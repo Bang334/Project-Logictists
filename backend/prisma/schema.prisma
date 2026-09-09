@@ -1,0 +1,327 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  ADMIN
+  DISPATCHER
+  DRIVER
+}
+
+enum VehicleStatus {
+  AVAILABLE
+  MAINTENANCE
+  ON_TRIP
+  DECOMMISSIONED
+}
+
+enum DriverStatus {
+  AVAILABLE
+  ON_DUTY
+  ON_LEAVE
+  RESTING
+}
+
+enum OrderStatus {
+  DRAFT
+  CONFIRMED
+  ASSIGNED
+  IN_TRANSIT
+  COMPLETED
+  CANCELLED
+}
+
+enum StopType {
+  PICKUP
+  DELIVERY
+  DEPOT_START
+  DEPOT_END
+}
+
+enum TaskAction {
+  LOAD
+  UNLOAD
+}
+
+enum TripStatus {
+  DRAFT
+  PLANNED
+  DISPATCHED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model User {
+  id        String   @id @default(uuid())
+  username  String   @unique
+  password  String
+  fullName  String
+  role      Role     @default(DISPATCHER)
+  phone     String?
+  email     String?  @unique
+  active    Boolean  @default(true)
+  branchId  String?
+  branch    Branch?  @relation(fields: [branchId], references: [id])
+  driver    Driver?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+model Branch {
+  id          String    @id @default(uuid())
+  code        String    @unique
+  name        String
+  address     String
+  latitude    Float
+  longitude   Float
+  phone       String?
+  timezone    String    @default("Asia/Ho_Chi_Minh")
+  active      Boolean   @default(true)
+  users       User[]
+  vehicles    Vehicle[]
+  drivers     Driver[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@map("branches")
+}
+
+model Vehicle {
+  id                String         @id @default(uuid())
+  plateNumber       String         @unique
+  model             String
+  vehicleType       String         // Ví dụ: Xe tải 1.5 tấn, 5 tấn, 8 tấn, Đầu kéo
+  homeBranchId      String
+  homeBranch        Branch         @relation(fields: [homeBranchId], references: [id])
+  payloadCapacityKg Float          // Tải trọng tối đa cho phép (kg)
+  volumeCapacityM3  Float          // Thể tích tối đa (m³)
+  lengthCm          Float          // Kích thước lọt lòng thùng: Dài (cm)
+  widthCm           Float          // Rộng (cm)
+  heightCm          Float          // Cao (cm)
+  status            VehicleStatus  @default(AVAILABLE)
+  currentLatitude   Float?
+  currentLongitude  Float?
+  lastLocationAt    DateTime?
+  trips             Trip[]
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@map("vehicles")
+}
+
+model Driver {
+  id             String             @id @default(uuid())
+  userId         String?            @unique
+  user           User?              @relation(fields: [userId], references: [id])
+  fullName       String
+  citizenId      String             @unique
+  phone          String
+  licenseNumber  String             @unique
+  licenseClass   String             // B2, C, D, E, FC...
+  licenseExpiry  DateTime
+  homeBranchId   String
+  homeBranch     Branch             @relation(fields: [homeBranchId], references: [id])
+  status         DriverStatus       @default(AVAILABLE)
+  shifts         DriverShift[]
+  assignments    DriverAssignment[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@map("drivers")
+}
+
+model DriverShift {
+  id        String   @id @default(uuid())
+  driverId  String
+  driver    Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  startTime DateTime
+  endTime   DateTime
+  notes     String?
+  createdAt DateTime @default(now())
+
+  @@map("driver_shifts")
+}
+
+model Customer {
+  id            String   @id @default(uuid())
+  code          String   @unique
+  name          String
+  taxCode       String?
+  address       String
+  contactPerson String
+  phone         String
+  email         String?
+  orders        Order[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("customers")
+}
+
+model Order {
+  id             String      @id @default(uuid())
+  orderNumber    String      @unique
+  customerId     String
+  customer       Customer    @relation(fields: [customerId], references: [id])
+  status         OrderStatus @default(CONFIRMED)
+  totalWeightKg  Float       @default(0)
+  totalVolumeM3  Float       @default(0)
+  totalPackages  Int         @default(0)
+  version        Int         @default(1)
+  notes          String?
+  stops          OrderStop[]
+  items          OrderItem[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@map("orders")
+}
+
+model OrderStop {
+  id                     String    @id @default(uuid())
+  orderId                String
+  order                  Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  type                   StopType  // PICKUP hoặc DELIVERY
+  sequence               Int       // 1 = Pickup, 2 = Delivery
+  address                String
+  latitude               Float
+  longitude              Float
+  contactName            String
+  contactPhone           String
+  windowStart            DateTime?
+  windowEnd              DateTime?
+  serviceDurationMinutes Int       @default(15)
+  createdAt              DateTime  @default(now())
+
+  @@map("order_stops")
+}
+
+model OrderItem {
+  id          String       @id @default(uuid())
+  orderId     String
+  order       Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  sku         String?
+  description String
+  packageType String       @default("CARTON") // CARTON, PALLET, CRATE, BAG
+  quantity    Int
+  weightKg    Float
+  lengthCm    Float
+  widthCm     Float
+  heightCm    Float
+  volumeM3    Float
+  allocations Allocation[]
+  createdAt   DateTime     @default(now())
+
+  @@map("order_items")
+}
+
+model Trip {
+  id                   String             @id @default(uuid())
+  tripNumber           String             @unique
+  vehicleId            String
+  vehicle              Vehicle            @relation(fields: [vehicleId], references: [id])
+  status               TripStatus         @default(DRAFT)
+  plannedStartTime     DateTime
+  plannedEndTime       DateTime
+  actualStartTime      DateTime?
+  actualEndTime        DateTime?
+  totalDistanceKm      Float              @default(0)
+  totalDurationMinutes Float              @default(0)
+  routeGeometry        String?            // GeoJSON string hoặc encoded polyline
+  version              Int                @default(1)
+  notes                String?
+  stops                TripStop[]
+  allocations          Allocation[]
+  assignments          DriverAssignment[]
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  @@map("trips")
+}
+
+model TripStop {
+  id                   String      @id @default(uuid())
+  tripId               String
+  trip                 Trip        @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  sequence             Int         // Thứ tự dừng: 1, 2, 3...
+  stopType             StopType
+  address              String
+  latitude             Float
+  longitude            Float
+  contactName          String?
+  contactPhone         String?
+  plannedArrivalTime   DateTime?
+  plannedDepartureTime DateTime?
+  actualArrivalTime    DateTime?
+  actualDepartureTime  DateTime?
+  status               String      @default("PENDING") // PENDING, ARRIVED, COMPLETED, SKIPPED
+  tasks                StopTask[]
+  createdAt            DateTime    @default(now())
+
+  @@map("trip_stops")
+}
+
+model Allocation {
+  id                String     @id @default(uuid())
+  orderItemId       String
+  orderItem         OrderItem  @relation(fields: [orderItemId], references: [id])
+  tripId            String
+  trip              Trip       @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  allocatedQuantity Int
+  status            String     @default("ALLOCATED")
+  tasks             StopTask[]
+  createdAt         DateTime   @default(now())
+
+  @@map("allocations")
+}
+
+model StopTask {
+  id              String      @id @default(uuid())
+  tripStopId      String
+  tripStop        TripStop    @relation(fields: [tripStopId], references: [id], onDelete: Cascade)
+  allocationId    String
+  allocation      Allocation  @relation(fields: [allocationId], references: [id], onDelete: Cascade)
+  action          TaskAction  // LOAD hoặc UNLOAD
+  plannedQuantity Int
+  actualQuantity  Int?
+  notes           String?
+  createdAt       DateTime    @default(now())
+
+  @@map("stop_tasks")
+}
+
+model DriverAssignment {
+  id        String   @id @default(uuid())
+  tripId    String
+  trip      Trip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  driverId  String
+  driver    Driver   @relation(fields: [driverId], references: [id])
+  startTime DateTime
+  endTime   DateTime
+  role      String   @default("PRIMARY") // PRIMARY, SECONDARY
+  status    String   @default("ASSIGNED")
+  createdAt DateTime @default(now())
+
+  @@map("driver_assignments")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  entityType  String
+  entityId    String
+  action      String
+  performedBy String
+  details     String?  // JSON metadata
+  timestamp   DateTime @default(now())
+
+  @@map("audit_logs")
+}

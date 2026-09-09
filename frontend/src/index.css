@@ -1,0 +1,94 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  background-color: #f0f2f5;
+  color: #1f2937;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Mapbox Marker Styles */
+.custom-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: white;
+  font-weight: 700;
+  font-size: 12px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.custom-marker:hover {
+  transform: scale(1.15);
+  z-index: 10;
+}
+
+.marker-depot {
+  background: linear-gradient(135deg, #1e40af, #3b82f6);
+  width: 32px;
+  height: 32px;
+  border: 2px solid white;
+}
+
+.marker-pickup {
+  background: linear-gradient(135deg, #059669, #10b981);
+  width: 28px;
+  height: 28px;
+  border: 2px solid white;
+}
+
+.marker-delivery {
+  background: linear-gradient(135deg, #ea580c, #f97316);
+  width: 28px;
+  height: 28px;
+  border: 2px solid white;
+}
+
+.marker-vehicle {
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+  width: 30px;
+  height: 30px;
+  border: 2px solid white;
+}
+
+/* Glassmorphism & Elevation */
+.card-elevation {
+  background: #ffffff;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.tms-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.025em;
+}
