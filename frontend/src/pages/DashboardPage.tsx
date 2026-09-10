@@ -6,6 +6,7 @@ import {
   ShoppingOutlined,
   SendOutlined,
   RightOutlined,
+  PlayCircleOutlined,
 } from '@ant-design/icons';
 import { branchesApi, vehiclesApi, driversApi, ordersApi, tripsApi } from '../api/client';
 import { Branch, Vehicle, Driver, Order, Trip } from '../types';
@@ -53,8 +54,9 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
 
   if (loading) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '60vh' }}>
-        <Spin size="large" tip="Đang tải dữ liệu vận hành TMS..." />
+      <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: '60vh', gap: 12 }}>
+        <Spin size="large" />
+        <span style={{ color: '#64748b' }}>Đang tải dữ liệu vận hành TMS...</span>
       </div>
     );
   }
@@ -130,7 +132,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
           <Title level={4} style={{ margin: 0 }}>Trung Tâm Chỉ Huy Vận Tải (TMS Dispatch)</Title>
           <Text type="secondary">Theo dõi đội xe, đơn hàng và các chuyến vận chuyển liên tỉnh trong thời gian thực</Text>
         </div>
-        <Button type="primary" icon={<SendOutlined />} onClick={() => onNavigate('dispatch')}>
+        <Button type="primary" icon={<SendOutlined />} onClick={() => onNavigate('dispatch-manual')}>
           Mở Bàn Điều Phối Chuyến Đi
         </Button>
       </div>
@@ -138,7 +140,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
       {/* Thống kê KPIs */}
       <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
         <Col xs={24} sm={12} lg={6}>
-          <Card bordered={false} className="card-elevation">
+          <Card variant="borderless" className="card-elevation">
             <Statistic
               title="Xe Tải Sẵn Sàng"
               value={availableVehicles}
@@ -149,7 +151,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <Card bordered={false} className="card-elevation">
+          <Card variant="borderless" className="card-elevation">
             <Statistic
               title="Tài Xế Khả Dụng"
               value={availableDrivers}
@@ -160,7 +162,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <Card bordered={false} className="card-elevation">
+          <Card variant="borderless" className="card-elevation">
             <Statistic
               title="Đơn Chờ Điều Phối"
               value={pendingOrders}
@@ -171,7 +173,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <Card bordered={false} className="card-elevation">
+          <Card variant="borderless" className="card-elevation">
             <Statistic
               title="Chuyến Đang Thực Hiện"
               value={activeTrips}
@@ -193,7 +195,17 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                 <Tag color="blue">{branches.length} Chi nhánh lớn</Tag>
               </Space>
             }
-            bordered={false}
+            extra={
+              <Button
+                type="primary"
+                icon={<PlayCircleOutlined />}
+                onClick={() => onNavigate('dispatch-auto')}
+                style={{ backgroundColor: '#2563eb' }}
+              >
+                Điều Phối & Mô Phỏng Xe Live
+              </Button>
+            }
+            variant="borderless"
             className="card-elevation"
           >
             <MapboxMap markers={branchMarkers} height={420} />
@@ -202,7 +214,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
         <Col xs={24} lg={8}>
           <Card
             title="Chi Nhánh & Tổng Kho"
-            bordered={false}
+            variant="borderless"
             className="card-elevation"
             style={{ height: '100%' }}
           >
@@ -237,11 +249,11 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
       <Card
         title="Danh Sách Chuyến Đi Gần Đây"
         extra={
-          <Button type="link" onClick={() => onNavigate('dispatch')}>
+          <Button type="link" onClick={() => onNavigate('dispatch-manual')}>
             Xem tất cả trên Bàn điều phối <RightOutlined />
           </Button>
         }
-        bordered={false}
+        variant="borderless"
         className="card-elevation"
       >
         <Table

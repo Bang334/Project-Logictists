@@ -58,102 +58,272 @@ enum TripStatus {
   CANCELLED
 }
 
+enum ScopeType {
+  COMPANY
+  BRANCH
+}
+
+enum PackageStatus {
+  DRAFT
+  READY
+  ALLOCATED
+  LOADED
+  DELIVERED
+  DAMAGED
+  CANCELLED
+}
+
+enum TripPlanStatus {
+  DRAFT
+  VALIDATED
+  PUBLISHED
+  SUPERSEDED
+  CANCELLED
+}
+
+enum ReservationStatus {
+  HELD
+  ACTIVE
+  RELEASED
+  CANCELLED
+}
+
+enum LoadValidationStatus {
+  PENDING
+  VALID
+  INVALID
+}
+
+enum FeasibilityStatus {
+  FEASIBLE
+  PARTIAL
+  INFEASIBLE
+  UNKNOWN
+}
+
+enum UploadStatus {
+  PENDING
+  UPLOADING
+  UPLOADED
+  FAILED
+}
+
+enum ApprovalStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum EmploymentStatus {
+  ACTIVE
+  SUSPENDED
+  TERMINATED
+}
+
+enum MaintenanceWorkOrderStatus {
+  DRAFT
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum PayrollRunStatus {
+  DRAFT
+  CALCULATED
+  APPROVED
+  PAID
+  CANCELLED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  OVERDUE
+  VOID
+}
+
+enum PaymentDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
 model User {
-  id        String   @id @default(uuid())
-  username  String   @unique
-  password  String
-  fullName  String
-  role      Role     @default(DISPATCHER)
-  phone     String?
-  email     String?  @unique
-  active    Boolean  @default(true)
-  branchId  String?
-  branch    Branch?  @relation(fields: [branchId], references: [id])
-  driver    Driver?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                            String                 @id @default(uuid())
+  username                      String                 @unique
+  password                      String
+  fullName                      String
+  role                          Role                   @default(DISPATCHER)
+  phone                         String?
+  email                         String?                @unique
+  active                        Boolean                @default(true)
+  branchId                      String?
+  branch                        Branch?                @relation(fields: [branchId], references: [id])
+  driver                        Driver?
+  optimizationJobs              OptimizationJob[]
+  roleScopes                    UserRoleScope[]
+  customerAccounts              CustomerUser[]
+  orderEvents                   OrderEvent[]           @relation("OrderEventActor")
+  createdTripPlans              TripPlan[]             @relation("TripPlanCreator")
+  loadObservations              LoadObservation[]
+  executionEvents               ExecutionEvent[]
+  trackingDevices               TrackingDevice[]
+  reportedIncidents             Incident[]             @relation("IncidentReporter")
+  notifications                 Notification[]
+  processedCommands             ProcessedCommand[]
+  auditLogs                     AuditLog[]             @relation("AuditActor")
+  employee                      Employee?
+  createdMaintenanceWorkOrders  MaintenanceWorkOrder[] @relation("MaintenanceCreator")
+  approvedMaintenanceWorkOrders MaintenanceWorkOrder[] @relation("MaintenanceApprover")
+  createdPayrollRuns            PayrollRun[]           @relation("PayrollCreator")
+  approvedPayrollRuns           PayrollRun[]           @relation("PayrollApprover")
+  createdInvoices               Invoice[]              @relation("InvoiceCreator")
+  recordedPayments              Payment[]              @relation("PaymentRecorder")
+  releasedTransfers             CargoTransfer[]        @relation("TransferReleasedBy")
+  receivedTransfers             CargoTransfer[]        @relation("TransferReceivedBy")
+  createdAt                     DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt                     DateTime               @updatedAt @db.Timestamptz(3)
 
   @@map("users")
 }
 
 model Branch {
-  id          String    @id @default(uuid())
-  code        String    @unique
-  name        String
-  address     String
-  latitude    Float
-  longitude   Float
-  phone       String?
-  timezone    String    @default("Asia/Ho_Chi_Minh")
-  active      Boolean   @default(true)
-  users       User[]
-  vehicles    Vehicle[]
-  drivers     Driver[]
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id                            String            @id @default(uuid())
+  code                          String            @unique
+  name                          String
+  address                       String
+  latitude                      Float
+  longitude                     Float
+  phone                         String?
+  timezone                      String            @default("Asia/Ho_Chi_Minh")
+  fuelPricePerLiter             Decimal           @default(23000) @db.Decimal(12, 2)
+  monthlyWorkingMinutes         Int               @default(10560)
+  cargoHoldingCostVndPerTonHour Decimal           @default(0) @db.Decimal(14, 2)
+  active                        Boolean           @default(true)
+  users                         User[]
+  vehicles                      Vehicle[]
+  drivers                       Driver[]
+  orders                        Order[]
+  optimizationJobs              OptimizationJob[]
+  roleScopes                    UserRoleScope[]
+  employees                     Employee[]
+  departments                   Department[]
+  managedTrips                  Trip[]            @relation("ManagingBranch")
+  payrollPeriods                PayrollPeriod[]
+  invoices                      Invoice[]
+  createdAt                     DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt                     DateTime          @updatedAt @db.Timestamptz(3)
 
   @@map("branches")
 }
 
 model Vehicle {
-  id                String         @id @default(uuid())
-  plateNumber       String         @unique
-  model             String
-  vehicleType       String         // Ví dụ: Xe tải 1.5 tấn, 5 tấn, 8 tấn, Đầu kéo
-  homeBranchId      String
-  homeBranch        Branch         @relation(fields: [homeBranchId], references: [id])
-  payloadCapacityKg Float          // Tải trọng tối đa cho phép (kg)
-  volumeCapacityM3  Float          // Thể tích tối đa (m³)
-  lengthCm          Float          // Kích thước lọt lòng thùng: Dài (cm)
-  widthCm           Float          // Rộng (cm)
-  heightCm          Float          // Cao (cm)
-  status            VehicleStatus  @default(AVAILABLE)
-  currentLatitude   Float?
-  currentLongitude  Float?
-  lastLocationAt    DateTime?
-  trips             Trip[]
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
+  id                                    String                  @id @default(uuid())
+  plateNumber                           String                  @unique
+  model                                 String
+  vehicleType                           String // Ví dụ: Xe tải 1.5 tấn, 5 tấn, 8 tấn, Đầu kéo
+  homeBranchId                          String
+  homeBranch                            Branch                  @relation(fields: [homeBranchId], references: [id])
+  vehicleTypeId                         String?
+  vehicleTypeRecord                     VehicleType?            @relation(fields: [vehicleTypeId], references: [id], onDelete: Restrict)
+  payloadCapacityKg                     Float // Tải trọng tối đa cho phép (kg)
+  volumeCapacityM3                      Float // Thể tích tối đa (m³)
+  lengthCm                              Float // Kích thước lọt lòng thùng: Dài (cm)
+  widthCm                               Float // Rộng (cm)
+  heightCm                              Float // Cao (cm)
+  fuelConsumptionLitersPer100Km         Decimal                 @default(12) @db.Decimal(8, 3) // Mức nền khi không chở hàng; cần hiệu chuẩn theo xe
+  loadFuelSurchargePercentAtFullPayload Decimal                 @default(0) @db.Decimal(6, 3)
+  fixedOperatingCostPerTrip             Decimal                 @default(0) @db.Decimal(14, 2)
+  status                                VehicleStatus           @default(AVAILABLE)
+  currentLatitude                       Float?
+  currentLongitude                      Float?
+  lastLocationAt                        DateTime?               @db.Timestamptz(3)
+  trips                                 Trip[]
+  tripPlans                             TripPlan[]
+  doors                                 VehicleDoor[]
+  obstacles                             VehicleObstacle[]
+  unavailability                        VehicleUnavailability[]
+  reservations                          ResourceReservation[]
+  trackingDevices                       TrackingDevice[]
+  gpsEvents                             GpsEvent[]
+  incidents                             Incident[]
+  maintenancePlans                      MaintenancePlan[]
+  maintenanceWorkOrders                 MaintenanceWorkOrder[]
+  odometerReadings                      OdometerReading[]
+  fuelLogs                              FuelLog[]
+  createdAt                             DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt                             DateTime                @updatedAt @db.Timestamptz(3)
 
+  @@index([vehicleTypeId])
   @@map("vehicles")
 }
 
 model Driver {
-  id             String             @id @default(uuid())
-  userId         String?            @unique
-  user           User?              @relation(fields: [userId], references: [id])
-  fullName       String
-  citizenId      String             @unique
-  phone          String
-  licenseNumber  String             @unique
-  licenseClass   String             // B2, C, D, E, FC...
-  licenseExpiry  DateTime
-  homeBranchId   String
-  homeBranch     Branch             @relation(fields: [homeBranchId], references: [id])
-  status         DriverStatus       @default(AVAILABLE)
-  shifts         DriverShift[]
-  assignments    DriverAssignment[]
-  createdAt      DateTime           @default(now())
-  updatedAt      DateTime           @updatedAt
+  id                 String                @id @default(uuid())
+  userId             String?               @unique
+  user               User?                 @relation(fields: [userId], references: [id])
+  fullName           String
+  citizenId          String                @unique
+  phone              String
+  licenseNumber      String                @unique
+  licenseClass       String // B2, C, D, E, FC...
+  licenseExpiry      DateTime              @db.Date
+  homeBranchId       String
+  homeBranch         Branch                @relation(fields: [homeBranchId], references: [id])
+  employeeId         String?               @unique
+  employee           Employee?             @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  status             DriverStatus          @default(AVAILABLE)
+  fixedSalaryMonthly Decimal               @default(0) @db.Decimal(14, 2)
+  tripBasePay        Decimal               @default(0) @db.Decimal(14, 2)
+  perKmPay           Decimal               @default(0) @db.Decimal(12, 2)
+  shifts             DriverShift[]
+  assignments        DriverAssignment[]
+  licenses           DriverLicense[]
+  leaveRecords       DriverLeave[]
+  activityEvents     DriverActivityEvent[]
+  reservations       ResourceReservation[]
+  gpsEvents          GpsEvent[]
+  incidents          Incident[]
+  payrollItems       PayrollItem[]
+  createdAt          DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime              @updatedAt @db.Timestamptz(3)
 
   @@map("drivers")
 }
 
 model DriverShift {
-  id        String   @id @default(uuid())
-  driverId  String
-  driver    Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
-  startTime DateTime
-  endTime   DateTime
-  notes     String?
-  createdAt DateTime @default(now())
+  id               String      @id @default(uuid())
+  driverId         String
+  driver           Driver      @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  workPolicyId     String?
+  workPolicy       WorkPolicy? @relation(fields: [workPolicyId], references: [id], onDelete: Restrict)
+  startTime        DateTime    @db.Timestamptz(3)
+  endTime          DateTime    @db.Timestamptz(3)
+  timezone         String      @default("Asia/Ho_Chi_Minh")
+  overtimeApproved Boolean     @default(false)
+  status           String      @default("SCHEDULED")
+  notes            String?
+  createdAt        DateTime    @default(now()) @db.Timestamptz(3)
 
+  @@index([driverId, startTime, endTime])
   @@map("driver_shifts")
 }
 
 model Customer {
-  id            String   @id @default(uuid())
-  code          String   @unique
+  id            String            @id @default(uuid())
+  code          String            @unique
   name          String
   taxCode       String?
   address       String
@@ -161,47 +331,62 @@ model Customer {
   phone         String
   email         String?
   orders        Order[]
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  contacts      CustomerContact[]
+  userAccounts  CustomerUser[]
+  invoices      Invoice[]
+  payments      Payment[]
+  createdAt     DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime          @updatedAt @db.Timestamptz(3)
 
   @@map("customers")
 }
 
 model Order {
-  id             String      @id @default(uuid())
-  orderNumber    String      @unique
-  customerId     String
-  customer       Customer    @relation(fields: [customerId], references: [id])
-  status         OrderStatus @default(CONFIRMED)
-  totalWeightKg  Float       @default(0)
-  totalVolumeM3  Float       @default(0)
-  totalPackages  Int         @default(0)
-  version        Int         @default(1)
-  notes          String?
-  stops          OrderStop[]
-  items          OrderItem[]
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  id              String           @id @default(uuid())
+  orderNumber     String           @unique
+  customerId      String
+  customer        Customer         @relation(fields: [customerId], references: [id])
+  branchId        String
+  branch          Branch           @relation(fields: [branchId], references: [id])
+  status          OrderStatus      @default(CONFIRMED)
+  totalWeightKg   Float            @default(0)
+  totalVolumeM3   Float            @default(0)
+  totalPackages   Int              @default(0)
+  version         Int              @default(1)
+  notes           String?
+  stops           OrderStop[]
+  items           OrderItem[]
+  events          OrderEvent[]
+  incidentLinks   IncidentOrder[]
+  costAllocations CostAllocation[]
+  charges         OrderCharge[]
+  invoiceItems    InvoiceItem[]
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
 
+  @@index([branchId, status])
   @@map("orders")
 }
 
 model OrderStop {
-  id                     String    @id @default(uuid())
+  id                     String     @id @default(uuid())
   orderId                String
-  order                  Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  type                   StopType  // PICKUP hoặc DELIVERY
-  sequence               Int       // 1 = Pickup, 2 = Delivery
+  order                  Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  type                   StopType // PICKUP hoặc DELIVERY
+  sequence               Int // 1 = Pickup, 2 = Delivery
   address                String
   latitude               Float
   longitude              Float
   contactName            String
   contactPhone           String
-  windowStart            DateTime?
-  windowEnd              DateTime?
-  serviceDurationMinutes Int       @default(15)
-  createdAt              DateTime  @default(now())
+  windowStart            DateTime?  @db.Timestamptz(3)
+  windowEnd              DateTime?  @db.Timestamptz(3)
+  serviceDurationMinutes Int        @default(15)
+  tasks                  StopTask[]
+  createdAt              DateTime   @default(now()) @db.Timestamptz(3)
 
+  @@unique([orderId, sequence])
+  @@index([orderId, type])
   @@map("order_stops")
 }
 
@@ -219,109 +404,1347 @@ model OrderItem {
   heightCm    Float
   volumeM3    Float
   allocations Allocation[]
-  createdAt   DateTime     @default(now())
+  packages    Package[]
+  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
 
   @@map("order_items")
 }
 
 model Trip {
-  id                   String             @id @default(uuid())
-  tripNumber           String             @unique
+  id                   String                @id @default(uuid())
+  tripNumber           String                @unique
   vehicleId            String
-  vehicle              Vehicle            @relation(fields: [vehicleId], references: [id])
-  status               TripStatus         @default(DRAFT)
-  plannedStartTime     DateTime
-  plannedEndTime       DateTime
-  actualStartTime      DateTime?
-  actualEndTime        DateTime?
-  totalDistanceKm      Float              @default(0)
-  totalDurationMinutes Float              @default(0)
-  routeGeometry        String?            // GeoJSON string hoặc encoded polyline
-  version              Int                @default(1)
+  vehicle              Vehicle               @relation(fields: [vehicleId], references: [id])
+  managingBranchId     String?
+  managingBranch       Branch?               @relation("ManagingBranch", fields: [managingBranchId], references: [id], onDelete: Restrict)
+  activePlanId         String?               @unique
+  activePlan           TripPlan?             @relation("ActiveTripPlan", fields: [activePlanId], references: [id], onDelete: Restrict)
+  status               TripStatus            @default(DRAFT)
+  plannedStartTime     DateTime              @db.Timestamptz(3)
+  plannedEndTime       DateTime              @db.Timestamptz(3)
+  actualStartTime      DateTime?             @db.Timestamptz(3)
+  actualEndTime        DateTime?             @db.Timestamptz(3)
+  totalDistanceKm      Float                 @default(0)
+  totalDurationMinutes Float                 @default(0)
+  routeGeometry        String? // GeoJSON string hoặc encoded polyline
+  version              Int                   @default(1)
   notes                String?
   stops                TripStop[]
   allocations          Allocation[]
   assignments          DriverAssignment[]
-  createdAt            DateTime           @default(now())
-  updatedAt            DateTime           @updatedAt
+  plans                TripPlan[]            @relation("TripPlans")
+  reservations         ResourceReservation[]
+  loadObservations     LoadObservation[]
+  executionEvents      ExecutionEvent[]
+  gpsEvents            GpsEvent[]
+  incidents            Incident[]
+  notifications        Notification[]
+  costEntries          CostEntry[]
+  driverActivities     DriverActivityEvent[]
+  transfersFrom        CargoTransfer[]       @relation("TransferFromTrip")
+  transfersTo          CargoTransfer[]       @relation("TransferToTrip")
+  fuelLogs             FuelLog[]
+  createdAt            DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime              @updatedAt @db.Timestamptz(3)
 
+  @@index([vehicleId, plannedStartTime, plannedEndTime])
+  @@index([managingBranchId, status, plannedStartTime])
   @@map("trips")
 }
 
 model TripStop {
-  id                   String      @id @default(uuid())
+  id                   String             @id @default(uuid())
   tripId               String
-  trip                 Trip        @relation(fields: [tripId], references: [id], onDelete: Cascade)
-  sequence             Int         // Thứ tự dừng: 1, 2, 3...
+  trip                 Trip               @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  sequence             Int // Thứ tự dừng: 1, 2, 3...
   stopType             StopType
   address              String
   latitude             Float
   longitude            Float
   contactName          String?
   contactPhone         String?
-  plannedArrivalTime   DateTime?
-  plannedDepartureTime DateTime?
-  actualArrivalTime    DateTime?
-  actualDepartureTime  DateTime?
-  status               String      @default("PENDING") // PENDING, ARRIVED, COMPLETED, SKIPPED
+  plannedArrivalTime   DateTime?          @db.Timestamptz(3)
+  plannedDepartureTime DateTime?          @db.Timestamptz(3)
+  actualArrivalTime    DateTime?          @db.Timestamptz(3)
+  actualDepartureTime  DateTime?          @db.Timestamptz(3)
+  status               String             @default("PENDING") // PENDING, ARRIVED, COMPLETED, SKIPPED
   tasks                StopTask[]
-  createdAt            DateTime    @default(now())
+  planStops            TripPlanStop[]
+  assignmentStarts     DriverAssignment[] @relation("AssignmentStartStop")
+  assignmentEnds       DriverAssignment[] @relation("AssignmentEndStop")
+  executionEvents      ExecutionEvent[]
+  deliveryAttempts     DeliveryAttempt[]
+  createdAt            DateTime           @default(now()) @db.Timestamptz(3)
 
+  @@unique([tripId, sequence])
+  @@index([tripId, status])
   @@map("trip_stops")
 }
 
 model Allocation {
-  id                String     @id @default(uuid())
+  id                String                 @id @default(uuid())
   orderItemId       String
-  orderItem         OrderItem  @relation(fields: [orderItemId], references: [id])
+  orderItem         OrderItem              @relation(fields: [orderItemId], references: [id])
+  packageId         String?
+  package           Package?               @relation(fields: [packageId], references: [id], onDelete: Restrict)
   tripId            String
-  trip              Trip       @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  trip              Trip                   @relation(fields: [tripId], references: [id], onDelete: Cascade)
   allocatedQuantity Int
-  status            String     @default("ALLOCATED")
+  legNumber         Int                    @default(1)
+  status            String                 @default("ALLOCATED")
+  releasedAt        DateTime?              @db.Timestamptz(3)
   tasks             StopTask[]
-  createdAt         DateTime   @default(now())
+  transferSources   CargoTransferPackage[] @relation("TransferFromAllocation")
+  transferTargets   CargoTransferPackage[] @relation("TransferToAllocation")
+  createdAt         DateTime               @default(now()) @db.Timestamptz(3)
 
+  @@index([tripId, status])
+  @@index([orderItemId])
+  @@index([packageId, status])
   @@map("allocations")
 }
 
 model StopTask {
-  id              String      @id @default(uuid())
+  id              String           @id @default(uuid())
   tripStopId      String
-  tripStop        TripStop    @relation(fields: [tripStopId], references: [id], onDelete: Cascade)
+  tripStop        TripStop         @relation(fields: [tripStopId], references: [id], onDelete: Cascade)
   allocationId    String
-  allocation      Allocation  @relation(fields: [allocationId], references: [id], onDelete: Cascade)
-  action          TaskAction  // LOAD hoặc UNLOAD
+  allocation      Allocation       @relation(fields: [allocationId], references: [id], onDelete: Cascade)
+  orderStopId     String?
+  orderStop       OrderStop?       @relation(fields: [orderStopId], references: [id], onDelete: Restrict)
+  action          TaskAction // LOAD hoặc UNLOAD
   plannedQuantity Int
   actualQuantity  Int?
   notes           String?
-  createdAt       DateTime    @default(now())
+  planTasks       TripPlanTask[]
+  executionEvents ExecutionEvent[]
+  deliveryResults DeliveryResult[]
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
 
+  @@index([tripStopId, action])
+  @@index([allocationId])
   @@map("stop_tasks")
 }
 
 model DriverAssignment {
-  id        String   @id @default(uuid())
-  tripId    String
-  trip      Trip     @relation(fields: [tripId], references: [id], onDelete: Cascade)
-  driverId  String
-  driver    Driver   @relation(fields: [driverId], references: [id])
-  startTime DateTime
-  endTime   DateTime
-  role      String   @default("PRIMARY") // PRIMARY, SECONDARY
-  status    String   @default("ASSIGNED")
-  createdAt DateTime @default(now())
+  id          String    @id @default(uuid())
+  tripId      String
+  trip        Trip      @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  tripPlanId  String?
+  tripPlan    TripPlan? @relation(fields: [tripPlanId], references: [id], onDelete: Restrict)
+  driverId    String
+  driver      Driver    @relation(fields: [driverId], references: [id])
+  startStopId String?
+  startStop   TripStop? @relation("AssignmentStartStop", fields: [startStopId], references: [id], onDelete: Restrict)
+  endStopId   String?
+  endStop     TripStop? @relation("AssignmentEndStop", fields: [endStopId], references: [id], onDelete: Restrict)
+  startTime   DateTime  @db.Timestamptz(3)
+  endTime     DateTime  @db.Timestamptz(3)
+  role        String    @default("PRIMARY") // PRIMARY, SECONDARY
+  status      String    @default("ASSIGNED")
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
 
+  @@index([driverId, startTime, endTime])
+  @@index([tripPlanId])
   @@map("driver_assignments")
 }
 
 model AuditLog {
-  id          String   @id @default(uuid())
-  entityType  String
-  entityId    String
-  action      String
-  performedBy String
-  details     String?  // JSON metadata
-  timestamp   DateTime @default(now())
+  id            String   @id @default(uuid())
+  entityType    String
+  entityId      String
+  action        String
+  performedBy   String
+  details       String? // JSON metadata
+  actorUserId   String?
+  actorUser     User?    @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  correlationId String?
+  changeSummary Json?
+  timestamp     DateTime @default(now()) @db.Timestamptz(3)
 
+  @@index([entityType, entityId, timestamp])
+  @@index([actorUserId, timestamp])
   @@map("audit_logs")
+}
+
+model OptimizationJob {
+  id              String               @id @default(uuid())
+  status          String               @default("PENDING")
+  branchId        String
+  branch          Branch               @relation(fields: [branchId], references: [id])
+  createdById     String
+  createdBy       User                 @relation(fields: [createdById], references: [id])
+  requestHash     String
+  requestSnapshot Json
+  schemaVersion   String               @default("1")
+  policyVersion   String?
+  solverVersion   String?
+  parameters      Json?
+  result          Json?
+  errorCode       String?
+  errorMessage    String?
+  attemptCount    Int                  @default(0)
+  leaseUntil      DateTime?            @db.Timestamptz(3)
+  cancelledAt     DateTime?            @db.Timestamptz(3)
+  startedAt       DateTime?            @db.Timestamptz(3)
+  completedAt     DateTime?            @db.Timestamptz(3)
+  results         OptimizationResult[]
+  createdAt       DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime             @updatedAt @db.Timestamptz(3)
+
+  @@index([branchId, createdAt])
+  @@index([status, createdAt])
+  @@map("optimization_jobs")
+}
+
+model AccessRole {
+  id          String           @id @default(uuid())
+  code        String           @unique
+  name        String
+  description String?
+  active      Boolean          @default(true)
+  permissions RolePermission[]
+  userScopes  UserRoleScope[]
+  createdAt   DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime         @updatedAt @db.Timestamptz(3)
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  code        String           @unique
+  description String
+  permissions RolePermission[]
+  createdAt   DateTime         @default(now()) @db.Timestamptz(3)
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String
+  role         AccessRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now()) @db.Timestamptz(3)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRoleScope {
+  id        String     @id @default(uuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId    String
+  role      AccessRole @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  scopeType ScopeType
+  branchId  String?
+  branch    Branch?    @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  active    Boolean    @default(true)
+  createdAt DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime   @updatedAt @db.Timestamptz(3)
+
+  @@unique([userId, roleId, scopeType, branchId])
+  @@index([branchId, active])
+  @@map("user_role_scopes")
+}
+
+model CustomerContact {
+  id          String   @id @default(uuid())
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  name        String
+  phone       String
+  email       String?
+  contactRole String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([customerId, active])
+  @@map("customer_contacts")
+}
+
+model CustomerUser {
+  id         String   @id @default(uuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([customerId, userId])
+  @@unique([userId])
+  @@map("customer_users")
+}
+
+model Package {
+  id                  String                 @id @default(uuid())
+  orderItemId         String
+  orderItem           OrderItem              @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  packageCode         String                 @unique
+  lengthMm            Int
+  widthMm             Int
+  heightMm            Int
+  weightG             BigInt
+  allowedOrientations Json
+  measurementSource   String
+  measuredAt          DateTime?              @db.Timestamptz(3)
+  status              PackageStatus          @default(DRAFT)
+  version             Int                    @default(1)
+  allocations         Allocation[]
+  loadPlanSteps       LoadPlanStep[]
+  loadPlacements      LoadPlacement[]
+  deliveryResults     DeliveryResult[]
+  transferPackages    CargoTransferPackage[]
+  createdAt           DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime               @updatedAt @db.Timestamptz(3)
+
+  @@index([orderItemId, status])
+  @@map("packages")
+}
+
+model OrderEvent {
+  id          String   @id @default(uuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  eventType   String
+  fromStatus  String?
+  toStatus    String?
+  actorUserId String?
+  actorUser   User?    @relation("OrderEventActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  commandId   String?
+  payload     Json?
+  occurredAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([commandId])
+  @@index([orderId, occurredAt])
+  @@map("order_events")
+}
+
+model VehicleType {
+  id                      String    @id @default(uuid())
+  code                    String    @unique
+  name                    String
+  requiredLicenseCategory String?
+  handlingCapabilities    Json?
+  active                  Boolean   @default(true)
+  vehicles                Vehicle[]
+  createdAt               DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@map("vehicle_types")
+}
+
+model VehicleDoor {
+  id               String         @id @default(uuid())
+  vehicleId        String
+  vehicle          Vehicle        @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  doorCode         String
+  side             String
+  offsetMm         Int
+  sillHeightMm     Int            @default(0)
+  clearWidthMm     Int
+  clearHeightMm    Int
+  approachGeometry Json?
+  active           Boolean        @default(true)
+  loadPlanSteps    LoadPlanStep[]
+  createdAt        DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime       @updatedAt @db.Timestamptz(3)
+
+  @@unique([vehicleId, doorCode])
+  @@map("vehicle_doors")
+}
+
+model VehicleObstacle {
+  id              String   @id @default(uuid())
+  vehicleId       String
+  vehicle         Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  name            String
+  geometry        Json
+  geometryVersion Int      @default(1)
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([vehicleId, active])
+  @@map("vehicle_obstacles")
+}
+
+model VehicleUnavailability {
+  id        String    @id @default(uuid())
+  vehicleId String
+  vehicle   Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  startsAt  DateTime  @db.Timestamptz(3)
+  endsAt    DateTime? @db.Timestamptz(3)
+  reason    String
+  status    String    @default("ACTIVE")
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([vehicleId, startsAt, endsAt])
+  @@map("vehicle_unavailability")
+}
+
+model DriverLicense {
+  id                 String   @id @default(uuid())
+  driverId           String
+  driver             Driver   @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  licenseNumber      String
+  category           String
+  validFrom          DateTime @db.Date
+  validUntil         DateTime @db.Date
+  verificationStatus String   @default("PENDING")
+  createdAt          DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([driverId, licenseNumber, category])
+  @@index([driverId, validUntil])
+  @@map("driver_licenses")
+}
+
+model WorkPolicy {
+  id                String        @id @default(uuid())
+  code              String
+  revision          Int
+  effectiveFrom     DateTime      @db.Date
+  effectiveTo       DateTime?     @db.Date
+  jurisdiction      String
+  limits            Json
+  approvalReference String?
+  shifts            DriverShift[]
+  createdAt         DateTime      @default(now()) @db.Timestamptz(3)
+
+  @@unique([code, revision])
+  @@map("work_policies")
+}
+
+model DriverLeave {
+  id        String         @id @default(uuid())
+  driverId  String
+  driver    Driver         @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  startsAt  DateTime       @db.Timestamptz(3)
+  endsAt    DateTime       @db.Timestamptz(3)
+  reason    String
+  status    ApprovalStatus @default(PENDING)
+  createdAt DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime       @updatedAt @db.Timestamptz(3)
+
+  @@index([driverId, startsAt, endsAt])
+  @@map("driver_leave")
+}
+
+model DriverActivityEvent {
+  id             String                @id @default(uuid())
+  driverId       String
+  driver         Driver                @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  tripId         String?
+  trip           Trip?                 @relation(fields: [tripId], references: [id], onDelete: Restrict)
+  activityType   String
+  occurredAt     DateTime              @db.Timestamptz(3)
+  receivedAt     DateTime              @default(now()) @db.Timestamptz(3)
+  source         String
+  correctionOfId String?
+  correctionOf   DriverActivityEvent?  @relation("DriverActivityCorrection", fields: [correctionOfId], references: [id], onDelete: Restrict)
+  corrections    DriverActivityEvent[] @relation("DriverActivityCorrection")
+  payload        Json?
+
+  @@index([driverId, occurredAt])
+  @@index([tripId, occurredAt])
+  @@map("driver_activity_events")
+}
+
+model TripPlan {
+  id                    String                @id @default(uuid())
+  tripId                String
+  trip                  Trip                  @relation("TripPlans", fields: [tripId], references: [id], onDelete: Restrict)
+  revision              Int
+  vehicleId             String
+  vehicle               Vehicle               @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  plannedStartTime      DateTime              @db.Timestamptz(3)
+  plannedEndTime        DateTime              @db.Timestamptz(3)
+  startLocationSnapshot Json
+  endLocationSnapshot   Json
+  planningSnapshot      Json
+  status                TripPlanStatus        @default(DRAFT)
+  createdById           String
+  createdBy             User                  @relation("TripPlanCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  publishedAt           DateTime?             @db.Timestamptz(3)
+  activeForTrip         Trip?                 @relation("ActiveTripPlan")
+  planStops             TripPlanStop[]
+  planTasks             TripPlanTask[]
+  assignments           DriverAssignment[]
+  reservations          ResourceReservation[]
+  loadPlans             LoadPlan[]
+  executionEvents       ExecutionEvent[]
+  deliveryAttempts      DeliveryAttempt[]
+  createdAt             DateTime              @default(now()) @db.Timestamptz(3)
+
+  @@unique([tripId, revision])
+  @@index([vehicleId, plannedStartTime, plannedEndTime])
+  @@index([status, plannedStartTime])
+  @@map("trip_plans")
+}
+
+model TripPlanStop {
+  id                   String    @id @default(uuid())
+  tripPlanId           String
+  tripPlan             TripPlan  @relation(fields: [tripPlanId], references: [id], onDelete: Cascade)
+  tripStopId           String
+  tripStop             TripStop  @relation(fields: [tripStopId], references: [id], onDelete: Restrict)
+  sequence             Int
+  locationSnapshot     Json
+  windowStart          DateTime? @db.Timestamptz(3)
+  windowEnd            DateTime? @db.Timestamptz(3)
+  plannedArrivalTime   DateTime? @db.Timestamptz(3)
+  plannedServiceStart  DateTime? @db.Timestamptz(3)
+  plannedDepartureTime DateTime? @db.Timestamptz(3)
+  createdAt            DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@unique([tripPlanId, sequence])
+  @@unique([tripPlanId, tripStopId])
+  @@index([tripStopId])
+  @@map("trip_plan_stops")
+}
+
+model TripPlanTask {
+  id                String         @id @default(uuid())
+  tripPlanId        String
+  tripPlan          TripPlan       @relation(fields: [tripPlanId], references: [id], onDelete: Cascade)
+  stopTaskId        String
+  stopTask          StopTask       @relation(fields: [stopTaskId], references: [id], onDelete: Restrict)
+  operationSequence Int
+  plannedStartTime  DateTime?      @db.Timestamptz(3)
+  plannedEndTime    DateTime?      @db.Timestamptz(3)
+  loadPlanSteps     LoadPlanStep[]
+  createdAt         DateTime       @default(now()) @db.Timestamptz(3)
+
+  @@unique([tripPlanId, stopTaskId])
+  @@unique([tripPlanId, operationSequence])
+  @@index([stopTaskId])
+  @@map("trip_plan_tasks")
+}
+
+model ResourceReservation {
+  id         String            @id @default(uuid())
+  tripPlanId String
+  tripPlan   TripPlan          @relation(fields: [tripPlanId], references: [id], onDelete: Restrict)
+  tripId     String
+  trip       Trip              @relation(fields: [tripId], references: [id], onDelete: Restrict)
+  vehicleId  String?
+  vehicle    Vehicle?          @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  driverId   String?
+  driver     Driver?           @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  startsAt   DateTime          @db.Timestamptz(3)
+  endsAt     DateTime          @db.Timestamptz(3)
+  status     ReservationStatus @default(HELD)
+  createdAt  DateTime          @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime          @updatedAt @db.Timestamptz(3)
+
+  @@index([tripPlanId, status])
+  @@index([vehicleId, startsAt, endsAt])
+  @@index([driverId, startsAt, endsAt])
+  @@map("resource_reservations")
+}
+
+model LoadPlan {
+  id                   String               @id @default(uuid())
+  tripPlanId           String
+  tripPlan             TripPlan             @relation(fields: [tripPlanId], references: [id], onDelete: Restrict)
+  revision             Int
+  initialStateSnapshot Json
+  geometrySnapshot     Json
+  validationStatus     LoadValidationStatus @default(PENDING)
+  validatorVersion     String
+  inputHash            String
+  steps                LoadPlanStep[]
+  createdAt            DateTime             @default(now()) @db.Timestamptz(3)
+
+  @@unique([tripPlanId, revision])
+  @@index([validationStatus, createdAt])
+  @@map("load_plans")
+}
+
+model LoadPlanStep {
+  id               String            @id @default(uuid())
+  loadPlanId       String
+  loadPlan         LoadPlan          @relation(fields: [loadPlanId], references: [id], onDelete: Cascade)
+  stepNumber       Int
+  tripPlanTaskId   String?
+  tripPlanTask     TripPlanTask?     @relation(fields: [tripPlanTaskId], references: [id], onDelete: Restrict)
+  operationType    String
+  packageId        String?
+  package          Package?          @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  doorId           String?
+  door             VehicleDoor?      @relation(fields: [doorId], references: [id], onDelete: Restrict)
+  handlingPath     Json?
+  validationResult Json
+  placements       LoadPlacement[]
+  observations     LoadObservation[]
+  createdAt        DateTime          @default(now()) @db.Timestamptz(3)
+
+  @@unique([loadPlanId, stepNumber])
+  @@index([tripPlanTaskId])
+  @@map("load_plan_steps")
+}
+
+model LoadPlacement {
+  id                String       @id @default(uuid())
+  loadPlanStepId    String
+  loadPlanStep      LoadPlanStep @relation(fields: [loadPlanStepId], references: [id], onDelete: Cascade)
+  packageId         String
+  package           Package      @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  xMm               Int
+  yMm               Int
+  zMm               Int          @default(0)
+  orientation       String
+  effectiveLengthMm Int
+  effectiveWidthMm  Int
+  effectiveHeightMm Int
+  createdAt         DateTime     @default(now()) @db.Timestamptz(3)
+
+  @@unique([loadPlanStepId, packageId])
+  @@index([packageId])
+  @@map("load_placements")
+}
+
+model LoadObservation {
+  id                   String        @id @default(uuid())
+  tripId               String
+  trip                 Trip          @relation(fields: [tripId], references: [id], onDelete: Restrict)
+  sourceLoadStepId     String?
+  sourceLoadStep       LoadPlanStep? @relation(fields: [sourceLoadStepId], references: [id], onDelete: Restrict)
+  observedAt           DateTime      @db.Timestamptz(3)
+  actorUserId          String
+  actorUser            User          @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  actualLayoutSnapshot Json
+  verificationStatus   String
+  createdAt            DateTime      @default(now()) @db.Timestamptz(3)
+
+  @@index([tripId, observedAt])
+  @@map("load_observations")
+}
+
+model ExecutionEvent {
+  id           String    @id @default(uuid())
+  tripId       String
+  trip         Trip      @relation(fields: [tripId], references: [id], onDelete: Restrict)
+  tripStopId   String?
+  tripStop     TripStop? @relation(fields: [tripStopId], references: [id], onDelete: Restrict)
+  stopTaskId   String?
+  stopTask     StopTask? @relation(fields: [stopTaskId], references: [id], onDelete: Restrict)
+  sourcePlanId String
+  sourcePlan   TripPlan  @relation(fields: [sourcePlanId], references: [id], onDelete: Restrict)
+  eventType    String
+  occurredAt   DateTime  @db.Timestamptz(3)
+  receivedAt   DateTime  @default(now()) @db.Timestamptz(3)
+  actorUserId  String
+  actorUser    User      @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  commandId    String
+  payload      Json?
+
+  @@unique([commandId])
+  @@index([tripId, occurredAt])
+  @@index([tripStopId, occurredAt])
+  @@map("execution_events")
+}
+
+model TrackingDevice {
+  id                String     @id @default(uuid())
+  installationKey   String     @unique
+  userId            String?
+  user              User?      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  assignedVehicleId String?
+  assignedVehicle   Vehicle?   @relation(fields: [assignedVehicleId], references: [id], onDelete: Restrict)
+  sourceType        String
+  active            Boolean    @default(true)
+  gpsEvents         GpsEvent[]
+  createdAt         DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime   @updatedAt @db.Timestamptz(3)
+
+  @@index([assignedVehicleId, active])
+  @@map("tracking_devices")
+}
+
+model GpsEvent {
+  id               String         @id @default(uuid())
+  trackingDeviceId String
+  trackingDevice   TrackingDevice @relation(fields: [trackingDeviceId], references: [id], onDelete: Restrict)
+  deviceSessionId  String
+  sequence         BigInt
+  driverId         String?
+  driver           Driver?        @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  vehicleId        String?
+  vehicle          Vehicle?       @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  tripId           String?
+  trip             Trip?          @relation(fields: [tripId], references: [id], onDelete: Restrict)
+  measuredAt       DateTime       @db.Timestamptz(3)
+  receivedAt       DateTime       @default(now()) @db.Timestamptz(3)
+  longitude        Decimal        @db.Decimal(10, 7)
+  latitude         Decimal        @db.Decimal(9, 7)
+  accuracyM        Decimal?       @db.Decimal(8, 2)
+  speedKph         Decimal?       @db.Decimal(8, 2)
+  headingDegrees   Decimal?       @db.Decimal(6, 2)
+
+  @@unique([trackingDeviceId, deviceSessionId, sequence])
+  @@index([tripId, measuredAt])
+  @@index([vehicleId, measuredAt])
+  @@index([driverId, measuredAt])
+  @@map("gps_events")
+}
+
+model DeliveryAttempt {
+  id            String           @id @default(uuid())
+  tripStopId    String
+  tripStop      TripStop         @relation(fields: [tripStopId], references: [id], onDelete: Restrict)
+  sourcePlanId  String
+  sourcePlan    TripPlan         @relation(fields: [sourcePlanId], references: [id], onDelete: Restrict)
+  attemptNumber Int
+  occurredAt    DateTime         @db.Timestamptz(3)
+  recipientName String?
+  result        String
+  failureReason String?
+  commandId     String           @unique
+  results       DeliveryResult[]
+  podFiles      PodFile[]
+  createdAt     DateTime         @default(now()) @db.Timestamptz(3)
+
+  @@unique([tripStopId, attemptNumber])
+  @@index([sourcePlanId, occurredAt])
+  @@map("delivery_attempts")
+}
+
+model DeliveryResult {
+  id                String          @id @default(uuid())
+  deliveryAttemptId String
+  deliveryAttempt   DeliveryAttempt @relation(fields: [deliveryAttemptId], references: [id], onDelete: Restrict)
+  stopTaskId        String
+  stopTask          StopTask        @relation(fields: [stopTaskId], references: [id], onDelete: Restrict)
+  packageId         String
+  package           Package         @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  result            String
+  reason            String?
+  createdAt         DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@unique([deliveryAttemptId, packageId])
+  @@index([stopTaskId])
+  @@map("delivery_results")
+}
+
+model PodFile {
+  id                String          @id @default(uuid())
+  deliveryAttemptId String
+  deliveryAttempt   DeliveryAttempt @relation(fields: [deliveryAttemptId], references: [id], onDelete: Restrict)
+  storageKey        String          @unique
+  checksum          String
+  mediaType         String
+  uploadStatus      UploadStatus    @default(PENDING)
+  capturedAt        DateTime?       @db.Timestamptz(3)
+  uploadedAt        DateTime?       @db.Timestamptz(3)
+  supersedesId      String?
+  supersedes        PodFile?        @relation("PodSupersession", fields: [supersedesId], references: [id], onDelete: Restrict)
+  replacements      PodFile[]       @relation("PodSupersession")
+  createdAt         DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@index([deliveryAttemptId, uploadStatus])
+  @@map("pod_files")
+}
+
+model Incident {
+  id          String          @id @default(uuid())
+  tripId      String
+  trip        Trip            @relation(fields: [tripId], references: [id], onDelete: Restrict)
+  vehicleId   String?
+  vehicle     Vehicle?        @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  driverId    String?
+  driver      Driver?         @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  type        String
+  severity    String
+  status      String          @default("OPEN")
+  occurredAt  DateTime        @db.Timestamptz(3)
+  reporterId  String
+  reporter    User            @relation("IncidentReporter", fields: [reporterId], references: [id], onDelete: Restrict)
+  description String
+  resolution  String?
+  orders      IncidentOrder[]
+  createdAt   DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime        @updatedAt @db.Timestamptz(3)
+
+  @@index([tripId, occurredAt])
+  @@index([status, severity])
+  @@map("incidents")
+}
+
+model IncidentOrder {
+  incidentId String
+  incident   Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  orderId    String
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@id([incidentId, orderId])
+  @@map("incident_orders")
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tripId    String?
+  trip      Trip?     @relation(fields: [tripId], references: [id], onDelete: Restrict)
+  kind      String
+  payload   Json
+  readAt    DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model OptimizationResult {
+  id                 String            @id @default(uuid())
+  optimizationJobId  String
+  optimizationJob    OptimizationJob   @relation(fields: [optimizationJobId], references: [id], onDelete: Restrict)
+  candidateNumber    Int
+  resultSnapshot     Json
+  feasibilityStatus  FeasibilityStatus
+  objectiveBreakdown Json
+  diagnostics        Json?
+  createdAt          DateTime          @default(now()) @db.Timestamptz(3)
+
+  @@unique([optimizationJobId, candidateNumber])
+  @@index([feasibilityStatus, createdAt])
+  @@map("optimization_results")
+}
+
+model OutboxEvent {
+  id               String    @id @default(uuid())
+  eventId          String    @unique
+  aggregateType    String
+  aggregateId      String
+  aggregateVersion Int
+  eventType        String
+  payload          Json
+  publishedAt      DateTime? @db.Timestamptz(3)
+  attempts         Int       @default(0)
+  lastError        String?
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([publishedAt, createdAt])
+  @@index([aggregateType, aggregateId, aggregateVersion])
+  @@map("outbox_events")
+}
+
+model ProcessedCommand {
+  id             String   @id @default(uuid())
+  actorUserId    String
+  actorUser      User     @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  commandType    String
+  idempotencyKey String
+  requestHash    String
+  status         String
+  result         Json?
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([actorUserId, commandType, idempotencyKey])
+  @@index([status, createdAt])
+  @@map("processed_commands")
+}
+
+model CostEntry {
+  id                 String              @id @default(uuid())
+  tripId             String
+  trip               Trip                @relation(fields: [tripId], references: [id], onDelete: Restrict)
+  category           String
+  amount             Decimal             @db.Decimal(20, 4)
+  currency           String              @default("VND")
+  basis              String
+  approvalStatus     ApprovalStatus      @default(DRAFT)
+  sourceReference    String?
+  occurredAt         DateTime            @db.Timestamptz(3)
+  allocations        CostAllocation[]
+  payrollAdjustments PayrollAdjustment[]
+  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime            @updatedAt @db.Timestamptz(3)
+
+  @@index([tripId, occurredAt])
+  @@index([approvalStatus, occurredAt])
+  @@map("cost_entries")
+}
+
+model CostAllocation {
+  id               String    @id @default(uuid())
+  costEntryId      String
+  costEntry        CostEntry @relation(fields: [costEntryId], references: [id], onDelete: Restrict)
+  orderId          String
+  order            Order     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  amount           Decimal   @db.Decimal(20, 4)
+  allocationMethod String
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@unique([costEntryId, orderId])
+  @@index([orderId])
+  @@map("cost_allocations")
+}
+
+model OrderCharge {
+  id              String        @id @default(uuid())
+  orderId         String
+  order           Order         @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  chargeType      String
+  amount          Decimal       @db.Decimal(20, 4)
+  currency        String        @default("VND")
+  sourceReference String?
+  status          String        @default("DRAFT")
+  invoiceItems    InvoiceItem[]
+  createdAt       DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime      @updatedAt @db.Timestamptz(3)
+
+  @@index([orderId, status])
+  @@map("order_charges")
+}
+
+model CargoTransfer {
+  id               String                 @id @default(uuid())
+  fromTripId       String
+  fromTrip         Trip                   @relation("TransferFromTrip", fields: [fromTripId], references: [id], onDelete: Restrict)
+  toTripId         String
+  toTrip           Trip                   @relation("TransferToTrip", fields: [toTripId], references: [id], onDelete: Restrict)
+  locationSnapshot Json
+  plannedAt        DateTime               @db.Timestamptz(3)
+  actualAt         DateTime?              @db.Timestamptz(3)
+  status           String
+  releasedById     String?
+  releasedBy       User?                  @relation("TransferReleasedBy", fields: [releasedById], references: [id], onDelete: Restrict)
+  receivedById     String?
+  receivedBy       User?                  @relation("TransferReceivedBy", fields: [receivedById], references: [id], onDelete: Restrict)
+  packages         CargoTransferPackage[]
+  createdAt        DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime               @updatedAt @db.Timestamptz(3)
+
+  @@index([fromTripId, plannedAt])
+  @@index([toTripId, plannedAt])
+  @@map("cargo_transfers")
+}
+
+model CargoTransferPackage {
+  cargoTransferId  String
+  cargoTransfer    CargoTransfer @relation(fields: [cargoTransferId], references: [id], onDelete: Restrict)
+  packageId        String
+  package          Package       @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  fromAllocationId String
+  fromAllocation   Allocation    @relation("TransferFromAllocation", fields: [fromAllocationId], references: [id], onDelete: Restrict)
+  toAllocationId   String
+  toAllocation     Allocation    @relation("TransferToAllocation", fields: [toAllocationId], references: [id], onDelete: Restrict)
+  condition        String?
+  receiptStatus    String
+
+  @@id([cargoTransferId, packageId])
+  @@map("cargo_transfer_packages")
+}
+
+model Department {
+  id        String     @id @default(uuid())
+  branchId  String
+  branch    Branch     @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  code      String
+  name      String
+  active    Boolean    @default(true)
+  positions Position[]
+  employees Employee[]
+  createdAt DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime   @updatedAt @db.Timestamptz(3)
+
+  @@unique([branchId, code])
+  @@map("departments")
+}
+
+model Position {
+  id           String               @id @default(uuid())
+  departmentId String
+  department   Department           @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  code         String
+  name         String
+  active       Boolean              @default(true)
+  employees    Employee[]
+  contracts    EmploymentContract[]
+  createdAt    DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime             @updatedAt @db.Timestamptz(3)
+
+  @@unique([departmentId, code])
+  @@map("positions")
+}
+
+model Employee {
+  id               String               @id @default(uuid())
+  employeeCode     String               @unique
+  userId           String?              @unique
+  user             User?                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  branchId         String
+  branch           Branch               @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  departmentId     String?
+  department       Department?          @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  positionId       String?
+  position         Position?            @relation(fields: [positionId], references: [id], onDelete: Restrict)
+  fullName         String
+  phone            String?
+  email            String?
+  citizenId        String?              @unique
+  joinedOn         DateTime             @db.Date
+  leftOn           DateTime?            @db.Date
+  employmentStatus EmploymentStatus     @default(ACTIVE)
+  version          Int                  @default(1)
+  driverProfile    Driver?
+  contracts        EmploymentContract[]
+  attendance       AttendanceEntry[]
+  leaveRecords     EmployeeLeave[]
+  payrollItems     PayrollItem[]
+  createdAt        DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime             @updatedAt @db.Timestamptz(3)
+
+  @@index([branchId, employmentStatus])
+  @@index([departmentId, positionId])
+  @@map("employees")
+}
+
+model EmploymentContract {
+  id             String         @id @default(uuid())
+  employeeId     String
+  employee       Employee       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  positionId     String?
+  position       Position?      @relation(fields: [positionId], references: [id], onDelete: Restrict)
+  contractNumber String         @unique
+  contractType   String
+  effectiveFrom  DateTime       @db.Date
+  effectiveTo    DateTime?      @db.Date
+  baseSalary     Decimal        @db.Decimal(20, 4)
+  currency       String         @default("VND")
+  status         ApprovalStatus @default(DRAFT)
+  terms          Json?
+  createdAt      DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime       @updatedAt @db.Timestamptz(3)
+
+  @@index([employeeId, effectiveFrom, effectiveTo])
+  @@map("employment_contracts")
+}
+
+model AttendanceEntry {
+  id              String         @id @default(uuid())
+  employeeId      String
+  employee        Employee       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  workDate        DateTime       @db.Date
+  clockInAt       DateTime?      @db.Timestamptz(3)
+  clockOutAt      DateTime?      @db.Timestamptz(3)
+  workedMinutes   Int?
+  overtimeMinutes Int?
+  source          String
+  approvalStatus  ApprovalStatus @default(PENDING)
+  notes           String?
+  createdAt       DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime       @updatedAt @db.Timestamptz(3)
+
+  @@unique([employeeId, workDate])
+  @@index([workDate, approvalStatus])
+  @@map("attendance_entries")
+}
+
+model EmployeeLeave {
+  id             String         @id @default(uuid())
+  employeeId     String
+  employee       Employee       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  leaveType      String
+  startsAt       DateTime       @db.Timestamptz(3)
+  endsAt         DateTime       @db.Timestamptz(3)
+  reason         String?
+  approvalStatus ApprovalStatus @default(PENDING)
+  createdAt      DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime       @updatedAt @db.Timestamptz(3)
+
+  @@index([employeeId, startsAt, endsAt])
+  @@map("employee_leave")
+}
+
+model CompensationPolicy {
+  id               String        @id @default(uuid())
+  code             String
+  revision         Int
+  name             String
+  effectiveFrom    DateTime      @db.Date
+  effectiveTo      DateTime?     @db.Date
+  calculationRules Json
+  active           Boolean       @default(true)
+  payrollItems     PayrollItem[]
+  createdAt        DateTime      @default(now()) @db.Timestamptz(3)
+
+  @@unique([code, revision])
+  @@map("compensation_policies")
+}
+
+model PayrollPeriod {
+  id        String       @id @default(uuid())
+  branchId  String
+  branch    Branch       @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  code      String
+  startsOn  DateTime     @db.Date
+  endsOn    DateTime     @db.Date
+  payDate   DateTime?    @db.Date
+  status    String       @default("OPEN")
+  runs      PayrollRun[]
+  createdAt DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime     @updatedAt @db.Timestamptz(3)
+
+  @@unique([branchId, code])
+  @@unique([branchId, startsOn, endsOn])
+  @@map("payroll_periods")
+}
+
+model PayrollRun {
+  id              String           @id @default(uuid())
+  payrollPeriodId String
+  payrollPeriod   PayrollPeriod    @relation(fields: [payrollPeriodId], references: [id], onDelete: Restrict)
+  runNumber       Int
+  status          PayrollRunStatus @default(DRAFT)
+  currency        String           @default("VND")
+  grossAmount     Decimal          @default(0) @db.Decimal(20, 4)
+  deductionAmount Decimal          @default(0) @db.Decimal(20, 4)
+  netAmount       Decimal          @default(0) @db.Decimal(20, 4)
+  createdById     String
+  createdBy       User             @relation("PayrollCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  approvedById    String?
+  approvedBy      User?            @relation("PayrollApprover", fields: [approvedById], references: [id], onDelete: Restrict)
+  approvedAt      DateTime?        @db.Timestamptz(3)
+  paidAt          DateTime?        @db.Timestamptz(3)
+  items           PayrollItem[]
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
+
+  @@unique([payrollPeriodId, runNumber])
+  @@index([status, createdAt])
+  @@map("payroll_runs")
+}
+
+model PayrollItem {
+  id                   String              @id @default(uuid())
+  payrollRunId         String
+  payrollRun           PayrollRun          @relation(fields: [payrollRunId], references: [id], onDelete: Restrict)
+  employeeId           String
+  employee             Employee            @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+  driverId             String?
+  driver               Driver?             @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  compensationPolicyId String?
+  compensationPolicy   CompensationPolicy? @relation(fields: [compensationPolicyId], references: [id], onDelete: Restrict)
+  baseAmount           Decimal             @default(0) @db.Decimal(20, 4)
+  tripAmount           Decimal             @default(0) @db.Decimal(20, 4)
+  allowanceAmount      Decimal             @default(0) @db.Decimal(20, 4)
+  overtimeAmount       Decimal             @default(0) @db.Decimal(20, 4)
+  deductionAmount      Decimal             @default(0) @db.Decimal(20, 4)
+  netAmount            Decimal             @default(0) @db.Decimal(20, 4)
+  currency             String              @default("VND")
+  calculationSnapshot  Json
+  adjustments          PayrollAdjustment[]
+  createdAt            DateTime            @default(now()) @db.Timestamptz(3)
+
+  @@unique([payrollRunId, employeeId])
+  @@index([driverId])
+  @@map("payroll_items")
+}
+
+model PayrollAdjustment {
+  id             String      @id @default(uuid())
+  payrollItemId  String
+  payrollItem    PayrollItem @relation(fields: [payrollItemId], references: [id], onDelete: Restrict)
+  costEntryId    String?
+  costEntry      CostEntry?  @relation(fields: [costEntryId], references: [id], onDelete: Restrict)
+  adjustmentType String
+  amount         Decimal     @db.Decimal(20, 4)
+  reason         String
+  createdAt      DateTime    @default(now()) @db.Timestamptz(3)
+
+  @@index([payrollItemId])
+  @@map("payroll_adjustments")
+}
+
+model MaintenancePlan {
+  id                String                 @id @default(uuid())
+  vehicleId         String
+  vehicle           Vehicle                @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  code              String
+  maintenanceType   String
+  intervalDays      Int?
+  intervalKm        Decimal?               @db.Decimal(12, 1)
+  nextDueAt         DateTime?              @db.Timestamptz(3)
+  nextDueOdometerKm Decimal?               @db.Decimal(12, 1)
+  active            Boolean                @default(true)
+  workOrders        MaintenanceWorkOrder[]
+  createdAt         DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime               @updatedAt @db.Timestamptz(3)
+
+  @@unique([vehicleId, code])
+  @@index([active, nextDueAt])
+  @@map("maintenance_plans")
+}
+
+model MaintenanceWorkOrder {
+  id                String                     @id @default(uuid())
+  workOrderNumber   String                     @unique
+  vehicleId         String
+  vehicle           Vehicle                    @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  maintenancePlanId String?
+  maintenancePlan   MaintenancePlan?           @relation(fields: [maintenancePlanId], references: [id], onDelete: Restrict)
+  status            MaintenanceWorkOrderStatus @default(DRAFT)
+  description       String
+  scheduledStartAt  DateTime?                  @db.Timestamptz(3)
+  scheduledEndAt    DateTime?                  @db.Timestamptz(3)
+  actualStartAt     DateTime?                  @db.Timestamptz(3)
+  actualEndAt       DateTime?                  @db.Timestamptz(3)
+  odometerKm        Decimal?                   @db.Decimal(12, 1)
+  vendorName        String?
+  estimatedCost     Decimal?                   @db.Decimal(20, 4)
+  actualCost        Decimal?                   @db.Decimal(20, 4)
+  currency          String                     @default("VND")
+  createdById       String
+  createdBy         User                       @relation("MaintenanceCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  approvedById      String?
+  approvedBy        User?                      @relation("MaintenanceApprover", fields: [approvedById], references: [id], onDelete: Restrict)
+  completedRecord   MaintenanceRecord?
+  createdAt         DateTime                   @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime                   @updatedAt @db.Timestamptz(3)
+
+  @@index([vehicleId, status, scheduledStartAt])
+  @@index([maintenancePlanId])
+  @@map("maintenance_work_orders")
+}
+
+model MaintenanceRecord {
+  id                     String               @id @default(uuid())
+  maintenanceWorkOrderId String               @unique
+  maintenanceWorkOrder   MaintenanceWorkOrder @relation(fields: [maintenanceWorkOrderId], references: [id], onDelete: Restrict)
+  serviceSummary         String
+  partsSummary           Json?
+  findings               Json?
+  warrantyUntil          DateTime?            @db.Date
+  nextRecommendationAt   DateTime?            @db.Timestamptz(3)
+  createdAt              DateTime             @default(now()) @db.Timestamptz(3)
+
+  @@map("maintenance_records")
+}
+
+model OdometerReading {
+  id         String   @id @default(uuid())
+  vehicleId  String
+  vehicle    Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  readingKm  Decimal  @db.Decimal(12, 1)
+  measuredAt DateTime @db.Timestamptz(3)
+  source     String
+  commandId  String?  @unique
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([vehicleId, measuredAt])
+  @@map("odometer_readings")
+}
+
+model FuelLog {
+  id              String   @id @default(uuid())
+  vehicleId       String
+  vehicle         Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  tripId          String?
+  trip            Trip?    @relation(fields: [tripId], references: [id], onDelete: Restrict)
+  liters          Decimal  @db.Decimal(12, 3)
+  unitPrice       Decimal  @db.Decimal(20, 4)
+  totalAmount     Decimal  @db.Decimal(20, 4)
+  currency        String   @default("VND")
+  odometerKm      Decimal? @db.Decimal(12, 1)
+  filledAt        DateTime @db.Timestamptz(3)
+  sourceReference String?
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([vehicleId, filledAt])
+  @@index([tripId])
+  @@map("fuel_logs")
+}
+
+model Invoice {
+  id                 String              @id @default(uuid())
+  invoiceNumber      String              @unique
+  branchId           String
+  branch             Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  customerId         String
+  customer           Customer            @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  status             InvoiceStatus       @default(DRAFT)
+  issuedOn           DateTime?           @db.Date
+  dueOn              DateTime?           @db.Date
+  currency           String              @default("VND")
+  subtotal           Decimal             @default(0) @db.Decimal(20, 4)
+  taxAmount          Decimal             @default(0) @db.Decimal(20, 4)
+  totalAmount        Decimal             @default(0) @db.Decimal(20, 4)
+  paidAmount         Decimal             @default(0) @db.Decimal(20, 4)
+  createdById        String
+  createdBy          User                @relation("InvoiceCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  items              InvoiceItem[]
+  paymentAllocations PaymentAllocation[]
+  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime            @updatedAt @db.Timestamptz(3)
+
+  @@index([customerId, status, dueOn])
+  @@index([branchId, issuedOn])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id            String       @id @default(uuid())
+  invoiceId     String
+  invoice       Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  orderId       String?
+  order         Order?       @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  orderChargeId String?
+  orderCharge   OrderCharge? @relation(fields: [orderChargeId], references: [id], onDelete: Restrict)
+  description   String
+  quantity      Decimal      @default(1) @db.Decimal(14, 3)
+  unitPrice     Decimal      @db.Decimal(20, 4)
+  amount        Decimal      @db.Decimal(20, 4)
+  createdAt     DateTime     @default(now()) @db.Timestamptz(3)
+
+  @@index([invoiceId])
+  @@index([orderId])
+  @@map("invoice_items")
+}
+
+model Payment {
+  id               String              @id @default(uuid())
+  paymentNumber    String              @unique
+  direction        PaymentDirection
+  customerId       String?
+  customer         Customer?           @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  counterpartyName String?
+  amount           Decimal             @db.Decimal(20, 4)
+  currency         String              @default("VND")
+  method           String
+  status           PaymentStatus       @default(PENDING)
+  transactionRef   String?
+  paidAt           DateTime?           @db.Timestamptz(3)
+  recordedById     String
+  recordedBy       User                @relation("PaymentRecorder", fields: [recordedById], references: [id], onDelete: Restrict)
+  allocations      PaymentAllocation[]
+  createdAt        DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime            @updatedAt @db.Timestamptz(3)
+
+  @@index([customerId, status, paidAt])
+  @@index([transactionRef])
+  @@map("payments")
+}
+
+model PaymentAllocation {
+  id        String   @id @default(uuid())
+  paymentId String
+  payment   Payment  @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  invoiceId String
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  amount    Decimal  @db.Decimal(20, 4)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([paymentId, invoiceId])
+  @@index([invoiceId])
+  @@map("payment_allocations")
 }

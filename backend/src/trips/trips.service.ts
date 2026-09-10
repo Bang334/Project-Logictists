@@ -1,16 +1,40 @@
-import { Injectable, BadRequestException, NotFoundException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  OnModuleInit,
+} from '@nestjs/common';
+import axios from 'axios';
+import { createHash } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { MapboxService } from '../mapbox/mapbox.service';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { TripsValidator, StopWithItems } from './trips.validator';
 import { TripStatus, OrderStatus, TaskAction, StopType } from '@prisma/client';
+import { OptimizeTripDto } from './dto/optimize-trip.dto';
+import { expandOrderItemsToCargoUnits } from './optimizer-payload';
+import { assertFleetOptimizationResult } from './optimizer-contract';
 
 @Injectable()
-export class TripsService {
+export class TripsService implements OnModuleInit {
   constructor(
     private prisma: PrismaService,
     private mapboxService: MapboxService,
   ) {}
+
+  async onModuleInit() {
+    await this.prisma.optimizationJob.updateMany({
+      where: { status: 'RUNNING' },
+      data: {
+        status: 'FAILED',
+        errorCode: 'WORKER_RESTARTED',
+        errorMessage: 'Backend khởi động lại trong khi optimizer đang chạy',
+        completedAt: new Date(),
+      },
+    });
+  }
 
   async findAll(status?: TripStatus) {
     return this.prisma.trip.findMany({
@@ -342,6 +366,7 @@ export class TripsService {
           id: '',
           orderNumber: '',
           customerId: '',
+          branchId: '',
           status: OrderStatus.ASSIGNED,
           totalWeightKg: 0,
           totalVolumeM3: 0,
@@ -356,5 +381,358 @@ export class TripsService {
     }
 
     return TripsValidator.calculateAndValidateLoad(trip.vehicle, stopsWithItems);
+  }
+
+  /**
+   * Gọi Optimization Engine (Google OR-Tools + Dynamic 2D Spatial Packing)
+   */
+  async runOptimization(body: OptimizeTripDto) {
+    if (new Set(body.orderIds).size !== body.orderIds.length) {
+      throw new BadRequestException('Danh sách orderIds không được chứa ID trùng');
+    }
+    const vehicle = await this.prisma.vehicle.findUnique({
+      where: { id: body.vehicleId },
+      include: { homeBranch: true },
+    });
+    if (!vehicle) {
+      throw new NotFoundException('Không tìm thấy xe');
+    }
+
+    const orders = await this.prisma.order.findMany({
+      where: { id: { in: body.orderIds } },
+      include: {
+        stops: { orderBy: { sequence: 'asc' } },
+        items: true,
+      },
+    });
+    if (orders.length !== body.orderIds.length) {
+      throw new BadRequestException('Một số đơn hàng tối ưu không tồn tại');
+    }
+
+    const orderedOrders = body.orderIds.map((id) => orders.find((order) => order.id === id)!);
+    const planningEpoch = this.getPlanningEpoch(orderedOrders);
+    const optimizerOrders = this.buildOptimizerOrders(orderedOrders, planningEpoch);
+    const matrixCoordinates: [number, number][] = [
+      [vehicle.homeBranch.longitude, vehicle.homeBranch.latitude],
+      ...optimizerOrders.flatMap((order) => [
+        [order.pickup_location.longitude, order.pickup_location.latitude] as [number, number],
+        [order.delivery_location.longitude, order.delivery_location.latitude] as [number, number],
+      ]),
+    ];
+    const matrix = await this.mapboxService.getRoadMatrix(matrixCoordinates);
+
+    const payload = {
+      job_id: `job-${Date.now()}`,
+      vehicle: {
+        id: vehicle.id,
+        plate_number: vehicle.plateNumber,
+        length_cm: vehicle.lengthCm,
+        width_cm: vehicle.widthCm,
+        height_cm: vehicle.heightCm,
+        payload_limit_kg: vehicle.payloadCapacityKg,
+        door_position: 'REAR',
+      },
+      depot: {
+        id: vehicle.homeBranch.id,
+        name: vehicle.homeBranch.name,
+        latitude: vehicle.homeBranch.latitude,
+        longitude: vehicle.homeBranch.longitude,
+      },
+      orders: optimizerOrders,
+      max_time_seconds: 5,
+      distance_matrix_meters: matrix.distancesMeters,
+      duration_matrix_seconds: matrix.durationsSeconds,
+    };
+
+    try {
+      const res = await axios.post(`${this.optimizerUrl}/optimize`, payload, { timeout: 10000 });
+      if (!res.data || typeof res.data.job_id !== 'string' || !Array.isArray(res.data.stops)) {
+        throw new Error('Optimization Engine trả response sai contract');
+      }
+      return res.data;
+    } catch (error) {
+      throw new BadRequestException(
+        error.response?.data?.detail || error.message || 'Lỗi khi gọi Optimization Engine',
+      );
+    }
+  }
+
+  async createAutomaticOptimizationJob(user: {
+    id: string;
+    branchId?: string;
+  }) {
+    if (!user.branchId) {
+      throw new ForbiddenException('Tài khoản chưa được gán chi nhánh để tối ưu tự động');
+    }
+
+    const [branch, vehicles, drivers, orders] = await Promise.all([
+      this.prisma.branch.findUnique({ where: { id: user.branchId } }),
+      this.prisma.vehicle.findMany({
+        where: { homeBranchId: user.branchId, status: 'AVAILABLE' },
+        include: { homeBranch: true },
+        orderBy: { plateNumber: 'asc' },
+      }),
+      this.prisma.driver.findMany({
+        where: {
+          homeBranchId: user.branchId,
+          status: 'AVAILABLE',
+          licenseExpiry: { gt: new Date() },
+        },
+        orderBy: { fullName: 'asc' },
+      }),
+      this.prisma.order.findMany({
+        where: { branchId: user.branchId, status: OrderStatus.CONFIRMED },
+        include: { stops: { orderBy: { sequence: 'asc' } }, items: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+
+    if (!branch) throw new NotFoundException('Không tìm thấy chi nhánh của dispatcher');
+    if (vehicles.length === 0) throw new BadRequestException('Không có xe khả dụng trong chi nhánh');
+    if (drivers.length === 0) throw new BadRequestException('Không có tài xế khả dụng trong chi nhánh');
+    if (orders.length === 0) throw new BadRequestException('Không có đơn CONFIRMED để tối ưu');
+
+    const candidateVehicles = vehicles.slice(0, drivers.length);
+    const coordinateCount = candidateVehicles.length + orders.length * 2;
+    if (coordinateCount > 25) {
+      throw new BadRequestException(
+        `Snapshot có ${coordinateCount} tọa độ, vượt giới hạn 25 của một Mapbox Matrix. ` +
+          'Hãy chia theo chi nhánh/đợt điều phối nhỏ hơn.',
+      );
+    }
+
+    const planningEpoch = this.getPlanningEpoch(orders);
+    const snapshot = {
+      vehicles: candidateVehicles.map((vehicle) => ({
+        id: vehicle.id,
+        plate_number: vehicle.plateNumber,
+        model: vehicle.model,
+        vehicle_type: vehicle.vehicleType,
+        length_cm: vehicle.lengthCm,
+        width_cm: vehicle.widthCm,
+        height_cm: vehicle.heightCm,
+        payload_limit_kg: vehicle.payloadCapacityKg,
+        door_position: 'REAR',
+        depot: {
+          id: vehicle.homeBranch.id,
+          name: vehicle.homeBranch.name,
+          latitude: vehicle.homeBranch.latitude,
+          longitude: vehicle.homeBranch.longitude,
+        },
+        fuel_consumption_liters_per_100_km: Number(
+          vehicle.fuelConsumptionLitersPer100Km,
+        ),
+        load_fuel_surcharge_percent_at_full_payload: Number(
+          vehicle.loadFuelSurchargePercentAtFullPayload,
+        ),
+        fixed_operating_cost_vnd: Number(vehicle.fixedOperatingCostPerTrip),
+      })),
+      drivers: drivers.map((driver) => ({
+        id: driver.id,
+        full_name: driver.fullName,
+        license_class: driver.licenseClass,
+        fixed_salary_monthly_vnd: Number(driver.fixedSalaryMonthly),
+        trip_base_pay_vnd: Number(driver.tripBasePay),
+        per_km_pay_vnd: Number(driver.perKmPay),
+      })),
+      orders: this.buildOptimizerOrders(orders, planningEpoch),
+      policy: {
+        fuel_price_per_liter_vnd: Number(branch.fuelPricePerLiter),
+        monthly_working_minutes: branch.monthlyWorkingMinutes,
+        cargo_holding_cost_vnd_per_ton_hour: Number(
+          branch.cargoHoldingCostVndPerTonHour,
+        ),
+        unassigned_order_penalty_vnd: 1_000_000_000,
+      },
+      planning_epoch_iso: planningEpoch.toISOString(),
+      max_time_seconds: 12,
+    };
+    const plainSnapshot = JSON.parse(JSON.stringify(snapshot));
+    const requestHash = createHash('sha256')
+      .update(JSON.stringify(plainSnapshot))
+      .digest('hex');
+    const job = await this.prisma.optimizationJob.create({
+      data: {
+        branchId: user.branchId,
+        createdById: user.id,
+        requestHash,
+        requestSnapshot: plainSnapshot,
+      },
+    });
+
+    setImmediate(() => {
+      void this.processAutomaticOptimizationJob(job.id);
+    });
+    return job;
+  }
+
+  async findOptimizationJob(
+    jobId: string,
+    user: { id: string; branchId?: string; role?: string },
+  ) {
+    const job = await this.prisma.optimizationJob.findUnique({ where: { id: jobId } });
+    if (!job) throw new NotFoundException('Không tìm thấy optimization job');
+    if (user.role !== 'ADMIN' && job.branchId !== user.branchId) {
+      throw new ForbiddenException('Không có quyền xem optimization job ngoài chi nhánh');
+    }
+    return job;
+  }
+
+  private async processAutomaticOptimizationJob(jobId: string) {
+    const claimed = await this.prisma.optimizationJob.updateMany({
+      where: { id: jobId, status: 'PENDING' },
+      data: { status: 'RUNNING', startedAt: new Date() },
+    });
+    if (claimed.count !== 1) return;
+
+    try {
+      const job = await this.prisma.optimizationJob.findUniqueOrThrow({ where: { id: jobId } });
+      const snapshot = job.requestSnapshot as Record<string, any>;
+      const coordinates: [number, number][] = [
+        ...snapshot.vehicles.map((vehicle) => [
+          vehicle.depot.longitude,
+          vehicle.depot.latitude,
+        ] as [number, number]),
+        ...snapshot.orders.flatMap((order) => [
+          [order.pickup_location.longitude, order.pickup_location.latitude] as [number, number],
+          [order.delivery_location.longitude, order.delivery_location.latitude] as [number, number],
+        ]),
+      ];
+      const matrix = await this.mapboxService.getRoadMatrix(coordinates);
+      const payload = {
+        job_id: job.id,
+        vehicles: snapshot.vehicles,
+        drivers: snapshot.drivers,
+        orders: snapshot.orders,
+        policy: snapshot.policy,
+        max_time_seconds: snapshot.max_time_seconds,
+        distance_matrix_meters: matrix.distancesMeters,
+        duration_matrix_seconds: matrix.durationsSeconds,
+      };
+      const response = await axios.post(`${this.optimizerUrl}/optimize-fleet`, payload, {
+        timeout: (snapshot.max_time_seconds + 10) * 1000,
+      });
+      assertFleetOptimizationResult(response.data);
+
+      for (const route of response.data.routes) {
+        const vehicle = snapshot.vehicles.find((item) => item.id === route.vehicle_id);
+        if (!vehicle) throw new Error(`Optimizer trả vehicle_id lạ: ${route.vehicle_id}`);
+        const routeCoordinates: [number, number][] = [
+          [vehicle.depot.longitude, vehicle.depot.latitude],
+          ...route.stops.map(
+            (stop) => [stop.longitude, stop.latitude] as [number, number],
+          ),
+          [vehicle.depot.longitude, vehicle.depot.latitude],
+        ];
+        const routeDetails = await this.mapboxService.getRoute(routeCoordinates);
+        route.depot = vehicle.depot;
+        route.route_geometry = routeDetails.geometry;
+      }
+
+      await this.prisma.optimizationJob.update({
+        where: { id: jobId },
+        data: {
+          status: 'COMPLETED',
+          result: JSON.parse(JSON.stringify(response.data)),
+          completedAt: new Date(),
+        },
+      });
+    } catch (error) {
+      await this.prisma.optimizationJob.update({
+        where: { id: jobId },
+        data: {
+          status: 'FAILED',
+          errorCode: error.response ? 'EXTERNAL_SERVICE_ERROR' : 'OPTIMIZATION_ERROR',
+          errorMessage:
+            error.response?.data?.detail || error.message || 'Optimization job thất bại',
+          completedAt: new Date(),
+        },
+      });
+    }
+  }
+
+  private get optimizerUrl() {
+    return process.env.OPTIMIZER_URL || 'http://localhost:8000';
+  }
+
+  private getPlanningEpoch(orders: Array<{ stops: Array<{ windowStart: Date | null }> }>) {
+    const windowStarts = orders
+      .flatMap((order) => order.stops.map((stop) => stop.windowStart))
+      .filter((value): value is Date => value instanceof Date);
+    const epoch = windowStarts.length > 0
+      ? new Date(Math.min(...windowStarts.map((value) => value.getTime())))
+      : new Date();
+    epoch.setUTCHours(0, 0, 0, 0);
+    return epoch;
+  }
+
+  private buildOptimizerOrders(
+    orders: Array<{
+      id: string;
+      orderNumber: string;
+      stops: Array<{
+        id: string;
+        type: StopType;
+        address: string;
+        latitude: number;
+        longitude: number;
+        windowStart: Date | null;
+        windowEnd: Date | null;
+        serviceDurationMinutes: number;
+      }>;
+      items: Array<{
+        id: string;
+        orderId: string;
+        description: string;
+        quantity: number;
+        weightKg: number;
+        lengthCm: number;
+        widthCm: number;
+        heightCm: number;
+      }>;
+    }>,
+    planningEpoch: Date,
+  ) {
+    const secondsFromEpoch = (value: Date | null, fallback: number) =>
+      value ? Math.max(0, Math.round((value.getTime() - planningEpoch.getTime()) / 1000)) : fallback;
+
+    return orders.map((order) => {
+      const pickup = order.stops.find((stop) => stop.type === StopType.PICKUP);
+      const delivery = order.stops.find((stop) => stop.type === StopType.DELIVERY);
+      if (!pickup || !delivery) {
+        throw new BadRequestException(`Đơn ${order.orderNumber} thiếu pickup hoặc delivery`);
+      }
+      let items;
+      try {
+        items = expandOrderItemsToCargoUnits(order.items);
+      } catch (error) {
+        throw new BadRequestException(error.message);
+      }
+      return {
+        id: order.id,
+        order_number: order.orderNumber,
+        pickup_location: {
+          id: pickup.id,
+          name: pickup.address,
+          latitude: pickup.latitude,
+          longitude: pickup.longitude,
+        },
+        delivery_location: {
+          id: delivery.id,
+          name: delivery.address,
+          latitude: delivery.latitude,
+          longitude: delivery.longitude,
+        },
+        items,
+        pickup_window_start_sec: secondsFromEpoch(pickup.windowStart, 0),
+        pickup_window_end_sec: secondsFromEpoch(pickup.windowEnd, 7 * 86400),
+        delivery_window_start_sec: secondsFromEpoch(delivery.windowStart, 0),
+        delivery_window_end_sec: secondsFromEpoch(delivery.windowEnd, 7 * 86400),
+        service_time_sec: Math.max(
+          pickup.serviceDurationMinutes,
+          delivery.serviceDurationMinutes,
+        ) * 60,
+      };
+    });
   }
 }

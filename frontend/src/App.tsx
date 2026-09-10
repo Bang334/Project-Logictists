@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Layout, ConfigProvider, theme } from 'antd';
+import { Layout, ConfigProvider, theme, App as AntdApp } from 'antd';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import LoginPage from './pages/LoginPage';
 import Navbar from './components/Navbar';
@@ -8,6 +8,7 @@ import DashboardPage from './pages/DashboardPage';
 import OrdersPage from './pages/OrdersPage';
 import FleetPage from './pages/FleetPage';
 import DispatchPage from './pages/DispatchPage';
+import AutomaticDispatchPage from './pages/AutomaticDispatchPage';
 
 const { Content } = Layout;
 
@@ -32,7 +33,11 @@ const MainLayout: React.FC = () => {
       case 'fleet':
         return <FleetPage />;
       case 'dispatch':
+      case 'dispatch-manual':
         return <DispatchPage />;
+      case 'dispatch-auto':
+      case 'tracking-demo':
+        return <AutomaticDispatchPage />;
       default:
         return <DashboardPage onNavigate={setCurrentTab} />;
     }
@@ -64,9 +69,11 @@ const App: React.FC = () => {
         },
       }}
     >
-      <AuthProvider>
-        <MainLayout />
-      </AuthProvider>
+      <AntdApp>
+        <AuthProvider>
+          <MainLayout />
+        </AuthProvider>
+      </AntdApp>
     </ConfigProvider>
   );
 };

@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { DriversService } from './drivers.service';
 import { DriverStatus } from '@prisma/client';
@@ -12,13 +12,17 @@ export class DriversController {
   findAll(
     @Query('branchId') branchId?: string,
     @Query('status') status?: DriverStatus,
+    @Req() req?: { user?: { branchId?: string } },
   ) {
-    return this.driversService.findAll(branchId, status);
+    return this.driversService.findAll(branchId || req?.user?.branchId, status);
   }
 
   @Get('available')
-  getAvailable(@Query('branchId') branchId?: string) {
-    return this.driversService.getAvailable(branchId);
+  getAvailable(
+    @Query('branchId') branchId?: string,
+    @Req() req?: { user?: { branchId?: string } },
+  ) {
+    return this.driversService.getAvailable(branchId || req?.user?.branchId);
   }
 
   @Get(':id')

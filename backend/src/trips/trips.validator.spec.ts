@@ -1,5 +1,5 @@
 import { TripsValidator, StopWithItems } from './trips.validator';
-import { Vehicle, OrderStatus, StopType, VehicleStatus } from '@prisma/client';
+import { Vehicle, OrderStatus, StopType, VehicleStatus, Prisma } from '@prisma/client';
 import { BadRequestException } from '@nestjs/common';
 
 describe('TripsValidator - TMS Invariants', () => {
@@ -14,6 +14,9 @@ describe('TripsValidator - TMS Invariants', () => {
     lengthCm: 620,
     widthCm: 215,
     heightCm: 205,
+    fuelConsumptionLitersPer100Km: new Prisma.Decimal(18.5),
+    loadFuelSurchargePercentAtFullPayload: new Prisma.Decimal(0),
+    fixedOperatingCostPerTrip: new Prisma.Decimal(120000),
     status: VehicleStatus.AVAILABLE,
     currentLatitude: null,
     currentLongitude: null,
@@ -21,6 +24,45 @@ describe('TripsValidator - TMS Invariants', () => {
     createdAt: new Date(),
     updatedAt: new Date(),
   };
+
+  const createMockOrder = (
+    id: string,
+    orderNumber: string,
+    totalWeightKg: number,
+    totalVolumeM3: number,
+    items: StopWithItems['order']['items'] = [],
+  ): StopWithItems['order'] => ({
+    id,
+    orderNumber,
+    customerId: 'cust-1',
+    branchId: 'branch-1',
+    status: OrderStatus.CONFIRMED,
+    totalWeightKg,
+    totalVolumeM3,
+    totalPackages: items.length || 1,
+    version: 1,
+    notes: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    items,
+  });
+
+  const sampleItems = [
+    {
+      id: 'i1',
+      orderId: 'ord-1',
+      sku: 'ITEM-1',
+      description: 'Hàng mẫu',
+      packageType: 'CARTON',
+      quantity: 10,
+      weightKg: 1000,
+      lengthCm: 100,
+      widthCm: 100,
+      heightCm: 100,
+      volumeM3: 5,
+      createdAt: new Date(),
+    },
+  ];
 
   describe('BR03: validatePickupBeforeDelivery', () => {
     it('Hợp lệ khi Điểm PICKUP đứng trước Điểm DELIVERY', () => {
@@ -41,35 +83,7 @@ describe('TripsValidator - TMS Invariants', () => {
             serviceDurationMinutes: 15,
             createdAt: new Date(),
           },
-          order: {
-            id: 'ord-1',
-            orderNumber: 'ORD-001',
-            customerId: 'cust-1',
-            status: OrderStatus.CONFIRMED,
-            totalWeightKg: 1000,
-            totalVolumeM3: 5,
-            totalPackages: 10,
-            version: 1,
-            notes: null,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            items: [
-              {
-                id: 'i1',
-                orderId: 'ord-1',
-                sku: 'ITEM-1',
-                description: 'Hàng mẫu',
-                packageType: 'CARTON',
-                quantity: 10,
-                weightKg: 1000,
-                lengthCm: 100,
-                widthCm: 100,
-                heightCm: 100,
-                volumeM3: 5,
-                createdAt: new Date(),
-              },
-            ],
-          },
+          order: createMockOrder('ord-1', 'ORD-001', 1000, 5, sampleItems),
         },
         {
           orderStop: {
@@ -87,35 +101,7 @@ describe('TripsValidator - TMS Invariants', () => {
             serviceDurationMinutes: 15,
             createdAt: new Date(),
           },
-          order: {
-            id: 'ord-1',
-            orderNumber: 'ORD-001',
-            customerId: 'cust-1',
-            status: OrderStatus.CONFIRMED,
-            totalWeightKg: 1000,
-            totalVolumeM3: 5,
-            totalPackages: 10,
-            version: 1,
-            notes: null,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            items: [
-              {
-                id: 'i1',
-                orderId: 'ord-1',
-                sku: 'ITEM-1',
-                description: 'Hàng mẫu',
-                packageType: 'CARTON',
-                quantity: 10,
-                weightKg: 1000,
-                lengthCm: 100,
-                widthCm: 100,
-                heightCm: 100,
-                volumeM3: 5,
-                createdAt: new Date(),
-              },
-            ],
-          },
+          order: createMockOrder('ord-1', 'ORD-001', 1000, 5, sampleItems),
         },
       ];
 
@@ -140,20 +126,7 @@ describe('TripsValidator - TMS Invariants', () => {
             serviceDurationMinutes: 15,
             createdAt: new Date(),
           },
-          order: {
-            id: 'ord-1',
-            orderNumber: 'ORD-001',
-            customerId: 'cust-1',
-            status: OrderStatus.CONFIRMED,
-            totalWeightKg: 1000,
-            totalVolumeM3: 5,
-            totalPackages: 10,
-            version: 1,
-            notes: null,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            items: [],
-          },
+          order: createMockOrder('ord-1', 'ORD-001', 1000, 5),
         },
         {
           orderStop: {
@@ -171,20 +144,7 @@ describe('TripsValidator - TMS Invariants', () => {
             serviceDurationMinutes: 15,
             createdAt: new Date(),
           },
-          order: {
-            id: 'ord-1',
-            orderNumber: 'ORD-001',
-            customerId: 'cust-1',
-            status: OrderStatus.CONFIRMED,
-            totalWeightKg: 1000,
-            totalVolumeM3: 5,
-            totalPackages: 10,
-            version: 1,
-            notes: null,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-            items: [],
-          },
+          order: createMockOrder('ord-1', 'ORD-001', 1000, 5),
         },
       ];
 
@@ -200,22 +160,25 @@ describe('TripsValidator - TMS Invariants', () => {
       // Tổng 2 đơn = 6,500 kg > 5,000 kg.
       // Nhưng lộ trình: Pickup 1 (+3500kg) -> Delivery 1 (-3500kg) -> Pickup 2 (+3000kg) -> Delivery 2 (-3000kg).
       // Tải max trên xe chỉ là 3500 kg <= 5000 kg -> HỢP LỆ THEO INVARIANT 5!
+      const item1 = [{ id: 'i1', orderId: 'o1', sku: '', description: '', packageType: 'CARTON', quantity: 1, weightKg: 3500, lengthCm: 0, widthCm: 0, heightCm: 0, volumeM3: 10, createdAt: new Date() }];
+      const item2 = [{ id: 'i2', orderId: 'o2', sku: '', description: '', packageType: 'CARTON', quantity: 1, weightKg: 3000, lengthCm: 0, widthCm: 0, heightCm: 0, volumeM3: 10, createdAt: new Date() }];
+
       const stops: StopWithItems[] = [
         {
           orderStop: { id: 'p1', orderId: 'o1', type: StopType.PICKUP, sequence: 1, address: 'Kho A', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
-          order: { id: 'o1', orderNumber: 'O1', customerId: 'c', status: OrderStatus.CONFIRMED, totalWeightKg: 3500, totalVolumeM3: 10, totalPackages: 1, version: 1, notes: null, createdAt: new Date(), updatedAt: new Date(), items: [{ id: 'i1', orderId: 'o1', sku: '', description: '', packageType: 'CARTON', quantity: 1, weightKg: 3500, lengthCm: 0, widthCm: 0, heightCm: 0, volumeM3: 10, createdAt: new Date() }] },
+          order: createMockOrder('o1', 'O1', 3500, 10, item1),
         },
         {
           orderStop: { id: 'd1', orderId: 'o1', type: StopType.DELIVERY, sequence: 2, address: 'Kho B', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
-          order: { id: 'o1', orderNumber: 'O1', customerId: 'c', status: OrderStatus.CONFIRMED, totalWeightKg: 3500, totalVolumeM3: 10, totalPackages: 1, version: 1, notes: null, createdAt: new Date(), updatedAt: new Date(), items: [{ id: 'i1', orderId: 'o1', sku: '', description: '', packageType: 'CARTON', quantity: 1, weightKg: 3500, lengthCm: 0, widthCm: 0, heightCm: 0, volumeM3: 10, createdAt: new Date() }] },
+          order: createMockOrder('o1', 'O1', 3500, 10, item1),
         },
         {
           orderStop: { id: 'p2', orderId: 'o2', type: StopType.PICKUP, sequence: 3, address: 'Kho C', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
-          order: { id: 'o2', orderNumber: 'O2', customerId: 'c', status: OrderStatus.CONFIRMED, totalWeightKg: 3000, totalVolumeM3: 10, totalPackages: 1, version: 1, notes: null, createdAt: new Date(), updatedAt: new Date(), items: [{ id: 'i2', orderId: 'o2', sku: '', description: '', packageType: 'CARTON', quantity: 1, weightKg: 3000, lengthCm: 0, widthCm: 0, heightCm: 0, volumeM3: 10, createdAt: new Date() }] },
+          order: createMockOrder('o2', 'O2', 3000, 10, item2),
         },
         {
           orderStop: { id: 'd2', orderId: 'o2', type: StopType.DELIVERY, sequence: 4, address: 'Kho D', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
-          order: { id: 'o2', orderNumber: 'O2', customerId: 'c', status: OrderStatus.CONFIRMED, totalWeightKg: 3000, totalVolumeM3: 10, totalPackages: 1, version: 1, notes: null, createdAt: new Date(), updatedAt: new Date(), items: [{ id: 'i2', orderId: 'o2', sku: '', description: '', packageType: 'CARTON', quantity: 1, weightKg: 3000, lengthCm: 0, widthCm: 0, heightCm: 0, volumeM3: 10, createdAt: new Date() }] },
+          order: createMockOrder('o2', 'O2', 3000, 10, item2),
         },
       ];
 
@@ -227,22 +190,25 @@ describe('TripsValidator - TMS Invariants', () => {
 
     it('Ném lỗi BadRequestException nếu tải tại một chặng vượt quá tải trọng xe (Vi phạm BR04)', () => {
       // Pickup cả 2 đơn trước: 3500 + 3000 = 6500 kg > 5000 kg -> Phải ném lỗi!
+      const item1 = [{ id: 'i1', orderId: 'o1', sku: '', description: '', packageType: 'CARTON', quantity: 1, weightKg: 3500, lengthCm: 0, widthCm: 0, heightCm: 0, volumeM3: 10, createdAt: new Date() }];
+      const item2 = [{ id: 'i2', orderId: 'o2', sku: '', description: '', packageType: 'CARTON', quantity: 1, weightKg: 3000, lengthCm: 0, widthCm: 0, heightCm: 0, volumeM3: 10, createdAt: new Date() }];
+
       const overloadedStops: StopWithItems[] = [
         {
           orderStop: { id: 'p1', orderId: 'o1', type: StopType.PICKUP, sequence: 1, address: 'Kho A', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
-          order: { id: 'o1', orderNumber: 'O1', customerId: 'c', status: OrderStatus.CONFIRMED, totalWeightKg: 3500, totalVolumeM3: 10, totalPackages: 1, version: 1, notes: null, createdAt: new Date(), updatedAt: new Date(), items: [{ id: 'i1', orderId: 'o1', sku: '', description: '', packageType: 'CARTON', quantity: 1, weightKg: 3500, lengthCm: 0, widthCm: 0, heightCm: 0, volumeM3: 10, createdAt: new Date() }] },
+          order: createMockOrder('o1', 'O1', 3500, 10, item1),
         },
         {
           orderStop: { id: 'p2', orderId: 'o2', type: StopType.PICKUP, sequence: 2, address: 'Kho C', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
-          order: { id: 'o2', orderNumber: 'O2', customerId: 'c', status: OrderStatus.CONFIRMED, totalWeightKg: 3000, totalVolumeM3: 10, totalPackages: 1, version: 1, notes: null, createdAt: new Date(), updatedAt: new Date(), items: [{ id: 'i2', orderId: 'o2', sku: '', description: '', packageType: 'CARTON', quantity: 1, weightKg: 3000, lengthCm: 0, widthCm: 0, heightCm: 0, volumeM3: 10, createdAt: new Date() }] },
+          order: createMockOrder('o2', 'O2', 3000, 10, item2),
         },
         {
           orderStop: { id: 'd1', orderId: 'o1', type: StopType.DELIVERY, sequence: 3, address: 'Kho B', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
-          order: { id: 'o1', orderNumber: 'O1', customerId: 'c', status: OrderStatus.CONFIRMED, totalWeightKg: 3500, totalVolumeM3: 10, totalPackages: 1, version: 1, notes: null, createdAt: new Date(), updatedAt: new Date(), items: [{ id: 'i1', orderId: 'o1', sku: '', description: '', packageType: 'CARTON', quantity: 1, weightKg: 3500, lengthCm: 0, widthCm: 0, heightCm: 0, volumeM3: 10, createdAt: new Date() }] },
+          order: createMockOrder('o1', 'O1', 3500, 10, item1),
         },
         {
           orderStop: { id: 'd2', orderId: 'o2', type: StopType.DELIVERY, sequence: 4, address: 'Kho D', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
-          order: { id: 'o2', orderNumber: 'O2', customerId: 'c', status: OrderStatus.CONFIRMED, totalWeightKg: 3000, totalVolumeM3: 10, totalPackages: 1, version: 1, notes: null, createdAt: new Date(), updatedAt: new Date(), items: [{ id: 'i2', orderId: 'o2', sku: '', description: '', packageType: 'CARTON', quantity: 1, weightKg: 3000, lengthCm: 0, widthCm: 0, heightCm: 0, volumeM3: 10, createdAt: new Date() }] },
+          order: createMockOrder('o2', 'O2', 3000, 10, item2),
         },
       ];
 

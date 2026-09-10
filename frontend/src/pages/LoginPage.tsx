@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { Card, Form, Input, Button, Typography, message, Alert } from 'antd';
+import { Card, Form, Input, Button, Typography, Alert, App as AntdApp } from 'antd';
 import { UserOutlined, LockOutlined, TruckOutlined } from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
 
 const { Title, Text } = Typography;
 
 const LoginPage: React.FC = () => {
+  const { message } = AntdApp.useApp();
   const { login } = useAuth();
   const [loading, setLoading] = useState(false);
 

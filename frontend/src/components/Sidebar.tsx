@@ -5,6 +5,7 @@ import {
   ShoppingOutlined,
   CarOutlined,
   CompassOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 
 const { Sider } = Layout;
@@ -27,9 +28,14 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
       label: 'Quản lý Đơn hàng',
     },
     {
-      key: 'dispatch',
+      key: 'dispatch-manual',
       icon: <CompassOutlined style={{ fontSize: '16px' }} />,
-      label: 'Bàn Điều Phối (Mapbox)',
+      label: 'Điều Phối Thủ Công',
+    },
+    {
+      key: 'dispatch-auto',
+      icon: <ThunderboltOutlined style={{ fontSize: '16px' }} />,
+      label: 'Điều Phối Tự Động',
     },
     {
       key: 'fleet',
@@ -41,6 +47,8 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
   return (
     <Sider
       width={240}
+      breakpoint="lg"
+      collapsedWidth={0}
       style={{
         background: '#ffffff',
         borderRight: '1px solid #e2e8f0',

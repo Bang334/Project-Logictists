@@ -1,4 +1,17 @@
-import { IsString, IsNotEmpty, IsOptional, IsArray, ValidateNested, IsNumber, IsEnum } from 'class-validator';
+import {
+  ArrayMinSize,
+  IsArray,
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsPositive,
+  IsString,
+  Max,
+  Min,
+  ValidateNested,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { StopType } from '@prisma/client';
 
@@ -15,23 +28,31 @@ export class CreateOrderItemDto {
   @IsString()
   packageType?: string;
 
-  @IsNumber()
+  @IsInt()
+  @Min(1)
+  @Max(500)
   quantity: number;
 
   @IsNumber()
+  @IsPositive()
   weightKg: number;
 
   @IsNumber()
+  @IsPositive()
   lengthCm: number;
 
   @IsNumber()
+  @IsPositive()
   widthCm: number;
 
   @IsNumber()
+  @IsPositive()
   heightCm: number;
 
+  @IsOptional()
   @IsNumber()
-  volumeM3: number;
+  @IsPositive()
+  volumeM3?: number;
 }
 
 export class CreateOrderStopDto {
@@ -80,11 +101,13 @@ export class CreateOrderDto {
   notes?: string;
 
   @IsArray()
+  @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => CreateOrderItemDto)
   items: CreateOrderItemDto[];
 
   @IsArray()
+  @ArrayMinSize(2)
   @ValidateNested({ each: true })
   @Type(() => CreateOrderStopDto)
   stops: CreateOrderStopDto[];

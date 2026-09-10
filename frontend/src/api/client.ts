@@ -1,5 +1,14 @@
 import axios from 'axios';
-import { Branch, Vehicle, Driver, Order, Trip, LoadProfileResult } from '../types';
+import {
+  Branch,
+  Driver,
+  LoadProfileResult,
+  OptimizationJobUI,
+  OptimizationResultUI,
+  Order,
+  Trip,
+  Vehicle,
+} from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 
@@ -23,6 +32,10 @@ export const authApi = {
 
 export const branchesApi = {
   getAll: () => client.get<Branch[]>('/branches'),
+};
+
+export const customersApi = {
+  getAll: () => client.get<Array<{ id: string; code: string; name: string }>>('/customers'),
 };
 
 export const vehiclesApi = {
@@ -63,6 +76,12 @@ export const tripsApi = {
   publish: (id: string) => client.patch<Trip>(`/trips/${id}/publish`),
   getLoadProfile: (id: string) =>
     client.get<LoadProfileResult>(`/trips/${id}/load-profile`),
+  optimize: (data: { vehicleId: string; orderIds: string[] }) =>
+    client.post<OptimizationResultUI>('/trips/optimize', data),
+  createAutomaticOptimizationJob: () =>
+    client.post<OptimizationJobUI>('/trips/optimization-jobs'),
+  getOptimizationJob: (jobId: string) =>
+    client.get<OptimizationJobUI>(`/trips/optimization-jobs/${jobId}`),
 };
 
 export const mapboxApi = {

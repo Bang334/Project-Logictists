@@ -3,13 +3,19 @@ import * as bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
+// The 15,000 VND/ton-hour and 20% full-payload fuel surcharge values below
+// are demo data only. Production values must be calibrated from fuel logs and policy.
 async function main() {
   console.log('🚀 Đang khởi tạo Master Data thực tế vào Supabase PostgreSQL...');
 
   // 1. Tạo Chi nhánh vận hành (Branches)
   const branchHN = await prisma.branch.upsert({
     where: { code: 'BRANCH-HAN' },
-    update: {},
+    update: {
+      fuelPricePerLiter: 23800,
+      monthlyWorkingMinutes: 10560,
+      cargoHoldingCostVndPerTonHour: 15000,
+    },
     create: {
       code: 'BRANCH-HAN',
       name: 'Kho Vận Miền Bắc - Chi nhánh Hà Nội',
@@ -18,12 +24,19 @@ async function main() {
       longitude: 105.9082,
       phone: '024.3875.1234',
       timezone: 'Asia/Ho_Chi_Minh',
+      fuelPricePerLiter: 23800,
+      monthlyWorkingMinutes: 10560,
+      cargoHoldingCostVndPerTonHour: 15000,
     },
   });
 
   const branchDAD = await prisma.branch.upsert({
     where: { code: 'BRANCH-DAD' },
-    update: {},
+    update: {
+      fuelPricePerLiter: 23500,
+      monthlyWorkingMinutes: 10560,
+      cargoHoldingCostVndPerTonHour: 15000,
+    },
     create: {
       code: 'BRANCH-DAD',
       name: 'Kho Vận Miền Trung - Chi nhánh Đà Nẵng',
@@ -32,12 +45,19 @@ async function main() {
       longitude: 108.1874,
       phone: '0236.3688.567',
       timezone: 'Asia/Ho_Chi_Minh',
+      fuelPricePerLiter: 23500,
+      monthlyWorkingMinutes: 10560,
+      cargoHoldingCostVndPerTonHour: 15000,
     },
   });
 
   const branchSGN = await prisma.branch.upsert({
     where: { code: 'BRANCH-SGN' },
-    update: {},
+    update: {
+      fuelPricePerLiter: 24000,
+      monthlyWorkingMinutes: 10560,
+      cargoHoldingCostVndPerTonHour: 15000,
+    },
     create: {
       code: 'BRANCH-SGN',
       name: 'Kho Vận Miền Nam - Tổng kho Sóng Thần',
@@ -46,6 +66,9 @@ async function main() {
       longitude: 106.7582,
       phone: '028.3729.8899',
       timezone: 'Asia/Ho_Chi_Minh',
+      fuelPricePerLiter: 24000,
+      monthlyWorkingMinutes: 10560,
+      cargoHoldingCostVndPerTonHour: 15000,
     },
   });
 
@@ -112,6 +135,9 @@ async function main() {
       lengthCm: 620,
       widthCm: 215,
       heightCm: 205,
+      fuelConsumptionLitersPer100Km: 18.5,
+      loadFuelSurchargePercentAtFullPayload: 20,
+      fixedOperatingCostPerTrip: 120000,
       status: VehicleStatus.AVAILABLE,
       currentLatitude: 21.0345,
       currentLongitude: 105.9082,
@@ -126,6 +152,26 @@ async function main() {
       lengthCm: 430,
       widthCm: 190,
       heightCm: 180,
+      fuelConsumptionLitersPer100Km: 12.5,
+      loadFuelSurchargePercentAtFullPayload: 20,
+      fixedOperatingCostPerTrip: 80000,
+      status: VehicleStatus.AVAILABLE,
+      currentLatitude: 21.0345,
+      currentLongitude: 105.9082,
+    },
+    {
+      plateNumber: '29D-528.36',
+      model: 'Isuzu Forward NQR75L',
+      vehicleType: 'Xe tải 5.5 tấn (Thùng kín đường dài)',
+      homeBranchId: branchHN.id,
+      payloadCapacityKg: 5500,
+      volumeCapacityM3: 28.0,
+      lengthCm: 630,
+      widthCm: 220,
+      heightCm: 210,
+      fuelConsumptionLitersPer100Km: 17.5,
+      loadFuelSurchargePercentAtFullPayload: 20,
+      fixedOperatingCostPerTrip: 120000,
       status: VehicleStatus.AVAILABLE,
       currentLatitude: 21.0345,
       currentLongitude: 105.9082,
@@ -140,6 +186,9 @@ async function main() {
       lengthCm: 820,
       widthCm: 235,
       heightCm: 235,
+      fuelConsumptionLitersPer100Km: 24,
+      loadFuelSurchargePercentAtFullPayload: 20,
+      fixedOperatingCostPerTrip: 160000,
       status: VehicleStatus.AVAILABLE,
       currentLatitude: 16.0125,
       currentLongitude: 108.1874,
@@ -154,6 +203,9 @@ async function main() {
       lengthCm: 450,
       widthCm: 185,
       heightCm: 180,
+      fuelConsumptionLitersPer100Km: 11.5,
+      loadFuelSurchargePercentAtFullPayload: 20,
+      fixedOperatingCostPerTrip: 75000,
       status: VehicleStatus.AVAILABLE,
       currentLatitude: 10.8924,
       currentLongitude: 106.7582,
@@ -168,6 +220,9 @@ async function main() {
       lengthCm: 960,
       widthCm: 240,
       heightCm: 240,
+      fuelConsumptionLitersPer100Km: 31,
+      loadFuelSurchargePercentAtFullPayload: 20,
+      fixedOperatingCostPerTrip: 220000,
       status: VehicleStatus.AVAILABLE,
       currentLatitude: 10.8924,
       currentLongitude: 106.7582,
@@ -177,7 +232,11 @@ async function main() {
   for (const v of vehiclesData) {
     await prisma.vehicle.upsert({
       where: { plateNumber: v.plateNumber },
-      update: {},
+      update: {
+        fuelConsumptionLitersPer100Km: v.fuelConsumptionLitersPer100Km,
+        loadFuelSurchargePercentAtFullPayload: v.loadFuelSurchargePercentAtFullPayload,
+        fixedOperatingCostPerTrip: v.fixedOperatingCostPerTrip,
+      },
       create: v,
     });
   }
@@ -186,14 +245,30 @@ async function main() {
   // 4. Tạo Hồ sơ Tài xế (Drivers)
   const driversData = [
     {
+      fullName: 'Lê Hoàng Long',
+      citizenId: '001095045678',
+      phone: '0986667788',
+      licenseNumber: 'B2-01045678',
+      licenseClass: 'B2',
+      licenseExpiry: new Date('2030-01-15'),
+      homeBranchId: branchHN.id,
+      status: DriverStatus.AVAILABLE,
+      fixedSalaryMonthly: 9500000,
+      tripBasePay: 110000,
+      perKmPay: 900,
+    },
+    {
       fullName: 'Nguyễn Văn Tuấn',
       citizenId: '001089012345',
       phone: '0981112233',
-      licenseNumber: 'B2-79012345',
+      licenseNumber: 'C-01012345',
       licenseClass: 'C',
       licenseExpiry: new Date('2028-10-15'),
       homeBranchId: branchHN.id,
       status: DriverStatus.AVAILABLE,
+      fixedSalaryMonthly: 12000000,
+      tripBasePay: 180000,
+      perKmPay: 1300,
     },
     {
       fullName: 'Trần Đình Trọng',
@@ -204,6 +279,22 @@ async function main() {
       licenseExpiry: new Date('2029-05-20'),
       homeBranchId: branchHN.id,
       status: DriverStatus.AVAILABLE,
+      fixedSalaryMonthly: 13500000,
+      tripBasePay: 160000,
+      perKmPay: 1100,
+    },
+    {
+      fullName: 'Hoàng Văn Nam',
+      citizenId: '001093034567',
+      phone: '0985556677',
+      licenseNumber: 'C-01034567',
+      licenseClass: 'C',
+      licenseExpiry: new Date('2029-11-25'),
+      homeBranchId: branchHN.id,
+      status: DriverStatus.AVAILABLE,
+      fixedSalaryMonthly: 13000000,
+      tripBasePay: 170000,
+      perKmPay: 1200,
     },
     {
       fullName: 'Lê Quang Dũng',
@@ -214,6 +305,9 @@ async function main() {
       licenseExpiry: new Date('2027-12-30'),
       homeBranchId: branchDAD.id,
       status: DriverStatus.AVAILABLE,
+      fixedSalaryMonthly: 15000000,
+      tripBasePay: 220000,
+      perKmPay: 1500,
     },
     {
       fullName: 'Phạm Minh Hoàng',
@@ -224,6 +318,9 @@ async function main() {
       licenseExpiry: new Date('2029-08-18'),
       homeBranchId: branchSGN.id,
       status: DriverStatus.AVAILABLE,
+      fixedSalaryMonthly: 11500000,
+      tripBasePay: 150000,
+      perKmPay: 1000,
     },
     {
       fullName: 'Vũ Thành Nam',
@@ -234,13 +331,20 @@ async function main() {
       licenseExpiry: new Date('2028-03-25'),
       homeBranchId: branchSGN.id,
       status: DriverStatus.AVAILABLE,
+      fixedSalaryMonthly: 16000000,
+      tripBasePay: 250000,
+      perKmPay: 1600,
     },
   ];
 
   for (const d of driversData) {
     await prisma.driver.upsert({
       where: { citizenId: d.citizenId },
-      update: {},
+      update: {
+        fixedSalaryMonthly: d.fixedSalaryMonthly,
+        tripBasePay: d.tripBasePay,
+        perKmPay: d.perKmPay,
+      },
       create: d,
     });
   }
@@ -295,10 +399,11 @@ async function main() {
   // Đơn hàng 1: Sữa Vinamilk từ KCN Tiên Sơn về Kho Minh Khai (Hai Bà Trưng, HN)
   const order1 = await prisma.order.upsert({
     where: { orderNumber: 'ORD-20260909-001' },
-    update: {},
+    update: { branchId: branchHN.id },
     create: {
       orderNumber: 'ORD-20260909-001',
       customerId: custVinamilk.id,
+      branchId: branchHN.id,
       status: OrderStatus.CONFIRMED,
       totalWeightKg: 1250,
       totalVolumeM3: 4.8,
@@ -353,10 +458,11 @@ async function main() {
   // Đơn hàng 2: Sunhouse gia dụng từ Ngọc Hồi về Siêu thị MediaMart Phạm Văn Đồng
   const order2 = await prisma.order.upsert({
     where: { orderNumber: 'ORD-20260909-002' },
-    update: {},
+    update: { branchId: branchHN.id },
     create: {
       orderNumber: 'ORD-20260909-002',
       customerId: custSunhouse.id,
+      branchId: branchHN.id,
       status: OrderStatus.CONFIRMED,
       totalWeightKg: 850,
       totalVolumeM3: 6.2,
@@ -411,10 +517,11 @@ async function main() {
   // Đơn hàng 3: Panasonic giao từ KCN Thăng Long về Trung tâm Trần Thái Tông
   const order3 = await prisma.order.upsert({
     where: { orderNumber: 'ORD-20260909-003' },
-    update: {},
+    update: { branchId: branchHN.id },
     create: {
       orderNumber: 'ORD-20260909-003',
       customerId: custPanasonic.id,
+      branchId: branchHN.id,
       status: OrderStatus.CONFIRMED,
       totalWeightKg: 420,
       totalVolumeM3: 3.1,
@@ -466,7 +573,187 @@ async function main() {
     },
   });
 
-  console.log('✅ Đã tạo các đơn hàng vận tải thực tế với tọa độ chuẩn.');
+  // Bộ dữ liệu demo điều phối: mỗi đơn có nhiều loại hàng, mỗi loại có nhiều kiện
+  // vật lý và mỗi đơn có cặp điểm nhận/gửi riêng. Các mức chi phí chỉ dùng demo.
+  const demoOrders = [
+    {
+      orderNumber: 'DEMO-HN-001', customerId: custPanasonic.id,
+      pickup: ['Kho linh kiện Đông Anh, Hà Nội', 21.1392, 105.8491],
+      delivery: ['Cửa hàng Tràng Tiền, Hoàn Kiếm, Hà Nội', 21.0245, 105.8556],
+      items: [
+        { sku: 'PCB-A', description: 'Thùng bo mạch điều khiển', packageType: 'CARTON', quantity: 8, weightKg: 240, lengthCm: 40, widthCm: 30, heightCm: 30 },
+        { sku: 'MOTOR-B', description: 'Kiện mô-tơ quạt', packageType: 'CRATE', quantity: 4, weightKg: 320, lengthCm: 60, widthCm: 40, heightCm: 45 },
+      ],
+    },
+    {
+      orderNumber: 'DEMO-HN-002', customerId: custVinamilk.id,
+      pickup: ['Kho lạnh Gia Lâm, Hà Nội', 21.0498, 105.9412],
+      delivery: ['Siêu thị Nguyễn Trãi, Thanh Xuân, Hà Nội', 20.9964, 105.8071],
+      items: [
+        { sku: 'MILK-BOX', description: 'Thùng sữa hộp', packageType: 'CARTON', quantity: 12, weightKg: 300, lengthCm: 35, widthCm: 25, heightCm: 22 },
+        { sku: 'YOGURT-BOX', description: 'Thùng sữa chua', packageType: 'CARTON', quantity: 5, weightKg: 150, lengthCm: 50, widthCm: 40, heightCm: 25 },
+      ],
+    },
+    {
+      orderNumber: 'DEMO-HN-003', customerId: custSunhouse.id,
+      pickup: ['Kho Ngọc Hồi, Thanh Trì, Hà Nội', 20.9349, 105.8428],
+      delivery: ['Siêu thị Mỹ Đình, Nam Từ Liêm, Hà Nội', 21.0118, 105.7706],
+      items: [
+        { sku: 'COOKER', description: 'Kiện nồi cơm điện', packageType: 'CARTON', quantity: 4, weightKg: 180, lengthCm: 70, widthCm: 50, heightCm: 55 },
+        { sku: 'PAN-SET', description: 'Thùng bộ nồi chảo', packageType: 'CARTON', quantity: 6, weightKg: 150, lengthCm: 45, widthCm: 35, heightCm: 30 },
+      ],
+    },
+    {
+      orderNumber: 'DEMO-HN-004', customerId: custPanasonic.id,
+      pickup: ['KCN Tiên Sơn, Bắc Ninh', 21.1214, 106.0114],
+      delivery: ['Kho Sài Đồng, Long Biên, Hà Nội', 21.0364, 105.9254],
+      items: [
+        { sku: 'LAMP', description: 'Thùng đèn chiếu sáng', packageType: 'CARTON', quantity: 10, weightKg: 220, lengthCm: 40, widthCm: 30, heightCm: 35 },
+        { sku: 'FAN-PART', description: 'Kiện phụ tùng quạt', packageType: 'CRATE', quantity: 5, weightKg: 280, lengthCm: 60, widthCm: 45, heightCm: 40 },
+      ],
+    },
+    {
+      orderNumber: 'DEMO-HN-005', customerId: custVinamilk.id,
+      pickup: ['Kho Hà Đông, Hà Nội', 20.9714, 105.7788],
+      delivery: ['Điểm bán Xuân La, Tây Hồ, Hà Nội', 21.0692, 105.8029],
+      items: [
+        { sku: 'JUICE', description: 'Thùng nước trái cây', packageType: 'CARTON', quantity: 8, weightKg: 240, lengthCm: 50, widthCm: 40, heightCm: 35 },
+        { sku: 'DISPLAY', description: 'Kiện kệ trưng bày', packageType: 'CRATE', quantity: 4, weightKg: 160, lengthCm: 80, widthCm: 50, heightCm: 60 },
+      ],
+    },
+    {
+      orderNumber: 'DEMO-HN-006', customerId: custSunhouse.id,
+      pickup: ['Kho Đức Giang, Long Biên, Hà Nội', 21.0648, 105.9125],
+      delivery: ['Trung tâm điện máy Cầu Giấy, Hà Nội', 21.0368, 105.7908],
+      items: [
+        { sku: 'KETTLE', description: 'Kiện ấm siêu tốc', packageType: 'CARTON', quantity: 6, weightKg: 180, lengthCm: 65, widthCm: 45, heightCm: 42 },
+        { sku: 'BLENDER', description: 'Thùng máy xay', packageType: 'CARTON', quantity: 6, weightKg: 150, lengthCm: 40, widthCm: 30, heightCm: 38 },
+      ],
+    },
+    {
+      orderNumber: 'DEMO-HN-007', customerId: custPanasonic.id,
+      pickup: ['KCN Thăng Long, Đông Anh, Hà Nội', 21.1363, 105.7818],
+      delivery: ['Kho Linh Đàm, Hoàng Mai, Hà Nội', 20.9649, 105.8268],
+      items: [
+        { sku: 'AC-PALLET', description: 'Pallet linh kiện điều hòa', packageType: 'PALLET', quantity: 2, weightKg: 900, lengthCm: 120, widthCm: 80, heightCm: 120 },
+        { sku: 'CABLE', description: 'Kiện dây cáp', packageType: 'CRATE', quantity: 6, weightKg: 240, lengthCm: 60, widthCm: 40, heightCm: 35 },
+      ],
+    },
+    {
+      orderNumber: 'DEMO-HN-008', customerId: custSunhouse.id,
+      pickup: ['Kho Thạch Bàn, Long Biên, Hà Nội', 21.0207, 105.9298],
+      delivery: ['Điểm nhận Phạm Văn Đồng, Bắc Từ Liêm, Hà Nội', 21.0701, 105.7868],
+      items: [
+        { sku: 'SMALL-APPLIANCE', description: 'Thùng gia dụng nhỏ', packageType: 'CARTON', quantity: 8, weightKg: 280, lengthCm: 45, widthCm: 35, heightCm: 38 },
+        { sku: 'RACK', description: 'Kiện giá kệ kim loại', packageType: 'CRATE', quantity: 3, weightKg: 360, lengthCm: 90, widthCm: 60, heightCm: 70 },
+      ],
+    },
+    {
+      orderNumber: 'DEMO-HN-009', customerId: custPanasonic.id,
+      pickup: ['KCN Phố Nối A, Yên Mỹ, Hưng Yên', 20.9542, 106.0581],
+      delivery: ['Trung tâm Phân phối Hải Phòng, Hồng Bàng, Hải Phòng', 20.862328, 106.679927],
+      items: [
+        { sku: 'ELEC-PANEL', description: 'Tủ điện công nghiệp trung thế', packageType: 'CRATE', quantity: 2, weightKg: 500, lengthCm: 110, widthCm: 75, heightCm: 130 },
+      ],
+    },
+    {
+      orderNumber: 'DEMO-HN-010', customerId: custSunhouse.id,
+      pickup: ['KCN Khai Quang, TP. Vĩnh Yên, Vĩnh Phúc', 21.3092, 105.6124],
+      delivery: ['Tổng kho Phủ Lý, Hà Nam', 20.5385, 105.9182],
+      items: [
+        { sku: 'HEATER-BATCH', description: 'Lô bình nước nóng công nghiệp', packageType: 'CARTON', quantity: 4, weightKg: 360, lengthCm: 75, widthCm: 55, heightCm: 60 },
+        { sku: 'SOLAR-KIT', description: 'Bộ năng lượng mặt trời', packageType: 'CRATE', quantity: 2, weightKg: 220, lengthCm: 100, widthCm: 60, heightCm: 45 },
+      ],
+    },
+    {
+      orderNumber: 'DEMO-HN-011', customerId: custVinamilk.id,
+      pickup: ['KCN Quang Châu, Việt Yên, Bắc Giang', 21.2285, 106.0954],
+      delivery: ['Trung tâm Phân phối Thường Tín, Hà Nội', 20.8712, 105.8624],
+      items: [
+        { sku: 'MILK-POWDER', description: 'Pallet sữa bột lon xuất khẩu', packageType: 'PALLET', quantity: 2, weightKg: 640, lengthCm: 110, widthCm: 80, heightCm: 115 },
+      ],
+    },
+  ] as const;
+
+  for (const [index, demo] of demoOrders.entries()) {
+    const totalWeightKg = demo.items.reduce((sum, item) => sum + item.weightKg, 0);
+    const totalVolumeM3 = demo.items.reduce(
+      (sum, item) => sum + (item.lengthCm * item.widthCm * item.heightCm * item.quantity) / 1_000_000,
+      0,
+    );
+    const totalPackages = demo.items.reduce((sum, item) => sum + item.quantity, 0);
+    const demoOrder = await prisma.order.upsert({
+      where: { orderNumber: demo.orderNumber },
+      update: { branchId: branchHN.id },
+      create: {
+        orderNumber: demo.orderNumber,
+        customerId: demo.customerId,
+        branchId: branchHN.id,
+        status: OrderStatus.CONFIRMED,
+        totalWeightKg,
+        totalVolumeM3: Math.round(totalVolumeM3 * 1000) / 1000,
+        totalPackages,
+        notes: 'Dữ liệu giả lập phục vụ demo optimizer đa kiện; không phải đơn vận hành thật.',
+        items: {
+          create: demo.items.map((item) => ({
+            ...item,
+            volumeM3:
+              (item.lengthCm * item.widthCm * item.heightCm * item.quantity) / 1_000_000,
+          })),
+        },
+        stops: {
+          create: [
+            {
+              type: StopType.PICKUP,
+              sequence: 1,
+              address: demo.pickup[0],
+              latitude: demo.pickup[1],
+              longitude: demo.pickup[2],
+              contactName: `Kho xuất demo ${index + 1}`,
+              contactPhone: `09010000${index + 1}`,
+              serviceDurationMinutes: 20,
+              windowStart: new Date('2026-09-11T01:00:00Z'),
+              windowEnd: new Date('2026-09-11T05:00:00Z'),
+            },
+            {
+              type: StopType.DELIVERY,
+              sequence: 2,
+              address: demo.delivery[0],
+              latitude: demo.delivery[1],
+              longitude: demo.delivery[2],
+              contactName: `Điểm nhận demo ${index + 1}`,
+              contactPhone: `09110000${index + 1}`,
+              serviceDurationMinutes: 20,
+              windowStart: new Date('2026-09-11T03:00:00Z'),
+              windowEnd: new Date('2026-09-11T11:00:00Z'),
+            },
+          ],
+        },
+      },
+    });
+
+    // Giữ nguyên ID stop hiện có nhưng đồng bộ lại dữ liệu demo khi địa chỉ/tọa độ được sửa.
+    await Promise.all([
+      prisma.orderStop.updateMany({
+        where: { orderId: demoOrder.id, type: StopType.PICKUP },
+        data: {
+          address: demo.pickup[0],
+          latitude: demo.pickup[1],
+          longitude: demo.pickup[2],
+        },
+      }),
+      prisma.orderStop.updateMany({
+        where: { orderId: demoOrder.id, type: StopType.DELIVERY },
+        data: {
+          address: demo.delivery[0],
+          latitude: demo.delivery[1],
+          longitude: demo.delivery[2],
+        },
+      }),
+    ]);
+  }
+
+  console.log(`✅ Đã tạo dữ liệu vận tải và ${demoOrders.length} đơn demo đa loại/đa kiện.`);
   console.log('🎉 KHỞI TẠO MASTER DATA THÀNH CÔNG VÀO POSTGRESQL SUPABASE!');
 }
 

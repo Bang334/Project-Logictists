@@ -1,6 +1,6 @@
 import React from 'react';
 import { Layout, Button, Space, Typography, Tag } from 'antd';
-import { LogoutOutlined, UserOutlined, EnvironmentOutlined } from '@ant-design/icons';
+import { CarOutlined, EnvironmentOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
 
 const { Header } = Layout;
@@ -25,7 +25,7 @@ const Navbar: React.FC = () => {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-        <span style={{ fontSize: '24px' }}>🚛</span>
+        <CarOutlined aria-label="TMS Logistics" style={{ color: '#60a5fa', fontSize: '24px' }} />
         <div>
           <span style={{ color: '#ffffff', fontWeight: 700, fontSize: '18px', letterSpacing: '-0.02em' }}>
             TMS LOGISTICS

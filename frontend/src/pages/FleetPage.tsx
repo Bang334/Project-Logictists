@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Table, Tag, Tabs, Card, Typography, Space, message, Badge } from 'antd';
+import { Table, Tag, Tabs, Card, Typography, Space, Badge, App as AntdApp } from 'antd';
 import { CarOutlined, TeamOutlined, EnvironmentOutlined } from '@ant-design/icons';
 import { vehiclesApi, driversApi } from '../api/client';
 import { Vehicle, Driver } from '../types';
@@ -7,6 +7,7 @@ import { Vehicle, Driver } from '../types';
 const { Title, Text } = Typography;
 
 const FleetPage: React.FC = () => {
+  const { message } = AntdApp.useApp();
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [loading, setLoading] = useState(false);
@@ -141,7 +142,7 @@ const FleetPage: React.FC = () => {
         <Text type="secondary">Theo dõi hồ sơ đăng kiểm, quy cách thùng xe tải và thời hạn bằng lái của tài xế</Text>
       </div>
 
-      <Card bordered={false} className="card-elevation">
+      <Card variant="borderless" className="card-elevation">
         <Tabs
           defaultActiveKey="vehicles"
           items={[

@@ -29,7 +29,15 @@ body {
 }
 
 /* Mapbox Marker Styles */
-.custom-marker {
+.tms-map-marker-container {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  will-change: transform;
+  pointer-events: auto;
+}
+
+.custom-marker-pin {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -39,19 +47,50 @@ body {
   font-size: 12px;
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
   cursor: pointer;
-  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.custom-marker:hover {
-  transform: scale(1.15);
+.custom-marker-pin::before {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  content: '';
+}
+
+.custom-marker-pin:hover {
+  transform: scale(1.18);
   z-index: 10;
 }
 
+.custom-marker-pin:focus-visible {
+  outline: 3px solid #facc15;
+  outline-offset: 3px;
+  transform: scale(1.12);
+}
+
 .marker-depot {
-  background: linear-gradient(135deg, #1e40af, #3b82f6);
-  width: 32px;
-  height: 32px;
-  border: 2px solid white;
+  width: 42px;
+  height: 42px;
+  border: 3px solid white;
+  border-radius: 12px 12px 12px 3px;
+  background: #0f3d5e;
+  color: #ffffff;
+  transform: rotate(-45deg);
+}
+
+.marker-depot svg {
+  width: 24px;
+  height: 24px;
+  transform: rotate(45deg);
+}
+
+.marker-depot:hover {
+  transform: rotate(-45deg) scale(1.15);
+}
+
+.marker-depot:focus-visible {
+  transform: rotate(-45deg) scale(1.12);
 }
 
 .marker-pickup {
@@ -91,4 +130,445 @@ body {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.025em;
+}
+
+.dispatch-page {
+  padding: 24px;
+}
+
+.dispatch-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.automatic-map-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.automatic-map-filter {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.automatic-map-filter .ant-select {
+  width: 260px;
+  max-width: 100%;
+}
+
+.route-color-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+}
+
+.automatic-map-legend {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 7px 10px;
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.map-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.map-legend-depot {
+  color: #0f3d5e;
+  font-weight: 700;
+}
+
+.map-legend-sequence {
+  color: #1e293b;
+  font-weight: 600;
+}
+
+.map-legend-pickup::before,
+.map-legend-delivery::before {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  content: '';
+}
+
+.map-legend-pickup::before {
+  background: #059669;
+}
+
+.map-legend-delivery::before {
+  background: #ea580c;
+}
+
+.automatic-route-focus {
+  margin-bottom: 10px;
+  overflow: hidden;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+}
+
+.automatic-route-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.automatic-route-journey {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  overflow-x: auto;
+  border-top: 1px solid #bfdbfe;
+  background: #ffffff;
+  white-space: nowrap;
+}
+
+.journey-node {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border-radius: 14px;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.journey-node-depot,
+.journey-node-return {
+  max-width: 180px;
+  padding: 0 10px;
+  overflow: hidden;
+  background: #0f3d5e;
+  text-overflow: ellipsis;
+}
+
+.journey-node-pickup {
+  background: #059669;
+}
+
+.journey-node-delivery {
+  background: #ea580c;
+}
+
+.journey-node-return {
+  background: #334155;
+}
+
+.journey-arrow {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.dispatch-stop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.dispatch-stop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.dispatch-stop-address {
+  overflow: hidden;
+  color: #475569;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-popup {
+  display: grid;
+  gap: 4px;
+  max-width: 260px;
+  padding: 4px;
+  font-family: Inter, sans-serif;
+}
+
+.map-popup strong {
+  color: #1e3a8a;
+  font-size: 13px;
+}
+
+.map-popup div {
+  color: #475569;
+  font-size: 12px;
+}
+
+.map-popup small {
+  color: #64748b;
+}
+
+@media (max-width: 767px) {
+  .dispatch-page {
+    padding: 16px;
+  }
+
+  .dispatch-page-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dispatch-page-header .ant-btn {
+    min-height: 44px;
+    width: 100%;
+  }
+
+  .automatic-map-toolbar,
+  .automatic-map-filter,
+  .automatic-route-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .automatic-map-toolbar > .ant-btn {
+    min-height: 44px;
+  }
+
+  .automatic-map-filter .ant-select {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* =========================================================
+   TMS Vehicle Live Simulation & Animated Truck Marker
+   ========================================================= */
+
+.truck-sim-marker-container {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 44px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+  z-index: 20;
+}
+
+/* Radar pulse animation around the moving vehicle */
+.truck-sim-radar {
+  position: absolute;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(37, 99, 235, 0.3);
+  box-shadow: 0 0 16px rgba(37, 99, 235, 0.55);
+  animation: radar-pulse 1.8s cubic-bezier(0, 0.2, 0.8, 1) infinite;
+  pointer-events: none;
+}
+
+@keyframes radar-pulse {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.9;
+  }
+  70% {
+    transform: scale(1.6);
+    opacity: 0.15;
+  }
+  100% {
+    transform: scale(2.0);
+    opacity: 0;
+  }
+}
+
+/* Rotatable wrapper aligned with the route bearing */
+.truck-sim-rotator {
+  position: relative;
+  width: 36px;
+  height: 68px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.1s linear;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.65));
+}
+
+/* Truck icon top-down SVG rendering */
+.truck-sim-svg {
+  width: 36px;
+  height: 68px;
+  display: block;
+}
+
+/* Headlight beam effect radiating forward */
+.truck-headlight-beam {
+  position: absolute;
+  top: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 32px;
+  height: 22px;
+  background: radial-gradient(ellipse at bottom, rgba(254, 240, 138, 0.75) 0%, rgba(254, 240, 138, 0) 75%);
+  pointer-events: none;
+  clip-path: polygon(30% 100%, 70% 100%, 100% 0%, 0% 0%);
+}
+
+/* Floating license plate and speed badge above truck */
+.truck-sim-badge {
+  position: absolute;
+  bottom: 74px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(6px);
+  color: #f8fafc;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid rgba(59, 130, 246, 0.6);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  z-index: 30;
+  pointer-events: none;
+}
+
+.truck-sim-badge .speed-pill {
+  background: #2563eb;
+  color: #ffffff;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+/* Simulation Floating Control Bar on Map - Sleek, Thin Single-Line Capsule */
+.map-sim-controls {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 24px;
+  padding: 2px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  color: #ffffff;
+  height: 34px;
+  white-space: nowrap;
+  max-width: 92%;
+}
+
+.map-sim-controls .control-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-weight: 600;
+  transition: all 0.2s;
+}
+
+.map-sim-hud {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 10;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: #f1f5f9;
+  font-size: 12px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+  pointer-events: auto;
+}
+
+/* ============================================================ */
+/* LỊCH TRÌNH TÀI XẾ (TIMELINE): DỊCH TRỤC THỜI GIAN SANG TRÁI  */
+/* ============================================================ */
+.driver-schedule-timeline.ant-timeline {
+  padding-top: 6px;
+}
+
+.driver-schedule-timeline.ant-timeline.ant-timeline-label .ant-timeline-item-label {
+  top: 0 !important;
+  width: 68px !important;
+  inset-inline-start: 0 !important;
+  text-align: right !important;
+  padding-right: 8px !important;
+}
+
+.driver-schedule-timeline.ant-timeline.ant-timeline-label .ant-timeline-item-tail {
+  inset-inline-start: 74px !important;
+}
+
+.driver-schedule-timeline.ant-timeline.ant-timeline-label .ant-timeline-item-head,
+.driver-schedule-timeline.ant-timeline.ant-timeline-label .ant-timeline-item-head-custom {
+  top: 2px !important;
+  inset-inline-start: 74px !important;
+  transform: translateX(-50%) !important;
+  margin-inline-start: 0 !important;
+}
+
+.driver-schedule-timeline.ant-timeline.ant-timeline-label .ant-timeline-item-left .ant-timeline-item-content {
+  top: 0 !important;
+  inset-inline-start: 74px !important;
+  width: calc(100% - 78px) !important;
+  margin-inline-start: 0 !important;
+  padding-inline-start: 14px !important;
+  padding-inline-end: 4px !important;
+  text-align: start !important;
 }

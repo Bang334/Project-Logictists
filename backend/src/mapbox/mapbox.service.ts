@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadGatewayException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import axios from 'axios';
 
 export interface GeocodeResult {
@@ -13,6 +13,11 @@ export interface DirectionsResult {
   durationMinutes: number;
   geometry: any; // GeoJSON LineString
   waypoints: { location: [number, number]; name: string }[];
+}
+
+export interface RoadMatrixResult {
+  distancesMeters: number[][];
+  durationsSeconds: number[][];
 }
 
 @Injectable()
@@ -85,35 +90,54 @@ export class MapboxService {
       };
     } catch (error) {
       this.logger.error('Directions API error:', error.message);
-      // Fallback cự ly đường chim bay x hệ số đường bộ 1.3 nếu Mapbox gặp sự cố
-      let fallbackDistance = 0;
-      for (let i = 0; i < coordinates.length - 1; i++) {
-        fallbackDistance += this.haversineDistance(coordinates[i], coordinates[i + 1]) * 1.3;
-      }
-      fallbackDistance = Math.round(fallbackDistance * 10) / 10;
-      const fallbackDuration = Math.round((fallbackDistance / 40) * 60); // 40 km/h vận tốc xe tải trung bình
-
-      return {
-        distanceKm: fallbackDistance,
-        durationMinutes: fallbackDuration,
-        geometry: {
-          type: 'LineString',
-          coordinates: coordinates,
-        },
-        waypoints: [],
-      };
+      throw new BadGatewayException(
+        'Mapbox Directions không trả được tuyến đường; không dùng đường chim bay thay cho tuyến hợp lệ',
+      );
     }
   }
 
-  private haversineDistance(c1: [number, number], c2: [number, number]): number {
-    const toRad = (x: number) => (x * Math.PI) / 180;
-    const R = 6371; // km
-    const dLat = toRad(c2[1] - c1[1]);
-    const dLon = toRad(c2[0] - c1[0]);
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(toRad(c1[1])) * Math.cos(toRad(c2[1])) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
+  async getRoadMatrix(coordinates: [number, number][]): Promise<RoadMatrixResult> {
+    if (!this.accessToken) {
+      throw new ServiceUnavailableException('Thiếu MAPBOX_ACCESS_TOKEN cho Matrix API');
+    }
+    if (coordinates.length < 2 || coordinates.length > 25) {
+      throw new BadGatewayException(
+        `Mapbox Matrix yêu cầu 2–25 tọa độ, nhận ${coordinates.length}`,
+      );
+    }
+
+    const coordsString = coordinates.map(([lng, lat]) => `${lng},${lat}`).join(';');
+    const url = `${this.baseUrl}/directions-matrix/v1/mapbox/driving/${coordsString}`;
+    try {
+      const response = await axios.get(url, {
+        params: { annotations: 'distance,duration', access_token: this.accessToken },
+        timeout: 12000,
+      });
+      if (response.data?.code !== 'Ok') {
+        throw new Error(response.data?.message || response.data?.code || 'Matrix response invalid');
+      }
+      const distances = response.data.distances as Array<Array<number | null>>;
+      const durations = response.data.durations as Array<Array<number | null>>;
+      const unreachable: string[] = [];
+      distances.forEach((row, from) =>
+        row.forEach((value, to) => {
+          if (value === null || durations[from]?.[to] === null) {
+            unreachable.push(`${from}->${to}`);
+          }
+        }),
+      );
+      if (unreachable.length > 0) {
+        throw new Error(`Không có đường cho các cặp tọa độ: ${unreachable.slice(0, 8).join(', ')}`);
+      }
+      return {
+        distancesMeters: distances as number[][],
+        durationsSeconds: durations as number[][],
+      };
+    } catch (error) {
+      this.logger.error(`Matrix API error: ${error.message}`);
+      throw new BadGatewayException(
+        `Mapbox Matrix không khả dụng: ${error.response?.data?.message || error.message}`,
+      );
+    }
   }
 }

@@ -9,12 +9,12 @@ import {
   Tag,
   Typography,
   Space,
-  message,
   Divider,
   Progress,
   Table,
   Spin,
   Alert,
+  App as AntdApp,
 } from 'antd';
 import {
   CompassOutlined,
@@ -23,14 +23,28 @@ import {
   CheckCircleOutlined,
   SendOutlined,
   EnvironmentOutlined,
+  ThunderboltOutlined,
+  ArrowUpOutlined,
+  ArrowDownOutlined,
+  PlayCircleOutlined,
+  PauseCircleOutlined,
 } from '@ant-design/icons';
 import { vehiclesApi, driversApi, ordersApi, tripsApi } from '../api/client';
-import { Vehicle, Driver, Order, Trip, LoadProfileResult } from '../types';
+import {
+  Vehicle,
+  Driver,
+  Order,
+  Trip,
+  LoadProfileResult,
+  OptimizationResultUI,
+} from '../types';
 import MapboxMap from '../components/MapboxMap';
+import FloorPackingVisualizer from '../components/FloorPackingVisualizer';
 
 const { Title, Text } = Typography;
 
 const DispatchPage: React.FC = () => {
+  const { message } = AntdApp.useApp();
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -46,6 +60,12 @@ const DispatchPage: React.FC = () => {
   // Selected Trip & Active Analysis State
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
   const [loadProfile, setLoadProfile] = useState<LoadProfileResult | null>(null);
+  const [optimizing, setOptimizing] = useState(false);
+  const [optimizationResult, setOptimizationResult] = useState<OptimizationResultUI | null>(null);
+  const [orderedStopIds, setOrderedStopIds] = useState<string[]>([]);
+  const [draftRouteGeometry, setDraftRouteGeometry] = useState<any>(null);
+  const [draftRouteStats, setDraftRouteStats] = useState<{ distanceKm: number; durationMinutes: number } | null>(null);
+  const [enableSim, setEnableSim] = useState<boolean>(false);
 
   const fetchData = async () => {
     try {
@@ -119,6 +139,7 @@ const DispatchPage: React.FC = () => {
         plannedStartTime: startTime,
         plannedEndTime: endTime,
         orderIds: selectedOrderIds,
+        orderedStopIds,
         notes: 'Chuyến ghép đơn điều phối thủ công qua Mapbox',
       });
 
@@ -149,6 +170,61 @@ const DispatchPage: React.FC = () => {
     }
   };
 
+  const handleRunOptimization = async () => {
+    if (!selectedVehicleId) {
+      return message.warning('Vui lòng chọn xe tải để tối ưu tuyến');
+    }
+    if (selectedOrderIds.length === 0) {
+      return message.warning('Vui lòng chọn ít nhất 1 đơn hàng để tối ưu');
+    }
+
+    try {
+      setOptimizing(true);
+      const res = await tripsApi.optimize({ vehicleId: selectedVehicleId, orderIds: selectedOrderIds });
+      setOptimizationResult(res.data);
+      if (res.data.status === 'SUCCESS') {
+        setOrderedStopIds(res.data.stops.map((stop) => stop.location_id));
+        message.success(
+          `Google OR-Tools đã tối ưu thành công! Cự ly: ${res.data.total_distance_km} km, thời gian: ${res.data.total_duration_minutes} phút, xếp dỡ 2D hợp lệ.`
+        );
+      } else {
+        message.warning(`Kết quả tối ưu: ${res.data.status}`);
+      }
+    } catch (err: any) {
+      message.error(err.response?.data?.message || 'Lỗi khi gọi Optimization Engine (FastAPI)');
+    } finally {
+      setOptimizing(false);
+    }
+  };
+
+  const handleOrderToggle = (order: Order, checked: boolean) => {
+    if (checked) {
+      setSelectedOrderIds((current) => [...current, order.id]);
+      setOrderedStopIds((current) => [
+        ...current,
+        ...order.stops
+          .slice()
+          .sort((a, b) => a.sequence - b.sequence)
+          .map((stop) => stop.id),
+      ]);
+    } else {
+      const stopIds = new Set(order.stops.map((stop) => stop.id));
+      setSelectedOrderIds((current) => current.filter((id) => id !== order.id));
+      setOrderedStopIds((current) => current.filter((id) => !stopIds.has(id)));
+    }
+    setOptimizationResult(null);
+  };
+
+  const moveStop = (index: number, offset: -1 | 1) => {
+    const target = index + offset;
+    if (target < 0 || target >= orderedStopIds.length) return;
+    setOrderedStopIds((current) => {
+      const next = [...current];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  };
+
   const selectedVehicle = vehicles.find((v) => v.id === selectedVehicleId);
   const selectedDriver = drivers.find((d) => d.id === selectedDriverId);
 
@@ -156,12 +232,127 @@ const DispatchPage: React.FC = () => {
   const chosenOrders = orders.filter((o) => selectedOrderIds.includes(o.id));
   const estimatedWeight = chosenOrders.reduce((sum, o) => sum + o.totalWeightKg, 0);
   const estimatedVolume = chosenOrders.reduce((sum, o) => sum + o.totalVolumeM3, 0);
+  const selectedStopById = new Map(
+    chosenOrders.flatMap((order) =>
+      order.stops.map((stop) => ({ ...stop, orderNumber: order.orderNumber })),
+    ).map((stop) => [stop.id, stop]),
+  );
+
+  // Tự động kết nối tuyến đường (Mapbox Driving Directions) ngay khi người dùng chọn đơn / đổi thứ tự điểm dừng
+  useEffect(() => {
+    if (chosenOrders.length === 0 || orderedStopIds.length === 0) {
+      setDraftRouteGeometry(null);
+      setDraftRouteStats(null);
+      return;
+    }
+
+    const token = import.meta.env.VITE_MAPBOX_TOKEN;
+    const stopById = new Map(
+      chosenOrders.flatMap((order) => order.stops).map((stop) => [stop.id, stop]),
+    );
+    const coords: [number, number][] = [];
+
+    // Điểm xuất phát từ bãi xe / chi nhánh của xe
+    if (selectedVehicle?.homeBranch) {
+      coords.push([selectedVehicle.homeBranch.longitude, selectedVehicle.homeBranch.latitude]);
+    }
+
+    // Các điểm dừng theo thứ tự đã sắp xếp
+    orderedStopIds.forEach((stopId) => {
+      const stop = stopById.get(stopId);
+      if (stop) {
+        coords.push([stop.longitude, stop.latitude]);
+      }
+    });
+
+    if (coords.length < 2) {
+      setDraftRouteGeometry(null);
+      setDraftRouteStats(null);
+      return;
+    }
+
+    let isMounted = true;
+
+    const fetchRoute = async () => {
+      if (!token) {
+        if (isMounted) {
+          setDraftRouteGeometry({
+            type: 'LineString',
+            coordinates: coords,
+          });
+        }
+        return;
+      }
+
+      try {
+        const coordsString = coords.map((c) => `${c[0]},${c[1]}`).join(';');
+        const res = await fetch(
+          `https://api.mapbox.com/directions/v5/mapbox/driving/${coordsString}?geometries=geojson&overview=full&access_token=${token}`,
+        );
+        const data = await res.json();
+        if (isMounted) {
+          if (data.routes && data.routes.length > 0) {
+            const r = data.routes[0];
+            setDraftRouteGeometry(r.geometry);
+            setDraftRouteStats({
+              distanceKm: Math.round((r.distance / 1000) * 10) / 10,
+              durationMinutes: Math.round(r.duration / 60),
+            });
+          } else {
+            setDraftRouteGeometry({
+              type: 'LineString',
+              coordinates: coords,
+            });
+          }
+        }
+      } catch {
+        if (isMounted) {
+          setDraftRouteGeometry({
+            type: 'LineString',
+            coordinates: coords,
+          });
+        }
+      }
+    };
+
+    fetchRoute();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [chosenOrders.length, orderedStopIds, selectedVehicle?.homeBranch]);
 
   // Chuẩn bị markers hiển thị trên Mapbox Map
   let mapMarkers: any[] = [];
   let routeGeometry: any = null;
 
-  if (activeTrip) {
+  if (chosenOrders.length > 0) {
+    routeGeometry = draftRouteGeometry;
+    if (selectedVehicle?.homeBranch) {
+      mapMarkers.push({
+        id: 'draft-depot',
+        latitude: selectedVehicle.homeBranch.latitude,
+        longitude: selectedVehicle.homeBranch.longitude,
+        title: `Điểm xuất phát: ${selectedVehicle.homeBranch.name}`,
+        subtitle: selectedVehicle.homeBranch.address,
+        type: 'DEPOT',
+      });
+    }
+    const stopById = new Map(chosenOrders.flatMap((order) => order.stops).map((stop) => [stop.id, stop]));
+    orderedStopIds.forEach((stopId, index) => {
+      const stop = stopById.get(stopId);
+      if (!stop) return;
+      mapMarkers.push({
+        id: stop.id,
+        latitude: stop.latitude,
+        longitude: stop.longitude,
+        title: `${index + 1}. ${stop.type === 'PICKUP' ? 'Nhận hàng' : 'Giao hàng'}`,
+        subtitle: stop.address,
+        type: stop.type,
+        sequence: index + 1,
+      });
+    });
+  } else if (activeTrip) {
     if (activeTrip.vehicle?.homeBranch) {
       mapMarkers.push({
         id: 'depot',
@@ -240,8 +431,9 @@ const DispatchPage: React.FC = () => {
 
   if (loading && trips.length === 0) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '60vh' }}>
-        <Spin size="large" tip="Đang tải Bàn điều phối Mapbox..." />
+      <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: '60vh', gap: '16px' }}>
+        <Spin size="large" />
+        <Text type="secondary">Đang tải Bàn điều phối Mapbox...</Text>
       </div>
     );
   }
@@ -252,10 +444,10 @@ const DispatchPage: React.FC = () => {
         <div>
           <Title level={4} style={{ margin: 0 }}>
             <CompassOutlined style={{ color: '#1d4ed8', marginRight: '8px' }} />
-            Bàn Điều Phối Vận Tải (TMS Dispatch Console)
+            Điều Phối Thủ Công
           </Title>
           <Text type="secondary">
-            Lập kế hoạch chuyến đi, ghép nhiều đơn hàng, kiểm tra bất biến tải trọng (BR03 / BR04) và tích hợp Mapbox
+            Chọn đơn ngay trên danh sách/bản đồ, sắp thứ tự điểm dừng, gán xe và tài xế trước khi phát hành
           </Text>
         </div>
       </div>
@@ -265,7 +457,7 @@ const DispatchPage: React.FC = () => {
         <Col xs={24} xl={10}>
           <Card
             title="1. Thiết Lập Chuyến Đi Mới"
-            bordered={false}
+            variant="borderless"
             className="card-elevation"
             style={{ marginBottom: '20px' }}
           >
@@ -287,7 +479,7 @@ const DispatchPage: React.FC = () => {
               </Select>
               {selectedVehicle && (
                 <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
-                  🏢 Chi nhánh: {selectedVehicle.homeBranch?.name} | Kích thước thùng: {selectedVehicle.lengthCm}x
+                  Chi nhánh: {selectedVehicle.homeBranch?.name} | Kích thước thùng: {selectedVehicle.lengthCm}x
                   {selectedVehicle.widthCm}x{selectedVehicle.heightCm} cm
                 </div>
               )}
@@ -340,13 +532,7 @@ const DispatchPage: React.FC = () => {
                     >
                       <Checkbox
                         checked={selectedOrderIds.includes(o.id)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedOrderIds([...selectedOrderIds, o.id]);
-                          } else {
-                            setSelectedOrderIds(selectedOrderIds.filter((id) => id !== o.id));
-                          }
-                        }}
+                        onChange={(e) => handleOrderToggle(o, e.target.checked)}
                       >
                         <div>
                           <strong style={{ color: '#0284c7' }}>{o.orderNumber}</strong>
@@ -355,7 +541,7 @@ const DispatchPage: React.FC = () => {
                           </span>
                         </div>
                         <div style={{ fontSize: '11px', color: '#64748b' }}>
-                          📦 {o.totalWeightKg} kg | {o.totalVolumeM3} m³ ({o.items[0]?.description})
+                          {o.totalPackages} kiện · {o.totalWeightKg} kg · {o.totalVolumeM3} m³ ({o.items.length} loại hàng)
                         </div>
                       </Checkbox>
                     </div>
@@ -383,22 +569,78 @@ const DispatchPage: React.FC = () => {
               </div>
             )}
 
-            <Button
-              type="primary"
-              size="large"
-              block
-              icon={<SendOutlined />}
-              onClick={handleCreateTrip}
-              loading={submitting}
-              disabled={selectedOrderIds.length === 0}
-              style={{ marginTop: '16px' }}
-            >
-              Tạo Chuyến Đi & Kiểm Tra Bất Biến (BR03 / BR04)
-            </Button>
+            {orderedStopIds.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <Text strong>3. Thứ tự điểm dừng</Text>
+                <div className="dispatch-stop-list" style={{ marginTop: 8 }}>
+                  {orderedStopIds.map((stopId, index) => {
+                    const stop = selectedStopById.get(stopId);
+                    if (!stop) return null;
+                    return (
+                      <div className="dispatch-stop-row" key={stopId}>
+                        <Tag color={stop.type === 'PICKUP' ? 'green' : 'orange'}>
+                          {index + 1}. {stop.type === 'PICKUP' ? 'NHẬN' : 'GIAO'}
+                        </Tag>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <Text strong>{stop.orderNumber}</Text>
+                          <div className="dispatch-stop-address">{stop.address}</div>
+                        </div>
+                        <Space size={4}>
+                          <Button
+                            aria-label={`Đưa điểm ${index + 1} lên trước`}
+                            icon={<ArrowUpOutlined />}
+                            disabled={index === 0}
+                            onClick={() => moveStop(index, -1)}
+                          />
+                          <Button
+                            aria-label={`Đưa điểm ${index + 1} xuống sau`}
+                            icon={<ArrowDownOutlined />}
+                            disabled={index === orderedStopIds.length - 1}
+                            onClick={() => moveStop(index, 1)}
+                          />
+                        </Space>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <Space direction="vertical" style={{ width: '100%', marginTop: '16px' }}>
+              <Button
+                type="default"
+                size="large"
+                block
+                icon={<ThunderboltOutlined style={{ color: '#d97706' }} />}
+                onClick={handleRunOptimization}
+                loading={optimizing}
+                disabled={selectedOrderIds.length === 0}
+                style={{
+                  borderColor: '#f59e0b',
+                  color: '#92400e',
+                  background: '#fef3c7',
+                  fontWeight: 600,
+                }}
+              >
+                Gợi Ý Thứ Tự Tuyến Cho Các Đơn Đã Chọn
+              </Button>
+
+              <Button
+                type="primary"
+                size="large"
+                block
+                icon={<SendOutlined />}
+                onClick={handleCreateTrip}
+                loading={submitting}
+                disabled={selectedOrderIds.length === 0}
+              >
+                Tạo Chuyến Đi & Kiểm Tra Bất Biến (BR03 / BR04)
+              </Button>
+            </Space>
           </Card>
 
           {/* DANH SÁCH CÁC CHUYẾN ĐI ĐÃ TẠO */}
-          <Card title="Danh Sách Chuyến Đi Đang Quản Lý" bordered={false} className="card-elevation">
+          <Card title="Danh Sách Chuyến Đi Đang Quản Lý" variant="borderless" className="card-elevation">
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {trips.map((t) => (
                 <div
@@ -418,13 +660,13 @@ const DispatchPage: React.FC = () => {
                     <Tag color={t.status === 'DISPATCHED' ? 'cyan' : 'gold'}>{t.status}</Tag>
                   </div>
                   <div style={{ fontSize: '12px', color: '#475569', marginTop: '4px' }}>
-                    🚗 Xe: <strong>{t.vehicle.plateNumber}</strong> ({t.vehicle.model}) | 👤 Tài xế:{' '}
+                    Xe: <strong>{t.vehicle.plateNumber}</strong> ({t.vehicle.model}) | Tài xế:{' '}
                     <strong>{t.assignments[0]?.driver.fullName}</strong>
                   </div>
                   <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: '#64748b', marginTop: '6px' }}>
-                    <span>🛣️ Cự ly Mapbox: <strong>{t.totalDistanceKm} km</strong></span>
-                    <span>⏱️ Thời gian: <strong>{t.totalDurationMinutes} phút</strong></span>
-                    <span>🛑 Số chặng: <strong>{t.stops.length} điểm</strong></span>
+                    <span>Cự ly Mapbox: <strong>{t.totalDistanceKm} km</strong></span>
+                    <span>Thời gian: <strong>{t.totalDurationMinutes} phút</strong></span>
+                    <span>Số chặng: <strong>{t.stops.length} điểm</strong></span>
                   </div>
                 </div>
               ))}
@@ -436,14 +678,45 @@ const DispatchPage: React.FC = () => {
         <Col xs={24} xl={14}>
           <Card
             title={
-              activeTrip ? (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              chosenOrders.length > 0 ? (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                  <span>Bản đồ phương án đang thiết lập (Đường nối tuyến thực tế)</span>
+                  <Space wrap>
+                    <Tag color="blue">{orderedStopIds.length} điểm dừng</Tag>
+                    {draftRouteStats && (
+                      <>
+                        <Tag color="green">~{draftRouteStats.distanceKm} km</Tag>
+                        <Tag color="purple">~{draftRouteStats.durationMinutes} phút</Tag>
+                      </>
+                    )}
+                    <Button
+                      type={enableSim ? 'default' : 'primary'}
+                      size="small"
+                      icon={enableSim ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                      disabled={!routeGeometry}
+                      onClick={() => setEnableSim(!enableSim)}
+                    >
+                      {enableSim ? 'Dừng mô phỏng' : 'Demo xe chạy'}
+                    </Button>
+                  </Space>
+                </div>
+              ) : activeTrip ? (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                   <span>
                     Bản Đồ Lộ Trình Mapbox — Chuyến <strong>{activeTrip.tripNumber}</strong>
                   </span>
-                  <Space>
+                  <Space wrap>
                     <Tag color="blue">{activeTrip.totalDistanceKm} km</Tag>
                     <Tag color="purple">~{activeTrip.totalDurationMinutes} phút</Tag>
+                    <Button
+                      type={enableSim ? 'default' : 'primary'}
+                      size="small"
+                      icon={enableSim ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                      disabled={!routeGeometry}
+                      onClick={() => setEnableSim(!enableSim)}
+                    >
+                      {enableSim ? 'Dừng mô phỏng' : 'Demo xe chạy'}
+                    </Button>
                     {activeTrip.status === 'PLANNED' && (
                       <Button
                         type="primary"
@@ -459,15 +732,51 @@ const DispatchPage: React.FC = () => {
                   </Space>
                 </div>
               ) : (
-                'Bản Đồ Lộ Trình Mapbox'
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>Bản Đồ Lộ Trình Mapbox</span>
+                  {routeGeometry && (
+                    <Button
+                      type={enableSim ? 'default' : 'primary'}
+                      size="small"
+                      icon={enableSim ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                      onClick={() => setEnableSim(!enableSim)}
+                    >
+                      {enableSim ? 'Dừng mô phỏng' : 'Demo xe chạy'}
+                    </Button>
+                  )}
+                </div>
               )
             }
-            bordered={false}
+            variant="borderless"
             className="card-elevation"
             style={{ marginBottom: '20px' }}
           >
-            <MapboxMap markers={mapMarkers} routeGeometry={routeGeometry} height={460} />
+            <MapboxMap
+              markers={mapMarkers}
+              routeGeometry={routeGeometry}
+              height={460}
+              enableSimulation={enableSim}
+              autoPlaySimulation={enableSim}
+              vehiclePlate={activeTrip ? activeTrip.vehicle?.plateNumber : selectedVehicle?.plateNumber || '29C-678.92'}
+              driverName={activeTrip ? activeTrip.assignments[0]?.driver?.fullName : drivers.find(d => d.id === selectedDriverId)?.fullName || 'Tài xế'}
+            />
           </Card>
+
+          {/* KẾT QUẢ TỐI ƯU TUYẾN & MÔ PHỎNG XẾP DỠ MẶT SÀN 2D (OR-TOOLS / NGƯỜI 3) */}
+          {optimizationResult && (
+            <div style={{ marginBottom: '20px' }}>
+              <FloorPackingVisualizer
+                vehicle={selectedVehicle}
+                stepStates={optimizationResult.spatial_validation?.step_states || []}
+                isValid={optimizationResult.spatial_validation?.is_valid ?? true}
+                violations={
+                  optimizationResult.spatial_validation?.error_message
+                    ? [optimizationResult.spatial_validation.error_message]
+                    : []
+                }
+              />
+            </div>
+          )}
 
           {/* BIỂU ĐỒ PHÂN TÍCH TẢI TRỌNG TỪNG CHẶNG (BR04 INVARIANT VERIFICATION) */}
           {loadProfile && (
@@ -478,7 +787,7 @@ const DispatchPage: React.FC = () => {
                   <Tag color="green">Bất Biến BR03 & BR04 Đạt Chuẩn</Tag>
                 </Space>
               }
-              bordered={false}
+              variant="borderless"
               className="card-elevation"
             >
               <Alert

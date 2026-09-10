@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Query, Req, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -13,13 +13,14 @@ export class OrdersController {
   findAll(
     @Query('status') status?: OrderStatus,
     @Query('customerId') customerId?: string,
+    @Req() req?: { user?: { branchId?: string } },
   ) {
-    return this.ordersService.findAll(status, customerId);
+    return this.ordersService.findAll(status, customerId, req?.user?.branchId);
   }
 
   @Get('available-for-dispatch')
-  getAvailableForDispatch() {
-    return this.ordersService.getAvailableForDispatch();
+  getAvailableForDispatch(@Req() req: { user: { branchId?: string } }) {
+    return this.ordersService.getAvailableForDispatch(req.user.branchId);
   }
 
   @Get(':id')
@@ -28,7 +29,7 @@ export class OrdersController {
   }
 
   @Post()
-  create(@Body() createOrderDto: CreateOrderDto) {
-    return this.ordersService.create(createOrderDto);
+  create(@Body() createOrderDto: CreateOrderDto, @Req() req: { user: { branchId?: string } }) {
+    return this.ordersService.create(createOrderDto, req.user.branchId);
   }
 }

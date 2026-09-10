@@ -28,8 +28,12 @@ export class AuthService {
     return null;
   }
 
-  async login(loginDto: { username: string; pass: string }) {
-    const user = await this.validateUser(loginDto.username, loginDto.pass);
+  async login(loginDto: { username: string; pass?: string; password?: string }) {
+    const rawPassword = loginDto.pass || loginDto.password;
+    if (!rawPassword) {
+      throw new UnauthorizedException('Mật khẩu không được để trống');
+    }
+    const user = await this.validateUser(loginDto.username, rawPassword);
     if (!user) {
       throw new UnauthorizedException('Sai tên đăng nhập hoặc mật khẩu');
     }

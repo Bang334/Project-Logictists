@@ -9,22 +9,27 @@ import {
   Input,
   Select,
   InputNumber,
-  message,
   Typography,
   Card,
   AutoComplete,
   Divider,
+  Alert,
+  Col,
+  Row,
+  App as AntdApp,
 } from 'antd';
-import { PlusOutlined, ShoppingOutlined, EnvironmentOutlined } from '@ant-design/icons';
-import { ordersApi, mapboxApi } from '../api/client';
+import { EnvironmentOutlined, MinusCircleOutlined, PlusOutlined, ShoppingOutlined } from '@ant-design/icons';
+import { customersApi, mapboxApi, ordersApi } from '../api/client';
 import { Order } from '../types';
 
 const { Title, Text } = Typography;
 
 const OrdersPage: React.FC = () => {
+  const { message } = AntdApp.useApp();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [customers, setCustomers] = useState<Array<{ id: string; code: string; name: string }>>([]);
   const [form] = Form.useForm();
 
   // Autocomplete options for Mapbox geocoding
@@ -44,7 +49,8 @@ const OrdersPage: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchOrders();
+    void fetchOrders();
+    void customersApi.getAll().then((response) => setCustomers(response.data));
   }, []);
 
   const handleSearchAddress = async (query: string, type: 'pickup' | 'delivery') => {
@@ -74,24 +80,18 @@ const OrdersPage: React.FC = () => {
       const payload = {
         customerId: values.customerId,
         notes: values.notes,
-        items: [
-          {
-            description: values.itemDescription,
-            quantity: values.itemQuantity,
-            weightKg: values.itemWeightKg,
-            lengthCm: values.lengthCm || 50,
-            widthCm: values.widthCm || 40,
-            heightCm: values.heightCm || 30,
-            volumeM3: values.volumeM3 || 0.5,
-          },
-        ],
+        items: values.items.map((item: any) => ({
+          ...item,
+          volumeM3:
+            (item.lengthCm * item.widthCm * item.heightCm * item.quantity) / 1_000_000,
+        })),
         stops: [
           {
             type: 'PICKUP',
             sequence: 1,
             address: values.pickupAddress,
-            latitude: pickupCoord?.lat || 21.0285,
-            longitude: pickupCoord?.lng || 105.8542,
+            latitude: pickupCoord?.lat || 0,
+            longitude: pickupCoord?.lng || 0,
             contactName: values.pickupContactName,
             contactPhone: values.pickupContactPhone,
             serviceDurationMinutes: 20,
@@ -100,8 +100,8 @@ const OrdersPage: React.FC = () => {
             type: 'DELIVERY',
             sequence: 2,
             address: values.deliveryAddress,
-            latitude: deliveryCoord?.lat || 21.0312,
-            longitude: deliveryCoord?.lng || 105.7871,
+            latitude: deliveryCoord?.lat || 0,
+            longitude: deliveryCoord?.lng || 0,
             contactName: values.deliveryContactName,
             contactPhone: values.deliveryContactPhone,
             serviceDurationMinutes: 20,
@@ -202,7 +202,7 @@ const OrdersPage: React.FC = () => {
         </Button>
       </div>
 
-      <Card bordered={false} className="card-elevation">
+      <Card variant="borderless" className="card-elevation">
         <Table
           dataSource={orders}
           columns={columns}
@@ -232,15 +232,11 @@ const OrdersPage: React.FC = () => {
             rules={[{ required: true, message: 'Chọn khách hàng' }]}
           >
             <Select placeholder="Chọn khách hàng">
-              <Select.Option value="7cb8f31a-0ad8-4c9d-a03c-c9acb1599299">
-                Vinamilk - Công ty CP Sữa Việt Nam
-              </Select.Option>
-              <Select.Option value="9caa8ada-eeec-471c-93ff-aeb630ebfcdd">
-                Sunhouse - Tập đoàn Sunhouse
-              </Select.Option>
-              <Select.Option value="d0952c52-e5ac-4121-a830-d4fe93fe8e6d">
-                Panasonic - Công ty TNHH Panasonic Việt Nam
-              </Select.Option>
+              {customers.map((customer) => (
+                <Select.Option key={customer.id} value={customer.id}>
+                  {customer.code} — {customer.name}
+                </Select.Option>
+              ))}
             </Select>
           </Form.Item>
 
@@ -286,18 +282,72 @@ const OrdersPage: React.FC = () => {
             </Form.Item>
           </div>
 
-          <Divider orientation="left" style={{ fontSize: '13px' }}>3. Chi Tiết Kiện Hàng & Trọng Tải</Divider>
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '12px' }}>
-            <Form.Item label="Tên/Mô tả hàng hóa" name="itemDescription" rules={[{ required: true }]}>
-              <Input placeholder="Ví dụ: Thùng sữa chua 48 hộp" />
-            </Form.Item>
-            <Form.Item label="Số lượng kiện" name="itemQuantity" initialValue={50} rules={[{ required: true }]}>
-              <InputNumber min={1} style={{ width: '100%' }} />
-            </Form.Item>
-            <Form.Item label="Khối lượng (kg)" name="itemWeightKg" initialValue={650} rules={[{ required: true }]}>
-              <InputNumber min={1} style={{ width: '100%' }} />
-            </Form.Item>
-          </div>
+          <Divider orientation="left" style={{ fontSize: '13px' }}>3. Các loại hàng và kiện vật lý</Divider>
+          <Alert
+            type="info"
+            showIcon
+            message="Mỗi dòng là một loại hàng; số lượng là số kiện cùng kích thước. Khối lượng nhập là tổng của cả dòng."
+            style={{ marginBottom: 12 }}
+          />
+          <Form.List name="items" initialValue={[{ quantity: 1, packageType: 'CARTON' }]}>
+            {(fields, { add, remove }) => (
+              <Space direction="vertical" style={{ width: '100%' }}>
+                {fields.map((field, index) => (
+                  <Card
+                    key={field.key}
+                    size="small"
+                    title={`Loại hàng ${index + 1}`}
+                    extra={fields.length > 1 ? (
+                      <Button danger type="text" icon={<MinusCircleOutlined />} onClick={() => remove(field.name)}>
+                        Xóa
+                      </Button>
+                    ) : null}
+                  >
+                    <Row gutter={12}>
+                      <Col xs={24} md={12}>
+                        <Form.Item {...field} label="Mô tả" name={[field.name, 'description']} rules={[{ required: true, message: 'Nhập mô tả' }]}>
+                          <Input placeholder="Ví dụ: Thùng sữa 48 hộp" />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={6}>
+                        <Form.Item {...field} label="Loại kiện" name={[field.name, 'packageType']} rules={[{ required: true }]}>
+                          <Select options={['CARTON', 'PALLET', 'CRATE', 'BAG'].map((value) => ({ value, label: value }))} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={6}>
+                        <Form.Item {...field} label="Số kiện" name={[field.name, 'quantity']} rules={[{ required: true }]}>
+                          <InputNumber min={1} max={500} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={12} md={6}>
+                        <Form.Item {...field} label="Tổng kg của dòng" name={[field.name, 'weightKg']} rules={[{ required: true }]}>
+                          <InputNumber min={0.1} precision={1} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={8} md={6}>
+                        <Form.Item {...field} label="Dài/kiện (cm)" name={[field.name, 'lengthCm']} rules={[{ required: true }]}>
+                          <InputNumber min={1} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={8} md={6}>
+                        <Form.Item {...field} label="Rộng/kiện (cm)" name={[field.name, 'widthCm']} rules={[{ required: true }]}>
+                          <InputNumber min={1} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                      <Col xs={8} md={6}>
+                        <Form.Item {...field} label="Cao/kiện (cm)" name={[field.name, 'heightCm']} rules={[{ required: true }]}>
+                          <InputNumber min={1} style={{ width: '100%' }} />
+                        </Form.Item>
+                      </Col>
+                    </Row>
+                  </Card>
+                ))}
+                <Button type="dashed" icon={<PlusOutlined />} onClick={() => add({ quantity: 1, packageType: 'CARTON' })} block>
+                  Thêm loại hàng khác
+                </Button>
+              </Space>
+            )}
+          </Form.List>
 
           <Form.Item label="Ghi chú đơn hàng" name="notes">
             <Input.TextArea rows={2} placeholder="Yêu cầu bảo quản, lưu ý khi dỡ hàng..." />

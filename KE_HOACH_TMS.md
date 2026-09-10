@@ -292,6 +292,7 @@ Tracking nền cần quyền và cấu hình ứng dụng; phải thử nghiệm
 - Giá cước/doanh thu cần chốt nguồn trước khi báo cáo lợi nhuận. Khi chưa có doanh thu, chỉ báo cáo chi phí.
 - Phân bổ chi phí chung theo phương pháp đã chọn như kg-km, thể tích-km hoặc quy tắc hợp đồng; tổng phân bổ phải khớp chi phí gốc.
 - Không tính hai lần lương/phụ cấp đã nằm trong đơn giá km và lại nhập riêng.
+- Optimizer hiện hỗ trợ phụ trội nhiên liệu tuyến tính theo tỷ lệ tải của từng chặng và chi phí giữ hàng theo tấn-giờ. `fuelConsumptionLitersPer100Km` được hiểu là mức nền khi xe không chở hàng. Hai hệ số mới là policy cấu hình, mặc định `0` trên migration để không áp đặt số liệu kinh doanh chưa hiệu chuẩn; số trong seed chỉ phục vụ demo.
 
 ## 7. Danh mục business rule để phản hồi
 

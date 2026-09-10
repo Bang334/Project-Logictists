@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { OrderStatus, StopType } from '@prisma/client';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -11,11 +11,12 @@ export class OrdersService {
     private mapboxService: MapboxService,
   ) {}
 
-  async findAll(status?: OrderStatus, customerId?: string) {
+  async findAll(status?: OrderStatus, customerId?: string, branchId?: string) {
     return this.prisma.order.findMany({
       where: {
         ...(status ? { status } : {}),
         ...(customerId ? { customerId } : {}),
+        ...(branchId ? { branchId } : {}),
       },
       include: {
         customer: { select: { id: true, code: true, name: true, phone: true } },
@@ -42,10 +43,11 @@ export class OrdersService {
     return order;
   }
 
-  async getAvailableForDispatch() {
+  async getAvailableForDispatch(branchId?: string) {
     return this.prisma.order.findMany({
       where: {
         status: OrderStatus.CONFIRMED,
+        ...(branchId ? { branchId } : {}),
       },
       include: {
         customer: { select: { id: true, code: true, name: true } },
@@ -56,7 +58,10 @@ export class OrdersService {
     });
   }
 
-  async create(dto: CreateOrderDto) {
+  async create(dto: CreateOrderDto, branchId?: string) {
+    if (!branchId) {
+      throw new ForbiddenException('Tài khoản chưa được gán chi nhánh để tạo đơn hàng');
+    }
     // 1. Kiểm tra Stops (BR03: Ít nhất 1 pickup và 1 delivery)
     const hasPickup = dto.stops.some((s) => s.type === StopType.PICKUP);
     const hasDelivery = dto.stops.some((s) => s.type === StopType.DELIVERY);
@@ -85,7 +90,9 @@ export class OrdersService {
 
     for (const item of dto.items) {
       totalWeightKg += item.weightKg;
-      totalVolumeM3 += item.volumeM3 || (item.lengthCm * item.widthCm * item.heightCm) / 1000000;
+      totalVolumeM3 +=
+        item.volumeM3 ||
+        (item.lengthCm * item.widthCm * item.heightCm * item.quantity) / 1000000;
       totalPackages += item.quantity;
     }
 
@@ -103,6 +110,7 @@ export class OrdersService {
       data: {
         orderNumber,
         customerId: dto.customerId,
+        branchId,
         status: OrderStatus.CONFIRMED,
         totalWeightKg: Math.round(totalWeightKg * 10) / 10,
         totalVolumeM3: Math.round(totalVolumeM3 * 100) / 100,
@@ -132,7 +140,9 @@ export class OrdersService {
             lengthCm: i.lengthCm,
             widthCm: i.widthCm,
             heightCm: i.heightCm,
-            volumeM3: i.volumeM3 || (i.lengthCm * i.widthCm * i.heightCm) / 1000000,
+            volumeM3:
+              i.volumeM3 ||
+              (i.lengthCm * i.widthCm * i.heightCm * i.quantity) / 1000000,
           })),
         },
       },
