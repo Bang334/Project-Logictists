@@ -7,10 +7,12 @@ import {
   SendOutlined,
   RightOutlined,
   PlayCircleOutlined,
+  EditOutlined,
 } from '@ant-design/icons';
 import { branchesApi, vehiclesApi, driversApi, ordersApi, tripsApi } from '../api/client';
 import { Branch, Vehicle, Driver, Order, Trip } from '../types';
 import MapboxMap from '../components/MapboxMap';
+import { EditBranchModal } from '../components/EditBranchModal';
 
 const { Title, Text } = Typography;
 
@@ -25,31 +27,33 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [trips, setTrips] = useState<Trip[]>([]);
+  const [selectedBranchForEdit, setSelectedBranchForEdit] = useState<Branch | null>(null);
+  const [isEditBranchModalOpen, setIsEditBranchModalOpen] = useState(false);
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const [bRes, vRes, dRes, oRes, tRes] = await Promise.all([
+        branchesApi.getAll(),
+        vehiclesApi.getAll(),
+        driversApi.getAll(),
+        ordersApi.getAll(),
+        tripsApi.getAll(),
+      ]);
+      setBranches(bRes.data);
+      setVehicles(vRes.data);
+      setDrivers(dRes.data);
+      setOrders(oRes.data);
+      setTrips(tRes.data);
+    } catch (error) {
+      console.error('Lỗi khi tải dữ liệu dashboard:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        setLoading(true);
-        const [bRes, vRes, dRes, oRes, tRes] = await Promise.all([
-          branchesApi.getAll(),
-          vehiclesApi.getAll(),
-          driversApi.getAll(),
-          ordersApi.getAll(),
-          tripsApi.getAll(),
-        ]);
-        setBranches(bRes.data);
-        setVehicles(vRes.data);
-        setDrivers(dRes.data);
-        setOrders(oRes.data);
-        setTrips(tRes.data);
-      } catch (error) {
-        console.error('Lỗi khi tải dữ liệu dashboard:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
+    void fetchData();
   }, []);
 
   if (loading) {
@@ -230,10 +234,31 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                   }}
                 >
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <strong style={{ color: '#1e3a8a' }}>{b.name}</strong>
-                    <Tag color="geekblue">{b.code}</Tag>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <strong style={{ color: '#1e3a8a' }}>{b.name}</strong>
+                      <Tag color="geekblue">{b.code}</Tag>
+                    </div>
+                    <Button
+                      size="small"
+                      type="link"
+                      icon={<EditOutlined />}
+                      onClick={() => {
+                        setSelectedBranchForEdit(b);
+                        setIsEditBranchModalOpen(true);
+                      }}
+                      style={{ padding: '0 4px', fontSize: 12 }}
+                    >
+                      Sửa địa chỉ
+                    </Button>
                   </div>
-                  <div style={{ color: '#64748b', fontSize: '13px', marginTop: '4px' }}>{b.address}</div>
+                  <div style={{ color: '#64748b', fontSize: '13px', marginTop: '4px' }}>
+                    📍 {b.address}
+                  </div>
+                  {b.latitude && b.longitude && (
+                    <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: 2 }}>
+                      Tọa độ: {b.latitude.toFixed(4)}, {b.longitude.toFixed(4)}
+                    </div>
+                  )}
                   <div style={{ display: 'flex', gap: '12px', marginTop: '8px', fontSize: '12px' }}>
                     <span>🚗 {b._count?.vehicles || 0} xe quản lý</span>
                     <span>👤 {b._count?.drivers || 0} tài xế</span>
@@ -263,6 +288,17 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
           pagination={{ pageSize: 5 }}
         />
       </Card>
+
+      {/* Modal Chỉnh Sửa Địa Chỉ & Thông Tin Chi Nhánh */}
+      <EditBranchModal
+        open={isEditBranchModalOpen}
+        branch={selectedBranchForEdit}
+        onCancel={() => {
+          setIsEditBranchModalOpen(false);
+          setSelectedBranchForEdit(null);
+        }}
+        onSuccess={() => void fetchData()}
+      />
     </div>
   );
 };

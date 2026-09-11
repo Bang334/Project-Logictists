@@ -94,6 +94,11 @@ export interface Order {
   orderNumber: string;
   customerId: string;
   branchId: string;
+  branch?: {
+    id: string;
+    code: string;
+    name: string;
+  };
   customer: {
     id: string;
     code: string;
@@ -184,6 +189,13 @@ export interface PlacedItemUI {
   weight_kg: number;
 }
 
+export interface PackageAccessPathUI {
+  item_id: string;
+  is_clear: boolean;
+  points: Array<{ x: number; y: number }>;
+  blocker_item_ids: string[];
+}
+
 export interface FloorStepStateUI {
   step_index: number;
   stop_id: string;
@@ -196,6 +208,7 @@ export interface FloorStepStateUI {
   weight_utilization_percent: number;
   area_utilization_percent: number;
   is_valid: boolean;
+  package_access_paths?: PackageAccessPathUI[];
 }
 
 export interface SpatialValidationUI {
@@ -269,6 +282,28 @@ export interface OptimizedRouteUI {
   route_geometry?: { type: 'LineString'; coordinates: [number, number][] };
 }
 
+export interface BenchmarkMetricUI {
+  method_name: string;
+  description: string;
+  total_cost_vnd: number;
+  total_distance_km: number;
+  total_duration_minutes: number;
+  vehicles_used: number;
+  fuel_cost_vnd: number;
+  vehicle_fixed_cost_vnd: number;
+  driver_cost_vnd: number;
+  cargo_holding_cost_vnd: number;
+  is_feasible: boolean;
+  violations: string[];
+}
+
+export interface BenchmarkComparisonUI {
+  or_tools: BenchmarkMetricUI;
+  direct_dedicated: BenchmarkMetricUI;
+  savings_vs_direct_vnd: number | null;
+  savings_vs_direct_percent: number | null;
+}
+
 export interface FleetOptimizationResultUI {
   job_id: string;
   status: 'SUCCESS' | 'PARTIAL' | 'INFEASIBLE' | 'TIMEOUT' | 'ERROR';
@@ -282,6 +317,7 @@ export interface FleetOptimizationResultUI {
   total_distance_km: number;
   total_duration_minutes: number;
   total_cost_vnd: number;
+  benchmarks?: BenchmarkComparisonUI;
   diagnostics: string[];
 }
 

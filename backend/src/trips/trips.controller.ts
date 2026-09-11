@@ -13,8 +13,9 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { TripsService } from './trips.service';
 import { CreateTripDto } from './dto/create-trip.dto';
-import { TripStatus } from '@prisma/client';
+import { Role, TripStatus } from '@prisma/client';
 import { OptimizeTripDto } from './dto/optimize-trip.dto';
+import { CreateAutomaticOptimizationJobDto } from './dto/create-automatic-optimization-job.dto';
 
 @Controller('trips')
 @UseGuards(AuthGuard('jwt'))
@@ -39,9 +40,10 @@ export class TripsController {
   @Post('optimization-jobs')
   @HttpCode(202)
   createAutomaticOptimizationJob(
-    @Req() req: { user: { id: string; branchId?: string } },
+    @Req() req: { user: { id: string; branchId?: string; role: Role } },
+    @Body() body?: CreateAutomaticOptimizationJobDto,
   ) {
-    return this.tripsService.createAutomaticOptimizationJob(req.user);
+    return this.tripsService.createAutomaticOptimizationJob(req.user, body?.branchId);
   }
 
   @Get('optimization-jobs/:jobId')

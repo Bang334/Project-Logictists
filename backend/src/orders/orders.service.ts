@@ -1,7 +1,8 @@
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { OrderStatus, StopType } from '@prisma/client';
+import { OrderStatus, Role, StopType } from '@prisma/client';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { UpdateOrderDto } from './dto/update-order.dto';
 import { MapboxService } from '../mapbox/mapbox.service';
 
 @Injectable()
@@ -151,6 +152,138 @@ export class OrdersService {
         stops: true,
         items: true,
       },
+    });
+  }
+
+  async update(
+    id: string,
+    dto: UpdateOrderDto,
+    user?: { branchId?: string; role: Role } | string,
+  ) {
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      include: { stops: true, items: true },
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Không tìm thấy đơn hàng với ID ${id}`);
+    }
+
+    if (order.status !== OrderStatus.CONFIRMED && order.status !== OrderStatus.DRAFT) {
+      throw new BadRequestException(
+        `Không thể chỉnh sửa đơn hàng đang ở trạng thái ${order.status} (đã gán vào chuyến xe hoặc đang vận chuyển).`,
+      );
+    }
+
+    const userRole = typeof user === 'object' ? user?.role : undefined;
+    const userBranchId = typeof user === 'object' ? user?.branchId : (typeof user === 'string' ? user : undefined);
+
+    if (userRole !== Role.ADMIN && userBranchId && order.branchId !== userBranchId) {
+      throw new ForbiddenException('Bạn không có quyền chỉnh sửa đơn hàng thuộc chi nhánh khác');
+    }
+
+    // Geocode các stop mới/thay đổi nếu thiếu tọa độ
+    if (dto.stops) {
+      const hasPickup = dto.stops.some((s) => s.type === StopType.PICKUP);
+      const hasDelivery = dto.stops.some((s) => s.type === StopType.DELIVERY);
+      if (!hasPickup || !hasDelivery) {
+        throw new BadRequestException(
+          'Đơn hàng bắt buộc phải có ít nhất 1 điểm lấy hàng (PICKUP) và 1 điểm giao hàng (DELIVERY)',
+        );
+      }
+
+      for (const stop of dto.stops) {
+        if (!stop.latitude || !stop.longitude) {
+          const geocoded = await this.mapboxService.geocode(stop.address);
+          if (geocoded.length > 0) {
+            stop.latitude = geocoded[0].latitude;
+            stop.longitude = geocoded[0].longitude;
+          } else {
+            throw new BadRequestException(
+              `Không thể định vị tọa độ Mapbox cho địa chỉ: "${stop.address}"`,
+            );
+          }
+        }
+      }
+    }
+
+    let totalWeightKg = order.totalWeightKg;
+    let totalVolumeM3 = order.totalVolumeM3;
+    let totalPackages = order.totalPackages;
+
+    if (dto.items) {
+      totalWeightKg = 0;
+      totalVolumeM3 = 0;
+      totalPackages = 0;
+      for (const item of dto.items) {
+        totalWeightKg += item.weightKg;
+        totalVolumeM3 +=
+          item.volumeM3 ||
+          (item.lengthCm * item.widthCm * item.heightCm * item.quantity) / 1000000;
+        totalPackages += item.quantity;
+      }
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.stops) {
+        await tx.orderStop.deleteMany({ where: { orderId: id } });
+        await tx.orderStop.createMany({
+          data: dto.stops.map((s, idx) => ({
+            orderId: id,
+            type: s.type,
+            sequence: s.sequence || idx + 1,
+            address: s.address,
+            latitude: s.latitude,
+            longitude: s.longitude,
+            contactName: s.contactName,
+            contactPhone: s.contactPhone,
+            windowStart: s.windowStart ? new Date(s.windowStart) : null,
+            windowEnd: s.windowEnd ? new Date(s.windowEnd) : null,
+            serviceDurationMinutes: s.serviceDurationMinutes || 20,
+          })),
+        });
+      }
+
+      if (dto.items) {
+        await tx.orderItem.deleteMany({ where: { orderId: id } });
+        await tx.orderItem.createMany({
+          data: dto.items.map((i) => ({
+            orderId: id,
+            sku: i.sku,
+            description: i.description,
+            packageType: i.packageType || 'CARTON',
+            quantity: i.quantity,
+            weightKg: i.weightKg,
+            lengthCm: i.lengthCm,
+            widthCm: i.widthCm,
+            heightCm: i.heightCm,
+            volumeM3:
+              i.volumeM3 ||
+              (i.lengthCm * i.widthCm * i.heightCm * i.quantity) / 1000000,
+          })),
+        });
+      }
+
+      return tx.order.update({
+        where: { id },
+        data: {
+          ...(dto.customerId ? { customerId: dto.customerId } : {}),
+          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+          ...(dto.status ? { status: dto.status } : {}),
+          ...(dto.items
+            ? {
+                totalWeightKg: Math.round(totalWeightKg * 10) / 10,
+                totalVolumeM3: Math.round(totalVolumeM3 * 100) / 100,
+                totalPackages,
+              }
+            : {}),
+        },
+        include: {
+          customer: true,
+          stops: { orderBy: { sequence: 'asc' } },
+          items: true,
+        },
+      });
     });
   }
 }

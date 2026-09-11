@@ -259,6 +259,13 @@ body {
   color: #ffffff;
   font-size: 12px;
   font-weight: 700;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.journey-node-active {
+  box-shadow: 0 0 0 3px #3b82f6, 0 4px 12px rgba(37, 99, 235, 0.45);
+  transform: scale(1.15);
+  z-index: 2;
 }
 
 .journey-node-depot,

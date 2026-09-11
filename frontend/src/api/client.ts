@@ -32,6 +32,9 @@ export const authApi = {
 
 export const branchesApi = {
   getAll: () => client.get<Branch[]>('/branches'),
+  getById: (id: string) => client.get<Branch>(`/branches/${id}`),
+  update: (id: string, data: Partial<Branch>) =>
+    client.patch<Branch>(`/branches/${id}`, data),
 };
 
 export const customersApi = {
@@ -39,25 +42,36 @@ export const customersApi = {
 };
 
 export const vehiclesApi = {
-  getAll: (branchId?: string) =>
-    client.get<Vehicle[]>('/vehicles', { params: { branchId } }),
+  getAll: (branchId?: string, status?: string) =>
+    client.get<Vehicle[]>('/vehicles', { params: { branchId, status } }),
   getAvailable: (branchId?: string) =>
     client.get<Vehicle[]>('/vehicles/available', { params: { branchId } }),
+  getById: (id: string) => client.get<Vehicle>(`/vehicles/${id}`),
+  update: (id: string, data: Partial<Vehicle>) =>
+    client.patch<Vehicle>(`/vehicles/${id}`, data),
 };
 
 export const driversApi = {
-  getAll: (branchId?: string) =>
-    client.get<Driver[]>('/drivers', { params: { branchId } }),
+  getAll: (branchId?: string, status?: string) =>
+    client.get<Driver[]>('/drivers', { params: { branchId, status } }),
   getAvailable: (branchId?: string) =>
     client.get<Driver[]>('/drivers/available', { params: { branchId } }),
+  getById: (id: string) => client.get<Driver>(`/drivers/${id}`),
+  update: (id: string, data: Partial<Driver>) =>
+    client.patch<Driver>(`/drivers/${id}`, data),
 };
 
 export const ordersApi = {
-  getAll: (status?: string) =>
-    client.get<Order[]>('/orders', { params: { status } }),
-  getAvailableForDispatch: () =>
-    client.get<Order[]>('/orders/available-for-dispatch'),
+  getAll: (params?: { status?: string; customerId?: string; branchId?: string } | string) => {
+    if (typeof params === 'string') {
+      return client.get<Order[]>('/orders', { params: { status: params } });
+    }
+    return client.get<Order[]>('/orders', { params });
+  },
+  getAvailableForDispatch: (branchId?: string) =>
+    client.get<Order[]>('/orders/available-for-dispatch', { params: { branchId } }),
   create: (data: any) => client.post<Order>('/orders', data),
+  update: (id: string, data: any) => client.patch<Order>(`/orders/${id}`, data),
 };
 
 export const tripsApi = {
@@ -78,8 +92,8 @@ export const tripsApi = {
     client.get<LoadProfileResult>(`/trips/${id}/load-profile`),
   optimize: (data: { vehicleId: string; orderIds: string[] }) =>
     client.post<OptimizationResultUI>('/trips/optimize', data),
-  createAutomaticOptimizationJob: () =>
-    client.post<OptimizationJobUI>('/trips/optimization-jobs'),
+  createAutomaticOptimizationJob: (branchId: string) =>
+    client.post<OptimizationJobUI>('/trips/optimization-jobs', { branchId }),
   getOptimizationJob: (jobId: string) =>
     client.get<OptimizationJobUI>(`/trips/optimization-jobs/${jobId}`),
 };
@@ -103,4 +117,40 @@ export const mapboxApi = {
       return [];
     }
   },
+  reverseGeocode: async (longitude: number, latitude: number) => {
+    const token = import.meta.env.VITE_MAPBOX_TOKEN;
+    if (!token) return null;
+    try {
+      const res = await axios.get(
+        `https://api.mapbox.com/geocoding/v5/mapbox.places/${longitude},${latitude}.json?access_token=${token}&country=vn&limit=1`,
+      );
+      if (res.data.features && res.data.features.length > 0) {
+        return res.data.features[0].place_name as string;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  },
+  getDrivingRoute: async (startLng: number, startLat: number, endLng: number, endLat: number) => {
+    const token = import.meta.env.VITE_MAPBOX_TOKEN;
+    if (!token) return null;
+    try {
+      const res = await axios.get(
+        `https://api.mapbox.com/directions/v5/mapbox/driving/${startLng},${startLat};${endLng},${endLat}?geometries=geojson&overview=full&access_token=${token}`,
+      );
+      if (res.data.routes && res.data.routes.length > 0) {
+        const route = res.data.routes[0];
+        return {
+          coordinates: route.geometry.coordinates as [number, number][],
+          distanceMeters: route.distance as number,
+          durationSeconds: route.duration as number,
+        };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  },
 };
+

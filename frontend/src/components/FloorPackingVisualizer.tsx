@@ -89,10 +89,37 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
   const [expandedOrderKeys, setExpandedOrderKeys] = useState<React.Key[]>([]);
   const playTimerRef = useRef<number | null>(null);
 
+  const bedLength = vehicleDimensions?.lengthCm || vehicle?.lengthCm || 620;
+  const bedWidth = vehicleDimensions?.widthCm || vehicle?.widthCm || 215;
+
+  // Bổ sung bước 0: Xuất bến tại Chi nhánh / Kho (Thùng xe rỗng sẵn sàng nhận hàng)
+  // Đảm bảo khi xe chưa tới điểm 1 để lấy hàng, thùng xe hiển thị rỗng đúng thực tế nghiệp vụ
+  const effectiveStepStates: FloorStepStateUI[] = useMemo(() => {
+    if (!stepStates || stepStates.length === 0) return [];
+    const depotName = route?.depot?.name || vehicle?.homeBranch?.name || 'Chi nhánh / Kho xuất phát';
+    const totalFloor = bedLength * bedWidth;
+    const startState: FloorStepStateUI = {
+      step_index: 0,
+      stop_id: 'depot-start',
+      stop_type: 'PICKUP',
+      action_description: `Xuất bến tại ${depotName} (Xe rỗng sẵn sàng nhận hàng)`,
+      placed_items: [],
+      current_weight_kg: 0,
+      current_occupied_area_cm2: 0,
+      floor_area_cm2: totalFloor,
+      weight_utilization_percent: 0,
+      area_utilization_percent: 0,
+      is_valid: true,
+      package_access_paths: [],
+    };
+    return [startState, ...stepStates];
+  }, [stepStates, route?.depot?.name, vehicle?.homeBranch?.name, bedLength, bedWidth]);
+
   const currentStep = selectedStepIndex !== undefined ? selectedStepIndex : internalStep;
+  const clampedStep = Math.max(0, Math.min(effectiveStepStates.length - 1, currentStep));
 
   const handleStepChange = (newStep: number) => {
-    const clamped = Math.max(0, Math.min(stepStates.length - 1, newStep));
+    const clamped = Math.max(0, Math.min(effectiveStepStates.length - 1, newStep));
     setInternalStep(clamped);
     setSelectedItemId(null); // Reset chọn kiện khi đổi bước
     if (onStepChange) {
@@ -105,7 +132,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
     if (isPlaying) {
       playTimerRef.current = window.setInterval(() => {
         setInternalStep((prev) => {
-          const next = prev + 1 >= stepStates.length ? 0 : prev + 1;
+          const next = prev + 1 >= effectiveStepStates.length ? 0 : prev + 1;
           if (onStepChange) onStepChange(next);
           return next;
         });
@@ -117,9 +144,9 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
     return () => {
       if (playTimerRef.current) window.clearInterval(playTimerRef.current);
     };
-  }, [isPlaying, stepStates.length, onStepChange]);
+  }, [isPlaying, effectiveStepStates.length, onStepChange]);
 
-  if (!stepStates || stepStates.length === 0) {
+  if (!effectiveStepStates || effectiveStepStates.length === 0) {
     return (
       <Card
         id="floor-visualizer-section"
@@ -136,9 +163,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
     );
   }
 
-  const activeState = stepStates[Math.min(currentStep, stepStates.length - 1)];
-  const bedLength = vehicleDimensions?.lengthCm || vehicle?.lengthCm || 620;
-  const bedWidth = vehicleDimensions?.widthCm || vehicle?.widthCm || 215;
+  const activeState = effectiveStepStates[clampedStep];
 
   // Diện tích thùng và phần chiếm dụng
   const totalFloorAreaM2 = (bedLength * bedWidth) / 10000;
@@ -150,7 +175,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
   const orderColorMap = useMemo(() => {
     const map = new Map<string, typeof ORDER_COLOR_PALETTE[0]>();
     let colorIdx = 0;
-    stepStates.forEach((state) => {
+    effectiveStepStates.forEach((state) => {
       state.placed_items.forEach((item) => {
         const orderKey = item.order_id || item.item_id.split('#')[0] || 'DEFAULT';
         if (!map.has(orderKey)) {
@@ -160,7 +185,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
       });
     });
     return map;
-  }, [stepStates]);
+  }, [effectiveStepStates]);
 
   const getItemColor = (item: PlacedItemUI) => {
     const orderKey = item.order_id || item.item_id.split('#')[0] || 'DEFAULT';
@@ -179,15 +204,16 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
 
   // Tính toán biến động (delta) kiện bốc/dỡ tại bước hiện tại so với bước trước
   const stepDelta = useMemo(() => {
-    const curr = activeState.placed_items || [];
-    if (currentStep === 0) {
+    if (!activeState) return { type: 'DEPOT', count: 0, weight: 0 };
+    if (clampedStep === 0) {
       return {
-        type: activeState.stop_type,
-        count: curr.length,
-        weight: activeState.current_weight_kg,
+        type: 'DEPOT',
+        count: 0,
+        weight: 0,
       };
     }
-    const prev = stepStates[currentStep - 1]?.placed_items || [];
+    const curr = activeState.placed_items || [];
+    const prev = effectiveStepStates[clampedStep - 1]?.placed_items || [];
     const prevIds = new Set(prev.map((i) => i.item_id));
     const currIds = new Set(curr.map((i) => i.item_id));
     const loaded = curr.filter((i) => !prevIds.has(i.item_id));
@@ -200,60 +226,31 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
       const weight = unloaded.reduce((sum, i) => sum + i.weight_kg, 0);
       return { type: 'DELIVERY', count: unloaded.length, weight };
     }
-  }, [activeState, currentStep, stepStates]);
+  }, [activeState, clampedStep, effectiveStepStates]);
 
-  // Kiểm tra kiện có hành lang thông thoáng ra cửa sau (x = bedLength) không
-  const isPathToDoorClear = (target: PlacedItemUI, allItems: PlacedItemUI[]): boolean => {
-    const targetRight = target.x + target.length_cm;
-    const targetTop = target.y;
-    const targetBottom = target.y + target.width_cm;
+  // Backend là nguồn sự thật cho đường thao tác 2D; frontend không lặp lại
+  // thuật toán hình học vì sẽ dễ báo khác kết quả validator.
+  const accessPathByItem = useMemo(
+    () => new Map(
+      (activeState.package_access_paths || []).map((accessPath) => [accessPath.item_id, accessPath]),
+    ),
+    [activeState.package_access_paths],
+  );
 
-    for (const other of allItems) {
-      if (other.item_id === target.item_id) continue;
-      const otherLeft = other.x;
-      const otherRight = other.x + other.length_cm;
-      const otherTop = other.y;
-      const otherBottom = other.y + other.width_cm;
+  const isPathToDoorClear = (target: PlacedItemUI): boolean =>
+    accessPathByItem.get(target.item_id)?.is_clear === true;
 
-      // Nếu other nằm về phía cửa sau (sau targetRight) và có phần giao cắt theo trục Y
-      const overlapY = !(targetBottom <= otherTop + 0.05 || targetTop >= otherBottom - 0.05);
-      const inCorridorX = otherRight > targetRight && otherLeft < bedLength;
-      if (overlapY && inCorridorX) {
-        return false;
-      }
-    }
-    return true;
-  };
-
-  // Tìm danh sách các kiện đang chắn lối dỡ của một kiện cụ thể
-  const getBlockingItems = (target: PlacedItemUI, allItems: PlacedItemUI[]): PlacedItemUI[] => {
-    const targetRight = target.x + target.length_cm;
-    const targetTop = target.y;
-    const targetBottom = target.y + target.width_cm;
-    const blockers: PlacedItemUI[] = [];
-
-    for (const other of allItems) {
-      if (other.item_id === target.item_id) continue;
-      const otherLeft = other.x;
-      const otherRight = other.x + other.length_cm;
-      const otherTop = other.y;
-      const otherBottom = other.y + other.width_cm;
-
-      const overlapY = !(targetBottom <= otherTop + 0.05 || targetTop >= otherBottom - 0.05);
-      const inCorridorX = otherRight > targetRight && otherLeft < bedLength;
-      if (overlapY && inCorridorX) {
-        blockers.push(other);
-      }
-    }
-    return blockers;
+  const getBlockingItems = (target: PlacedItemUI): PlacedItemUI[] => {
+    const blockerIds = new Set(
+      accessPathByItem.get(target.item_id)?.blocker_item_ids || [],
+    );
+    return activeState.placed_items.filter((item) => blockerIds.has(item.item_id));
   };
 
   // Số lượng kiện có lối ra cửa sau thông suốt
   const clearCorridorCount = useMemo(() => {
-    return (activeState.placed_items || []).filter((item) =>
-      isPathToDoorClear(item, activeState.placed_items)
-    ).length;
-  }, [activeState.placed_items, bedLength]);
+    return (activeState.placed_items || []).filter(isPathToDoorClear).length;
+  }, [activeState.placed_items, accessPathByItem]);
 
   // Gom nhóm kiện theo Đơn hàng có trên xe tại điểm này
   const orderGroups = useMemo(() => {
@@ -277,12 +274,6 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
     if (!targetId) return null;
     return activeState.placed_items.find((item) => item.item_id === targetId) || null;
   }, [selectedItemId, hoveredItemId, activeState.placed_items]);
-
-  // Danh sách kiện đang chắn kiện được chọn
-  const currentBlockers = useMemo(() => {
-    if (!activeHighlightedItem) return [];
-    return getBlockingItems(activeHighlightedItem, activeState.placed_items);
-  }, [activeHighlightedItem, activeState.placed_items, bedLength]);
 
   // Kích thước khung vẽ SVG
   const cabinWidth = 72; // Đầu cabin phía trước bên trái
@@ -329,13 +320,15 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
       }
       className="card-elevation"
       style={{ marginTop: route ? 0 : 16 }}
-      headStyle={{
-        padding: '0 16px',
-        minHeight: 52,
-        borderBottom: '1px solid #f1f5f9',
-      }}
-      bodyStyle={{
-        padding: '16px',
+      styles={{
+        header: {
+          padding: '0 16px',
+          minHeight: 52,
+          borderBottom: '1px solid #f1f5f9',
+        },
+        body: {
+          padding: '16px',
+        },
       }}
     >
       {/* ============================================================ */}
@@ -427,14 +420,14 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             <Tooltip title="Về điểm đầu tiên">
               <Button
                 icon={<StepBackwardOutlined />}
-                disabled={currentStep === 0}
+                disabled={clampedStep === 0}
                 onClick={() => handleStepChange(0)}
               />
             </Tooltip>
             <Tooltip title="Điểm trước">
               <Button
-                disabled={currentStep === 0}
-                onClick={() => handleStepChange(currentStep - 1)}
+                disabled={clampedStep === 0}
+                onClick={() => handleStepChange(clampedStep - 1)}
               >
                 Trước
               </Button>
@@ -450,8 +443,8 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             </Tooltip>
             <Tooltip title="Điểm tiếp theo">
               <Button
-                disabled={currentStep === stepStates.length - 1}
-                onClick={() => handleStepChange(currentStep + 1)}
+                disabled={clampedStep === effectiveStepStates.length - 1}
+                onClick={() => handleStepChange(clampedStep + 1)}
               >
                 Tiếp
               </Button>
@@ -459,18 +452,23 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             <Tooltip title="Đến điểm cuối cùng">
               <Button
                 icon={<StepForwardOutlined />}
-                disabled={currentStep === stepStates.length - 1}
-                onClick={() => handleStepChange(stepStates.length - 1)}
+                disabled={clampedStep === effectiveStepStates.length - 1}
+                onClick={() => handleStepChange(effectiveStepStates.length - 1)}
               />
             </Tooltip>
           </Button.Group>
 
-          <Tag color={activeState.stop_type === 'PICKUP' ? 'success' : 'warning'} style={{ margin: 0, fontWeight: 600, fontSize: 12 }}>
-            {activeState.stop_type === 'PICKUP' ? 'NHẬN' : 'GIAO'}
+          <Tag
+            color={clampedStep === 0 ? 'blue' : activeState.stop_type === 'PICKUP' ? 'success' : 'warning'}
+            style={{ margin: 0, fontWeight: 600, fontSize: 12 }}
+          >
+            {clampedStep === 0 ? 'XUẤT BẾN' : activeState.stop_type === 'PICKUP' ? 'NHẬN' : 'GIAO'}
           </Tag>
 
           <Text strong style={{ fontSize: 12 }}>
-            Bước {currentStep + 1}/{stepStates.length}:
+            {clampedStep === 0
+              ? 'Khởi hành:'
+              : `Điểm dừng ${clampedStep}/${effectiveStepStates.length - 1}:`}
           </Text>
           <Text type="secondary" style={{ maxWidth: 220, fontSize: 12 }} ellipsis>
             {activeState.action_description}
@@ -536,20 +534,30 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span style={{ fontSize: 11, color: '#64748b' }}>Biến động tại điểm</span>
-              <SwapOutlined style={{ color: stepDelta.type === 'PICKUP' ? '#16a34a' : '#ea580c', fontSize: 13 }} />
+              <SwapOutlined
+                style={{
+                  color: stepDelta.type === 'DEPOT' ? '#2563eb' : stepDelta.type === 'PICKUP' ? '#16a34a' : '#ea580c',
+                  fontSize: 13,
+                }}
+              />
             </div>
             <div
               style={{
                 fontSize: 16,
                 fontWeight: 700,
-                color: stepDelta.type === 'PICKUP' ? '#16a34a' : '#ea580c',
+                color: stepDelta.type === 'DEPOT' ? '#2563eb' : stepDelta.type === 'PICKUP' ? '#16a34a' : '#ea580c',
                 marginTop: 2,
               }}
             >
-              {stepDelta.type === 'PICKUP' ? `+${stepDelta.count}` : `-${stepDelta.count}`} <span style={{ fontSize: 12, fontWeight: 500 }}>kiện</span>
+              {stepDelta.type === 'DEPOT'
+                ? '0 kiện'
+                : stepDelta.type === 'PICKUP'
+                ? `+${stepDelta.count} kiện`
+                : `-${stepDelta.count} kiện`}
             </div>
             <div style={{ fontSize: 11, color: '#475569' }}>
-              {stepDelta.type === 'PICKUP' ? 'Bốc nhận:' : 'Dỡ giao:'} <b>{stepDelta.weight.toFixed(0)} kg</b>
+              {stepDelta.type === 'DEPOT' ? 'Thùng xe:' : stepDelta.type === 'PICKUP' ? 'Bốc nhận:' : 'Dỡ giao:'}{' '}
+              <b>{stepDelta.type === 'DEPOT' ? 'Xe rỗng' : `${stepDelta.weight.toFixed(0)} kg`}</b>
             </div>
           </div>
         </Col>
@@ -591,16 +599,30 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
               <span style={{ fontSize: 11, color: '#64748b' }}>Lối dỡ cửa sau T21–T27</span>
               <SafetyCertificateOutlined
                 style={{
-                  color: clearCorridorCount === activeState.placed_items.length ? '#16a34a' : '#eab308',
+                  color: clampedStep === 0 ? '#3b82f6' : clearCorridorCount === activeState.placed_items.length ? '#16a34a' : '#eab308',
                   fontSize: 13,
                 }}
               />
             </div>
             <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
-              {clearCorridorCount} / {activeState.placed_items.length} <span style={{ fontSize: 12, fontWeight: 500 }}>kiện</span>
+              {clampedStep === 0
+                ? '0 / 0 '
+                : `${clearCorridorCount} / ${activeState.placed_items.length} `}
+              <span style={{ fontSize: 12, fontWeight: 500 }}>kiện</span>
             </div>
-            <div style={{ fontSize: 11, color: clearCorridorCount === activeState.placed_items.length ? '#16a34a' : '#d97706' }}>
-              {clearCorridorCount === activeState.placed_items.length
+            <div
+              style={{
+                fontSize: 11,
+                color: clampedStep === 0
+                  ? '#3b82f6'
+                  : clearCorridorCount === activeState.placed_items.length
+                  ? '#16a34a'
+                  : '#d97706',
+              }}
+            >
+              {clampedStep === 0
+                ? '✓ Sàn xe sẵn sàng'
+                : clearCorridorCount === activeState.placed_items.length
                 ? '✓ 100% thông thoáng'
                 : `${activeState.placed_items.length - clearCorridorCount} kiện chờ dỡ sau`}
             </div>
@@ -853,44 +875,69 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                 const ry = activeHighlightedItem.y * scaleY;
                 const rw = activeHighlightedItem.length_cm * scaleX;
                 const rh = activeHighlightedItem.width_cm * scaleY;
-                const corridorX = rx + rw;
-                const corridorWidth = Math.max(0, bedCanvasWidth - corridorX);
-                const isClear = isPathToDoorClear(activeHighlightedItem, activeState.placed_items);
+                const accessPath = accessPathByItem.get(activeHighlightedItem.item_id);
+                const isClear = accessPath?.is_clear === true;
+                const polylinePoints = (accessPath?.points || [])
+                  .map((point) => (
+                    `${(point.x + activeHighlightedItem.length_cm / 2) * scaleX},${
+                      (point.y + activeHighlightedItem.width_cm / 2) * scaleY
+                    }`
+                  ))
+                  .join(' ');
 
                 return (
                   <g>
-                    {/* Dải sáng hành lang từ mép kiện đến cửa sau */}
-                    <rect
-                      x={corridorX}
-                      y={ry}
-                      width={corridorWidth}
-                      height={rh}
-                      fill={isClear ? '#10b981' : '#ef4444'}
-                      fillOpacity="0.22"
-                      stroke={isClear ? '#10b981' : '#ef4444'}
-                      strokeWidth="1.5"
-                      strokeDasharray="4 4"
-                    />
-
-                    {/* Mũi tên chỉ hướng dỡ hàng ra cửa sau */}
-                    {corridorWidth > 40 && (
-                      <g transform={`translate(${corridorX + corridorWidth / 2}, ${ry + rh / 2})`}>
-                        <line x1="-15" y1="0" x2="15" y2="0" stroke={isClear ? '#34d399' : '#f87171'} strokeWidth="2" />
-                        <polygon
-                          points="15,0 8,-4 8,4"
-                          fill={isClear ? '#34d399' : '#f87171'}
+                    {isClear && accessPath && accessPath.points.length >= 2 ? (
+                      <>
+                        <polyline
+                          points={polylinePoints}
+                          fill="none"
+                          stroke="#10b981"
+                          strokeWidth="3"
+                          strokeDasharray="7 4"
+                          strokeLinejoin="round"
+                          strokeLinecap="round"
                         />
+                        {accessPath.points.slice(1, -1).map((point, index) => (
+                          <circle
+                            key={`${point.x}-${point.y}-${index}`}
+                            cx={(point.x + activeHighlightedItem.length_cm / 2) * scaleX}
+                            cy={(point.y + activeHighlightedItem.width_cm / 2) * scaleY}
+                            r="4"
+                            fill="#34d399"
+                          />
+                        ))}
                         <text
-                          x="0"
-                          y="-6"
-                          fill={isClear ? '#34d399' : '#f87171'}
+                          x={Math.min(bedCanvasWidth - 8, rx + rw / 2 + 8)}
+                          y={Math.max(12, ry + rh / 2 - 8)}
+                          fill="#34d399"
                           fontSize="9"
                           fontWeight="bold"
-                          textAnchor="middle"
                         >
-                          {isClear ? 'LỐI RA THÔNG THOÁNG' : 'BỊ CHẮN CỬA'}
+                          ĐƯỜNG RA 2D
                         </text>
-                      </g>
+                      </>
+                    ) : (
+                      <>
+                        <line
+                          x1={rx + rw / 2}
+                          y1={ry + rh / 2}
+                          x2={bedCanvasWidth}
+                          y2={ry + rh / 2}
+                          stroke="#ef4444"
+                          strokeWidth="2"
+                          strokeDasharray="4 4"
+                        />
+                        <text
+                          x={Math.min(bedCanvasWidth - 8, rx + rw / 2 + 8)}
+                          y={Math.max(12, ry + rh / 2 - 8)}
+                          fill="#f87171"
+                          fontSize="9"
+                          fontWeight="bold"
+                        >
+                          KHÔNG CÓ ĐƯỜNG 2D
+                        </text>
+                      </>
                     )}
                   </g>
                 );
@@ -908,7 +955,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
               const colorInfo = getItemColor(item);
               const isHovered = hoveredItemId === item.item_id;
               const isSelected = selectedItemId === item.item_id;
-              const isClear = isPathToDoorClear(item, activeState.placed_items);
+              const isClear = isPathToDoorClear(item);
               const label = getItemShortLabel(item);
 
               // Xử lý làm mờ nếu đang lọc theo đơn hàng khác
@@ -1000,6 +1047,42 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                 </g>
               );
             })}
+
+            {/* Thông báo khi xe ở bước khởi hành rỗng (chưa tới Điểm 1) */}
+            {clampedStep === 0 && (
+              <g transform={`translate(${bedCanvasWidth / 2}, ${bedCanvasHeight / 2})`}>
+                <rect
+                  x="-175"
+                  y="-34"
+                  width="350"
+                  height="68"
+                  rx="8"
+                  fill="rgba(30, 41, 59, 0.92)"
+                  stroke="#3b82f6"
+                  strokeWidth="1.5"
+                  strokeDasharray="5 3"
+                />
+                <text
+                  x="0"
+                  y="-6"
+                  fill="#60a5fa"
+                  fontSize="13"
+                  fontWeight="600"
+                  textAnchor="middle"
+                >
+                  🚚 Xe đang xuất bến từ công ty / kho
+                </text>
+                <text
+                  x="0"
+                  y="16"
+                  fill="#94a3b8"
+                  fontSize="11"
+                  textAnchor="middle"
+                >
+                  Thùng xe rỗng · Chưa tới Điểm 1 để lấy hàng
+                </text>
+              </g>
+            )}
           </g>
 
           {/* ============================================================ */}
@@ -1107,7 +1190,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             </strong>
           </Space>
 
-          {orderGroups.length > 0 && (
+          {clampedStep > 0 && orderGroups.length > 0 && (
             <Space size={8}>
               <Button
                 size="small"
@@ -1127,7 +1210,25 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           )}
         </div>
 
-        {orderGroups.length === 0 ? (
+        {clampedStep === 0 ? (
+          <div
+            style={{
+              padding: '24px 16px',
+              textAlign: 'center',
+              backgroundColor: '#f8fafc',
+              borderRadius: 8,
+              border: '1px dashed #cbd5e1',
+            }}
+          >
+            <InboxOutlined style={{ fontSize: 32, color: '#94a3b8', marginBottom: 8 }} />
+            <div style={{ fontWeight: 600, color: '#334155', fontSize: 14 }}>
+              Thùng xe đang trống (Xe rỗng chuẩn bị nhận hàng)
+            </div>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              Xe đang khởi hành từ chi nhánh. Hàng hóa sẽ được bốc lên xe khi xe di chuyển tới Điểm 1.
+            </Text>
+          </div>
+        ) : orderGroups.length === 0 ? (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
             description="Thùng xe đang trống tại điểm dừng này (chưa có kiện hàng nào trên xe)"
@@ -1137,7 +1238,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {orderGroups.map((group) => {
               const isExpanded = expandedOrderKeys.includes(group.orderKey);
-              const clearCount = group.items.filter((it) => isPathToDoorClear(it, activeState.placed_items)).length;
+              const clearCount = group.items.filter(isPathToDoorClear).length;
               const isAllClear = clearCount === group.items.length;
               const areaM2 = group.items.reduce((s, it) => s + (it.length_cm * it.width_cm), 0) / 10000;
               const pct = totalFloorAreaM2 > 0 ? ((areaM2 / totalFloorAreaM2) * 100).toFixed(1) : '0';
@@ -1319,8 +1420,8 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                             title: 'Lối ra cửa',
                             key: 'clear',
                             render: (_, it) => {
-                              const clear = isPathToDoorClear(it, activeState.placed_items);
-                              const blockers = getBlockingItems(it, activeState.placed_items);
+                              const clear = isPathToDoorClear(it);
+                              const blockers = getBlockingItems(it);
                               return clear ? (
                                 <Tag color="success" style={{ margin: 0, fontSize: 11 }}>
                                   ✓ Thông suốt

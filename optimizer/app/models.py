@@ -104,6 +104,18 @@ class PlacedItem(BaseModel):
     weight_kg: float
 
 
+class MovementPoint(BaseModel):
+    x: float
+    y: float
+
+
+class PackageAccessPath(BaseModel):
+    item_id: str
+    is_clear: bool
+    points: List[MovementPoint] = Field(default_factory=list)
+    blocker_item_ids: List[str] = Field(default_factory=list)
+
+
 class StopAction(BaseModel):
     stop_id: str
     sequence: int = Field(ge=1)
@@ -127,6 +139,7 @@ class FloorState(BaseModel):
     weight_utilization_percent: float
     area_utilization_percent: float
     is_valid: bool
+    package_access_paths: List[PackageAccessPath] = Field(default_factory=list)
     error_code: Optional[str] = None
     error_message: Optional[str] = None
 
@@ -249,6 +262,28 @@ class UnassignedOrder(BaseModel):
     reason_message: str
 
 
+class BenchmarkMetric(BaseModel):
+    method_name: str
+    description: str
+    total_cost_vnd: int
+    total_distance_km: float
+    total_duration_minutes: float
+    vehicles_used: int
+    fuel_cost_vnd: int
+    vehicle_fixed_cost_vnd: int
+    driver_cost_vnd: int
+    cargo_holding_cost_vnd: int = 0
+    is_feasible: bool = True
+    violations: List[str] = Field(default_factory=list)
+
+
+class BenchmarkComparisonResponse(BaseModel):
+    or_tools: BenchmarkMetric
+    direct_dedicated: BenchmarkMetric
+    savings_vs_direct_vnd: Optional[int] = None
+    savings_vs_direct_percent: Optional[float] = None
+
+
 class FleetOptimizationResponse(BaseModel):
     job_id: str
     status: Literal["SUCCESS", "PARTIAL", "INFEASIBLE", "TIMEOUT", "ERROR"]
@@ -257,6 +292,7 @@ class FleetOptimizationResponse(BaseModel):
     total_distance_km: float = 0.0
     total_duration_minutes: float = 0.0
     total_cost_vnd: int = 0
+    benchmarks: Optional[BenchmarkComparisonResponse] = None
     diagnostics: List[str] = Field(default_factory=list)
 
 

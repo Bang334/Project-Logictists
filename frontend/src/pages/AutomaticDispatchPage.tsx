@@ -20,7 +20,9 @@ import {
   Timeline,
   Segmented,
   Tabs,
+  Popover,
 } from 'antd';
+import dayjs from 'dayjs';
 import {
   BranchesOutlined,
   CarOutlined,
@@ -46,11 +48,18 @@ import {
   ExportOutlined,
   ApartmentOutlined,
   InfoCircleOutlined,
+  EditOutlined,
+  EyeOutlined,
 } from '@ant-design/icons';
-import { driversApi, ordersApi, tripsApi, vehiclesApi } from '../api/client';
+import { branchesApi, driversApi, ordersApi, tripsApi, vehiclesApi } from '../api/client';
 import MapboxMap, { MAP_ROUTE_COLORS, MapMarker } from '../components/MapboxMap';
 import FloorPackingVisualizer from '../components/FloorPackingVisualizer';
-import { OptimizationJobUI, OptimizedRouteUI, Order, Vehicle, Driver } from '../types';
+import { BenchmarkCostComparisonCard } from '../components/BenchmarkCostComparisonCard';
+import { EditDriverModal } from '../components/EditDriverModal';
+import { EditVehicleModal } from '../components/EditVehicleModal';
+import { OrderDetailDrawer } from '../components/OrderDetailDrawer';
+import { Branch, OptimizationJobUI, OptimizedRouteUI, Order, Vehicle, Driver } from '../types';
+import { useAuth } from '../context/AuthContext';
 import {
   calculateStopMilestonesKm,
   getStepIndexForDistance,
@@ -220,6 +229,10 @@ const buildDriverSchedule = (route: OptimizedRouteUI): DriverScheduleResult => {
 
 const AutomaticDispatchPage: React.FC = () => {
   const { message } = AntdApp.useApp();
+  const { user } = useAuth();
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranchId, setSelectedBranchId] = useState<string>();
+  const [loadingBranches, setLoadingBranches] = useState(true);
   const [counts, setCounts] = useState({ orders: 0, vehicles: 0, drivers: 0, packages: 0 });
   const [availableOrders, setAvailableOrders] = useState<Order[]>([]);
   const [availableVehicles, setAvailableVehicles] = useState<Vehicle[]>([]);
@@ -232,14 +245,30 @@ const AutomaticDispatchPage: React.FC = () => {
   const [activeStepIndex, setActiveStepIndex] = useState<number>(0);
   const [mapLayoutMode, setMapLayoutMode] = useState<'HALF' | 'FULL'>('HALF');
 
-  const loadCounts = async () => {
+  // Modal chỉnh sửa tài xế, xe và xem đơn hàng
+  const [selectedDriverForEdit, setSelectedDriverForEdit] = useState<Driver | null>(null);
+  const [isEditDriverModalOpen, setIsEditDriverModalOpen] = useState<boolean>(false);
+
+  const [selectedVehicleForEdit, setSelectedVehicleForEdit] = useState<Vehicle | null>(null);
+  const [isEditVehicleModalOpen, setIsEditVehicleModalOpen] = useState<boolean>(false);
+
+  const [selectedOrderForDrawer, setSelectedOrderForDrawer] = useState<Order | null>(null);
+  const [isOrderDetailDrawerOpen, setIsOrderDetailDrawerOpen] = useState<boolean>(false);
+
+  const selectedBranch = useMemo(
+    () => branches.find((branch) => branch.id === selectedBranchId),
+    [branches, selectedBranchId],
+  );
+
+  const loadCounts = async (branchId: string, isCurrent: () => boolean) => {
     try {
       setLoadingCounts(true);
       const [orders, vehicles, drivers] = await Promise.all([
-        ordersApi.getAvailableForDispatch(),
-        vehiclesApi.getAvailable(),
-        driversApi.getAvailable(),
+        ordersApi.getAvailableForDispatch(branchId),
+        vehiclesApi.getAvailable(branchId),
+        driversApi.getAvailable(branchId),
       ]);
+      if (!isCurrent()) return;
       setAvailableOrders(orders.data);
       setAvailableVehicles(vehicles.data);
       setAvailableDrivers(drivers.data);
@@ -250,15 +279,53 @@ const AutomaticDispatchPage: React.FC = () => {
         packages: orders.data.reduce((sum, order) => sum + order.totalPackages, 0),
       });
     } catch (error) {
-      message.error('Không tải được nguồn lực cho tối ưu tự động');
+      if (isCurrent()) message.error('Không tải được nguồn lực cho tối ưu tự động');
     } finally {
-      setLoadingCounts(false);
+      if (isCurrent()) setLoadingCounts(false);
     }
   };
 
   useEffect(() => {
-    void loadCounts();
-  }, []);
+    let active = true;
+    const loadBranches = async () => {
+      try {
+        setLoadingBranches(true);
+        const response = await branchesApi.getAll();
+        if (!active) return;
+        const allowedBranches = user?.role === 'ADMIN'
+          ? response.data
+          : response.data.filter((branch) => branch.id === user?.branchId);
+        setBranches(allowedBranches);
+        setSelectedBranchId((current) => {
+          if (current && allowedBranches.some((branch) => branch.id === current)) {
+            return current;
+          }
+          return allowedBranches.find((branch) => branch.id === user?.branchId)?.id
+            || allowedBranches[0]?.id;
+        });
+      } catch {
+        if (active) message.error('Không tải được danh sách chi nhánh');
+      } finally {
+        if (active) setLoadingBranches(false);
+      }
+    };
+    void loadBranches();
+    return () => {
+      active = false;
+    };
+  }, [user?.branchId, user?.role]);
+
+  useEffect(() => {
+    if (!selectedBranchId) {
+      setLoadingCounts(false);
+      return;
+    }
+    let active = true;
+    void loadCounts(selectedBranchId, () => active);
+    return () => {
+      active = false;
+    };
+  }, [selectedBranchId]);
 
   useEffect(() => {
     if (!job || !['PENDING', 'RUNNING'].includes(job.status)) return;
@@ -281,9 +348,13 @@ const AutomaticDispatchPage: React.FC = () => {
   }, [job?.id, job?.status]);
 
   const startOptimization = async () => {
+    if (!selectedBranchId) {
+      message.warning('Hãy chọn chi nhánh trước khi tối ưu');
+      return;
+    }
     try {
       setStarting(true);
-      const response = await tripsApi.createAutomaticOptimizationJob();
+      const response = await tripsApi.createAutomaticOptimizationJob(selectedBranchId);
       setJob(response.data);
       message.info('Đã tạo job; hệ thống đang tự chọn đơn, xe, tài xế và tuyến');
     } catch (error: any) {
@@ -291,6 +362,18 @@ const AutomaticDispatchPage: React.FC = () => {
     } finally {
       setStarting(false);
     }
+  };
+
+  const changeBranch = (branchId: string) => {
+    setSelectedBranchId(branchId);
+    setCounts({ orders: 0, vehicles: 0, drivers: 0, packages: 0 });
+    setAvailableOrders([]);
+    setAvailableVehicles([]);
+    setAvailableDrivers([]);
+    setJob(null);
+    setSelectedVehicleForMap('ALL');
+    setEnableSim(false);
+    setActiveStepIndex(0);
   };
 
   const result = job?.result;
@@ -414,6 +497,253 @@ const AutomaticDispatchPage: React.FC = () => {
 
   const [routeViewMode, setRouteViewMode] = useState<Record<string, 'TIMELINE' | 'TABLE'>>({});
 
+  const renderVehiclePopover = (route: OptimizedRouteUI) => {
+    const v = availableVehicles.find(
+      (item) => item.id === route.vehicle_id || item.plateNumber === route.plate_number,
+    );
+    return (
+      <div style={{ width: 330, padding: '4px 2px' }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            borderBottom: '1px solid #f1f5f9',
+            paddingBottom: 8,
+            marginBottom: 10,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 8,
+                background: '#eff6ff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#2563eb',
+              }}
+            >
+              <CarOutlined style={{ fontSize: 18 }} />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: '#1e293b' }}>
+                {v?.plateNumber || route.plate_number}
+              </div>
+              <div style={{ fontSize: 11, color: '#64748b' }}>
+                {v?.model || 'Xe tải vận chuyển'} {v?.vehicleType ? `· ${v.vehicleType}` : ''}
+              </div>
+            </div>
+          </div>
+          <Tag color="success" style={{ margin: 0, fontWeight: 600 }}>
+            {v?.status || 'SẴN SÀNG'}
+          </Tag>
+        </div>
+
+        <Row gutter={[10, 8]} style={{ fontSize: 12 }}>
+          <Col span={12}>
+            <div style={{ color: '#64748b', fontSize: 11 }}>Tải trọng thiết kế:</div>
+            <strong style={{ color: '#15803d' }}>
+              {(v?.payloadCapacityKg || 0).toLocaleString()} kg
+            </strong>
+          </Col>
+          <Col span={12}>
+            <div style={{ color: '#64748b', fontSize: 11 }}>Thể tích lòng thùng:</div>
+            <strong style={{ color: '#0f766e' }}>
+              {v?.volumeCapacityM3 ? `${v.volumeCapacityM3.toFixed(1)} m³` : 'N/A'}
+            </strong>
+          </Col>
+          <Col span={24}>
+            <div style={{ color: '#64748b', fontSize: 11 }}>Kích thước thùng (D × R × C):</div>
+            <div style={{ fontFamily: 'monospace', fontWeight: 600, color: '#334155' }}>
+              {v
+                ? `${v.lengthCm} × ${v.widthCm} × ${v.heightCm} cm`
+                : `${route.vehicle_length_cm} × ${route.vehicle_width_cm} cm`}
+            </div>
+          </Col>
+          <Col span={12}>
+            <div style={{ color: '#64748b', fontSize: 11 }}>Định mức tiêu hao:</div>
+            <div>
+              <b>{v?.fuelConsumptionLitersPer100Km || 12} L / 100km</b>
+            </div>
+          </Col>
+          <Col span={12}>
+            <div style={{ color: '#64748b', fontSize: 11 }}>Chi phí xe cố định:</div>
+            <div>
+              <b>{currency.format(Number(v?.fixedOperatingCostPerTrip) || 0)}</b>
+            </div>
+          </Col>
+          {(v?.homeBranch || selectedBranch) && (
+            <Col span={24}>
+              <div style={{ color: '#64748b', fontSize: 11 }}>Bãi đậu / Chi nhánh:</div>
+              <div style={{ color: '#1e40af', fontWeight: 500 }}>
+                🏢 {v?.homeBranch?.name || selectedBranch?.name}
+              </div>
+            </Col>
+          )}
+        </Row>
+
+        {v && (
+          <div
+            style={{
+              marginTop: 10,
+              paddingTop: 8,
+              borderTop: '1px dashed #e2e8f0',
+              display: 'flex',
+              justifyContent: 'flex-end',
+            }}
+          >
+            <Button
+              type="link"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedVehicleForEdit(v);
+                setIsEditVehicleModalOpen(true);
+              }}
+              style={{ padding: 0 }}
+            >
+              Chỉnh sửa thông số xe
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderDriverPopover = (route: OptimizedRouteUI) => {
+    const d = availableDrivers.find(
+      (item) =>
+        (route.driver_id && item.id === route.driver_id) ||
+        (route.driver_name && item.fullName === route.driver_name),
+    );
+    return (
+      <div style={{ width: 330, padding: '4px 2px' }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            borderBottom: '1px solid #f1f5f9',
+            paddingBottom: 8,
+            marginBottom: 10,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: '50%',
+                background: '#e0e7ff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#4338ca',
+                fontWeight: 700,
+                fontSize: 14,
+              }}
+            >
+              {(d?.fullName || route.driver_name || 'T')?.charAt(0)}
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: '#1e293b' }}>
+                {d?.fullName || route.driver_name}
+              </div>
+              <div style={{ fontSize: 11, color: '#64748b' }}>
+                📞 {d?.phone || 'Chưa cập nhật SĐT'}
+              </div>
+            </div>
+          </div>
+          <Tag
+            color={
+              route.driver_license_class === 'B2'
+                ? 'green'
+                : route.driver_license_class === 'FC'
+                ? 'magenta'
+                : 'orange'
+            }
+            style={{ margin: 0, fontWeight: 700 }}
+          >
+            Hạng {d?.licenseClass || route.driver_license_class || 'C'}
+          </Tag>
+        </div>
+
+        <Row gutter={[10, 8]} style={{ fontSize: 12 }}>
+          <Col span={12}>
+            <div style={{ color: '#64748b', fontSize: 11 }}>Số GPLX:</div>
+            <strong style={{ color: '#1e293b', fontFamily: 'monospace' }}>
+              {d?.licenseNumber || 'Đang cập nhật'}
+            </strong>
+          </Col>
+          <Col span={12}>
+            <div style={{ color: '#64748b', fontSize: 11 }}>Hạn GPLX:</div>
+            <div>
+              {d?.licenseExpiry ? dayjs(d.licenseExpiry).format('DD/MM/YYYY') : 'Còn hiệu lực'}
+            </div>
+          </Col>
+          <Col span={12}>
+            <div style={{ color: '#64748b', fontSize: 11 }}>Số CCCD/CMND:</div>
+            <div style={{ fontFamily: 'monospace', color: '#334155' }}>
+              {d?.citizenId || 'Đang cập nhật'}
+            </div>
+          </Col>
+          <Col span={12}>
+            <div style={{ color: '#64748b', fontSize: 11 }}>Phạm vi lái xe:</div>
+            <div style={{ color: '#0369a1', fontWeight: 500 }}>
+              {d?.licenseClass === 'B2'
+                ? 'Xe ≤ 3.5T'
+                : d?.licenseClass === 'FC'
+                ? 'Đầu kéo, Container'
+                : 'Xe > 3.5T'}
+            </div>
+          </Col>
+          <Col span={12}>
+            <div style={{ color: '#64748b', fontSize: 11 }}>Thù lao mở chuyến:</div>
+            <strong>{currency.format(Number(d?.tripBasePay) || 180000)}</strong>
+          </Col>
+          <Col span={12}>
+            <div style={{ color: '#64748b', fontSize: 11 }}>Phụ trội lăn bánh:</div>
+            <strong>{currency.format(Number(d?.perKmPay) || 1200)}/km</strong>
+          </Col>
+          <Col span={24}>
+            <div style={{ color: '#64748b', fontSize: 11 }}>Lương cứng cơ bản:</div>
+            <div>{currency.format(Number(d?.fixedSalaryMonthly) || 12000000)} / tháng</div>
+          </Col>
+        </Row>
+
+        {d && (
+          <div
+            style={{
+              marginTop: 10,
+              paddingTop: 8,
+              borderTop: '1px dashed #e2e8f0',
+              display: 'flex',
+              justifyContent: 'flex-end',
+            }}
+          >
+            <Button
+              type="link"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedDriverForEdit(d);
+                setIsEditDriverModalOpen(true);
+              }}
+              style={{ padding: 0 }}
+            >
+              Chỉnh sửa hồ sơ tài xế
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderRoute = (route: OptimizedRouteUI) => {
     const isThisRouteActive = currentActiveRoute?.vehicle_id === route.vehicle_id;
     const schedule = buildDriverSchedule(route);
@@ -422,108 +752,383 @@ const AutomaticDispatchPage: React.FC = () => {
     return (
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={10}>
-          <Descriptions bordered size="small" column={2}>
-            <Descriptions.Item label="Xe">{route.plate_number}</Descriptions.Item>
-            <Descriptions.Item label="Tài xế">
-              <Space size={4} wrap>
-                <strong>{route.driver_name}</strong>
-                {route.driver_license_class && (
-                  <Tag
-                    color={route.driver_license_class === 'B2' ? 'green' : route.driver_license_class === 'FC' ? 'magenta' : 'orange'}
-                    style={{ margin: 0, fontSize: 11 }}
-                  >
-                    Hạng {route.driver_license_class}
-                  </Tag>
-                )}
-              </Space>
-            </Descriptions.Item>
-            <Descriptions.Item label="Quãng đường">{route.total_distance_km} km</Descriptions.Item>
-            <Descriptions.Item label="Thời gian">{route.total_duration_minutes} phút</Descriptions.Item>
-            <Descriptions.Item label="Nhiên liệu nền">
-              {currency.format(route.cost?.base_fuel_cost_vnd || 0)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Phụ trội do tải">
-              {currency.format(route.cost?.load_fuel_surcharge_vnd || 0)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Tổng nhiên liệu">
-              {currency.format(route.cost?.fuel_cost_vnd || 0)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Chi phí giữ hàng dự toán">
-              {currency.format(route.cost?.cargo_holding_cost_vnd || 0)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Luân chuyển tải">
-              {(route.cost?.cargo_distance_ton_km || 0).toLocaleString('vi-VN')} tấn-km
-            </Descriptions.Item>
-            <Descriptions.Item label="Thời gian giữ tải">
-              {(route.cost?.cargo_time_ton_hours || 0).toLocaleString('vi-VN')} tấn-giờ
-            </Descriptions.Item>
-            <Descriptions.Item label="Chi phí xe">{currency.format(route.cost?.vehicle_fixed_cost_vnd || 0)}</Descriptions.Item>
-            <Descriptions.Item label="Lương cố định">
-              {currency.format(route.cost?.driver_fixed_salary_allocation_vnd || 0)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Lương chuyến">
-              {currency.format(route.cost?.driver_trip_pay_vnd || 0)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Tổng dự toán tuyến" span={2}>
-              <Text strong style={{ color: '#1677ff', fontSize: 14 }}>
-                {currency.format(route.cost?.total_cost_vnd || 0)}
-              </Text>
-            </Descriptions.Item>
-          </Descriptions>
-
-          {/* KHỐI TỔNG QUAN CA LÀM VIỆC CỦA TÀI XẾ */}
           <div
             style={{
-              marginTop: 12,
-              padding: '10px 12px',
-              backgroundColor: '#f8fafc',
-              borderRadius: 8,
-              border: '1px solid #e2e8f0',
+              background: '#ffffff',
+              borderRadius: 10,
+              border: isThisRouteActive ? '2px solid #3b82f6' : '1px solid #e2e8f0',
+              boxShadow: isThisRouteActive
+                ? '0 4px 14px rgba(59, 130, 246, 0.12)'
+                : '0 1px 3px rgba(0,0,0,0.03)',
+              padding: '14px 16px',
+              transition: 'all 0.25s ease',
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <Space size={6}>
-                <ClockCircleOutlined style={{ color: '#2563eb' }} />
-                <strong style={{ fontSize: 13, color: '#0f172a' }}>Kế Hoạch Ca Làm Việc</strong>
-              </Space>
-              <Tag color="success" style={{ margin: 0 }}>Đạt chuẩn BR07</Tag>
-            </div>
-            <Row gutter={[8, 8]} style={{ fontSize: 12 }}>
-              <Col span={12}>
-                <span style={{ color: '#64748b' }}>Ca làm việc:</span>
-                <div><b>{schedule.startTime} — {schedule.endTime}</b> ({schedule.totalWorkDuration})</div>
-              </Col>
-              <Col span={12}>
-                <span style={{ color: '#64748b' }}>Thời gian lái xe:</span>
-                <div><b>{schedule.drivingDuration}</b> ({route.total_distance_km} km)</div>
-              </Col>
-              <Col span={12}>
-                <span style={{ color: '#64748b' }}>Bốc/dỡ tại kho:</span>
-                <div><b>{schedule.serviceDuration}</b> ({route.stops.length} điểm)</div>
-              </Col>
-              <Col span={12}>
-                <span style={{ color: '#64748b' }}>Nghỉ ngơi an toàn:</span>
-                <div><b>{schedule.restDurationMinutes} phút</b> (Hồi phục thể lực)</div>
-              </Col>
-            </Row>
-          </div>
-
-          <div style={{ marginTop: 10 }}>
-            <Button
-              size="small"
-              type={isThisRouteActive ? 'primary' : 'default'}
-              icon={<AimOutlined />}
-              onClick={() => {
-                setSelectedVehicleForMap(route.vehicle_id);
-                setActiveStepIndex(0);
-                const targetEl = document.getElementById('floor-visualizer-section') || document.getElementById('map-card-section');
-                targetEl?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            {/* Header: Hover Xe & Tài Xế + Trạng thái bản đồ */}
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 8,
+                paddingBottom: 12,
+                borderBottom: '1px solid #f1f5f9',
               }}
             >
-              {isThisRouteActive
-                ? 'Đang xem xe này trên bản đồ & sơ đồ sàn phía trên ↑'
-                : 'Đưa xe này lên sơ đồ xếp dỡ & bản đồ phía trên ↑'}
-            </Button>
+              <Space size={8} wrap>
+                {/* Hover vào Xe */}
+                <Popover
+                  content={renderVehiclePopover(route)}
+                  title={null}
+                  trigger="hover"
+                  placement="bottomLeft"
+                >
+                  <div
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 7,
+                      padding: '5px 11px',
+                      borderRadius: 7,
+                      background: '#eff6ff',
+                      border: '1px solid #bfdbfe',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                    }}
+                  >
+                    <CarOutlined style={{ color: '#2563eb', fontSize: 15 }} />
+                    <span
+                      style={{
+                        fontWeight: 700,
+                        color: '#1e40af',
+                        fontSize: 13,
+                        letterSpacing: '0.2px',
+                      }}
+                    >
+                      {route.plate_number}
+                    </span>
+                    <InfoCircleOutlined style={{ fontSize: 11, color: '#3b82f6', opacity: 0.7 }} />
+                  </div>
+                </Popover>
+
+                {/* Hover vào Tài Xế */}
+                <Popover
+                  content={renderDriverPopover(route)}
+                  title={null}
+                  trigger="hover"
+                  placement="bottomLeft"
+                >
+                  <div
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 7,
+                      padding: '5px 11px',
+                      borderRadius: 7,
+                      background: '#f8fafc',
+                      border: '1px solid #e2e8f0',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                    }}
+                  >
+                    <UserOutlined style={{ color: '#4338ca', fontSize: 14 }} />
+                    <span style={{ fontWeight: 600, color: '#1e293b', fontSize: 13 }}>
+                      {route.driver_name}
+                    </span>
+                    {route.driver_license_class && (
+                      <Tag
+                        color={
+                          route.driver_license_class === 'B2'
+                            ? 'green'
+                            : route.driver_license_class === 'FC'
+                            ? 'magenta'
+                            : 'orange'
+                        }
+                        style={{
+                          margin: 0,
+                          fontSize: 10,
+                          padding: '0 5px',
+                          lineHeight: '16px',
+                          borderRadius: 4,
+                          fontWeight: 700,
+                        }}
+                      >
+                        Hạng {route.driver_license_class}
+                      </Tag>
+                    )}
+                    <InfoCircleOutlined style={{ fontSize: 11, color: '#94a3b8', opacity: 0.7 }} />
+                  </div>
+                </Popover>
+              </Space>
+
+              {/* Tag trạng thái đồng bộ với bản đồ/sơ đồ sàn */}
+              {isThisRouteActive ? (
+                <Tag
+                  color="processing"
+                  icon={<CheckCircleOutlined />}
+                  style={{ margin: 0, borderRadius: 6, fontWeight: 600 }}
+                >
+                  Đang xem trên bản đồ
+                </Tag>
+              ) : (
+                <Tag
+                  style={{
+                    margin: 0,
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    background: '#f8fafc',
+                    borderColor: '#cbd5e1',
+                    color: '#475569',
+                    fontSize: 11,
+                  }}
+                  onClick={() => {
+                    setSelectedVehicleForMap(route.vehicle_id);
+                    setActiveStepIndex(0);
+                    const targetEl =
+                      document.getElementById('floor-visualizer-section') ||
+                      document.getElementById('map-card-section');
+                    targetEl?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }}
+                >
+                  <span style={{ color: '#2563eb' }}>Xem trên bản đồ ↑</span>
+                </Tag>
+              )}
+            </div>
+
+            {/* Chỉ số vận hành nhanh (4 ô) */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(4, 1fr)',
+                gap: 8,
+                marginTop: 12,
+              }}
+            >
+              <div
+                style={{
+                  background: '#f8fafc',
+                  border: '1px solid #f1f5f9',
+                  borderRadius: 7,
+                  padding: '7px 6px',
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ fontSize: 11, color: '#64748b' }}>Quãng đường</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
+                  {route.total_distance_km} km
+                </div>
+              </div>
+              <div
+                style={{
+                  background: '#f8fafc',
+                  border: '1px solid #f1f5f9',
+                  borderRadius: 7,
+                  padding: '7px 6px',
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ fontSize: 11, color: '#64748b' }}>Thời gian</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
+                  {route.total_duration_minutes} phút
+                </div>
+              </div>
+              <div
+                style={{
+                  background: '#f8fafc',
+                  border: '1px solid #f1f5f9',
+                  borderRadius: 7,
+                  padding: '7px 6px',
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ fontSize: 11, color: '#64748b' }}>Luân chuyển</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#0f766e', marginTop: 2 }}>
+                  {(route.cost?.cargo_distance_ton_km || 0).toLocaleString('vi-VN')}{' '}
+                  <span style={{ fontSize: 10, fontWeight: 500 }}>t-km</span>
+                </div>
+              </div>
+              <div
+                style={{
+                  background: '#f8fafc',
+                  border: '1px solid #f1f5f9',
+                  borderRadius: 7,
+                  padding: '7px 6px',
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ fontSize: 11, color: '#64748b' }}>Giữ tải</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#0369a1', marginTop: 2 }}>
+                  {(route.cost?.cargo_time_ton_hours || 0).toLocaleString('vi-VN')}{' '}
+                  <span style={{ fontSize: 10, fontWeight: 500 }}>t-h</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Bảng Chi Tiết Dự Toán Chi Phí Tuyến */}
+            <div
+              style={{
+                marginTop: 12,
+                border: '1px solid #e2e8f0',
+                borderRadius: 8,
+                overflow: 'hidden',
+              }}
+            >
+              <div
+                style={{
+                  background: '#f8fafc',
+                  padding: '6px 12px',
+                  borderBottom: '1px solid #e2e8f0',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: '#475569',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.4px',
+                }}
+              >
+                Chi tiết dự toán chi phí tuyến
+              </div>
+              <div
+                style={{
+                  padding: '8px 12px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                  fontSize: 12,
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <span style={{ color: '#475569' }}>Tổng chi phí nhiên liệu:</span>
+                    <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                      Nền: {currency.format(route.cost?.base_fuel_cost_vnd || 0)} · Tải: {currency.format(route.cost?.load_fuel_surcharge_vnd || 0)}
+                    </div>
+                  </div>
+                  <strong style={{ color: '#1e293b' }}>
+                    {currency.format(route.cost?.fuel_cost_vnd || 0)}
+                  </strong>
+                </div>
+
+                <div style={{ height: 1, background: '#f1f5f9' }} />
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ color: '#475569' }}>Chi phí vận hành xe & khấu hao:</span>
+                  <strong style={{ color: '#1e293b' }}>
+                    {currency.format(route.cost?.vehicle_fixed_cost_vnd || 0)}
+                  </strong>
+                </div>
+
+                <div style={{ height: 1, background: '#f1f5f9' }} />
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <span style={{ color: '#475569' }}>Lương & thù lao tài xế:</span>
+                    <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                      Chuyến: {currency.format(route.cost?.driver_trip_pay_vnd || 0)} · Cố định: {currency.format(route.cost?.driver_fixed_salary_allocation_vnd || 0)}
+                    </div>
+                  </div>
+                  <strong style={{ color: '#1e293b' }}>
+                    {currency.format(
+                      (route.cost?.driver_trip_pay_vnd || 0) +
+                        (route.cost?.driver_fixed_salary_allocation_vnd || 0),
+                    )}
+                  </strong>
+                </div>
+
+                <div style={{ height: 1, background: '#f1f5f9' }} />
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ color: '#475569' }}>Chi phí vốn giữ hàng dự toán:</span>
+                  <strong style={{ color: '#1e293b' }}>
+                    {currency.format(route.cost?.cargo_holding_cost_vnd || 0)}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Dải banner Tổng dự toán tuyến */}
+              <div
+                style={{
+                  background: 'linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%)',
+                  borderTop: '1px solid #bbf7d0',
+                  padding: '9px 12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}
+              >
+                <div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: '#15803d',
+                      fontWeight: 700,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.4px',
+                    }}
+                  >
+                    Tổng dự toán tuyến xe
+                  </div>
+                  <div style={{ fontSize: 11, color: '#16a34a' }}>Đã tối ưu đa mục tiêu (OR-Tools)</div>
+                </div>
+                <div style={{ fontSize: 17, fontWeight: 800, color: '#15803d' }}>
+                  {currency.format(route.cost?.total_cost_vnd || 0)}
+                </div>
+              </div>
+            </div>
+
+            {/* KHỐI KẾ HOẠCH CA LÀM VIỆC CỦA TÀI XẾ (BR07) */}
+            <div
+              style={{
+                marginTop: 12,
+                padding: '10px 12px',
+                backgroundColor: '#f8fafc',
+                borderRadius: 8,
+                border: '1px solid #e2e8f0',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: 8,
+                }}
+              >
+                <Space size={6}>
+                  <ClockCircleOutlined style={{ color: '#2563eb' }} />
+                  <strong style={{ fontSize: 13, color: '#0f172a' }}>Kế Hoạch Ca Làm Việc</strong>
+                </Space>
+                <Tag color="success" style={{ margin: 0, fontWeight: 600 }}>
+                  Đạt chuẩn BR07
+                </Tag>
+              </div>
+              <Row gutter={[8, 8]} style={{ fontSize: 12 }}>
+                <Col span={12}>
+                  <span style={{ color: '#64748b' }}>Ca làm việc:</span>
+                  <div>
+                    <b>{schedule.startTime} — {schedule.endTime}</b> ({schedule.totalWorkDuration})
+                  </div>
+                </Col>
+                <Col span={12}>
+                  <span style={{ color: '#64748b' }}>Thời gian lái xe:</span>
+                  <div>
+                    <b>{schedule.drivingDuration}</b> ({route.total_distance_km} km)
+                  </div>
+                </Col>
+                <Col span={12}>
+                  <span style={{ color: '#64748b' }}>Bốc/dỡ tại kho:</span>
+                  <div>
+                    <b>{schedule.serviceDuration}</b> ({route.stops.length} điểm)
+                  </div>
+                </Col>
+                <Col span={12}>
+                  <span style={{ color: '#64748b' }}>Nghỉ ngơi an toàn:</span>
+                  <div>
+                    <b>{schedule.restDurationMinutes} phút</b> (Hồi phục thể lực)
+                  </div>
+                </Col>
+              </Row>
+            </div>
           </div>
         </Col>
 
@@ -760,6 +1365,7 @@ const AutomaticDispatchPage: React.FC = () => {
               <Text strong style={{ fontSize: 16, color: '#0369a1' }}>
                 Tổng Hợp Nguồn Lực Chuẩn Bị Tối Ưu
               </Text>
+              {selectedBranch && <Tag color="blue">{selectedBranch.code}</Tag>}
               <Tag color={isWeightSafe && isVolumeSafe ? 'success' : 'warning'} style={{ marginLeft: 4 }}>
                 {isWeightSafe && isVolumeSafe ? 'CÂN ĐỐI TẢI TRỌNG AN TOÀN' : 'CÓ NGUY CƠ VƯỢT TẢI'}
               </Tag>
@@ -773,50 +1379,76 @@ const AutomaticDispatchPage: React.FC = () => {
             <div
               style={{
                 background: '#ffffff',
-                padding: '8px 14px',
-                borderRadius: 8,
-                border: '1px solid #e2e8f0',
-                textAlign: 'center',
+                padding: '8px 16px',
+                borderRadius: 10,
+                border: '1px solid #bae6fd',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                boxShadow: '0 2px 8px rgba(3, 105, 161, 0.06)',
               }}
             >
-              <div style={{ fontSize: 11, color: '#64748b' }}>Tải trọng / Sức chở</div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: isWeightSafe ? '#166534' : '#b91c1c' }}>
-                {totalOrderWeight.toLocaleString()} / {totalVehicleCapacityKg.toLocaleString()} kg
-                <span style={{ fontSize: 11, fontWeight: 400, marginLeft: 4 }}>({weightRatio.toFixed(0)}%)</span>
+              <div
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 8,
+                  background: isWeightSafe ? '#dcfce7' : '#fee2e2',
+                  color: isWeightSafe ? '#15803d' : '#b91c1c',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 16,
+                  fontWeight: 700,
+                }}
+              >
+                ⚖️
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: '#64748b', fontWeight: 500 }}>Tải trọng / Sức chở</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: isWeightSafe ? '#166534' : '#b91c1c' }}>
+                  {totalOrderWeight.toLocaleString()} / {totalVehicleCapacityKg.toLocaleString()} kg
+                  <span style={{ fontSize: 11, fontWeight: 400, marginLeft: 4 }}>({weightRatio.toFixed(0)}%)</span>
+                </div>
               </div>
             </div>
 
             <div
               style={{
                 background: '#ffffff',
-                padding: '8px 14px',
-                borderRadius: 8,
-                border: '1px solid #e2e8f0',
-                textAlign: 'center',
+                padding: '8px 16px',
+                borderRadius: 10,
+                border: '1px solid #bae6fd',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                boxShadow: '0 2px 8px rgba(3, 105, 161, 0.06)',
               }}
             >
-              <div style={{ fontSize: 11, color: '#64748b' }}>Thể tích / Dung tích</div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: isVolumeSafe ? '#166534' : '#b91c1c' }}>
-                {totalOrderVolume.toFixed(1)} / {totalVehicleCapacityM3.toFixed(1)} m³
-                <span style={{ fontSize: 11, fontWeight: 400, marginLeft: 4 }}>({volumeRatio.toFixed(0)}%)</span>
+              <div
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 8,
+                  background: isVolumeSafe ? '#dcfce7' : '#fee2e2',
+                  color: isVolumeSafe ? '#15803d' : '#b91c1c',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 16,
+                  fontWeight: 700,
+                }}
+              >
+                📦
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: '#64748b', fontWeight: 500 }}>Thể tích / Dung tích</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: isVolumeSafe ? '#166534' : '#b91c1c' }}>
+                  {totalOrderVolume.toFixed(1)} / {totalVehicleCapacityM3.toFixed(1)} m³
+                  <span style={{ fontSize: 11, fontWeight: 400, marginLeft: 4 }}>({volumeRatio.toFixed(0)}%)</span>
+                </div>
               </div>
             </div>
-
-            <Button
-              type="primary"
-              size="large"
-              icon={<ThunderboltOutlined />}
-              loading={starting}
-              disabled={availableOrders.length === 0}
-              onClick={startOptimization}
-              style={{
-                background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
-                boxShadow: '0 4px 14px rgba(37, 99, 235, 0.35)',
-                fontWeight: 600,
-              }}
-            >
-              Tối ưu toàn bộ ngay
-            </Button>
           </Space>
         </div>
 
@@ -1005,6 +1637,25 @@ const AutomaticDispatchPage: React.FC = () => {
                         width: 110,
                         render: (val) => `${val?.toFixed(2)} m³`,
                       },
+                      {
+                        title: 'Thao tác',
+                        key: 'actions',
+                        width: 110,
+                        align: 'center',
+                        render: (_, record) => (
+                          <Button
+                            type="link"
+                            size="small"
+                            icon={<EyeOutlined />}
+                            onClick={() => {
+                              setSelectedOrderForDrawer(record);
+                              setIsOrderDetailDrawerOpen(true);
+                            }}
+                          >
+                            Lộ trình
+                          </Button>
+                        ),
+                      },
                     ]}
                   />
                 </div>
@@ -1099,8 +1750,28 @@ const AutomaticDispatchPage: React.FC = () => {
                       title: 'Trạng thái',
                       dataIndex: 'status',
                       key: 'status',
-                      width: 140,
+                      width: 130,
                       render: () => <Tag color="success">SẴN SÀNG</Tag>,
+                    },
+                    {
+                      title: 'Thao tác',
+                      key: 'actions',
+                      width: 100,
+                      align: 'center',
+                      render: (_, record) => (
+                        <Button
+                          type="primary"
+                          ghost
+                          size="small"
+                          icon={<EditOutlined />}
+                          onClick={() => {
+                            setSelectedVehicleForEdit(record);
+                            setIsEditVehicleModalOpen(true);
+                          }}
+                        >
+                          Sửa
+                        </Button>
+                      ),
                     },
                   ]}
                 />
@@ -1193,8 +1864,28 @@ const AutomaticDispatchPage: React.FC = () => {
                       title: 'Trạng thái',
                       dataIndex: 'status',
                       key: 'status',
-                      width: 140,
+                      width: 130,
                       render: () => <Tag color="success">SẴN SÀNG</Tag>,
+                    },
+                    {
+                      title: 'Thao tác',
+                      key: 'actions',
+                      width: 100,
+                      align: 'center',
+                      render: (_, record) => (
+                        <Button
+                          type="primary"
+                          ghost
+                          size="small"
+                          icon={<EditOutlined />}
+                          onClick={() => {
+                            setSelectedDriverForEdit(record);
+                            setIsEditDriverModalOpen(true);
+                          }}
+                        >
+                          Sửa
+                        </Button>
+                      ),
                     },
                   ]}
                 />
@@ -1209,29 +1900,268 @@ const AutomaticDispatchPage: React.FC = () => {
   return (
     <main className="dispatch-page" aria-labelledby="automatic-dispatch-title">
       <div className="dispatch-page-header">
-        <div>
-          <Title id="automatic-dispatch-title" level={4}>Điều Phối Tự Động</Title>
-          <Text type="secondary">
-            Không cần chọn thủ công: hệ thống lấy toàn bộ nguồn lực hợp lệ trong chi nhánh và tạo phương án chi phí thấp.
-          </Text>
-        </div>
-        <Button
-          type="primary"
-          size="large"
-          icon={<ThunderboltOutlined />}
-          loading={starting}
-          disabled={counts.orders === 0 || job?.status === 'RUNNING' || job?.status === 'PENDING'}
-          onClick={startOptimization}
-        >
-          Tối ưu toàn bộ
-        </Button>
+        <Space wrap align="end">
+          <div>
+            <Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>
+              Chi nhánh điều phối
+            </Text>
+            <Select
+              aria-label="Chọn chi nhánh điều phối tự động"
+              value={selectedBranchId}
+              loading={loadingBranches}
+              disabled={loadingBranches || ['PENDING', 'RUNNING'].includes(job?.status || '')}
+              placeholder="Chọn chi nhánh"
+              showSearch
+              optionFilterProp="label"
+              style={{ minWidth: 300 }}
+              onChange={changeBranch}
+              options={branches.map((branch) => ({
+                value: branch.id,
+                label: `${branch.code} · ${branch.name}`,
+              }))}
+            />
+          </div>
+          <Button
+            type="primary"
+            size="large"
+            icon={<ThunderboltOutlined style={{ fontSize: 18, color: '#fbbf24' }} />}
+            loading={starting}
+            disabled={
+              !selectedBranchId
+              || counts.orders === 0
+              || job?.status === 'RUNNING'
+              || job?.status === 'PENDING'
+            }
+            onClick={startOptimization}
+            style={{
+              background: 'linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)',
+              boxShadow: '0 4px 14px rgba(37, 99, 235, 0.35)',
+              border: 'none',
+              fontWeight: 600,
+              height: 40,
+              padding: '0 22px',
+              borderRadius: 8,
+            }}
+          >
+            Tối ưu toàn bộ
+          </Button>
+        </Space>
       </div>
 
-      <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
-        <Col xs={12} lg={6}><Card loading={loadingCounts}><Statistic title="Đơn sẵn sàng" value={counts.orders} prefix={<BranchesOutlined />} /></Card></Col>
-        <Col xs={12} lg={6}><Card loading={loadingCounts}><Statistic title="Kiện vật lý" value={counts.packages} prefix={<NodeIndexOutlined />} /></Card></Col>
-        <Col xs={12} lg={6}><Card loading={loadingCounts}><Statistic title="Xe khả dụng" value={counts.vehicles} prefix={<CarOutlined />} /></Card></Col>
-        <Col xs={12} lg={6}><Card loading={loadingCounts}><Statistic title="Tài xế khả dụng" value={counts.drivers} prefix={<UserOutlined />} /></Card></Col>
+      {!loadingBranches && branches.length === 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message="Tài khoản chưa có chi nhánh khả dụng để điều phối"
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
+      {/* 4 Thẻ Thống Kê Nguồn Lực - Thiết Kế Hiện Đại Có Màu Sắc & Icon Badge */}
+      <Row gutter={[14, 14]} style={{ marginBottom: 20 }}>
+        {/* Thẻ 1: Đơn sẵn sàng */}
+        <Col xs={12} sm={12} lg={6}>
+          <Card
+            loading={loadingCounts}
+            bordered={false}
+            style={{
+              borderRadius: 12,
+              background: 'linear-gradient(135deg, #ffffff 0%, #f0f7ff 100%)',
+              border: '1px solid #bfdbfe',
+              boxShadow: '0 4px 14px -2px rgba(37, 99, 235, 0.08)',
+              transition: 'all 0.3s ease',
+            }}
+            styles={{ body: { padding: '18px 20px' } }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: '#64748b', marginBottom: 4 }}>
+                  Đơn sẵn sàng
+                </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                  <span style={{ fontSize: 28, fontWeight: 800, color: '#1e40af', lineHeight: 1 }}>
+                    {counts.orders}
+                  </span>
+                  <span style={{ fontSize: 12, color: '#3b82f6', fontWeight: 600 }}>đơn</span>
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <Tag color="blue" style={{ margin: 0, fontSize: 11, borderRadius: 4, padding: '1px 8px' }}>
+                    Chờ điều phối
+                  </Tag>
+                </div>
+              </div>
+              <div
+                style={{
+                  width: 52,
+                  height: 52,
+                  borderRadius: 14,
+                  background: 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#1d4ed8',
+                  fontSize: 24,
+                  boxShadow: '0 2px 10px rgba(37, 99, 235, 0.2)',
+                }}
+              >
+                <BranchesOutlined />
+              </div>
+            </div>
+          </Card>
+        </Col>
+
+        {/* Thẻ 2: Kiện vật lý */}
+        <Col xs={12} sm={12} lg={6}>
+          <Card
+            loading={loadingCounts}
+            bordered={false}
+            style={{
+              borderRadius: 12,
+              background: 'linear-gradient(135deg, #ffffff 0%, #faf5ff 100%)',
+              border: '1px solid #e9d5ff',
+              boxShadow: '0 4px 14px -2px rgba(147, 51, 234, 0.08)',
+              transition: 'all 0.3s ease',
+            }}
+            styles={{ body: { padding: '18px 20px' } }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: '#64748b', marginBottom: 4 }}>
+                  Kiện vật lý
+                </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                  <span style={{ fontSize: 28, fontWeight: 800, color: '#6b21a8', lineHeight: 1 }}>
+                    {counts.packages}
+                  </span>
+                  <span style={{ fontSize: 12, color: '#9333ea', fontWeight: 600 }}>kiện</span>
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <Tag color="purple" style={{ margin: 0, fontSize: 11, borderRadius: 4, padding: '1px 8px' }}>
+                    Tổng kiện con
+                  </Tag>
+                </div>
+              </div>
+              <div
+                style={{
+                  width: 52,
+                  height: 52,
+                  borderRadius: 14,
+                  background: 'linear-gradient(135deg, #f3e8ff 0%, #e9d5ff 100%)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#7e22ce',
+                  fontSize: 24,
+                  boxShadow: '0 2px 10px rgba(147, 51, 234, 0.2)',
+                }}
+              >
+                <InboxOutlined />
+              </div>
+            </div>
+          </Card>
+        </Col>
+
+        {/* Thẻ 3: Xe khả dụng */}
+        <Col xs={12} sm={12} lg={6}>
+          <Card
+            loading={loadingCounts}
+            bordered={false}
+            style={{
+              borderRadius: 12,
+              background: 'linear-gradient(135deg, #ffffff 0%, #f0fdf4 100%)',
+              border: '1px solid #bbf7d0',
+              boxShadow: '0 4px 14px -2px rgba(22, 163, 74, 0.08)',
+              transition: 'all 0.3s ease',
+            }}
+            styles={{ body: { padding: '18px 20px' } }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: '#64748b', marginBottom: 4 }}>
+                  Xe khả dụng
+                </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                  <span style={{ fontSize: 28, fontWeight: 800, color: '#15803d', lineHeight: 1 }}>
+                    {counts.vehicles}
+                  </span>
+                  <span style={{ fontSize: 12, color: '#16a34a', fontWeight: 600 }}>xe tải</span>
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <Tag color="success" style={{ margin: 0, fontSize: 11, borderRadius: 4, padding: '1px 8px' }}>
+                    Sẵn sàng nhận lệnh
+                  </Tag>
+                </div>
+              </div>
+              <div
+                style={{
+                  width: 52,
+                  height: 52,
+                  borderRadius: 14,
+                  background: 'linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#15803d',
+                  fontSize: 24,
+                  boxShadow: '0 2px 10px rgba(22, 163, 74, 0.2)',
+                }}
+              >
+                <CarOutlined />
+              </div>
+            </div>
+          </Card>
+        </Col>
+
+        {/* Thẻ 4: Tài xế khả dụng */}
+        <Col xs={12} sm={12} lg={6}>
+          <Card
+            loading={loadingCounts}
+            bordered={false}
+            style={{
+              borderRadius: 12,
+              background: 'linear-gradient(135deg, #ffffff 0%, #fffbeb 100%)',
+              border: '1px solid #fde68a',
+              boxShadow: '0 4px 14px -2px rgba(217, 119, 6, 0.08)',
+              transition: 'all 0.3s ease',
+            }}
+            styles={{ body: { padding: '18px 20px' } }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: '#64748b', marginBottom: 4 }}>
+                  Tài xế khả dụng
+                </div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                  <span style={{ fontSize: 28, fontWeight: 800, color: '#b45309', lineHeight: 1 }}>
+                    {counts.drivers}
+                  </span>
+                  <span style={{ fontSize: 12, color: '#d97706', fontWeight: 600 }}>tài xế</span>
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <Tag color="warning" style={{ margin: 0, fontSize: 11, borderRadius: 4, padding: '1px 8px' }}>
+                    Trực ca hợp lệ
+                  </Tag>
+                </div>
+              </div>
+              <div
+                style={{
+                  width: 52,
+                  height: 52,
+                  borderRadius: 14,
+                  background: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#b45309',
+                  fontSize: 24,
+                  boxShadow: '0 2px 10px rgba(217, 119, 6, 0.2)',
+                }}
+              >
+                <UserOutlined />
+              </div>
+            </div>
+          </Card>
+        </Col>
       </Row>
 
       {job && ['PENDING', 'RUNNING'].includes(job.status) && (
@@ -1269,6 +2199,7 @@ const AutomaticDispatchPage: React.FC = () => {
 
       {result ? (
         <>
+          {result.benchmarks && <BenchmarkCostComparisonCard benchmarks={result.benchmarks} />}
           <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
             <Col xs={24} xl={mapLayoutMode === 'FULL' ? 24 : 12}>
               <Card
@@ -1378,7 +2309,11 @@ const AutomaticDispatchPage: React.FC = () => {
 
                     <div className="automatic-route-journey" aria-label="Thứ tự lộ trình">
                       <Tooltip title={selectedRouteInfo.depot?.name || 'Công ty / chi nhánh'}>
-                        <span className="journey-node journey-node-depot">
+                        <span
+                          className={`journey-node journey-node-depot ${activeStepIndex === 0 ? 'journey-node-active' : ''}`}
+                          style={{ cursor: 'pointer' }}
+                          onClick={() => setActiveStepIndex(0)}
+                        >
                           <BankOutlined />
                           <span>Công ty</span>
                         </span>
@@ -1388,7 +2323,9 @@ const AutomaticDispatchPage: React.FC = () => {
                           <ArrowRightOutlined className="journey-arrow" aria-hidden="true" />
                           <Tooltip title={`${stop.stop_type === 'PICKUP' ? 'Nhận' : 'Giao'} · ${stop.location_name}`}>
                             <span
-                              className={`journey-node ${stop.stop_type === 'PICKUP' ? 'journey-node-pickup' : 'journey-node-delivery'}`}
+                              className={`journey-node ${stop.stop_type === 'PICKUP' ? 'journey-node-pickup' : 'journey-node-delivery'} ${activeStepIndex === stop.sequence ? 'journey-node-active' : ''}`}
+                              style={{ cursor: 'pointer' }}
+                              onClick={() => setActiveStepIndex(stop.sequence)}
                             >
                               {stop.sequence}
                             </span>
@@ -1396,7 +2333,9 @@ const AutomaticDispatchPage: React.FC = () => {
                         </React.Fragment>
                       ))}
                       <ArrowRightOutlined className="journey-arrow" aria-hidden="true" />
-                      <span className="journey-node journey-node-return">
+                      <span
+                        className={`journey-node journey-node-return ${activeStepIndex > selectedRouteInfo.stops.length ? 'journey-node-active' : ''}`}
+                      >
                         <BankOutlined />
                         <span>Về công ty</span>
                       </span>
@@ -1470,6 +2409,52 @@ const AutomaticDispatchPage: React.FC = () => {
       ) : !job ? (
         renderPreDispatchResourcePreview()
       ) : null}
+
+      {/* Modal Chỉnh Sửa Hồ Sơ & Trạng Thái Tài Xế */}
+      <EditDriverModal
+        open={isEditDriverModalOpen}
+        driver={selectedDriverForEdit}
+        branches={branches}
+        onCancel={() => {
+          setIsEditDriverModalOpen(false);
+          setSelectedDriverForEdit(null);
+        }}
+        onSuccess={() => {
+          setIsEditDriverModalOpen(false);
+          setSelectedDriverForEdit(null);
+          if (selectedBranchId) {
+            loadCounts(selectedBranchId, () => true);
+          }
+        }}
+      />
+
+      {/* Modal Chỉnh Sửa Phương Tiện / Xe Tải */}
+      <EditVehicleModal
+        open={isEditVehicleModalOpen}
+        vehicle={selectedVehicleForEdit}
+        branches={branches}
+        onCancel={() => {
+          setIsEditVehicleModalOpen(false);
+          setSelectedVehicleForEdit(null);
+        }}
+        onSuccess={() => {
+          setIsEditVehicleModalOpen(false);
+          setSelectedVehicleForEdit(null);
+          if (selectedBranchId) {
+            loadCounts(selectedBranchId, () => true);
+          }
+        }}
+      />
+
+      {/* Drawer Chi Tiết & Lộ Trình Đơn Hàng */}
+      <OrderDetailDrawer
+        open={isOrderDetailDrawerOpen}
+        order={selectedOrderForDrawer}
+        onClose={() => {
+          setIsOrderDetailDrawerOpen(false);
+          setSelectedOrderForDrawer(null);
+        }}
+      />
     </main>
   );
 };

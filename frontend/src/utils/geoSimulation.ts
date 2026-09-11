@@ -299,7 +299,8 @@ export function calculateStopMilestonesKm(
 ): number[] {
   if (!stops || stops.length === 0) return [];
   if (!profile || profile.coordinates.length < 2) {
-    return stops.map((_, i) => i);
+    const total = profile?.totalDistanceKm || stops.length;
+    return stops.map((_, i) => ((i + 1) * total) / (stops.length + 1));
   }
 
   const { coordinates, cumulativeDistances, totalDistanceKm } = profile;
@@ -308,16 +309,8 @@ export function calculateStopMilestonesKm(
   let lastIndex = 0;
   for (let s = 0; s < stops.length; s++) {
     const stop = stops[s];
-    if (s === 0) {
-      milestones.push(0);
-      continue;
-    }
-    if (s === stops.length - 1) {
-      milestones.push(totalDistanceKm);
-      continue;
-    }
 
-    // Tìm điểm trên routeCoordinates gần stop này nhất (tìm từ lastIndex trở đi)
+    // Tìm điểm trên route coordinates gần stop này nhất (tìm từ lastIndex trở đi)
     let bestDist = Infinity;
     let bestIdx = lastIndex;
 
@@ -331,8 +324,9 @@ export function calculateStopMilestonesKm(
     }
 
     const distAlongRoute = cumulativeDistances[bestIdx] || 0;
-    // Đảm bảo khoảng cách tăng dần không bị lùi
-    const validDist = Math.max(milestones[s - 1] || 0, Math.min(totalDistanceKm, distAlongRoute));
+    const prevMilestone = milestones.length > 0 ? milestones[milestones.length - 1] : 0;
+    // Đảm bảo khoảng cách tăng dần không bị lùi và không vượt quá totalDistanceKm
+    const validDist = Math.max(prevMilestone, Math.min(totalDistanceKm, distAlongRoute));
     milestones.push(validDist);
     lastIndex = Math.max(lastIndex, bestIdx);
   }
@@ -341,7 +335,9 @@ export function calculateStopMilestonesKm(
 }
 
 /**
- * Determine the exact active step index: cargo is ONLY loaded/unloaded when the truck actually reaches the stop!
+ * Determine the exact active step index:
+ * - Step 0: Truck departed from depot, moving towards Stop 1 (cargo floor is EMPTY)
+ * - Step s + 1: Truck reached Stop s and loaded/unloaded cargo
  */
 export function getStepIndexForDistance(
   milestonesKm: number[],
@@ -349,16 +345,16 @@ export function getStepIndexForDistance(
 ): number {
   if (!milestonesKm || milestonesKm.length === 0) return 0;
 
-  // Tìm stop cuối cùng mà xe đã thực sự chạm tới (dung sai 0.3 km)
-  let activeIndex = 0;
+  // Nếu xe chưa chạm tới Stop 1 (dung sai 0.15 km): xe vẫn đang ở Bước 0 (Xuất bến, xe rỗng)
+  let activeStep = 0;
   for (let i = 0; i < milestonesKm.length; i++) {
-    if (traveledKm >= milestonesKm[i] - 0.3) {
-      activeIndex = i;
+    if (traveledKm >= milestonesKm[i] - 0.15) {
+      activeStep = i + 1;
     } else {
       break;
     }
   }
 
-  return activeIndex;
+  return activeStep;
 }
 

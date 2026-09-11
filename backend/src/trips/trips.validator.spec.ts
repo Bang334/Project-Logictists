@@ -9,6 +9,7 @@ describe('TripsValidator - TMS Invariants', () => {
     model: 'Hino 500',
     vehicleType: '5 tấn',
     homeBranchId: 'branch-1',
+    vehicleTypeId: null,
     payloadCapacityKg: 5000,
     volumeCapacityM3: 25,
     lengthCm: 620,

@@ -1,5 +1,6 @@
 import { PrismaClient, Role, VehicleStatus, DriverStatus, OrderStatus, StopType, TaskAction } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { seedCentralBranchData } from './seed-central';
 
 const prisma = new PrismaClient();
 
@@ -753,7 +754,108 @@ async function main() {
     ]);
   }
 
-  console.log(`✅ Đã tạo dữ liệu vận tải và ${demoOrders.length} đơn demo đa loại/đa kiện.`);
+  // Bộ dữ liệu miền Nam tái hiện bài toán trong hình người dùng cung cấp:
+  // 3 đơn x 15 kiện 90x40 cm. Xe 1.9 tấn không chở được một đơn (2.100 kg),
+  // nên optimizer phải dùng sàn xe 960x240 cm. Khung giờ buộc lấy đủ 45 kiện
+  // trước khi giao lần lượt, tạo nhu cầu chừa lối ngang/dọc ra cửa sau.
+  const southernAisleOrders = [
+    {
+      orderNumber: 'DEMO-SGN-AISLE-001',
+      customerId: custPanasonic.id,
+      sku: 'SGN-AISLE-RED',
+      description: 'Kiện demo đỏ - đơn giao thứ nhất',
+      delivery: ['Điểm giao demo Thủ Đức, TP. Hồ Chí Minh', 10.8496, 106.7719],
+      deliveryWindow: ['2026-09-11T03:00:00Z', '2026-09-11T04:00:00Z'],
+    },
+    {
+      orderNumber: 'DEMO-SGN-AISLE-002',
+      customerId: custVinamilk.id,
+      sku: 'SGN-AISLE-ORANGE',
+      description: 'Kiện demo cam - đơn giao thứ hai',
+      delivery: ['Điểm giao demo Bình Thạnh, TP. Hồ Chí Minh', 10.8036, 106.7204],
+      deliveryWindow: ['2026-09-11T04:00:00Z', '2026-09-11T05:00:00Z'],
+    },
+    {
+      orderNumber: 'DEMO-SGN-AISLE-003',
+      customerId: custSunhouse.id,
+      sku: 'SGN-AISLE-YELLOW',
+      description: 'Kiện demo vàng - đơn giao thứ ba',
+      delivery: ['Điểm giao demo Quận 7, TP. Hồ Chí Minh', 10.7305, 106.7217],
+      deliveryWindow: ['2026-09-11T05:00:00Z', '2026-09-11T06:30:00Z'],
+    },
+  ] as const;
+
+  for (const [index, demo] of southernAisleOrders.entries()) {
+    const quantity = 15;
+    const totalWeightKg = 2100;
+    const totalVolumeM3 = (90 * 40 * 45 * quantity) / 1_000_000;
+    await prisma.order.upsert({
+      where: { orderNumber: demo.orderNumber },
+      update: { branchId: branchSGN.id },
+      create: {
+        orderNumber: demo.orderNumber,
+        customerId: demo.customerId,
+        branchId: branchSGN.id,
+        status: OrderStatus.CONFIRMED,
+        totalWeightKg,
+        totalVolumeM3,
+        totalPackages: quantity,
+        notes:
+          '[DEMO 2D] Ba đơn x 15 kiện; lấy hết trước khi giao để kiểm tra lối di chuyển ngang/dọc ra cửa sau. Không phải đơn vận hành thật.',
+        items: {
+          create: [
+            {
+              sku: demo.sku,
+              description: demo.description,
+              packageType: 'CARTON',
+              quantity,
+              weightKg: totalWeightKg,
+              lengthCm: 90,
+              widthCm: 40,
+              heightCm: 45,
+              volumeM3: totalVolumeM3,
+            },
+          ],
+        },
+        stops: {
+          create: [
+            {
+              type: StopType.PICKUP,
+              sequence: 1,
+              address: `Khu xuất hàng demo ${index + 1}, Tổng kho Sóng Thần, Dĩ An`,
+              latitude: 10.8924,
+              longitude: 106.7582,
+              contactName: `Kho demo miền Nam ${index + 1}`,
+              contactPhone: `090200000${index + 1}`,
+              serviceDurationMinutes: 20,
+              windowStart: new Date('2026-09-11T01:00:00Z'),
+              windowEnd: new Date('2026-09-11T02:00:00Z'),
+            },
+            {
+              type: StopType.DELIVERY,
+              sequence: 2,
+              address: demo.delivery[0],
+              latitude: demo.delivery[1],
+              longitude: demo.delivery[2],
+              contactName: `Điểm nhận demo miền Nam ${index + 1}`,
+              contactPhone: `091200000${index + 1}`,
+              serviceDurationMinutes: 20,
+              windowStart: new Date(demo.deliveryWindow[0]),
+              windowEnd: new Date(demo.deliveryWindow[1]),
+            },
+          ],
+        },
+      },
+    });
+  }
+
+  console.log(
+    `✅ Đã tạo dữ liệu vận tải, ${demoOrders.length} đơn đa loại và ${southernAisleOrders.length} đơn demo lối đi 2D miền Nam.`,
+  );
+
+  // 7. Khởi tạo 30 đơn hàng, đội xe, tài xế cho Chi nhánh Miền Trung (Đà Nẵng - BRANCH-DAD)
+  await seedCentralBranchData();
+
   console.log('🎉 KHỞI TẠO MASTER DATA THÀNH CÔNG VÀO POSTGRESQL SUPABASE!');
 }
 

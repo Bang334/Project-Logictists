@@ -54,6 +54,28 @@ export type OptimizedRouteResult = {
   route_geometry?: { type: string; coordinates: number[][] };
 };
 
+export type BenchmarkMetric = {
+  method_name: string;
+  description: string;
+  total_cost_vnd: number;
+  total_distance_km: number;
+  total_duration_minutes: number;
+  vehicles_used: number;
+  fuel_cost_vnd: number;
+  vehicle_fixed_cost_vnd: number;
+  driver_cost_vnd: number;
+  cargo_holding_cost_vnd: number;
+  is_feasible: boolean;
+  violations: string[];
+};
+
+export type BenchmarkComparison = {
+  or_tools: BenchmarkMetric;
+  direct_dedicated: BenchmarkMetric;
+  savings_vs_direct_vnd: number | null;
+  savings_vs_direct_percent: number | null;
+};
+
 export type FleetOptimizationResult = {
   job_id: string;
   status: 'SUCCESS' | 'PARTIAL' | 'INFEASIBLE' | 'TIMEOUT' | 'ERROR';
@@ -67,6 +89,7 @@ export type FleetOptimizationResult = {
   total_distance_km: number;
   total_duration_minutes: number;
   total_cost_vnd: number;
+  benchmarks?: BenchmarkComparison;
   diagnostics: string[];
 };
 
@@ -113,6 +136,56 @@ export function assertFleetOptimizationResult(
       const fieldValue = route.cost[field];
       if (typeof fieldValue !== 'number' || !Number.isFinite(fieldValue)) {
         throw new Error(`Optimizer trả trường chi phí ${field} không hợp lệ`);
+      }
+    }
+  }
+  if (value.benchmarks !== undefined) {
+    if (!isRecord(value.benchmarks)) {
+      throw new Error('Optimizer benchmarks phải là object');
+    }
+    for (const method of [
+      'or_tools',
+      'direct_dedicated',
+    ]) {
+      const metric = value.benchmarks[method];
+      if (!isRecord(metric)) {
+        throw new Error(`Optimizer benchmark ${method} không hợp lệ`);
+      }
+      if (typeof metric.is_feasible !== 'boolean') {
+        throw new Error(`Optimizer benchmark ${method} thiếu is_feasible`);
+      }
+      if (
+        !Array.isArray(metric.violations) ||
+        !metric.violations.every((violation) => typeof violation === 'string')
+      ) {
+        throw new Error(`Optimizer benchmark ${method} thiếu violations hợp lệ`);
+      }
+      for (const field of [
+        'total_cost_vnd',
+        'total_distance_km',
+        'total_duration_minutes',
+        'vehicles_used',
+        'fuel_cost_vnd',
+        'vehicle_fixed_cost_vnd',
+        'driver_cost_vnd',
+        'cargo_holding_cost_vnd',
+      ]) {
+        const fieldValue = metric[field];
+        if (typeof fieldValue !== 'number' || !Number.isFinite(fieldValue)) {
+          throw new Error(`Optimizer benchmark ${method}.${field} không hợp lệ`);
+        }
+      }
+    }
+    for (const field of [
+      'savings_vs_direct_vnd',
+      'savings_vs_direct_percent',
+    ]) {
+      const fieldValue = value.benchmarks[field];
+      if (
+        fieldValue !== null &&
+        (typeof fieldValue !== 'number' || !Number.isFinite(fieldValue))
+      ) {
+        throw new Error(`Optimizer benchmark ${field} không hợp lệ`);
       }
     }
   }

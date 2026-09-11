@@ -98,6 +98,10 @@ export class CreateOrderDto {
 
   @IsOptional()
   @IsString()
+  branchId?: string;
+
+  @IsOptional()
+  @IsString()
   notes?: string;
 
   @IsArray()

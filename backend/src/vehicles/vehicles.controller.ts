@@ -1,7 +1,19 @@
-import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { VehiclesService } from './vehicles.service';
-import { VehicleStatus } from '@prisma/client';
+import { Role, VehicleStatus } from '@prisma/client';
+import { resolveBranchScope } from '../auth/branch-scope';
+import { UpdateVehicleDto } from './dto/update-vehicle.dto';
 
 @Controller('vehicles')
 @UseGuards(AuthGuard('jwt'))
@@ -10,23 +22,37 @@ export class VehiclesController {
 
   @Get()
   findAll(
+    @Req() req: { user: { branchId?: string; role: Role } },
     @Query('branchId') branchId?: string,
     @Query('status') status?: VehicleStatus,
-    @Req() req?: { user?: { branchId?: string } },
   ) {
-    return this.vehiclesService.findAll(branchId || req?.user?.branchId, status);
+    const effectiveBranchId =
+      req.user.role === Role.ADMIN
+        ? (branchId && branchId !== 'ALL' ? branchId : undefined)
+        : req.user.branchId;
+    return this.vehiclesService.findAll(effectiveBranchId, status);
   }
 
   @Get('available')
   getAvailable(
-    @Query('branchId') branchId?: string,
-    @Req() req?: { user?: { branchId?: string } },
+    @Req() req: { user: { branchId?: string; role: Role } },
+    @Query('branchId', new ParseUUIDPipe({ optional: true })) branchId?: string,
   ) {
-    return this.vehiclesService.getAvailable(branchId || req?.user?.branchId);
+    return this.vehiclesService.getAvailable(resolveBranchScope(req.user, branchId));
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
+  findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.vehiclesService.findOne(id);
   }
+
+  @Patch(':id')
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() updateVehicleDto: UpdateVehicleDto,
+    @Req() req: { user: { branchId?: string; role: Role } },
+  ) {
+    return this.vehiclesService.update(id, updateVehicleDto, req.user);
+  }
 }
+

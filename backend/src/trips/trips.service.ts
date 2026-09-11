@@ -12,10 +12,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MapboxService } from '../mapbox/mapbox.service';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { TripsValidator, StopWithItems } from './trips.validator';
-import { TripStatus, OrderStatus, TaskAction, StopType } from '@prisma/client';
+import { TripStatus, OrderStatus, TaskAction, StopType, Role } from '@prisma/client';
 import { OptimizeTripDto } from './dto/optimize-trip.dto';
 import { expandOrderItemsToCargoUnits } from './optimizer-payload';
 import { assertFleetOptimizationResult } from './optimizer-contract';
+import { resolveBranchScope } from '../auth/branch-scope';
 
 @Injectable()
 export class TripsService implements OnModuleInit {
@@ -460,46 +461,38 @@ export class TripsService implements OnModuleInit {
   async createAutomaticOptimizationJob(user: {
     id: string;
     branchId?: string;
-  }) {
-    if (!user.branchId) {
-      throw new ForbiddenException('Tài khoản chưa được gán chi nhánh để tối ưu tự động');
-    }
+    role: Role;
+  }, requestedBranchId?: string) {
+    const branchId = resolveBranchScope(user, requestedBranchId);
 
     const [branch, vehicles, drivers, orders] = await Promise.all([
-      this.prisma.branch.findUnique({ where: { id: user.branchId } }),
+      this.prisma.branch.findFirst({ where: { id: branchId, active: true } }),
       this.prisma.vehicle.findMany({
-        where: { homeBranchId: user.branchId, status: 'AVAILABLE' },
+        where: { homeBranchId: branchId, status: 'AVAILABLE' },
         include: { homeBranch: true },
         orderBy: { plateNumber: 'asc' },
       }),
       this.prisma.driver.findMany({
         where: {
-          homeBranchId: user.branchId,
+          homeBranchId: branchId,
           status: 'AVAILABLE',
           licenseExpiry: { gt: new Date() },
         },
         orderBy: { fullName: 'asc' },
       }),
       this.prisma.order.findMany({
-        where: { branchId: user.branchId, status: OrderStatus.CONFIRMED },
+        where: { branchId, status: OrderStatus.CONFIRMED },
         include: { stops: { orderBy: { sequence: 'asc' } }, items: true },
         orderBy: { createdAt: 'asc' },
       }),
     ]);
 
-    if (!branch) throw new NotFoundException('Không tìm thấy chi nhánh của dispatcher');
+    if (!branch) throw new NotFoundException('Không tìm thấy chi nhánh đang hoạt động');
     if (vehicles.length === 0) throw new BadRequestException('Không có xe khả dụng trong chi nhánh');
     if (drivers.length === 0) throw new BadRequestException('Không có tài xế khả dụng trong chi nhánh');
     if (orders.length === 0) throw new BadRequestException('Không có đơn CONFIRMED để tối ưu');
 
     const candidateVehicles = vehicles.slice(0, drivers.length);
-    const coordinateCount = candidateVehicles.length + orders.length * 2;
-    if (coordinateCount > 25) {
-      throw new BadRequestException(
-        `Snapshot có ${coordinateCount} tọa độ, vượt giới hạn 25 của một Mapbox Matrix. ` +
-          'Hãy chia theo chi nhánh/đợt điều phối nhỏ hơn.',
-      );
-    }
 
     const planningEpoch = this.getPlanningEpoch(orders);
     const snapshot = {
@@ -545,7 +538,7 @@ export class TripsService implements OnModuleInit {
         unassigned_order_penalty_vnd: 1_000_000_000,
       },
       planning_epoch_iso: planningEpoch.toISOString(),
-      max_time_seconds: 12,
+      max_time_seconds: Math.min(30, Math.max(12, Math.round(orders.length * 0.8))),
     };
     const plainSnapshot = JSON.parse(JSON.stringify(snapshot));
     const requestHash = createHash('sha256')
@@ -553,7 +546,7 @@ export class TripsService implements OnModuleInit {
       .digest('hex');
     const job = await this.prisma.optimizationJob.create({
       data: {
-        branchId: user.branchId,
+        branchId,
         createdById: user.id,
         requestHash,
         requestSnapshot: plainSnapshot,
@@ -588,17 +581,63 @@ export class TripsService implements OnModuleInit {
     try {
       const job = await this.prisma.optimizationJob.findUniqueOrThrow({ where: { id: jobId } });
       const snapshot = job.requestSnapshot as Record<string, any>;
-      const coordinates: [number, number][] = [
-        ...snapshot.vehicles.map((vehicle) => [
-          vehicle.depot.longitude,
-          vehicle.depot.latitude,
-        ] as [number, number]),
-        ...snapshot.orders.flatMap((order) => [
-          [order.pickup_location.longitude, order.pickup_location.latitude] as [number, number],
-          [order.delivery_location.longitude, order.delivery_location.latitude] as [number, number],
-        ]),
-      ];
-      const matrix = await this.mapboxService.getRoadMatrix(coordinates);
+      const vehicleCount = snapshot.vehicles.length;
+      const orderCount = snapshot.orders.length;
+
+      const firstDepot = snapshot.vehicles[0]?.depot;
+      const allSameDepot =
+        firstDepot &&
+        snapshot.vehicles.every(
+          (v: any) =>
+            v.depot.longitude === firstDepot.longitude &&
+            v.depot.latitude === firstDepot.latitude,
+        );
+
+      let fullDistances: number[][];
+      let fullDurations: number[][];
+
+      if (allSameDepot && vehicleCount > 1) {
+        const compactCoordinates: [number, number][] = [
+          [firstDepot.longitude, firstDepot.latitude],
+          ...snapshot.orders.flatMap((order: any) => [
+            [order.pickup_location.longitude, order.pickup_location.latitude] as [number, number],
+            [order.delivery_location.longitude, order.delivery_location.latitude] as [number, number],
+          ]),
+        ];
+        const matrix = await this.mapboxService.getRoadMatrix(compactCoordinates);
+        const fullSize = vehicleCount + orderCount * 2;
+        fullDistances = Array.from({ length: fullSize }, () => Array(fullSize).fill(0));
+        fullDurations = Array.from({ length: fullSize }, () => Array(fullSize).fill(0));
+
+        for (let i = 0; i < fullSize; i++) {
+          const mapboxI = i < vehicleCount ? 0 : i - vehicleCount + 1;
+          for (let j = 0; j < fullSize; j++) {
+            const mapboxJ = j < vehicleCount ? 0 : j - vehicleCount + 1;
+            if (i < vehicleCount && j < vehicleCount) {
+              fullDistances[i][j] = 0;
+              fullDurations[i][j] = 0;
+            } else {
+              fullDistances[i][j] = matrix.distancesMeters[mapboxI][mapboxJ];
+              fullDurations[i][j] = matrix.durationsSeconds[mapboxI][mapboxJ];
+            }
+          }
+        }
+      } else {
+        const coordinates: [number, number][] = [
+          ...snapshot.vehicles.map((vehicle: any) => [
+            vehicle.depot.longitude,
+            vehicle.depot.latitude,
+          ] as [number, number]),
+          ...snapshot.orders.flatMap((order: any) => [
+            [order.pickup_location.longitude, order.pickup_location.latitude] as [number, number],
+            [order.delivery_location.longitude, order.delivery_location.latitude] as [number, number],
+          ]),
+        ];
+        const matrix = await this.mapboxService.getRoadMatrix(coordinates);
+        fullDistances = matrix.distancesMeters;
+        fullDurations = matrix.durationsSeconds;
+      }
+
       const payload = {
         job_id: job.id,
         vehicles: snapshot.vehicles,
@@ -606,11 +645,11 @@ export class TripsService implements OnModuleInit {
         orders: snapshot.orders,
         policy: snapshot.policy,
         max_time_seconds: snapshot.max_time_seconds,
-        distance_matrix_meters: matrix.distancesMeters,
-        duration_matrix_seconds: matrix.durationsSeconds,
+        distance_matrix_meters: fullDistances,
+        duration_matrix_seconds: fullDurations,
       };
       const response = await axios.post(`${this.optimizerUrl}/optimize-fleet`, payload, {
-        timeout: (snapshot.max_time_seconds + 10) * 1000,
+        timeout: Math.max(120000, (snapshot.max_time_seconds + 60) * 1000),
       });
       assertFleetOptimizationResult(response.data);
 
