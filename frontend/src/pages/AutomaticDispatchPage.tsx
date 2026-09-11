@@ -7,7 +7,6 @@ import {
   Collapse,
   Descriptions,
   Empty,
-  Progress,
   Row,
   Select,
   Space,
@@ -28,7 +27,6 @@ import {
   CarOutlined,
   CheckCircleOutlined,
   DollarOutlined,
-  LoadingOutlined,
   NodeIndexOutlined,
   ThunderboltOutlined,
   UserOutlined,
@@ -58,7 +56,14 @@ import { BenchmarkCostComparisonCard } from '../components/BenchmarkCostComparis
 import { EditDriverModal } from '../components/EditDriverModal';
 import { EditVehicleModal } from '../components/EditVehicleModal';
 import { OrderDetailDrawer } from '../components/OrderDetailDrawer';
-import { Branch, OptimizationJobUI, OptimizedRouteUI, Order, Vehicle, Driver } from '../types';
+import {
+  AutomaticOptimizationResponseUI,
+  Branch,
+  Driver,
+  OptimizedRouteUI,
+  Order,
+  Vehicle,
+} from '../types';
 import { useAuth } from '../context/AuthContext';
 import {
   calculateStopMilestonesKm,
@@ -238,8 +243,10 @@ const AutomaticDispatchPage: React.FC = () => {
   const [availableVehicles, setAvailableVehicles] = useState<Vehicle[]>([]);
   const [availableDrivers, setAvailableDrivers] = useState<Driver[]>([]);
   const [loadingCounts, setLoadingCounts] = useState(true);
-  const [job, setJob] = useState<OptimizationJobUI | null>(null);
+  const [optimization, setOptimization] = useState<AutomaticOptimizationResponseUI | null>(null);
   const [starting, setStarting] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [appliedTripCount, setAppliedTripCount] = useState<number | null>(null);
   const [selectedVehicleForMap, setSelectedVehicleForMap] = useState<string | 'ALL'>('ALL');
   const [enableSim, setEnableSim] = useState<boolean>(false);
   const [activeStepIndex, setActiveStepIndex] = useState<number>(0);
@@ -327,26 +334,6 @@ const AutomaticDispatchPage: React.FC = () => {
     };
   }, [selectedBranchId]);
 
-  useEffect(() => {
-    if (!job || !['PENDING', 'RUNNING'].includes(job.status)) return;
-    const timer = window.setInterval(async () => {
-      try {
-        const response = await tripsApi.getOptimizationJob(job.id);
-        setJob(response.data);
-        if (['COMPLETED', 'FAILED'].includes(response.data.status)) {
-          window.clearInterval(timer);
-          if (response.data.status === 'COMPLETED') {
-            message.success('Đã tạo phương án điều phối tự động để bạn kiểm tra');
-          }
-        }
-      } catch (error) {
-        window.clearInterval(timer);
-        message.error('Mất kết nối khi theo dõi optimization job');
-      }
-    }, 1200);
-    return () => window.clearInterval(timer);
-  }, [job?.id, job?.status]);
-
   const startOptimization = async () => {
     if (!selectedBranchId) {
       message.warning('Hãy chọn chi nhánh trước khi tối ưu');
@@ -354,13 +341,36 @@ const AutomaticDispatchPage: React.FC = () => {
     }
     try {
       setStarting(true);
-      const response = await tripsApi.createAutomaticOptimizationJob(selectedBranchId);
-      setJob(response.data);
-      message.info('Đã tạo job; hệ thống đang tự chọn đơn, xe, tài xế và tuyến');
+      setAppliedTripCount(null);
+      const response = await tripsApi.runAutomaticOptimization(selectedBranchId);
+      setOptimization(response.data);
+      message.success('Đã tạo phương án điều phối để bạn kiểm tra');
     } catch (error: any) {
       message.error(error.response?.data?.message || 'Không thể bắt đầu tối ưu tự động');
     } finally {
       setStarting(false);
+    }
+  };
+
+  const applyOptimization = async () => {
+    if (!optimization) return;
+    try {
+      setApplying(true);
+      const response = await tripsApi.applyAutomaticOptimization(optimization);
+      setAppliedTripCount(response.data.trips.length);
+      message.success(
+        `Đã tạo ${response.data.trips.length} chuyến và phân công tài xế`,
+      );
+      if (selectedBranchId) {
+        await loadCounts(selectedBranchId, () => true);
+      }
+    } catch (error: any) {
+      message.error(
+        error.response?.data?.message ||
+          'Không thể áp dụng phương án; hãy chạy tối ưu lại',
+      );
+    } finally {
+      setApplying(false);
     }
   };
 
@@ -370,13 +380,14 @@ const AutomaticDispatchPage: React.FC = () => {
     setAvailableOrders([]);
     setAvailableVehicles([]);
     setAvailableDrivers([]);
-    setJob(null);
+    setOptimization(null);
+    setAppliedTripCount(null);
     setSelectedVehicleForMap('ALL');
     setEnableSim(false);
     setActiveStepIndex(0);
   };
 
-  const result = job?.result;
+  const result = optimization?.proposal.result;
 
   // Lọc danh sách tuyến hiển thị trên bản đồ (xem tất cả hoặc xem riêng 1 xe)
   const activeRoutesForMap = useMemo(() => {
@@ -1909,7 +1920,7 @@ const AutomaticDispatchPage: React.FC = () => {
               aria-label="Chọn chi nhánh điều phối tự động"
               value={selectedBranchId}
               loading={loadingBranches}
-              disabled={loadingBranches || ['PENDING', 'RUNNING'].includes(job?.status || '')}
+              disabled={loadingBranches || starting || applying}
               placeholder="Chọn chi nhánh"
               showSearch
               optionFilterProp="label"
@@ -1929,8 +1940,7 @@ const AutomaticDispatchPage: React.FC = () => {
             disabled={
               !selectedBranchId
               || counts.orders === 0
-              || job?.status === 'RUNNING'
-              || job?.status === 'PENDING'
+              || applying
             }
             onClick={startOptimization}
             style={{
@@ -1944,6 +1954,22 @@ const AutomaticDispatchPage: React.FC = () => {
             }}
           >
             Tối ưu toàn bộ
+          </Button>
+          <Button
+            size="large"
+            icon={<CheckCircleOutlined />}
+            loading={applying}
+            disabled={
+              !optimization ||
+              optimization.proposal.result.routes.length === 0 ||
+              appliedTripCount !== null ||
+              starting
+            }
+            onClick={applyOptimization}
+          >
+            {appliedTripCount === null
+              ? 'Áp dụng phân công'
+              : `Đã áp dụng ${appliedTripCount} chuyến`}
           </Button>
         </Space>
       </div>
@@ -2164,39 +2190,6 @@ const AutomaticDispatchPage: React.FC = () => {
         </Col>
       </Row>
 
-      {job && ['PENDING', 'RUNNING'].includes(job.status) && (
-        <Card className="card-elevation" style={{ marginBottom: 16 }}>
-          <Space direction="vertical" style={{ width: '100%' }}>
-            <Text strong><LoadingOutlined spin /> Đang giải bài toán và kiểm tra xếp/dỡ từng bước</Text>
-            <Progress percent={job.status === 'PENDING' ? 20 : 70} status="active" showInfo={false} />
-            <Text type="secondary">Job {job.id}</Text>
-          </Space>
-        </Card>
-      )}
-
-      {job?.status === 'FAILED' && (
-        <Alert
-          type="error"
-          showIcon
-          message={`Lỗi: ${job.errorCode || 'Optimization job thất bại'}`}
-          description={
-            <div>
-              <p style={{ margin: '4px 0 8px 0' }}>{job.errorMessage}</p>
-              <Button
-                size="small"
-                type="primary"
-                danger
-                loading={starting}
-                onClick={startOptimization}
-              >
-                Chạy lại tối ưu (Retry)
-              </Button>
-            </div>
-          }
-          style={{ marginBottom: 16 }}
-        />
-      )}
-
       {result ? (
         <>
           {result.benchmarks && <BenchmarkCostComparisonCard benchmarks={result.benchmarks} />}
@@ -2406,7 +2399,7 @@ const AutomaticDispatchPage: React.FC = () => {
             />
           )}
         </>
-      ) : !job ? (
+      ) : !optimization ? (
         renderPreDispatchResourcePreview()
       ) : null}
 

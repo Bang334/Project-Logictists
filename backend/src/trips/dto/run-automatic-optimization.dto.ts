@@ -1,6 +1,6 @@
 import { IsOptional, IsUUID } from 'class-validator';
 
-export class CreateAutomaticOptimizationJobDto {
+export class RunAutomaticOptimizationDto {
   @IsOptional()
   @IsUUID()
   branchId?: string;

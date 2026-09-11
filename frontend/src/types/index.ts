@@ -321,14 +321,32 @@ export interface FleetOptimizationResultUI {
   diagnostics: string[];
 }
 
-export interface OptimizationJobUI {
-  id: string;
-  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
-  requestHash: string;
-  result?: FleetOptimizationResultUI;
-  errorCode?: string;
-  errorMessage?: string;
-  createdAt: string;
-  startedAt?: string;
-  completedAt?: string;
+export interface OptimizationProposalUI {
+  branchId: string;
+  planningEpochIso: string;
+  expiresAt: string;
+  resources: {
+    orders: Array<{ id: string; version: number }>;
+    vehicles: Array<{ id: string; updatedAt: string }>;
+    drivers: Array<{ id: string; updatedAt: string }>;
+  };
+  result: FleetOptimizationResultUI;
+}
+
+export interface AutomaticOptimizationResponseUI {
+  proposal: OptimizationProposalUI;
+  signature: string;
+}
+
+export interface ApplyOptimizationResponseUI {
+  appliedAt: string;
+  trips: Array<{
+    id: string;
+    tripNumber: string;
+    vehicleId: string;
+    driverId: string;
+    orderIds: string[];
+    plannedStartTime: string;
+    plannedEndTime: string;
+  }>;
 }

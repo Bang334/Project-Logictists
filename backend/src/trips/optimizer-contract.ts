@@ -97,6 +97,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
 export function assertFleetOptimizationResult(
   value: unknown,
 ): asserts value is FleetOptimizationResult {
@@ -108,6 +112,21 @@ export function assertFleetOptimizationResult(
   if (!Array.isArray(value.routes) || !Array.isArray(value.unassigned_orders)) {
     throw new Error('Optimizer response thiếu routes/unassigned_orders');
   }
+  for (const field of [
+    'total_distance_km',
+    'total_duration_minutes',
+    'total_cost_vnd',
+  ]) {
+    if (!isFiniteNumber(value[field]) || Number(value[field]) < 0) {
+      throw new Error(`Optimizer response có ${field} không hợp lệ`);
+    }
+  }
+  if (
+    !Array.isArray(value.diagnostics) ||
+    !value.diagnostics.every((item) => typeof item === 'string')
+  ) {
+    throw new Error('Optimizer response thiếu diagnostics hợp lệ');
+  }
   for (const route of value.routes) {
     if (
       !isRecord(route) ||
@@ -117,6 +136,43 @@ export function assertFleetOptimizationResult(
       route.spatial_validation.is_valid !== true
     ) {
       throw new Error('Optimizer trả route thiếu dữ liệu hoặc chưa vượt spatial validator');
+    }
+    for (const field of [
+      'vehicle_length_cm',
+      'vehicle_width_cm',
+      'total_distance_km',
+      'total_duration_minutes',
+    ]) {
+      if (!isFiniteNumber(route[field]) || Number(route[field]) < 0) {
+        throw new Error(`Optimizer trả route.${field} không hợp lệ`);
+      }
+    }
+    if (
+      typeof route.plate_number !== 'string' ||
+      (route.driver_id !== undefined && typeof route.driver_id !== 'string') ||
+      (route.driver_name !== undefined && typeof route.driver_name !== 'string') ||
+      !Array.isArray(route.spatial_validation.step_states)
+    ) {
+      throw new Error('Optimizer trả thông tin xe/tài xế/spatial không hợp lệ');
+    }
+    for (const stop of route.stops) {
+      if (
+        !isRecord(stop) ||
+        !Number.isInteger(stop.sequence) ||
+        typeof stop.location_id !== 'string' ||
+        typeof stop.location_name !== 'string' ||
+        !['PICKUP', 'DELIVERY'].includes(String(stop.stop_type)) ||
+        typeof stop.order_id !== 'string' ||
+        !isFiniteNumber(stop.latitude) ||
+        !isFiniteNumber(stop.longitude) ||
+        !isFiniteNumber(stop.arrival_time_sec) ||
+        !isFiniteNumber(stop.departure_time_sec) ||
+        !Array.isArray(stop.items_loaded) ||
+        !Array.isArray(stop.items_unloaded) ||
+        !isFiniteNumber(stop.current_weight_kg)
+      ) {
+        throw new Error('Optimizer trả điểm dừng không hợp lệ');
+      }
     }
     if (!isRecord(route.cost)) {
       throw new Error('Optimizer trả route thiếu bảng phân rã chi phí');
@@ -137,6 +193,17 @@ export function assertFleetOptimizationResult(
       if (typeof fieldValue !== 'number' || !Number.isFinite(fieldValue)) {
         throw new Error(`Optimizer trả trường chi phí ${field} không hợp lệ`);
       }
+    }
+  }
+  for (const order of value.unassigned_orders) {
+    if (
+      !isRecord(order) ||
+      typeof order.order_id !== 'string' ||
+      typeof order.order_number !== 'string' ||
+      typeof order.reason_code !== 'string' ||
+      typeof order.reason_message !== 'string'
+    ) {
+      throw new Error('Optimizer trả unassigned_orders không hợp lệ');
     }
   }
   if (value.benchmarks !== undefined) {

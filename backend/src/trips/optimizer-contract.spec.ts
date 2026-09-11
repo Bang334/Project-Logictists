@@ -6,8 +6,13 @@ const validResult = () => ({
   routes: [
     {
       vehicle_id: 'vehicle-1',
+      plate_number: '51C-000.01',
+      vehicle_length_cm: 430,
+      vehicle_width_cm: 190,
+      total_distance_km: 10,
+      total_duration_minutes: 20,
       stops: [],
-      spatial_validation: { is_valid: true },
+      spatial_validation: { is_valid: true, step_states: [] },
       cost: {
         base_fuel_cost_vnd: 100,
         load_fuel_surcharge_vnd: 20,

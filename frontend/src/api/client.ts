@@ -1,9 +1,10 @@
 import axios from 'axios';
 import {
   Branch,
+  ApplyOptimizationResponseUI,
+  AutomaticOptimizationResponseUI,
   Driver,
   LoadProfileResult,
-  OptimizationJobUI,
   OptimizationResultUI,
   Order,
   Trip,
@@ -92,10 +93,15 @@ export const tripsApi = {
     client.get<LoadProfileResult>(`/trips/${id}/load-profile`),
   optimize: (data: { vehicleId: string; orderIds: string[] }) =>
     client.post<OptimizationResultUI>('/trips/optimize', data),
-  createAutomaticOptimizationJob: (branchId: string) =>
-    client.post<OptimizationJobUI>('/trips/optimization-jobs', { branchId }),
-  getOptimizationJob: (jobId: string) =>
-    client.get<OptimizationJobUI>(`/trips/optimization-jobs/${jobId}`),
+  runAutomaticOptimization: (branchId: string) =>
+    client.post<AutomaticOptimizationResponseUI>('/trips/automatic-optimization', {
+      branchId,
+    }),
+  applyAutomaticOptimization: (data: AutomaticOptimizationResponseUI) =>
+    client.post<ApplyOptimizationResponseUI>(
+      '/trips/automatic-optimization/apply',
+      data,
+    ),
 };
 
 export const mapboxApi = {
