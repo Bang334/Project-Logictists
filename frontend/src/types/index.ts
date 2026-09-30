@@ -2,9 +2,19 @@ export interface User {
   id: string;
   username: string;
   fullName: string;
-  role: 'ADMIN' | 'DISPATCHER' | 'DRIVER';
-  branchId?: string;
-  branch?: Branch;
+  grants: Array<{ role: string; scopeType: 'COMPANY' | 'BRANCH'; branchId: string | null; permissions: string[] }>;
+  branches: Array<{ id: string; code: string; name: string }>;
+  companyScope: boolean;
+  permissions: string[];
+}
+export function parseUser(value: unknown): User {
+  if (!value || typeof value !== 'object') throw new Error('Invalid profile');
+  const v = value as Record<string, unknown>;
+  const strings = (x: unknown): x is string[] => Array.isArray(x) && x.every(i => typeof i === 'string');
+  if (typeof v.id !== 'string' || typeof v.username !== 'string' || typeof v.fullName !== 'string' || typeof v.companyScope !== 'boolean' || !strings(v.permissions)
+      || !Array.isArray(v.branches) || !v.branches.every(b => b && typeof b.id === 'string' && typeof b.code === 'string' && typeof b.name === 'string')
+      || !Array.isArray(v.grants) || !v.grants.every(g => g && typeof g.role === 'string' && ['COMPANY', 'BRANCH'].includes(g.scopeType) && (g.branchId === null || typeof g.branchId === 'string') && strings(g.permissions))) throw new Error('Invalid profile');
+  return value as User;
 }
 
 export interface Branch {

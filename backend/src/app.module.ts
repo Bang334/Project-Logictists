@@ -10,6 +10,7 @@ import { OrdersModule } from './orders/orders.module';
 import { TripsModule } from './trips/trips.module';
 import { MapboxModule } from './mapbox/mapbox.module';
 import { EventsModule } from './events/events.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { EventsModule } from './events/events.module';
     MapboxModule,
     EventsModule,
     AuthModule,
+    UsersModule,
     BranchesModule,
     VehiclesModule,
     DriversModule,

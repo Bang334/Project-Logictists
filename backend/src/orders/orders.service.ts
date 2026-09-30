@@ -1,6 +1,8 @@
+import { Principal, branchFilter, requireBranch } from '../auth/access';
+import { ResourceAccess } from '../auth/resource-access.service';
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { OrderStatus, Role, StopType } from '@prisma/client';
+import { OrderStatus, StopType } from '@prisma/client';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { MapboxService } from '../mapbox/mapbox.service';
@@ -10,16 +12,18 @@ export class OrdersService {
   constructor(
     private prisma: PrismaService,
     private mapboxService: MapboxService,
+    private access: ResourceAccess,
   ) {}
 
-  async findAll(status?: OrderStatus, customerId?: string, branchId?: string) {
+  async findAll(user: Principal, status?: OrderStatus, customerId?: string, branchId?: string) {
     return this.prisma.order.findMany({
       where: {
         ...(status ? { status } : {}),
         ...(customerId ? { customerId } : {}),
-        ...(branchId ? { branchId } : {}),
+        branchId: branchFilter(user, 'orders.read', branchId),
       },
       include: {
+        branch: { select: { id: true, code: true, name: true } },
         customer: { select: { id: true, code: true, name: true, phone: true } },
         stops: { orderBy: { sequence: 'asc' } },
         items: true,
@@ -28,10 +32,11 @@ export class OrdersService {
     });
   }
 
-  async findOne(id: string) {
-    const order = await this.prisma.order.findUnique({
-      where: { id },
+  async findOne(id: string, user: Principal) {
+    const order = await this.prisma.order.findFirst({
+      where: { id, branchId: branchFilter(user, 'orders.read') },
       include: {
+        branch: { select: { id: true, code: true, name: true } },
         customer: true,
         stops: { orderBy: { sequence: 'asc' } },
         items: true,
@@ -44,13 +49,14 @@ export class OrdersService {
     return order;
   }
 
-  async getAvailableForDispatch(branchId?: string) {
+  async getAvailableForDispatch(user: Principal, branchId?: string) {
     return this.prisma.order.findMany({
       where: {
         status: OrderStatus.CONFIRMED,
-        ...(branchId ? { branchId } : {}),
+        branchId: branchFilter(user, 'orders.read', branchId),
       },
       include: {
+        branch: { select: { id: true, code: true, name: true } },
         customer: { select: { id: true, code: true, name: true } },
         stops: { orderBy: { sequence: 'asc' } },
         items: true,
@@ -59,7 +65,10 @@ export class OrdersService {
     });
   }
 
-  async create(dto: CreateOrderDto, branchId?: string) {
+  async create(dto: CreateOrderDto, user: Principal) {
+    const branchId = requireBranch(user, 'orders.write', dto.branchId);
+    await this.access.branch(user, 'orders.write', branchId);
+    await this.access.customer(user, dto.customerId, branchId);
     if (!branchId) {
       throw new ForbiddenException('Tài khoản chưa được gán chi nhánh để tạo đơn hàng');
     }
@@ -148,6 +157,7 @@ export class OrdersService {
         },
       },
       include: {
+        branch: { select: { id: true, code: true, name: true } },
         customer: true,
         stops: true,
         items: true,
@@ -158,10 +168,10 @@ export class OrdersService {
   async update(
     id: string,
     dto: UpdateOrderDto,
-    user?: { branchId?: string; role: Role } | string,
+    user: Principal,
   ) {
-    const order = await this.prisma.order.findUnique({
-      where: { id },
+    const order = await this.prisma.order.findFirst({
+      where: { id, branchId: branchFilter(user, 'orders.write') },
       include: { stops: true, items: true },
     });
 
@@ -175,12 +185,7 @@ export class OrdersService {
       );
     }
 
-    const userRole = typeof user === 'object' ? user?.role : undefined;
-    const userBranchId = typeof user === 'object' ? user?.branchId : (typeof user === 'string' ? user : undefined);
-
-    if (userRole !== Role.ADMIN && userBranchId && order.branchId !== userBranchId) {
-      throw new ForbiddenException('Bạn không có quyền chỉnh sửa đơn hàng thuộc chi nhánh khác');
-    }
+    if (dto.customerId) await this.access.customer(user, dto.customerId, order.branchId);
 
     // Geocode các stop mới/thay đổi nếu thiếu tọa độ
     if (dto.stops) {
@@ -225,6 +230,9 @@ export class OrdersService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      const current = await tx.order.findFirst({ where: { id, branchId: branchFilter(user, 'orders.write') } });
+      if (!current) throw new NotFoundException('Đơn không tồn tại hoặc ngoài phạm vi');
+      if (dto.customerId) await this.access.customer(user, dto.customerId, current.branchId, tx);
       if (dto.stops) {
         await tx.orderStop.deleteMany({ where: { orderId: id } });
         await tx.orderStop.createMany({
@@ -265,7 +273,7 @@ export class OrdersService {
       }
 
       return tx.order.update({
-        where: { id },
+        where: { id, branchId: branchFilter(user, 'orders.write') },
         data: {
           ...(dto.customerId ? { customerId: dto.customerId } : {}),
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
@@ -279,6 +287,7 @@ export class OrdersService {
             : {}),
         },
         include: {
+          branch: { select: { id: true, code: true, name: true } },
           customer: true,
           stops: { orderBy: { sequence: 'asc' } },
           items: true,

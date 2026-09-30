@@ -28,6 +28,8 @@ Phân công theo **tính năng xuyên suốt**, không chia cứng frontend/back
 
 Luồng chung: **chốt yêu cầu → chốt contract → triển khai → tự test → review chéo → tích hợp**.
 
+- Chuẩn cấu trúc chung từ 23/09/2026: [THIET_KE_DATABASE.md v0.2](THIET_KE_DATABASE.md). Người 3 chủ trì đồng bộ schema/migration sau khi kiểm kê database thực; Người 1/2 đối chiếu FK, version, command/event và contract tiêu thụ trước khi tích hợp. Cấu trúc đã chốt không thay thế các policy còn mở tại mục 8 và không tự cấp quyền triển khai.
+
 - Người 1 chủ trì contract job/snapshot/kết quả/publish của optimizer; Người 3 review phần chạm Trip và dữ liệu dùng chung.
 - Người 2 chủ trì API mobile, idempotency, offline, POD và GPS; Người 3 review auth, quyền và realtime dùng chung.
 - Người 1 review dữ liệu tải/bố trí trên web; Người 2 review khả năng sử dụng API và luồng thực tế; Người 3 review tích hợp, dữ liệu và bảo mật.

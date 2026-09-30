@@ -1,19 +1,12 @@
-import { Controller, Get, Param, UseGuards } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+﻿import { Controller, Get, Param, Req, ParseUUIDPipe } from '@nestjs/common';
 import { CustomersService } from './customers.service';
-
+import { AuthRequest, RequirePermission } from '../auth/access';
 @Controller('customers')
-@UseGuards(AuthGuard('jwt'))
+@RequirePermission('customers.read')
 export class CustomersController {
-  constructor(private readonly customersService: CustomersService) {}
-
+  constructor(private readonly service: CustomersService) {}
   @Get()
-  findAll() {
-    return this.customersService.findAll();
-  }
-
+  findAll(@Req() req: AuthRequest) { return this.service.findAll(req.user); }
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.customersService.findOne(id);
-  }
+  findOne(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.service.findOne(id, req.user); }
 }

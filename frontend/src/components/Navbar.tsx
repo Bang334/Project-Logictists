@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layout, Button, Space, Typography, Tag } from 'antd';
+import { Layout, Button, Space, Typography, Tag, Select } from 'antd';
 import { CarOutlined, EnvironmentOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
 
@@ -7,7 +7,7 @@ const { Header } = Layout;
 const { Text } = Typography;
 
 const Navbar: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user, logout, branchId, setBranchId } = useAuth();
 
   return (
     <Header
@@ -15,10 +15,13 @@ const Navbar: React.FC = () => {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '0 24px',
+        padding: '8px 16px',
+        flexWrap: 'wrap',
+        gap: 12,
         background: '#001529',
         borderBottom: '1px solid #1e293b',
-        height: '64px',
+        height: 'auto',
+        minHeight: 64,
         position: 'sticky',
         top: 0,
         zIndex: 100,
@@ -36,16 +39,12 @@ const Navbar: React.FC = () => {
         </div>
       </div>
 
-      <Space size="middle">
-        {user?.branch && (
-          <Tag icon={<EnvironmentOutlined />} color="blue" style={{ padding: '4px 10px', fontSize: '13px' }}>
-            {user.branch.name}
-          </Tag>
-        )}
+      <Space size="middle" wrap>
+        <Select aria-label="Chi nhánh làm việc" style={{ minWidth: 210 }} value={branchId || 'ALL'} onChange={value => setBranchId(value === 'ALL' ? undefined : value)} options={[{ value: 'ALL', label: user?.companyScope ? 'Toàn công ty' : 'Các chi nhánh được cấp' }, ...(user?.branches || []).map(b => ({ value: b.id, label: b.name }))]} />
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Tag color="geekblue" icon={<UserOutlined />}>
-            {user?.role}
+            {[...new Set(user?.grants.map(g => g.role))].join(', ')}
           </Tag>
           <Text style={{ color: '#ffffff', fontWeight: 500 }}>
             {user?.fullName || user?.username}

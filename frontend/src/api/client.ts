@@ -1,4 +1,5 @@
-import axios from 'axios';
+import axios, { CanceledError, InternalAxiosRequestConfig } from 'axios';
+import { AccountQuery, CreateAccount, parseAccount, parseAccountList } from '../types/accounts';
 import {
   Branch,
   ApplyOptimizationResponseUI,
@@ -17,18 +18,55 @@ const client = axios.create({
   baseURL: API_URL,
 });
 
-client.interceptors.request.use((config) => {
-  const token = localStorage.getItem('tms_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+let currentToken: string | null = sessionStorage.getItem('tms_token');
+let currentBranch: string | undefined;
+let generation = 0;
+let abort = new AbortController();
+const requests = new WeakMap<InternalAxiosRequestConfig, { generation: number; token: string | null }>();
+export function setApiSession(token: string | null, branchId?: string) { currentToken = token; currentBranch = branchId; }
+export function resetRequests() { generation++; abort.abort(); abort = new AbortController(); }
+export function apiErrorMessage(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    if (!error.response) return 'Không kết nối được backend. Vui lòng kiểm tra kết nối và thử lại.';
+    const message: unknown = error.response.data?.message;
+    if (typeof message === 'string') return message;
+    if (Array.isArray(message) && message.every(m => typeof m === 'string')) return message.join('. ');
+    if (error.response.status === 403) return 'Bạn không có quyền thực hiện thao tác này.';
+    if (error.response.status === 401) return 'Phiên không hợp lệ hoặc đã hết hạn.';
   }
+  return 'Không xử lý được yêu cầu. Vui lòng thử lại.';
+}
+client.interceptors.request.use(config => {
+  if (currentToken && !config.headers.Authorization) config.headers.Authorization = `Bearer ${currentToken}`;
+  if (currentBranch) config.headers['X-Branch-Id'] = currentBranch;
+  if (!config.url?.startsWith('/auth/')) config.signal = abort.signal;
+  requests.set(config, { generation, token: currentToken });
   return config;
 });
-
+client.interceptors.response.use(response => {
+  const request = requests.get(response.config);
+  if (!response.config.url?.startsWith('/auth/') && request?.generation !== generation) throw new CanceledError('Phạm vi đã thay đổi');
+  return response;
+}, (error: unknown) => {
+  if (axios.isAxiosError(error) && error.config && !error.config.url?.endsWith('/login') && !error.config.url?.endsWith('/logout')) {
+    const request = requests.get(error.config);
+    if (request?.token === currentToken && request?.generation === generation) {
+      if (error.response?.status === 401) window.dispatchEvent(new Event('tms:unauthorized'));
+      if (error.response?.status === 403) window.dispatchEvent(new Event('tms:forbidden'));
+    }
+  }
+  return Promise.reject(error);
+});
 export const authApi = {
-  login: (username: string, pass: string) =>
-    client.post('/auth/login', { username, pass }),
-  getProfile: () => client.get('/auth/profile'),
+  login: (username: string, password: string) => client.post('/auth/login', { username, password }, { timeout: 10000 }),
+  getProfile: () => client.get<unknown>('/auth/profile', { timeout: 10000 }),
+  logout: () => client.post('/auth/logout', {}, { timeout: 10000, headers: { Authorization: `Bearer ${currentToken}` } }),
+};
+
+export const accountsApi = {
+  list: async (params: AccountQuery) => parseAccountList((await client.get<unknown>('/users', { params, timeout: 10000 })).data),
+  create: async (data: CreateAccount) => parseAccount((await client.post<unknown>('/users', data, { timeout: 15000 })).data),
+  lock: async (id: string) => parseAccount((await client.patch<unknown>(`/users/${id}/lock`, {}, { timeout: 10000 })).data),
 };
 
 export const branchesApi = {

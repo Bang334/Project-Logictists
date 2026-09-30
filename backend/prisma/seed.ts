@@ -1,3 +1,4 @@
+import { requiredDemoPassword } from './seed-auth';
 import { PrismaClient, Role, VehicleStatus, DriverStatus, OrderStatus, StopType, TaskAction } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { seedCentralBranchData } from './seed-central';
@@ -77,8 +78,8 @@ async function main() {
 
   // 2. Tạo Tài khoản Người dùng (Users)
   const salt = await bcrypt.genSalt(10);
-  const adminPassword = await bcrypt.hash('admin123', salt);
-  const dispatcherPassword = await bcrypt.hash('dispatcher123', salt);
+  const adminPassword = await bcrypt.hash(requiredDemoPassword(), salt);
+  const dispatcherPassword = await bcrypt.hash(requiredDemoPassword(), salt);
 
   const admin = await prisma.user.upsert({
     where: { username: 'admin' },

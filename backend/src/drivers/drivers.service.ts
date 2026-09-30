@@ -1,20 +1,21 @@
+import { Principal, branchFilter, assertPermission, tripFilter } from '../auth/access';
 import {
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { DriverStatus, Role } from '@prisma/client';
+import { DriverStatus } from '@prisma/client';
 import { UpdateDriverDto } from './dto/update-driver.dto';
 
 @Injectable()
 export class DriversService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(branchId?: string, status?: DriverStatus) {
+  async findAll(user: Principal, branchId?: string, status?: DriverStatus) {
     return this.prisma.driver.findMany({
       where: {
-        ...(branchId ? { homeBranchId: branchId } : {}),
+        homeBranchId: branchFilter(user, 'drivers.read', branchId),
         ...(status ? { status } : {}),
       },
       include: {
@@ -26,26 +27,29 @@ export class DriversService {
     });
   }
 
-  async findOne(id: string) {
-    return this.prisma.driver.findUnique({
-      where: { id },
+  async findOne(id: string, user: Principal) {
+    const result = await this.prisma.driver.findFirst({
+      where: { id, homeBranchId: branchFilter(user, 'drivers.read') },
       include: {
         homeBranch: true,
         assignments: {
+          where: { trip: tripFilter(user) },
           take: 5,
           orderBy: { createdAt: 'desc' },
           include: { trip: true },
         },
       },
     });
+    if (!result) throw new NotFoundException('Tài nguyên không tồn tại hoặc ngoài phạm vi được cấp');
+    return result;
   }
 
-  async getAvailable(branchId?: string) {
+  async getAvailable(user: Principal, branchId?: string) {
     return this.prisma.driver.findMany({
       where: {
         status: DriverStatus.AVAILABLE,
         licenseExpiry: { gt: new Date() }, // Bằng lái còn hạn
-        ...(branchId ? { homeBranchId: branchId } : {}),
+        homeBranchId: branchFilter(user, 'drivers.read', branchId),
       },
       include: {
         homeBranch: true,
@@ -56,7 +60,7 @@ export class DriversService {
   async update(
     id: string,
     dto: UpdateDriverDto,
-    user?: { role: Role; branchId?: string },
+    user: Principal,
   ) {
     const driver = await this.prisma.driver.findUnique({
       where: { id },
@@ -66,27 +70,7 @@ export class DriversService {
       throw new NotFoundException(`Không tìm thấy tài xế với ID ${id}`);
     }
 
-    if (
-      user &&
-      user.role !== Role.ADMIN &&
-      user.branchId &&
-      driver.homeBranchId !== user.branchId
-    ) {
-      throw new ForbiddenException(
-        'Bạn không có quyền chỉnh sửa tài xế thuộc chi nhánh khác',
-      );
-    }
-
-    if (
-      dto.homeBranchId &&
-      dto.homeBranchId !== driver.homeBranchId &&
-      user?.role !== Role.ADMIN
-    ) {
-      throw new ForbiddenException(
-        'Chỉ Quản trị viên (ADMIN) mới có quyền điều chuyển tài xế sang chi nhánh khác',
-      );
-    }
-
+    assertPermission(user, 'drivers.manage');
     return this.prisma.driver.update({
       where: { id },
       data: {

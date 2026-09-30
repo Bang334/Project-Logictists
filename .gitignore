@@ -32,3 +32,5 @@ Thumbs.db
 # Project logs & scratch
 logs/
 *.log
+frontend/test-results/
+frontend/playwright-report/

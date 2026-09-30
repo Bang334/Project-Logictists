@@ -1,3 +1,5 @@
+import { Principal, tripFilter, requireBranch } from '../auth/access';
+import { ResourceAccess } from '../auth/resource-access.service';
 import {
   BadRequestException,
   ConflictException,
@@ -17,7 +19,6 @@ import {
   Driver as DriverRecord,
   OrderStatus,
   Prisma,
-  Role,
   StopType,
   TaskAction,
   TripStatus,
@@ -80,12 +81,14 @@ export class TripsService {
   constructor(
     private prisma: PrismaService,
     private mapboxService: MapboxService,
+    private access: ResourceAccess,
   ) {}
 
-  async findAll(status?: TripStatus) {
+  async findAll(user: Principal, status?: TripStatus, branchId?: string) {
     return this.prisma.trip.findMany({
       where: {
         ...(status ? { status } : {}),
+        ...tripFilter(user, 'trips.read', branchId),
       },
       include: {
         vehicle: {
@@ -110,9 +113,9 @@ export class TripsService {
     });
   }
 
-  async findOne(id: string) {
-    const trip = await this.prisma.trip.findUnique({
-      where: { id },
+  async findOne(id: string, user: Principal) {
+    const trip = await this.prisma.trip.findFirst({
+      where: { id, ...tripFilter(user) },
       include: {
         vehicle: { include: { homeBranch: true } },
         assignments: { include: { driver: true } },
@@ -148,7 +151,9 @@ export class TripsService {
   /**
    * Tạo chuyến đi mới (Lập kế hoạch Trip)
    */
-  async create(dto: CreateTripDto) {
+  async create(dto: CreateTripDto, user: Principal) {
+    const branchId = requireBranch(user, 'trips.plan', dto.branchId);
+    await this.access.tripInputs(user, branchId, dto);
     const plannedStart = new Date(dto.plannedStartTime);
     const plannedEnd = new Date(dto.plannedEndTime);
 
@@ -278,9 +283,11 @@ export class TripsService {
 
     // 8. Thực thi Transaction lưu toàn bộ vào PostgreSQL
     const createdTrip = await this.prisma.$transaction(async (tx) => {
+      await this.access.tripInputs(user, branchId, dto, tx);
       const trip = await tx.trip.create({
         data: {
           tripNumber,
+          managingBranchId: branchId,
           vehicleId: dto.vehicleId,
           status: TripStatus.PLANNED,
           plannedStartTime: plannedStart,
@@ -359,20 +366,21 @@ export class TripsService {
       return trip;
     });
 
-    return this.findOne(createdTrip.id);
+    return this.findOne(createdTrip.id, user);
   }
 
   /**
    * Phát hành chuyến đi (Publish Trip)
    */
-  async publish(id: string) {
-    const trip = await this.findOne(id);
+  async publish(id: string, user: Principal) {
+    await this.access.trip(user, id, 'trips.publish');
+    const trip = await this.findOne(id, user);
     if (trip.status !== TripStatus.PLANNED && trip.status !== TripStatus.DRAFT) {
       throw new BadRequestException(`Chuyến đi ở trạng thái [${trip.status}] không thể phát hành`);
     }
 
     return this.prisma.trip.update({
-      where: { id },
+      where: { id, AND: tripFilter(user, 'trips.publish') },
       data: { status: TripStatus.DISPATCHED },
       include: {
         vehicle: true,
@@ -385,8 +393,8 @@ export class TripsService {
   /**
    * Lấy biểu đồ phân tích tải trọng xe qua từng điểm dừng (Load Profile)
    */
-  async getLoadProfile(id: string) {
-    const trip = await this.findOne(id);
+  async getLoadProfile(id: string, user: Principal) {
+    const trip = await this.findOne(id, user);
     const stopsWithItems: StopWithItems[] = [];
 
     for (const stop of trip.stops) {
@@ -432,7 +440,9 @@ export class TripsService {
   /**
    * Gọi Optimization Engine (Google OR-Tools + Dynamic 2D Spatial Packing)
    */
-  async runOptimization(body: OptimizeTripDto) {
+  async runOptimization(body: OptimizeTripDto, user: Principal) {
+    const branchId = requireBranch(user, 'trips.plan', body.branchId);
+    await this.access.tripInputs(user, branchId, body);
     if (new Set(body.orderIds).size !== body.orderIds.length) {
       throw new BadRequestException('Danh sách orderIds không được chứa ID trùng');
     }
@@ -504,7 +514,7 @@ export class TripsService {
   }
 
   async runAutomaticOptimization(
-    user: { id: string; branchId?: string; role: Role },
+    user: Principal,
     requestedBranchId?: string,
   ) {
     const branchId = resolveBranchScope(user, requestedBranchId);
@@ -705,7 +715,7 @@ export class TripsService {
 
   async applyAutomaticOptimization(
     dto: ApplyAutomaticOptimizationDto,
-    user: { id: string; branchId?: string; role: Role },
+    user: Principal,
   ) {
     try {
       assertOptimizationProposal(dto.proposal);
@@ -762,6 +772,14 @@ export class TripsService {
     const applied = await this.prisma.$transaction(
       async (tx) => {
         await this.acquireApplicationLocks(tx, vehicleIds, driverIds, orderIds);
+        for (const route of proposal.result.routes) {
+          await this.access.tripInputs(user, branchId, {
+            vehicleId: route.vehicle_id,
+            driverId: route.driver_id || undefined,
+            orderIds: [...new Set(route.stops.map(stop => stop.order_id))],
+            orderedStopIds: route.stops.map(stop => stop.location_id),
+          }, tx);
+        }
 
         const [orders, vehicles, drivers] = await Promise.all([
           tx.order.findMany({
@@ -1075,7 +1093,7 @@ export class TripsService {
     );
 
     for (const key of keys) {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(${key.namespace}::int4, hashtext(${key.id})::int4)`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${key.namespace}::int4, hashtext(${key.id})::int4)`;
     }
   }
 
@@ -1140,7 +1158,7 @@ export class TripsService {
     count: number,
   ): Promise<string[]> {
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(${LOCK_NAMESPACE_TRIP_NUMBER}::int4, hashtext(${dateStr})::int4)`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LOCK_NAMESPACE_TRIP_NUMBER}::int4, hashtext(${dateStr})::int4)`;
     const existing = await tx.trip.count({
       where: { tripNumber: { startsWith: `TRIP-${dateStr}` } },
     });

@@ -1,3 +1,4 @@
+import { Principal, branchFilter, assertPermission, hasPermission } from '../auth/access';
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { MapboxService } from '../mapbox/mapbox.service';
@@ -10,9 +11,9 @@ export class BranchesService {
     private mapboxService: MapboxService,
   ) {}
 
-  async findAll() {
+  async findAll(user: Principal) {
     return this.prisma.branch.findMany({
-      where: { active: true },
+      where: { active: true, id: branchFilter({ ...user, selectedBranchId: undefined }, 'branches.read') },
       include: {
         _count: {
           select: { vehicles: true, drivers: true },
@@ -22,12 +23,12 @@ export class BranchesService {
     });
   }
 
-  async findOne(id: string) {
-    const branch = await this.prisma.branch.findUnique({
-      where: { id },
+  async findOne(id: string, user: Principal) {
+    const branch = await this.prisma.branch.findFirst({
+      where: { id, AND: { id: branchFilter(user, 'branches.read') } },
       include: {
-        vehicles: true,
-        drivers: true,
+        vehicles: hasPermission(user, 'vehicles.read', id),
+        drivers: hasPermission(user, 'drivers.read', id),
       },
     });
 
@@ -38,7 +39,8 @@ export class BranchesService {
     return branch;
   }
 
-  async update(id: string, dto: UpdateBranchDto) {
+  async update(id: string, dto: UpdateBranchDto, user: Principal) {
+    assertPermission(user, 'branches.manage');
     const branch = await this.prisma.branch.findUnique({
       where: { id },
     });

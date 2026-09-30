@@ -1,3 +1,4 @@
+import { IsUUID as BranchUUID, IsOptional as OptionalBranch } from 'class-validator';
 import { IsString, IsNotEmpty, IsArray, IsDateString, IsOptional } from 'class-validator';
 
 export class TripStopInputDto {
@@ -11,6 +12,10 @@ export class TripStopInputDto {
 }
 
 export class CreateTripDto {
+  @OptionalBranch()
+  @BranchUUID()
+  branchId?: string;
+
   @IsString()
   @IsNotEmpty()
   vehicleId: string;

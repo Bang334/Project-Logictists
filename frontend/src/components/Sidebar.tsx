@@ -1,3 +1,5 @@
+import { useAuth } from '../context/AuthContext';
+import { canManageAccounts } from '../types/accounts';
 import React from 'react';
 import { Layout, Menu } from 'antd';
 import {
@@ -6,6 +8,7 @@ import {
   CarOutlined,
   CompassOutlined,
   ThunderboltOutlined,
+  UserOutlined,
 } from '@ant-design/icons';
 
 const { Sider } = Layout;
@@ -16,7 +19,9 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
+  const { can, user } = useAuth();
   const menuItems = [
+    { key: 'accounts', icon: <UserOutlined aria-hidden="true" />, label: 'Quản lý tài khoản' },
     {
       key: 'dashboard',
       icon: <DashboardOutlined style={{ fontSize: '16px' }} />,
@@ -60,7 +65,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
         selectedKeys={[currentTab]}
         onClick={({ key }) => onSelectTab(key)}
         style={{ borderRight: 0, paddingTop: '12px' }}
-        items={menuItems}
+        items={menuItems.filter(item => item.key === 'accounts' ? canManageAccounts(user) : can(({ dashboard: 'orders.read', orders: 'orders.read', fleet: 'vehicles.read', 'dispatch-manual': 'trips.plan', 'dispatch-auto': 'trips.plan' } as Record<string,string>)[item.key]))}
       />
     </Sider>
   );

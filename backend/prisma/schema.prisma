@@ -122,6 +122,7 @@ model User {
   branchId         String?
   branch           Branch?           @relation(fields: [branchId], references: [id])
   driver           Driver?
+  authSessions     AuthSession[]
   roleScopes       UserRoleScope[]
   optimizationJobs OptimizationJob[]
   customerAccounts CustomerUser[]
@@ -1078,4 +1079,24 @@ model PaymentAllocation {
   @@unique([paymentId, invoiceId])
   @@index([invoiceId])
   @@map("payment_allocations")
+}
+
+// Auth-only sessions; JWT carries this ID, never cached authorization claims.
+model AuthSession {
+  id        String @id @default(uuid())
+  userId    String
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime @db.Timestamptz(3)
+  revokedAt DateTime? @db.Timestamptz(3)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  @@index([userId, expiresAt])
+  @@map("auth_sessions")
+}
+
+model AuthLoginLimit {
+  key       String @id
+  attempts  Int
+  expiresAt DateTime @db.Timestamptz(3)
+  @@index([expiresAt])
+  @@map("auth_login_limits")
 }

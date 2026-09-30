@@ -8,9 +8,9 @@ async function bootstrap() {
 
   // Bật CORS cho Web và Mobile
   app.enableCors({
-    origin: '*',
+    origin: process.env.WEB_ORIGIN || 'http://localhost:5173',
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    credentials: true,
+    credentials: false,
   });
 
   // Global Validation Pipe cho Runtime Input
@@ -18,7 +18,7 @@ async function bootstrap() {
     new ValidationPipe({
       whitelist: true,
       transform: true,
-      forbidNonWhitelisted: false,
+      forbidNonWhitelisted: true,
     }),
   );
 

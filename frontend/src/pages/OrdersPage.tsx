@@ -1,3 +1,4 @@
+import { useAuth } from '../context/AuthContext';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Table,
@@ -49,6 +50,7 @@ interface Coordinate {
 
 const OrdersPage: React.FC = () => {
   const { message } = AntdApp.useApp();
+  const { can, branchId, setBranchId } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(false);
   const [customers, setCustomers] = useState<Array<{ id: string; code: string; name: string }>>([]);
@@ -56,7 +58,8 @@ const OrdersPage: React.FC = () => {
 
   // State bộ lọc
   const [searchText, setSearchText] = useState('');
-  const [filterBranchId, setFilterBranchId] = useState<string | undefined>(undefined);
+  const filterBranchId = branchId;
+  const setFilterBranchId = setBranchId;
   const [filterCustomerId, setFilterCustomerId] = useState<string | undefined>(undefined);
   const [filterStatus, setFilterStatus] = useState<string | undefined>(undefined);
 
@@ -114,8 +117,8 @@ const OrdersPage: React.FC = () => {
 
   // Tải dữ liệu master data (Khách hàng, Chi nhánh)
   useEffect(() => {
-    void customersApi.getAll().then((response) => setCustomers(response.data));
-    void branchesApi.getAll().then((response) => setBranches(response.data));
+    void customersApi.getAll().then((response) => setCustomers(response.data)).catch(() => message.error('Không tải được khách hàng trong phạm vi hiện tại'));
+    void branchesApi.getAll().then((response) => setBranches(response.data)).catch(() => message.error('Không tải được chi nhánh'));
   }, []);
 
   // Lọc tức thời phía client theo từ khóa tìm kiếm
@@ -575,7 +578,7 @@ const OrdersPage: React.FC = () => {
                 type="primary"
                 ghost
                 icon={<EditOutlined />}
-                disabled={!isEditable}
+                disabled={!isEditable || !can('orders.write')}
                 onClick={() => handleOpenEditModal(record)}
               >
                 Sửa
@@ -608,7 +611,7 @@ const OrdersPage: React.FC = () => {
         </div>
         <Button
           type="primary"
-          icon={<PlusOutlined />}
+          disabled={!can('orders.write')} icon={<PlusOutlined />}
           onClick={() => {
             setCreatePickupCoord(null);
             setCreateDeliveryCoord(null);
@@ -1065,7 +1068,7 @@ const OrdersPage: React.FC = () => {
                 ))}
                 <Button
                   type="dashed"
-                  icon={<PlusOutlined />}
+                  disabled={!can('orders.write')} icon={<PlusOutlined />}
                   onClick={() => add({ quantity: 1, packageType: 'CARTON' })}
                   block
                 >
@@ -1329,7 +1332,7 @@ const OrdersPage: React.FC = () => {
                 ))}
                 <Button
                   type="dashed"
-                  icon={<PlusOutlined />}
+                  disabled={!can('orders.write')} icon={<PlusOutlined />}
                   onClick={() => add({ quantity: 1, packageType: 'CARTON' })}
                   block
                 >

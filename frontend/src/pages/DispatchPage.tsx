@@ -1,3 +1,4 @@
+import { useAuth } from '../context/AuthContext';
 import React, { useEffect, useState } from 'react';
 import {
   Row,
@@ -45,6 +46,7 @@ const { Title, Text } = Typography;
 
 const DispatchPage: React.FC = () => {
   const { message } = AntdApp.useApp();
+  const { can, branchId } = useAuth();
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -117,6 +119,7 @@ const DispatchPage: React.FC = () => {
   };
 
   const handleCreateTrip = async () => {
+    if (!branchId) return message.warning('Hãy chọn chi nhánh làm việc trên thanh điều hướng');
     if (!selectedVehicleId) {
       return message.warning('Vui lòng chọn xe tải thực hiện chuyến đi');
     }
@@ -171,6 +174,7 @@ const DispatchPage: React.FC = () => {
   };
 
   const handleRunOptimization = async () => {
+    if (!branchId) return message.warning('Hãy chọn chi nhánh làm việc trên thanh điều hướng');
     if (!selectedVehicleId) {
       return message.warning('Vui lòng chọn xe tải để tối ưu tuyến');
     }
@@ -722,7 +726,7 @@ const DispatchPage: React.FC = () => {
                         type="primary"
                         size="small"
                         icon={<CheckCircleOutlined />}
-                        onClick={handlePublishTrip}
+                        disabled={!can('trips.publish')} onClick={handlePublishTrip}
                         loading={submitting}
                         style={{ background: '#059669', borderColor: '#059669' }}
                       >
