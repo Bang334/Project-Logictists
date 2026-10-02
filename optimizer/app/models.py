@@ -22,6 +22,10 @@ class VehicleFloor(BaseModel):
 
 
 class FleetVehicle(VehicleFloor):
+    source_vehicle_id: Optional[str] = None
+    service_day_index: int = Field(default=0, ge=0)
+    available_start_sec: int = Field(default=0, ge=0)
+    available_end_sec: int = Field(default=30 * 86400, gt=0)
     depot: LocationPoint
     model: Optional[str] = None
     vehicle_type: Optional[str] = None
@@ -33,8 +37,16 @@ class FleetVehicle(VehicleFloor):
     )
     fixed_operating_cost_vnd: int = Field(ge=0)
 
+    @model_validator(mode="after")
+    def validate_availability(self):
+        if self.available_start_sec >= self.available_end_sec:
+            raise ValueError("vehicle availability window is invalid")
+        return self
+
 
 class DriverOption(BaseModel):
+    source_driver_id: Optional[str] = None
+    service_day_index: int = Field(default=0, ge=0)
     id: str
     full_name: str
     license_class: str = "C"
@@ -79,6 +91,20 @@ class CostPolicy(BaseModel):
     monthly_working_minutes: int = Field(gt=0)
     cargo_holding_cost_vnd_per_ton_hour: int = Field(default=0, ge=0)
     unassigned_order_penalty_vnd: int = Field(default=1_000_000_000, gt=0)
+    delivery_grace_days: int = Field(default=2, ge=0, le=365)
+    late_delivery_penalty_mode: Literal[
+        "NONE", "FIXED_PER_DAY", "PERCENT_ORDER_VALUE_PER_DAY"
+    ] = "NONE"
+    late_delivery_penalty_value: float = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_late_delivery_penalty(self):
+        if (
+            self.late_delivery_penalty_mode == "PERCENT_ORDER_VALUE_PER_DAY"
+            and self.late_delivery_penalty_value > 100
+        ):
+            raise ValueError("percentage late-delivery penalty cannot exceed 100% per day")
+        return self
 
 
 class CargoItem(BaseModel):
@@ -160,19 +186,9 @@ class OrderPair(BaseModel):
     pickup_location: LocationPoint
     delivery_location: LocationPoint
     items: List[CargoItem] = Field(min_length=1)
-    pickup_window_start_sec: int = Field(default=0, ge=0)
-    pickup_window_end_sec: int = Field(default=604800, ge=0)
-    delivery_window_start_sec: int = Field(default=0, ge=0)
-    delivery_window_end_sec: int = Field(default=604800, ge=0)
+    ordered_at_sec: int = 0
+    order_value_vnd: int = Field(default=0, ge=0)
     service_time_sec: int = Field(default=1200, ge=0)
-
-    @model_validator(mode="after")
-    def validate_windows(self):
-        if self.pickup_window_start_sec > self.pickup_window_end_sec:
-            raise ValueError("pickup time window is invalid")
-        if self.delivery_window_start_sec > self.delivery_window_end_sec:
-            raise ValueError("delivery time window is invalid")
-        return self
 
 
 class OptimizationRequest(BaseModel):
@@ -231,6 +247,7 @@ class RouteCostBreakdown(BaseModel):
     load_fuel_surcharge_vnd: int
     fuel_cost_vnd: int
     cargo_holding_cost_vnd: int
+    late_delivery_penalty_vnd: int = 0
     cargo_distance_ton_km: float
     cargo_time_ton_hours: float
     vehicle_fixed_cost_vnd: int
@@ -240,7 +257,11 @@ class RouteCostBreakdown(BaseModel):
 
 
 class OptimizedRoute(BaseModel):
+    route_id: Optional[str] = None
     vehicle_id: str
+    service_day_index: int = Field(default=0, ge=0)
+    start_time_sec: int = Field(default=0, ge=0)
+    end_time_sec: int = Field(default=0, ge=0)
     plate_number: str
     vehicle_length_cm: float
     vehicle_width_cm: float
@@ -273,6 +294,7 @@ class BenchmarkMetric(BaseModel):
     vehicle_fixed_cost_vnd: int
     driver_cost_vnd: int
     cargo_holding_cost_vnd: int = 0
+    late_delivery_penalty_vnd: int = 0
     is_feasible: bool = True
     violations: List[str] = Field(default_factory=list)
 

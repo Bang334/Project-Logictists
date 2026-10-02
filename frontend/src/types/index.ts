@@ -2,8 +2,10 @@ export interface User {
   id: string;
   username: string;
   fullName: string;
-  role: 'ADMIN' | 'DISPATCHER' | 'DRIVER';
+  role: 'ADMIN' | 'DISPATCHER' | 'DRIVER' | 'STAFF' | 'CUSTOMER';
   branchId?: string;
+  locationId?: string;
+  phone?: string;
   branch?: Branch;
 }
 
@@ -19,10 +21,27 @@ export interface Branch {
   fuelPricePerLiter?: string;
   monthlyWorkingMinutes?: number;
   cargoHoldingCostVndPerTonHour?: string;
+  deliveryGraceDays?: number;
+  lateDeliveryPenaltyMode?: 'NONE' | 'FIXED_PER_DAY' | 'PERCENT_ORDER_VALUE_PER_DAY';
+  lateDeliveryPenaltyValue?: string;
   _count?: {
     vehicles: number;
     drivers: number;
   };
+}
+
+export interface Location {
+  id: string;
+  code: string;
+  name: string;
+  type: 'STORE' | 'CENTRAL_WAREHOUSE' | 'PICKUP_POINT';
+  managingBranchId?: string | null;
+  address: string;
+  latitude: number;
+  longitude: number;
+  capabilities?: string[] | null;
+  totalHoldingSlots: number;
+  availableHoldingSlots: number;
 }
 
 export interface Vehicle {
@@ -84,8 +103,6 @@ export interface OrderStop {
   longitude: number;
   contactName: string;
   contactPhone: string;
-  windowStart?: string;
-  windowEnd?: string;
   serviceDurationMinutes: number;
 }
 
@@ -111,6 +128,8 @@ export interface Order {
   totalPackages: number;
   version: number;
   notes?: string;
+  orderedAt: string;
+  totalAmount: string;
   stops: OrderStop[];
   items: OrderItem[];
   createdAt: string;
@@ -252,6 +271,7 @@ export interface RouteCostBreakdownUI {
   load_fuel_surcharge_vnd: number;
   fuel_cost_vnd: number;
   cargo_holding_cost_vnd: number;
+  late_delivery_penalty_vnd: number;
   cargo_distance_ton_km: number;
   cargo_time_ton_hours: number;
   vehicle_fixed_cost_vnd: number;
@@ -261,7 +281,11 @@ export interface RouteCostBreakdownUI {
 }
 
 export interface OptimizedRouteUI {
+  route_id: string;
   vehicle_id: string;
+  service_day_index: number;
+  start_time_sec: number;
+  end_time_sec: number;
   plate_number: string;
   vehicle_length_cm: number;
   vehicle_width_cm: number;
@@ -293,6 +317,7 @@ export interface BenchmarkMetricUI {
   vehicle_fixed_cost_vnd: number;
   driver_cost_vnd: number;
   cargo_holding_cost_vnd: number;
+  late_delivery_penalty_vnd: number;
   is_feasible: boolean;
   violations: string[];
 }
@@ -321,9 +346,18 @@ export interface FleetOptimizationResultUI {
   diagnostics: string[];
 }
 
+export type AutomaticDispatchScheduleModeUI = 'CURRENT_TIME' | 'NEXT_DAY';
+
+export interface RunAutomaticOptimizationPayloadUI {
+  branchId: string;
+  scheduleMode?: AutomaticDispatchScheduleModeUI;
+  customStartTime?: string;
+}
+
 export interface OptimizationProposalUI {
   branchId: string;
   planningEpochIso: string;
+  scheduleMode?: AutomaticDispatchScheduleModeUI;
   expiresAt: string;
   resources: {
     orders: Array<{ id: string; version: number }>;

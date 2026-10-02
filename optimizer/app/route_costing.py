@@ -1,6 +1,7 @@
 from typing import Dict, List, Tuple
 
 from .models import (
+    CostPolicy,
     DriverOption,
     FleetOptimizationRequest,
     FleetVehicle,
@@ -8,6 +9,31 @@ from .models import (
     RouteCostBreakdown,
     ScheduledStop,
 )
+
+
+SECONDS_PER_DAY = 86_400
+
+
+def late_delivery_daily_penalty(order: OrderPair, policy: CostPolicy) -> float:
+    if policy.late_delivery_penalty_mode == "FIXED_PER_DAY":
+        return policy.late_delivery_penalty_value
+    if policy.late_delivery_penalty_mode == "PERCENT_ORDER_VALUE_PER_DAY":
+        return order.order_value_vnd * policy.late_delivery_penalty_value / 100
+    return 0
+
+
+def calculate_late_delivery_penalty(
+    order: OrderPair,
+    delivery_time_sec: int,
+    policy: CostPolicy,
+) -> int:
+    grace_end_sec = order.ordered_at_sec + policy.delivery_grace_days * SECONDS_PER_DAY
+    late_seconds = max(0, delivery_time_sec - grace_end_sec)
+    return round(
+        late_delivery_daily_penalty(order, policy)
+        * late_seconds
+        / SECONDS_PER_DAY
+    )
 
 
 def calculate_driver_cost(
@@ -150,6 +176,13 @@ def build_route_cost_breakdown(
     _, fixed_salary_allocation, trip_pay = calculate_driver_cost(
         request, driver, duration_minutes, distance_km
     )
+    late_delivery_penalty = sum(
+        calculate_late_delivery_penalty(
+            order_by_id[stop.order_id], stop.arrival_time_sec, request.policy
+        )
+        for stop in stops
+        if stop.stop_type == "DELIVERY" and stop.order_id in order_by_id
+    )
     fuel_cost = base_fuel_cost + load_fuel_surcharge
     total_cost = (
         fuel_cost
@@ -157,12 +190,14 @@ def build_route_cost_breakdown(
         + fixed_salary_allocation
         + trip_pay
         + cargo_holding_cost
+        + late_delivery_penalty
     )
     return RouteCostBreakdown(
         base_fuel_cost_vnd=base_fuel_cost,
         load_fuel_surcharge_vnd=load_fuel_surcharge,
         fuel_cost_vnd=fuel_cost,
         cargo_holding_cost_vnd=cargo_holding_cost,
+        late_delivery_penalty_vnd=late_delivery_penalty,
         cargo_distance_ton_km=cargo_distance_ton_km,
         cargo_time_ton_hours=cargo_time_ton_hours,
         vehicle_fixed_cost_vnd=vehicle.fixed_operating_cost_vnd,

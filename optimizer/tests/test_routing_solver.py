@@ -1,3 +1,5 @@
+import time
+
 import pytest
 from app.models import (
     CostPolicy,
@@ -9,6 +11,9 @@ from app.models import (
     LocationPoint,
     OrderPair,
     OptimizationRequest,
+    OptimizedRoute,
+    ScheduledStop,
+    SpatialValidationResult,
 )
 from app.routing_solver import FleetRoutingSolver, OrToolsRoutingSolver
 
@@ -169,6 +174,411 @@ def test_fleet_solver_assigns_two_vehicles_drivers_and_costs():
     assert all(route.cost and route.cost.total_cost_vnd > 0 for route in response.routes)
 
 
+def test_fleet_solver_rounds_fractional_resequenced_route_end_time(monkeypatch):
+    depot = LocationPoint(id="fractional-depot", name="Kho", latitude=21, longitude=105.8)
+    vehicle = FleetVehicle(
+        id="fractional-truck",
+        plate_number="29C-FRACTIONAL",
+        length_cm=400,
+        width_cm=200,
+        height_cm=200,
+        payload_limit_kg=1000,
+        depot=depot,
+        fuel_consumption_liters_per_100_km=10,
+        fixed_operating_cost_vnd=50_000,
+    )
+    driver = DriverOption(
+        id="fractional-driver",
+        full_name="Tài xế",
+        fixed_salary_monthly_vnd=10_000_000,
+        trip_base_pay_vnd=100_000,
+        per_km_pay_vnd=1_000,
+    )
+    order = OrderPair(
+        id="fractional-order",
+        order_number="FRACTIONAL-ORDER",
+        pickup_location=LocationPoint(
+            id="fractional-pickup", name="Điểm lấy", latitude=21.01, longitude=105.81
+        ),
+        delivery_location=LocationPoint(
+            id="fractional-delivery", name="Điểm giao", latitude=21.02, longitude=105.82
+        ),
+        items=[
+            CargoItem(
+                id="fractional-item",
+                order_id="fractional-order",
+                length_cm=100,
+                width_cm=100,
+                height_cm=100,
+                weight_kg=100,
+            )
+        ],
+        service_time_sec=0,
+    )
+    matrix = [[0 if i == j else 60.25 for j in range(3)] for i in range(3)]
+    request = FleetOptimizationRequest(
+        job_id="fractional-time-job",
+        vehicles=[vehicle],
+        drivers=[driver],
+        orders=[order],
+        policy=CostPolicy(
+            fuel_price_per_liter_vnd=23_000,
+            monthly_working_minutes=10_560,
+        ),
+        max_time_seconds=1,
+        distance_matrix_meters=matrix,
+        duration_matrix_seconds=matrix,
+    )
+    solver = FleetRoutingSolver(request)
+    scheduled = [
+        ScheduledStop(
+            sequence=1,
+            location_id=order.pickup_location.id,
+            location_name=order.pickup_location.name,
+            stop_type="PICKUP",
+            order_id=order.id,
+            latitude=order.pickup_location.latitude,
+            longitude=order.pickup_location.longitude,
+            arrival_time_sec=60,
+            departure_time_sec=60,
+            items_loaded=[order.items[0].id],
+            current_weight_kg=100,
+        ),
+        ScheduledStop(
+            sequence=2,
+            location_id=order.delivery_location.id,
+            location_name=order.delivery_location.name,
+            stop_type="DELIVERY",
+            order_id=order.id,
+            latitude=order.delivery_location.latitude,
+            longitude=order.delivery_location.longitude,
+            arrival_time_sec=120,
+            departure_time_sec=120,
+            items_unloaded=[order.items[0].id],
+        ),
+    ]
+
+    monkeypatch.setattr(
+        "app.routing_solver.SpatialValidator.validate_plan",
+        lambda *_: SpatialValidationResult(
+            is_valid=False,
+            violation_code="BLOCKED_ACCESS",
+            error_message="Buộc đi qua nhánh tái sắp xếp",
+        ),
+    )
+    monkeypatch.setattr(
+        solver,
+        "_resequence_stops_for_spatial_feasibility",
+        lambda *_: (
+            scheduled,
+            [],
+            180.75,
+            180.75,
+            SpatialValidationResult(is_valid=True),
+        ),
+    )
+
+    response = solver.solve()
+
+    assert response.status == "SUCCESS"
+    assert response.routes[0].end_time_sec == 181
+    assert isinstance(response.routes[0].end_time_sec, int)
+
+
+def test_recovery_uses_an_idle_future_day_before_repacking_a_busy_route(monkeypatch):
+    depot = LocationPoint(id="recovery-depot", name="Kho", latitude=21, longitude=105.8)
+    vehicles = [
+        FleetVehicle(
+            id=f"recovery-truck::day:{day}",
+            source_vehicle_id="recovery-truck",
+            service_day_index=day,
+            available_start_sec=day * 86400,
+            available_end_sec=day * 86400 + 3600,
+            plate_number="29C-RECOVERY",
+            length_cm=400,
+            width_cm=200,
+            height_cm=200,
+            payload_limit_kg=1000,
+            depot=depot,
+            fuel_consumption_liters_per_100_km=10,
+            fixed_operating_cost_vnd=50_000,
+        )
+        for day in (0, 1)
+    ]
+    drivers = [
+        DriverOption(
+            id=f"recovery-driver::day:{day}",
+            source_driver_id="recovery-driver",
+            service_day_index=day,
+            full_name="Tài xế",
+            fixed_salary_monthly_vnd=10_000_000,
+            trip_base_pay_vnd=100_000,
+            per_km_pay_vnd=1_000,
+        )
+        for day in (0, 1)
+    ]
+
+    def make_order(index: int) -> OrderPair:
+        return OrderPair(
+            id=f"recovery-order-{index}",
+            order_number=f"RECOVERY-{index}",
+            pickup_location=LocationPoint(
+                id=f"recovery-pickup-{index}", name="Điểm lấy", latitude=21.01, longitude=105.81
+            ),
+            delivery_location=LocationPoint(
+                id=f"recovery-delivery-{index}", name="Điểm giao", latitude=21.02, longitude=105.82
+            ),
+            items=[
+                CargoItem(
+                    id=f"recovery-item-{index}",
+                    order_id=f"recovery-order-{index}",
+                    length_cm=100,
+                    width_cm=100,
+                    height_cm=100,
+                    weight_kg=100,
+                )
+            ],
+            service_time_sec=0,
+        )
+
+    existing_order = make_order(1)
+    pending_order = make_order(2)
+    matrix = [[0 if i == j else 60 for j in range(6)] for i in range(6)]
+    solver = FleetRoutingSolver(
+        FleetOptimizationRequest(
+            job_id="future-day-recovery",
+            vehicles=vehicles,
+            drivers=drivers,
+            orders=[existing_order, pending_order],
+            policy=CostPolicy(
+                fuel_price_per_liter_vnd=23_000,
+                monthly_working_minutes=10_560,
+            ),
+            max_time_seconds=1,
+            distance_matrix_meters=matrix,
+            duration_matrix_seconds=matrix,
+        )
+    )
+    busy_route = OptimizedRoute(
+        route_id=vehicles[0].id,
+        vehicle_id=vehicles[0].source_vehicle_id,
+        service_day_index=0,
+        plate_number=vehicles[0].plate_number,
+        vehicle_length_cm=vehicles[0].length_cm,
+        vehicle_width_cm=vehicles[0].width_cm,
+        total_distance_km=1,
+        total_duration_minutes=1,
+        stops=[
+            ScheduledStop(
+                sequence=1,
+                location_id=existing_order.pickup_location.id,
+                location_name=existing_order.pickup_location.name,
+                stop_type="PICKUP",
+                order_id=existing_order.id,
+                latitude=existing_order.pickup_location.latitude,
+                longitude=existing_order.pickup_location.longitude,
+                arrival_time_sec=60,
+                departure_time_sec=60,
+            )
+        ],
+        spatial_validation=SpatialValidationResult(is_valid=True),
+    )
+    recovered_stops = [
+        ScheduledStop(
+            sequence=1,
+            location_id=pending_order.pickup_location.id,
+            location_name=pending_order.pickup_location.name,
+            stop_type="PICKUP",
+            order_id=pending_order.id,
+            latitude=pending_order.pickup_location.latitude,
+            longitude=pending_order.pickup_location.longitude,
+            arrival_time_sec=86460,
+            departure_time_sec=86460,
+        ),
+        ScheduledStop(
+            sequence=2,
+            location_id=pending_order.delivery_location.id,
+            location_name=pending_order.delivery_location.name,
+            stop_type="DELIVERY",
+            order_id=pending_order.id,
+            latitude=pending_order.delivery_location.latitude,
+            longitude=pending_order.delivery_location.longitude,
+            arrival_time_sec=86520,
+            departure_time_sec=86520,
+        ),
+    ]
+    attempted_vehicle_ids = []
+
+    def recover_on_future_day(vehicle, *_):
+        attempted_vehicle_ids.append(vehicle.id)
+        if vehicle.service_day_index == 0:
+            raise AssertionError("Không được tái xếp tuyến bận trước khi thử slot trống ngày sau")
+        return (
+            recovered_stops,
+            [],
+            1000,
+            86580,
+            SpatialValidationResult(is_valid=True),
+        )
+
+    monkeypatch.setattr(
+        solver,
+        "_resequence_stops_for_spatial_feasibility",
+        recover_on_future_day,
+    )
+    routes = [busy_route]
+    assigned_order_ids = {existing_order.id}
+
+    limit_reached = solver._recover_unassigned_orders(
+        routes,
+        assigned_order_ids,
+        {},
+        deadline=time.monotonic() + 1,
+    )
+
+    assert limit_reached is False
+    assert attempted_vehicle_ids == [vehicles[1].id]
+    assert pending_order.id in assigned_order_ids
+    assert {route.service_day_index for route in routes} == {0, 1}
+
+
+def test_fleet_solver_reuses_vehicle_and_driver_on_the_next_service_day():
+    depot = LocationPoint(id="depot-multiday", name="Kho", latitude=21.0, longitude=105.8)
+    vehicle_slots = [
+        FleetVehicle(
+            id=f"truck-1::day:{day}",
+            source_vehicle_id="truck-1",
+            service_day_index=day,
+            available_start_sec=day * 86400,
+            available_end_sec=day * 86400 + 300,
+            plate_number="29C-001.23",
+            length_cm=400,
+            width_cm=200,
+            height_cm=200,
+            payload_limit_kg=1000,
+            depot=depot,
+            fuel_consumption_liters_per_100_km=10,
+            fixed_operating_cost_vnd=50_000,
+        )
+        for day in (0, 1)
+    ]
+    driver_slots = [
+        DriverOption(
+            id=f"driver-1::day:{day}",
+            source_driver_id="driver-1",
+            service_day_index=day,
+            full_name="Tài xế 1",
+            fixed_salary_monthly_vnd=10_000_000,
+            trip_base_pay_vnd=100_000,
+            per_km_pay_vnd=1_000,
+        )
+        for day in (0, 1)
+    ]
+
+    def make_order(index: int) -> OrderPair:
+        return OrderPair(
+            id=f"next-day-order-{index}",
+            order_number=f"NEXT-DAY-{index}",
+            pickup_location=LocationPoint(
+                id=f"next-day-p{index}", name=f"P{index}", latitude=21.01, longitude=105.81
+            ),
+            delivery_location=LocationPoint(
+                id=f"next-day-d{index}", name=f"D{index}", latitude=21.02, longitude=105.82
+            ),
+            items=[
+                CargoItem(
+                    id=f"next-day-item-{index}", order_id=f"next-day-order-{index}",
+                    length_cm=100, width_cm=100, height_cm=100, weight_kg=100,
+                )
+            ],
+            pickup_window_end_sec=2 * 86400 + 300,
+            delivery_window_end_sec=2 * 86400 + 300,
+            service_time_sec=0,
+        )
+
+    size = 6
+    distances = [[0 if i == j else 1000 for j in range(size)] for i in range(size)]
+    durations = [[0 if i == j else 100 for j in range(size)] for i in range(size)]
+    response = FleetRoutingSolver(FleetOptimizationRequest(
+        job_id="multi-day-job",
+        vehicles=vehicle_slots,
+        drivers=driver_slots,
+        orders=[make_order(1), make_order(2)],
+        policy=CostPolicy(fuel_price_per_liter_vnd=23_000, monthly_working_minutes=10_560),
+        max_time_seconds=3,
+        distance_matrix_meters=distances,
+        duration_matrix_seconds=durations,
+    )).solve()
+
+    assert response.status == "SUCCESS"
+    assert len(response.routes) == 2
+    assert {route.vehicle_id for route in response.routes} == {"truck-1"}
+    assert {route.driver_id for route in response.routes} == {"driver-1"}
+    assert {route.service_day_index for route in response.routes} == {0, 1}
+    assert all(route.end_time_sec <= (route.service_day_index + 1) * 86400 for route in response.routes)
+
+
+def test_fleet_solver_does_not_bypass_driver_license_requirements():
+    depot = LocationPoint(id="depot-license", name="Kho", latitude=21, longitude=105)
+    vehicle = FleetVehicle(
+        id="heavy-truck",
+        plate_number="29H-HEAVY",
+        length_cm=600,
+        width_cm=220,
+        height_cm=220,
+        payload_limit_kg=8_000,
+        depot=depot,
+        fuel_consumption_liters_per_100_km=18,
+        fixed_operating_cost_vnd=100_000,
+    )
+    driver = DriverOption(
+        id="b2-driver",
+        full_name="Tài xế B2",
+        license_class="B2",
+        fixed_salary_monthly_vnd=10_000_000,
+        trip_base_pay_vnd=100_000,
+        per_km_pay_vnd=1_000,
+    )
+    order = OrderPair(
+        id="license-order",
+        order_number="LICENSE-ORDER",
+        pickup_location=LocationPoint(id="license-p", name="P", latitude=21, longitude=105.1),
+        delivery_location=LocationPoint(id="license-d", name="D", latitude=21, longitude=105.2),
+        items=[
+            CargoItem(
+                id="license-item",
+                order_id="license-order",
+                length_cm=100,
+                width_cm=100,
+                height_cm=100,
+                weight_kg=500,
+            )
+        ],
+        service_time_sec=0,
+    )
+    matrix = [[0 if i == j else 1_000 for j in range(3)] for i in range(3)]
+
+    response = FleetRoutingSolver(
+        FleetOptimizationRequest(
+            job_id="license-job",
+            vehicles=[vehicle],
+            drivers=[driver],
+            orders=[order],
+            policy=CostPolicy(
+                fuel_price_per_liter_vnd=23_000,
+                monthly_working_minutes=10_560,
+            ),
+            max_time_seconds=1,
+            distance_matrix_meters=matrix,
+            duration_matrix_seconds=matrix,
+        )
+    ).solve()
+
+    assert response.status == "INFEASIBLE"
+    assert response.routes == []
+    assert response.unassigned_orders[0].reason_code == "NO_COMPATIBLE_DRIVER"
+
+
 def _economic_sequence_request(
     *, load_surcharge_percent: float = 0, cargo_holding_rate: int = 0
 ) -> FleetOptimizationRequest:
@@ -273,15 +683,14 @@ def test_cargo_holding_cost_penalizes_long_onboard_time():
 
 def test_fleet_solver_hanoi_multi_package_no_blocking():
     """
-    Kiểm thử bài toán thực tế 8 đơn Hà Nội (nhiều kiện, pallet, kích thước khác nhau)
-    trên 2 xe tải (2.5t và 5t).
-    Đảm bảo 100% đơn được xếp (0 unassigned) và không xảy ra vi phạm T24/T26 (chắn cửa).
+    Regression cho snapshot 11 đơn Hà Nội: cả ba xe đã có tuyến
+    nhưng đơn DEMO-HN-002 vẫn ghép được vào xe 29D-528.36.
+    Recovery không được chỉ xét xe rảnh.
     """
     import json, os, math
 
-    snapshot_path = os.path.join(os.path.dirname(__file__), "..", "job_snapshot.json")
-    if not os.path.exists(snapshot_path):
-        return
+    snapshot_path = os.path.join(os.path.dirname(__file__), "..", "test_full_payload.json")
+    assert os.path.exists(snapshot_path), "Thiếu fixture test_full_payload.json bắt buộc"
 
     with open(snapshot_path, encoding="utf-8") as f:
         data = json.load(f)
@@ -322,8 +731,64 @@ def test_fleet_solver_hanoi_multi_package_no_blocking():
         duration_matrix_seconds=dur_matrix,
     )
 
-    response = FleetRoutingSolver(req).solve()
-    assert response.status == "SUCCESS"
-    assert len(response.routes) == 2
-    assert len(response.unassigned_orders) == 0
-    assert all(r.spatial_validation.is_valid for r in response.routes)
+    solver = FleetRoutingSolver(req)
+    orders_by_number = {order.order_number: order for order in req.orders}
+    route_orders = {
+        "29C-678.92": ["DEMO-HN-003", "DEMO-HN-005", "DEMO-HN-006", "DEMO-HN-008"],
+        "29D-528.36": ["DEMO-HN-001", "DEMO-HN-004", "DEMO-HN-007", "DEMO-HN-011"],
+        "29H-842.15": ["DEMO-HN-009", "DEMO-HN-010"],
+    }
+
+    def placeholder_route(vehicle, order_numbers):
+        stops = []
+        for sequence, order_number in enumerate(order_numbers, 1):
+            order = orders_by_number[order_number]
+            stops.append(
+                ScheduledStop(
+                    sequence=sequence,
+                    location_id=order.pickup_location.id,
+                    location_name=order.pickup_location.name,
+                    stop_type="PICKUP",
+                    order_id=order.id,
+                    latitude=order.pickup_location.latitude,
+                    longitude=order.pickup_location.longitude,
+                    arrival_time_sec=0,
+                    departure_time_sec=0,
+                )
+            )
+        return OptimizedRoute(
+            vehicle_id=vehicle.id,
+            plate_number=vehicle.plate_number,
+            vehicle_length_cm=vehicle.length_cm,
+            vehicle_width_cm=vehicle.width_cm,
+            total_distance_km=0,
+            total_duration_minutes=0,
+            stops=stops,
+            spatial_validation=SpatialValidationResult(is_valid=True),
+        )
+
+    routes = [
+        placeholder_route(vehicle, route_orders[vehicle.plate_number])
+        for vehicle in req.vehicles
+    ]
+    target = orders_by_number["DEMO-HN-002"]
+    assigned_order_ids = {
+        order.id for order in req.orders if order.id != target.id
+    }
+    rejected_reasons = {
+        target.id: ("SPATIAL_ROUTE_CONFLICT", "Tuyến ban đầu không hợp lệ")
+    }
+
+    limit_reached = solver._recover_unassigned_orders(
+        routes,
+        assigned_order_ids,
+        rejected_reasons,
+        deadline=time.monotonic() + 10,
+    )
+
+    assert limit_reached is False
+    assert target.id in assigned_order_ids
+    assert target.id not in rejected_reasons
+    assert len(routes) == 3
+    assert any(target.id in {stop.order_id for stop in route.stops} for route in routes)
+    assert all(route.spatial_validation.is_valid for route in routes)

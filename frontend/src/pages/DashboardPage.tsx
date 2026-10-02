@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Row, Col, Card, Statistic, Table, Tag, Typography, Button, Spin, Space } from 'antd';
+import { Row, Col, Card, Statistic, Table, Tag, Typography, Button, Spin } from 'antd';
 import {
   CarOutlined,
   TeamOutlined,
@@ -8,11 +8,16 @@ import {
   RightOutlined,
   PlayCircleOutlined,
   EditOutlined,
+  EnvironmentOutlined,
+  BankOutlined,
+  ShopOutlined,
+  InboxOutlined,
 } from '@ant-design/icons';
-import { branchesApi, vehiclesApi, driversApi, ordersApi, tripsApi } from '../api/client';
-import { Branch, Vehicle, Driver, Order, Trip } from '../types';
+import { branchesApi, vehiclesApi, driversApi, locationsApi, ordersApi, tripsApi } from '../api/client';
+import { Branch, Vehicle, Driver, Location, Order, Trip } from '../types';
 import MapboxMap from '../components/MapboxMap';
 import { EditBranchModal } from '../components/EditBranchModal';
+import { buildNetworkMarkers } from '../utils/dashboardMap';
 
 const { Title, Text } = Typography;
 
@@ -25,6 +30,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
+  const [locations, setLocations] = useState<Location[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [selectedBranchForEdit, setSelectedBranchForEdit] = useState<Branch | null>(null);
@@ -33,16 +39,18 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [bRes, vRes, dRes, oRes, tRes] = await Promise.all([
+      const [bRes, vRes, dRes, lRes, oRes, tRes] = await Promise.all([
         branchesApi.getAll(),
         vehiclesApi.getAll(),
         driversApi.getAll(),
+        locationsApi.getAll(),
         ordersApi.getAll(),
         tripsApi.getAll(),
       ]);
       setBranches(bRes.data);
       setVehicles(vRes.data);
       setDrivers(dRes.data);
+      setLocations(lRes.data);
       setOrders(oRes.data);
       setTrips(tRes.data);
     } catch (error) {
@@ -70,15 +78,10 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
   const pendingOrders = orders.filter((o) => o.status === 'CONFIRMED').length;
   const activeTrips = trips.filter((t) => t.status === 'DISPATCHED' || t.status === 'IN_PROGRESS').length;
 
-  // Chuẩn bị markers cho bản đồ tổng quan
-  const branchMarkers = branches.map((b) => ({
-    id: b.id,
-    latitude: b.latitude,
-    longitude: b.longitude,
-    title: b.name,
-    subtitle: b.address,
-    type: 'DEPOT' as const,
-  }));
+  const networkMarkers = buildNetworkMarkers(branches, locations);
+  const warehouseCount = locations.filter((location) => location.type === 'CENTRAL_WAREHOUSE').length;
+  const pickupPointCount = locations.filter((location) => location.type === 'PICKUP_POINT').length;
+  const storeCount = locations.filter((location) => location.type === 'STORE').length;
 
   const tripColumns = [
     {
@@ -130,13 +133,14 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
   ];
 
   return (
-    <div style={{ padding: '24px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+    <div className="tms-page">
+      <div className="dashboard-page-header">
         <div>
-          <Title level={4} style={{ margin: 0 }}>Trung Tâm Chỉ Huy Vận Tải (TMS Dispatch)</Title>
+          <Text className="tms-page-eyebrow">Operations control center</Text>
+          <Title level={3} style={{ margin: 0 }}>Trung Tâm Chỉ Huy Vận Tải</Title>
           <Text type="secondary">Theo dõi đội xe, đơn hàng và các chuyến vận chuyển liên tỉnh trong thời gian thực</Text>
         </div>
-        <Button type="primary" icon={<SendOutlined />} onClick={() => onNavigate('dispatch-manual')}>
+        <Button className="dashboard-primary-action" type="primary" icon={<SendOutlined />} onClick={() => onNavigate('dispatch-manual')}>
           Mở Bàn Điều Phối Chuyến Đi
         </Button>
       </div>
@@ -144,46 +148,42 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
       {/* Thống kê KPIs */}
       <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
         <Col xs={24} sm={12} lg={6}>
-          <Card variant="borderless" className="card-elevation">
+          <Card className="dashboard-kpi-card dashboard-kpi-blue">
             <Statistic
               title="Xe Tải Sẵn Sàng"
               value={availableVehicles}
               suffix={`/ ${vehicles.length}`}
-              prefix={<CarOutlined style={{ color: '#3b82f6' }} />}
-              valueStyle={{ color: '#1e40af' }}
+              prefix={<span className="dashboard-kpi-icon"><CarOutlined /></span>}
             />
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <Card variant="borderless" className="card-elevation">
+          <Card className="dashboard-kpi-card dashboard-kpi-green">
             <Statistic
               title="Tài Xế Khả Dụng"
               value={availableDrivers}
               suffix={`/ ${drivers.length}`}
-              prefix={<TeamOutlined style={{ color: '#10b981' }} />}
-              valueStyle={{ color: '#047857' }}
+              prefix={<span className="dashboard-kpi-icon"><TeamOutlined /></span>}
             />
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <Card variant="borderless" className="card-elevation">
+          <Card className="dashboard-kpi-card dashboard-kpi-amber">
             <Statistic
               title="Đơn Chờ Điều Phối"
               value={pendingOrders}
               suffix="đơn"
-              prefix={<ShoppingOutlined style={{ color: '#f59e0b' }} />}
-              valueStyle={{ color: '#b45309' }}
+              prefix={<span className="dashboard-kpi-icon"><ShoppingOutlined /></span>}
             />
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <Card variant="borderless" className="card-elevation">
+          <Card className="dashboard-kpi-card dashboard-kpi-violet">
             <Statistic
               title="Chuyến Đang Thực Hiện"
               value={activeTrips}
               suffix="chuyến"
-              prefix={<SendOutlined style={{ color: '#8b5cf6' }} />}
-              valueStyle={{ color: '#6d28d9' }}
+              prefix={<span className="dashboard-kpi-icon"><SendOutlined /></span>}
             />
           </Card>
         </Col>
@@ -192,51 +192,47 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
       {/* Bản đồ mạng lưới chi nhánh kho vận Mapbox */}
       <Row gutter={[16, 16]} style={{ marginBottom: '24px' }}>
         <Col xs={24} lg={16}>
-          <Card
-            title={
-              <Space>
-                <span>Mạng Lưới Chi Nhánh Vận Tải (Mapbox Live View)</span>
-                <Tag color="blue">{branches.length} Chi nhánh lớn</Tag>
-              </Space>
-            }
-            extra={
+          <Card className="dashboard-network-card" styles={{ body: { padding: 0 } }}>
+            <div className="dashboard-map-toolbar">
+              <div className="dashboard-map-heading">
+                <div>
+                  <Text className="dashboard-section-kicker">Mapbox live view</Text>
+                  <Title level={4}>Mạng Lưới Kho & Điểm Nhận</Title>
+                </div>
+                <div className="dashboard-map-legend" aria-label="Chú giải bản đồ">
+                  <Tag color="blue"><BankOutlined /> {branches.length + warehouseCount} kho vận</Tag>
+                  <Tag color="cyan"><InboxOutlined /> {pickupPointCount} điểm nhận</Tag>
+                  <Tag color="orange"><ShopOutlined /> {storeCount} cửa hàng</Tag>
+                </div>
+              </div>
               <Button
+                className="dashboard-map-action"
                 type="primary"
                 icon={<PlayCircleOutlined />}
                 onClick={() => onNavigate('dispatch-auto')}
-                style={{ backgroundColor: '#2563eb' }}
               >
-                Điều Phối & Mô Phỏng Xe Live
+                Điều Phối & Mô Phỏng
               </Button>
-            }
-            variant="borderless"
-            className="card-elevation"
-          >
-            <MapboxMap markers={branchMarkers} height={420} />
+            </div>
+            <div className="dashboard-map-frame">
+              <MapboxMap markers={networkMarkers} height={480} />
+            </div>
           </Card>
         </Col>
         <Col xs={24} lg={8}>
           <Card
-            title="Chi Nhánh & Tổng Kho"
-            variant="borderless"
-            className="card-elevation"
+            title="Điểm Trong Mạng Lưới"
+            className="dashboard-points-card"
             style={{ height: '100%' }}
           >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div className="dashboard-point-list">
               {branches.map((b) => (
-                <div
-                  key={b.id}
-                  style={{
-                    padding: '12px',
-                    borderRadius: '8px',
-                    background: '#f8fafc',
-                    border: '1px solid #e2e8f0',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                      <strong style={{ color: '#1e3a8a' }}>{b.name}</strong>
-                      <Tag color="geekblue">{b.code}</Tag>
+                <div key={b.id} className="dashboard-point-item">
+                  <div className="dashboard-point-topline">
+                    <span className="dashboard-point-type dashboard-point-type-branch"><BankOutlined /></span>
+                    <div className="dashboard-point-copy">
+                      <strong>{b.name}</strong>
+                      <span><Tag color="blue">Kho vận</Tag>{b.code}</span>
                     </div>
                     <Button
                       size="small"
@@ -246,25 +242,44 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                         setSelectedBranchForEdit(b);
                         setIsEditBranchModalOpen(true);
                       }}
-                      style={{ padding: '0 4px', fontSize: 12 }}
+                      aria-label={`Sửa địa chỉ ${b.name}`}
                     >
-                      Sửa địa chỉ
+                      Sửa
                     </Button>
                   </div>
-                  <div style={{ color: '#64748b', fontSize: '13px', marginTop: '4px' }}>
-                    📍 {b.address}
+                  <div className="dashboard-point-address">
+                    <EnvironmentOutlined /> {b.address}
                   </div>
-                  {b.latitude && b.longitude && (
-                    <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: 2 }}>
-                      Tọa độ: {b.latitude.toFixed(4)}, {b.longitude.toFixed(4)}
-                    </div>
-                  )}
-                  <div style={{ display: 'flex', gap: '12px', marginTop: '8px', fontSize: '12px' }}>
-                    <span>🚗 {b._count?.vehicles || 0} xe quản lý</span>
-                    <span>👤 {b._count?.drivers || 0} tài xế</span>
+                  <div className="dashboard-point-meta">
+                    <span><CarOutlined /> {b._count?.vehicles || 0} xe</span>
+                    <span><TeamOutlined /> {b._count?.drivers || 0} tài xế</span>
                   </div>
                 </div>
               ))}
+              {locations.map((location) => {
+                const config = location.type === 'PICKUP_POINT'
+                  ? { label: 'Điểm nhận', icon: <InboxOutlined />, color: 'cyan', className: 'pickup' }
+                  : location.type === 'CENTRAL_WAREHOUSE'
+                    ? { label: 'Kho trung tâm', icon: <BankOutlined />, color: 'blue', className: 'warehouse' }
+                    : { label: 'Cửa hàng', icon: <ShopOutlined />, color: 'orange', className: 'store' };
+                return (
+                  <div key={location.id} className="dashboard-point-item">
+                    <div className="dashboard-point-topline">
+                      <span className={`dashboard-point-type dashboard-point-type-${config.className}`}>{config.icon}</span>
+                      <div className="dashboard-point-copy">
+                        <strong>{location.name}</strong>
+                        <span><Tag color={config.color}>{config.label}</Tag>{location.code}</span>
+                      </div>
+                    </div>
+                    <div className="dashboard-point-address"><EnvironmentOutlined /> {location.address}</div>
+                    {location.type === 'PICKUP_POINT' && (
+                      <div className="dashboard-point-meta">
+                        <span><InboxOutlined /> {location.availableHoldingSlots}/{location.totalHoldingSlots} chỗ trống</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </Card>
         </Col>

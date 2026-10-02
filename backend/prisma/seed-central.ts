@@ -1291,8 +1291,6 @@ export async function seedCentralBranchData() {
               contactName: o.pickup.contactName,
               contactPhone: o.pickup.contactPhone,
               serviceDurationMinutes: 25,
-              windowStart: new Date(o.pickup.windowStart),
-              windowEnd: new Date(o.pickup.windowEnd),
             },
             {
               type: StopType.DELIVERY,
@@ -1303,8 +1301,6 @@ export async function seedCentralBranchData() {
               contactName: o.delivery.contactName,
               contactPhone: o.delivery.contactPhone,
               serviceDurationMinutes: 25,
-              windowStart: new Date(o.delivery.windowStart),
-              windowEnd: new Date(o.delivery.windowEnd),
             },
           ],
         },
@@ -1338,8 +1334,6 @@ export async function seedCentralBranchData() {
           contactName: o.pickup.contactName,
           contactPhone: o.pickup.contactPhone,
           serviceDurationMinutes: 25,
-          windowStart: new Date(o.pickup.windowStart),
-          windowEnd: new Date(o.pickup.windowEnd),
         },
         create: {
           orderId: createdOrder.id,
@@ -1351,8 +1345,6 @@ export async function seedCentralBranchData() {
           contactName: o.pickup.contactName,
           contactPhone: o.pickup.contactPhone,
           serviceDurationMinutes: 25,
-          windowStart: new Date(o.pickup.windowStart),
-          windowEnd: new Date(o.pickup.windowEnd),
         },
       }),
       prisma.orderStop.upsert({
@@ -1364,8 +1356,6 @@ export async function seedCentralBranchData() {
           contactName: o.delivery.contactName,
           contactPhone: o.delivery.contactPhone,
           serviceDurationMinutes: 25,
-          windowStart: new Date(o.delivery.windowStart),
-          windowEnd: new Date(o.delivery.windowEnd),
         },
         create: {
           orderId: createdOrder.id,
@@ -1377,8 +1367,6 @@ export async function seedCentralBranchData() {
           contactName: o.delivery.contactName,
           contactPhone: o.delivery.contactPhone,
           serviceDurationMinutes: 25,
-          windowStart: new Date(o.delivery.windowStart),
-          windowEnd: new Date(o.delivery.windowEnd),
         },
       }),
     ]);

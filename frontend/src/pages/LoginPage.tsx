@@ -1,101 +1,139 @@
 import React, { useState } from 'react';
-import { Card, Form, Input, Button, Typography, Alert, App as AntdApp } from 'antd';
-import { UserOutlined, LockOutlined, TruckOutlined } from '@ant-design/icons';
+import { Alert, App as AntdApp, Button, Card, Form, Input, Typography } from 'antd';
+import {
+  BarChartOutlined,
+  CheckCircleFilled,
+  LockOutlined,
+  SafetyCertificateOutlined,
+  TruckOutlined,
+  UserOutlined,
+} from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
 
 const { Title, Text } = Typography;
+
+type LoginValues = {
+  username: string;
+  pass: string;
+};
+
+const DEMO_CREDENTIALS: LoginValues = {
+  username: 'admin',
+  pass: 'admin123',
+};
 
 const LoginPage: React.FC = () => {
   const { message } = AntdApp.useApp();
   const { login } = useAuth();
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async (values: { username: string; pass: string }) => {
+  const handleSubmit = async (values: LoginValues) => {
     setLoading(true);
     try {
       await login(values.username, values.pass);
       message.success('Đăng nhập hệ thống TMS thành công!');
-    } catch (err: any) {
-      message.error(err.response?.data?.message || 'Sai tên đăng nhập hoặc mật khẩu');
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { message?: string } } };
+      message.error(error.response?.data?.message || 'Sai tên đăng nhập hoặc mật khẩu');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        minHeight: '100vh',
-        background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
-        padding: '20px',
-      }}
-    >
-      <Card
-        style={{
-          width: 440,
-          borderRadius: '12px',
-          boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.3)',
-          border: '1px solid #334155',
-        }}
-      >
-        <div style={{ textAlign: 'center', marginBottom: '24px' }}>
-          <div
-            style={{
-              display: 'inline-flex',
-              padding: '12px',
-              borderRadius: '50%',
-              background: '#e0f2fe',
-              color: '#0284c7',
-              marginBottom: '12px',
-            }}
-          >
-            <TruckOutlined style={{ fontSize: '32px' }} />
-          </div>
-          <Title level={3} style={{ margin: 0, color: '#0f172a' }}>
-            Hệ Thống Quản Trị TMS
-          </Title>
-          <Text type="secondary">Đăng nhập cổng điều phối vận tải trực tuyến</Text>
+    <main className="login-shell">
+      <section className="login-intro" aria-labelledby="login-intro-title">
+        <div className="login-brand">
+          <span className="login-brand-mark"><TruckOutlined /></span>
+          <span><strong>TMS Logistics</strong><small>Transport Management System</small></span>
         </div>
 
-        <Alert
-          type="info"
-          showIcon
-          message="Tài khoản dùng thử có sẵn trong database:"
-          description={
-            <div style={{ fontSize: '12px' }}>
-              <div>• Quản trị viên: <code>admin</code> / <code>admin123</code></div>
-              <div>• Điều phối viên: <code>dispatcher_hn</code> / <code>dispatcher123</code></div>
-            </div>
-          }
-          style={{ marginBottom: '20px' }}
-        />
+        <div className="login-intro-content">
+          <span className="login-eyebrow">Trung tâm điều hành hợp nhất</span>
+          <Title id="login-intro-title" level={1}>
+            Vận hành vận tải rõ ràng, từ kế hoạch đến giao hàng.
+          </Title>
+          <Text>
+            Theo dõi đơn, nguồn lực và tiến độ trong một không gian làm việc tập trung cho đội vận hành.
+          </Text>
 
-        <Form layout="vertical" onFinish={handleSubmit} initialValues={{ username: 'admin', pass: 'admin123' }}>
-          <Form.Item
-            label="Tên đăng nhập"
-            name="username"
-            rules={[{ required: true, message: 'Vui lòng nhập username' }]}
+          <div className="login-feature-list">
+            <div><TruckOutlined /><span><strong>Điều phối chuyến</strong><small>Phân công và theo dõi tiến độ</small></span></div>
+            <div><BarChartOutlined /><span><strong>Dữ liệu vận hành</strong><small>Tồn kho, đơn hàng và đối soát</small></span></div>
+            <div><SafetyCertificateOutlined /><span><strong>Kiểm soát truy cập</strong><small>Không gian theo vai trò người dùng</small></span></div>
+          </div>
+        </div>
+
+        <div className="login-system-status">
+          <CheckCircleFilled /> Sẵn sàng tiếp nhận phiên làm việc
+        </div>
+      </section>
+
+      <section className="login-form-panel" aria-labelledby="login-title">
+        <Card className="login-card">
+          <div className="login-card-heading">
+            <span className="login-mobile-mark"><TruckOutlined /></span>
+            <span className="login-eyebrow">Cổng vận hành</span>
+            <Title id="login-title" level={2}>Chào mừng trở lại</Title>
+            <Text type="secondary">Đăng nhập bằng tài khoản đã được cấp cho bạn.</Text>
+          </div>
+
+          {import.meta.env.DEV && (
+            <Alert
+              type="info"
+              showIcon
+              message="Tài khoản dùng thử"
+              description={(
+                <span className="login-demo-credentials">
+                  <span>Tên đăng nhập: <strong>{DEMO_CREDENTIALS.username}</strong></span>
+                  <span>Mật khẩu: <strong>{DEMO_CREDENTIALS.pass}</strong></span>
+                </span>
+              )}
+              className="login-demo-alert"
+            />
+          )}
+
+          <Form<LoginValues>
+            layout="vertical"
+            onFinish={handleSubmit}
+            initialValues={import.meta.env.DEV ? DEMO_CREDENTIALS : undefined}
+            autoComplete="off"
+            requiredMark
           >
-            <Input prefix={<UserOutlined />} placeholder="Ví dụ: admin" size="large" />
-          </Form.Item>
+            <Form.Item
+              label="Tên đăng nhập"
+              name="username"
+              rules={[{ required: true, message: 'Vui lòng nhập tên đăng nhập' }]}
+            >
+              <Input
+                prefix={<UserOutlined />}
+                placeholder={import.meta.env.DEV ? 'admin' : 'Tên đăng nhập'}
+                autoComplete={import.meta.env.DEV ? 'off' : 'username'}
+                size="large"
+              />
+            </Form.Item>
 
-          <Form.Item
-            label="Mật khẩu"
-            name="pass"
-            rules={[{ required: true, message: 'Vui lòng nhập mật khẩu' }]}
-          >
-            <Input.Password prefix={<LockOutlined />} placeholder="Mật khẩu" size="large" />
-          </Form.Item>
+            <Form.Item
+              label="Mật khẩu"
+              name="pass"
+              rules={[{ required: true, message: 'Vui lòng nhập mật khẩu' }]}
+            >
+              <Input.Password
+                prefix={<LockOutlined />}
+                placeholder={import.meta.env.DEV ? 'admin123' : 'Mật khẩu'}
+                autoComplete={import.meta.env.DEV ? 'new-password' : 'current-password'}
+                size="large"
+              />
+            </Form.Item>
 
-          <Button type="primary" htmlType="submit" size="large" block loading={loading} style={{ marginTop: '8px' }}>
-            Đăng Nhập Ngay
-          </Button>
-        </Form>
-      </Card>
-    </div>
+            <Button type="primary" htmlType="submit" size="large" block loading={loading} className="login-submit">
+              Đăng nhập
+            </Button>
+          </Form>
+          <Text className="login-help">Liên hệ quản trị viên nếu bạn chưa có quyền truy cập.</Text>
+        </Card>
+      </section>
+    </main>
   );
 };
 

@@ -113,6 +113,8 @@ export class OrdersService {
         customerId: dto.customerId,
         branchId,
         status: OrderStatus.CONFIRMED,
+        orderedAt: dto.orderedAt,
+        totalAmount: dto.totalAmount ?? 0,
         totalWeightKg: Math.round(totalWeightKg * 10) / 10,
         totalVolumeM3: Math.round(totalVolumeM3 * 100) / 100,
         totalPackages,
@@ -126,8 +128,6 @@ export class OrdersService {
             longitude: s.longitude,
             contactName: s.contactName,
             contactPhone: s.contactPhone,
-            windowStart: s.windowStart ? new Date(s.windowStart) : null,
-            windowEnd: s.windowEnd ? new Date(s.windowEnd) : null,
             serviceDurationMinutes: s.serviceDurationMinutes || 20,
           })),
         },
@@ -237,8 +237,6 @@ export class OrdersService {
             longitude: s.longitude,
             contactName: s.contactName,
             contactPhone: s.contactPhone,
-            windowStart: s.windowStart ? new Date(s.windowStart) : null,
-            windowEnd: s.windowEnd ? new Date(s.windowEnd) : null,
             serviceDurationMinutes: s.serviceDurationMinutes || 20,
           })),
         });
@@ -270,6 +268,8 @@ export class OrdersService {
           ...(dto.customerId ? { customerId: dto.customerId } : {}),
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
           ...(dto.status ? { status: dto.status } : {}),
+          ...(dto.orderedAt ? { orderedAt: dto.orderedAt } : {}),
+          ...(dto.totalAmount !== undefined ? { totalAmount: dto.totalAmount } : {}),
           ...(dto.items
             ? {
                 totalWeightKg: Math.round(totalWeightKg * 10) / 10,

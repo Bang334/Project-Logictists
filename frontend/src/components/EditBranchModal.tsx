@@ -10,11 +10,15 @@ import {
   AutoComplete,
   App as AntdApp,
   Alert,
+  Divider,
+  InputNumber,
+  Select,
 } from 'antd';
 import {
   ApartmentOutlined,
   CompassOutlined,
   AimOutlined,
+  EnvironmentOutlined,
   SaveOutlined,
 } from '@ant-design/icons';
 import { branchesApi, mapboxApi } from '../api/client';
@@ -56,6 +60,9 @@ export const EditBranchModal: React.FC<EditBranchModalProps> = ({
         code: branch.code,
         phone: branch.phone || '',
         address: branch.address,
+        deliveryGraceDays: branch.deliveryGraceDays ?? 2,
+        lateDeliveryPenaltyMode: branch.lateDeliveryPenaltyMode ?? 'NONE',
+        lateDeliveryPenaltyValue: Number(branch.lateDeliveryPenaltyValue ?? 0),
       });
 
       if (branch.latitude && branch.longitude) {
@@ -111,6 +118,9 @@ export const EditBranchModal: React.FC<EditBranchModalProps> = ({
         phone: values.phone,
         latitude: lat,
         longitude: lng,
+        deliveryGraceDays: values.deliveryGraceDays,
+        lateDeliveryPenaltyMode: values.lateDeliveryPenaltyMode,
+        lateDeliveryPenaltyValue: values.lateDeliveryPenaltyValue,
       };
 
       await branchesApi.update(branch.id, payload);
@@ -206,9 +216,63 @@ export const EditBranchModal: React.FC<EditBranchModalProps> = ({
               </Tag>
             ) : (
               <Text type="secondary" style={{ fontSize: 12 }}>
-                📍 Chưa có tọa độ GPS (hệ thống sẽ tự động geocode từ địa chỉ qua Mapbox)
+                <EnvironmentOutlined /> Chưa có tọa độ GPS (hệ thống sẽ tự động geocode từ địa chỉ qua Mapbox)
               </Text>
             )}
+          </div>
+
+          <Divider orientation="left">Chính sách giao trễ</Divider>
+          <Alert
+            type="info"
+            showIcon
+            message="Không có hạn giao cứng. Đơn được miễn phạt trong số ngày cấu hình; sau đó mức phạt tăng tuyến tính theo thời gian giao trễ."
+            style={{ marginBottom: 12 }}
+          />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.5fr 1fr', gap: 12 }}>
+            <Form.Item
+              label="Số ngày miễn phạt"
+              name="deliveryGraceDays"
+              rules={[{ required: true }]}
+            >
+              <InputNumber min={0} max={365} precision={0} style={{ width: '100%' }} />
+            </Form.Item>
+            <Form.Item label="Cách tính phạt" name="lateDeliveryPenaltyMode">
+              <Select
+                options={[
+                  { value: 'NONE', label: 'Không áp dụng' },
+                  { value: 'FIXED_PER_DAY', label: 'Số tiền cố định / ngày' },
+                  {
+                    value: 'PERCENT_ORDER_VALUE_PER_DAY',
+                    label: '% giá trị đơn / ngày',
+                  },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item
+              noStyle
+              shouldUpdate={(previous, current) =>
+                previous.lateDeliveryPenaltyMode !== current.lateDeliveryPenaltyMode
+              }
+            >
+              {({ getFieldValue }) => {
+                const mode = getFieldValue('lateDeliveryPenaltyMode');
+                return (
+                  <Form.Item
+                    label={mode === 'PERCENT_ORDER_VALUE_PER_DAY' ? 'Mức phạt (%)' : 'Mức phạt (₫)'}
+                    name="lateDeliveryPenaltyValue"
+                    rules={[{ required: mode !== 'NONE' }]}
+                  >
+                    <InputNumber
+                      min={0}
+                      max={mode === 'PERCENT_ORDER_VALUE_PER_DAY' ? 100 : undefined}
+                      precision={mode === 'PERCENT_ORDER_VALUE_PER_DAY' ? 2 : 0}
+                      disabled={mode === 'NONE'}
+                      style={{ width: '100%' }}
+                    />
+                  </Form.Item>
+                );
+              }}
+            </Form.Item>
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>

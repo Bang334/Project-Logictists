@@ -43,6 +43,7 @@ export class AuthService {
       username: user.username,
       role: user.role,
       branchId: user.branchId,
+      locationId: user.locationId,
     };
 
     return {
@@ -53,6 +54,7 @@ export class AuthService {
         fullName: user.fullName,
         role: user.role,
         branch: user.branch,
+        locationId: user.locationId,
       },
     };
   }

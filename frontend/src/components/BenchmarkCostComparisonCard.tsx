@@ -10,20 +10,15 @@ import {
   Divider,
   Space,
   Tooltip,
-  Collapse,
   Table,
   Alert,
 } from 'antd';
 import {
   ThunderboltOutlined,
-  DollarCircleOutlined,
   DashboardOutlined,
-  CarOutlined,
-  ArrowDownOutlined,
   InfoCircleOutlined,
   CheckCircleOutlined,
   FundOutlined,
-  ClockCircleOutlined,
   SafetyCertificateOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
@@ -141,6 +136,12 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
       category: '📦 Chi phí lưu hàng trên xe',
       or_tools: or_tools.cargo_holding_cost_vnd,
       direct: direct_dedicated.cargo_holding_cost_vnd,
+    },
+    {
+      key: 'late-delivery',
+      category: '⏱️ Phạt giao trễ dự kiến',
+      or_tools: or_tools.late_delivery_penalty_vnd,
+      direct: direct_dedicated.late_delivery_penalty_vnd,
     },
     {
       key: 'total',

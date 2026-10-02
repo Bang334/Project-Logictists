@@ -1,6 +1,7 @@
 import {
   ArrayMinSize,
   IsArray,
+  IsDate,
   IsEnum,
   IsInt,
   IsNotEmpty,
@@ -81,12 +82,6 @@ export class CreateOrderStopDto {
   contactPhone: string;
 
   @IsOptional()
-  windowStart?: Date;
-
-  @IsOptional()
-  windowEnd?: Date;
-
-  @IsOptional()
   @IsNumber()
   serviceDurationMinutes?: number;
 }
@@ -103,6 +98,15 @@ export class CreateOrderDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @Type(() => Date)
+  @IsDate()
+  orderedAt: Date;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  totalAmount?: number;
 
   @IsArray()
   @ArrayMinSize(1)

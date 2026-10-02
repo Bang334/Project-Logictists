@@ -11,10 +11,13 @@ Write-Host "       HỆ THỐNG QUẢN TRỊ & ĐIỀU PHỐI VẬN TẢI - TMS 
 Write-Host "========================================================================" -ForegroundColor Cyan
 Write-Host ""
 
-$ROOT_DIR = if ($PSScriptRoot) { $PSScriptRoot } else { "e:\HocTap\Project-Logictists" }
+$ROOT_DIR = if ($PSScriptRoot) { $PSScriptRoot } else { "e:\Projects\Coursework\Project-Logictists" }
 $PORTS = @(4000, 5173, 8000)
 
 function Stop-TMSPorts {
+    Write-Host "  -> Đang quét và giải phóng các dịch vụ TMS..." -ForegroundColor Yellow
+
+    # 1. Tắt theo cổng 4000, 5173, 8000
     foreach ($port in $PORTS) {
         try {
             $connections = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
@@ -24,28 +27,42 @@ function Stop-TMSPorts {
                     if ($procId -and $procId -ne 0 -and $procId -ne $PID) {
                         $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
                         $procName = if ($proc) { $proc.ProcessName } else { "Unknown" }
-                        Write-Host "  -> Cổng $port đang bị chiếm bởi [$procName] (PID: $procId). Đang ngắt..." -ForegroundColor Yellow
+                        Write-Host "     * Ngắt tiến trình [$procName] (PID: $procId) trên cổng $port..." -ForegroundColor Yellow
                         Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
                     }
                 }
             }
-        } catch {
+        } catch {}
+        try {
             $netstatOutput = netstat -ano | Select-String ":$port\s+"
             foreach ($line in $netstatOutput) {
                 $parts = $line.ToString().Trim() -split '\s+'
                 $pidToKill = $parts[-1]
                 if ($pidToKill -and $pidToKill -match '^\d+$' -and [int]$pidToKill -ne 0 -and [int]$pidToKill -ne $PID) {
-                    Write-Host "  -> Cổng $port bị chiếm bởi PID $pidToKill. Đang ngắt..." -ForegroundColor Yellow
                     taskkill /F /PID $pidToKill 2>$null
                 }
             }
-        }
+        } catch {}
     }
+
+    # 2. Tắt triệt để các tiến trình Node/Python ngầm thuộc dự án TMS
+    try {
+        $tmsProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.ProcessId -ne $PID -and (
+                ($_.Name -in @('node.exe', 'python.exe') -and $_.CommandLine -like "*Project-Logictists*") -or
+                ($_.Name -eq 'powershell.exe' -and $_.CommandLine -like "*[TMS]*" -and $_.ProcessId -ne $PID)
+            )
+        }
+        foreach ($p in $tmsProcs) {
+            Write-Host "     * Dọn tiến trình ngầm [$($p.Name)] (PID: $($p.ProcessId))..." -ForegroundColor Yellow
+            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
 }
 
 try {
     # ------------------------------------------------------------------------
-    # BƯỚC 1: GIẢI PHÓNG CÁC CỔNG MẠNG
+    # BƯỚC 1: GIẢI PHÓNG CÁC CỔNG MẠNG VÀ TIẾN TRÌNH CŨ
     # ------------------------------------------------------------------------
     Write-Host "[1/4] Đang kiểm tra và giải phóng các cổng mạng (4000, 5173, 8000)..." -ForegroundColor Cyan
     Stop-TMSPorts
@@ -86,7 +103,7 @@ try {
         @{ Name = "Frontend Web";    Port = 5173; Ready = $false }
     )
 
-    $maxWaitSec = 40
+    $maxWaitSec = 45
     $startTime = Get-Date
 
     while (((Get-Date) - $startTime).TotalSeconds -lt $maxWaitSec) {
@@ -117,7 +134,7 @@ try {
     Write-Host ""
     Write-Host ""
     Write-Host "========================================================================" -ForegroundColor Green
-    Write-Host "       TẤT CẢ CÁC DỊCH VỤ ĐÃ KHỞI ĐỘNG THÀNH CÔNG!                      " -ForegroundColor Green
+    Write-Host "       TẤT CẢ CÁC DỊCH VỤ ĐÃ KHỞI ĐỘNG XONG!                           " -ForegroundColor Green
     Write-Host "========================================================================" -ForegroundColor Green
     Write-Host "  - Frontend:   http://localhost:5173" -ForegroundColor White
     Write-Host "  - Backend:    http://localhost:4000" -ForegroundColor White
@@ -129,7 +146,7 @@ try {
 
     Write-Host ""
     Write-Host "Hệ thống đang hoạt động trong các cửa sổ riêng biệt." -ForegroundColor Green
-    Write-Host "Nhấn [Q] tại đây để tắt toàn bộ hệ thống khi làm việc xong." -ForegroundColor Yellow
+    Write-Host "Nhấn phím [Q] tại đây để tắt toàn bộ hệ thống khi làm việc xong." -ForegroundColor Yellow
     Write-Host "========================================================================" -ForegroundColor Cyan
 
     while ($true) {
@@ -160,9 +177,9 @@ try {
         if (-not [Console]::IsInputRedirected) {
             $null = [Console]::ReadKey($true)
         } else {
-            Start-Sleep -Seconds 10
+            Start-Sleep -Seconds 15
         }
     } catch {
-        Start-Sleep -Seconds 10
+        Start-Sleep -Seconds 15
     }
 }

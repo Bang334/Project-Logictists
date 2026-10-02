@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Table,
   Tag,
@@ -6,15 +6,14 @@ import {
   Card,
   Typography,
   Space,
-  Badge,
   Button,
   Select,
   Input,
   Row,
   Col,
   Statistic,
-  Tooltip,
   App as AntdApp,
+  Image,
 } from 'antd';
 import {
   CarOutlined,
@@ -26,23 +25,18 @@ import {
   SearchOutlined,
   ReloadOutlined,
   CheckCircleOutlined,
-  ToolOutlined,
-  StopOutlined,
-  SmileOutlined,
-  CoffeeOutlined,
 } from '@ant-design/icons';
 import { vehiclesApi, driversApi, branchesApi } from '../api/client';
 import { Vehicle, Driver, Branch } from '../types';
 import { EditBranchModal } from '../components/EditBranchModal';
 import { EditVehicleModal } from '../components/EditVehicleModal';
 import { EditDriverModal } from '../components/EditDriverModal';
-import { useAuth } from '../context/AuthContext';
+import { getVehicleImage } from '../utils/demoAssets';
 
 const { Title, Text } = Typography;
 
 const FleetPage: React.FC = () => {
   const { message } = AntdApp.useApp();
-  const { user } = useAuth();
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
@@ -65,7 +59,7 @@ const FleetPage: React.FC = () => {
   const [selectedDriverForEdit, setSelectedDriverForEdit] = useState<Driver | null>(null);
   const [isEditDriverModalOpen, setIsEditDriverModalOpen] = useState(false);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       const branchParam = selectedBranchId === 'ALL' ? undefined : selectedBranchId;
@@ -82,11 +76,11 @@ const FleetPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [message, selectedBranchId]);
 
   useEffect(() => {
     void fetchData();
-  }, [selectedBranchId]);
+  }, [fetchData]);
 
   // Thao tác đổi nhanh trạng thái xe
   const handleQuickVehicleStatusChange = async (vehicle: Vehicle, newStatus: string) => {
@@ -147,6 +141,21 @@ const FleetPage: React.FC = () => {
 
   // Cột bảng Xe Tải
   const vehicleColumns = [
+    {
+      title: 'Ảnh xe',
+      key: 'image',
+      width: 112,
+      render: (_: any, vehicle: Vehicle) => (
+        <Image
+          src={getVehicleImage(vehicle.vehicleType, vehicle.model)}
+          alt={`${vehicle.vehicleType} ${vehicle.plateNumber}`}
+          width={88}
+          height={64}
+          style={{ objectFit: 'cover', borderRadius: 8 }}
+          preview={false}
+        />
+      ),
+    },
     {
       title: 'Biển Số Xe',
       dataIndex: 'plateNumber',
@@ -346,7 +355,7 @@ const FleetPage: React.FC = () => {
           <div style={{ color: '#0f172a', fontWeight: 500 }}>{r.address}</div>
           {r.latitude && r.longitude && (
             <div style={{ fontSize: '12px', color: '#64748b', marginTop: 2 }}>
-              📍 Tọa độ GPS: {r.latitude.toFixed(5)}, {r.longitude.toFixed(5)}
+              <EnvironmentOutlined /> Tọa độ GPS: {r.latitude.toFixed(5)}, {r.longitude.toFixed(5)}
             </div>
           )}
         </div>
@@ -404,11 +413,12 @@ const FleetPage: React.FC = () => {
   ];
 
   return (
-    <div style={{ padding: '24px' }}>
+    <div className="tms-page">
       {/* Header & Bộ Lọc Tổng Thể */}
-      <div style={{ marginBottom: '20px' }}>
+      <div className="tms-page-header">
         <Row justify="space-between" align="middle" gutter={[16, 16]}>
           <Col xs={24} md={12}>
+            <Text className="tms-page-eyebrow">Fleet operations · Resources</Text>
             <Title level={4} style={{ margin: 0 }}>
               Quản Lý Đội Xe, Tài Xế & Chi Nhánh Kho Vận
             </Title>
@@ -430,11 +440,11 @@ const FleetPage: React.FC = () => {
                 placeholder="Chọn chi nhánh"
               >
                 <Select.Option value="ALL">
-                  🌐 <strong>Tất cả chi nhánh (Toàn quốc)</strong>
+                  <strong>Tất cả chi nhánh (Toàn quốc)</strong>
                 </Select.Option>
                 {branches.map((b) => (
                   <Select.Option key={b.id} value={b.id}>
-                    📍 {b.name} ({b.code})
+                    {b.name} ({b.code})
                   </Select.Option>
                 ))}
               </Select>

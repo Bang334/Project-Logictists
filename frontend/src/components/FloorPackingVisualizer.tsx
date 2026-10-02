@@ -28,10 +28,8 @@ import {
   FilterOutlined,
   AppstoreOutlined,
   SwapOutlined,
-  CarOutlined,
   DownOutlined,
   UpOutlined,
-  EyeOutlined,
 } from '@ant-design/icons';
 import { Select } from 'antd';
 import { FloorStepStateUI, PlacedItemUI, Vehicle, OptimizedRouteUI } from '../types';
@@ -50,7 +48,7 @@ interface Props {
   // Props tích hợp khi đặt làm tracker chính phía trên
   route?: OptimizedRouteUI | null;
   allRoutes?: OptimizedRouteUI[];
-  onSelectRoute?: (vehicleId: string) => void;
+  onSelectRoute?: (routeId: string) => void;
   isSimulating?: boolean;
 }
 
@@ -172,7 +170,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
   const freeAreaPercent = Math.max(0, 100 - (activeState.area_utilization_percent || 0));
 
   // Lập bản đồ màu sắc duy nhất cho từng Đơn Hàng (Order ID)
-  const orderColorMap = useMemo(() => {
+  const orderColorMap = (() => {
     const map = new Map<string, typeof ORDER_COLOR_PALETTE[0]>();
     let colorIdx = 0;
     effectiveStepStates.forEach((state) => {
@@ -185,7 +183,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
       });
     });
     return map;
-  }, [effectiveStepStates]);
+  })();
 
   const getItemColor = (item: PlacedItemUI) => {
     const orderKey = item.order_id || item.item_id.split('#')[0] || 'DEFAULT';
@@ -203,7 +201,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
   };
 
   // Tính toán biến động (delta) kiện bốc/dỡ tại bước hiện tại so với bước trước
-  const stepDelta = useMemo(() => {
+  const stepDelta = (() => {
     if (!activeState) return { type: 'DEPOT', count: 0, weight: 0 };
     if (clampedStep === 0) {
       return {
@@ -226,15 +224,12 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
       const weight = unloaded.reduce((sum, i) => sum + i.weight_kg, 0);
       return { type: 'DELIVERY', count: unloaded.length, weight };
     }
-  }, [activeState, clampedStep, effectiveStepStates]);
+  })();
 
   // Backend là nguồn sự thật cho đường thao tác 2D; frontend không lặp lại
   // thuật toán hình học vì sẽ dễ báo khác kết quả validator.
-  const accessPathByItem = useMemo(
-    () => new Map(
-      (activeState.package_access_paths || []).map((accessPath) => [accessPath.item_id, accessPath]),
-    ),
-    [activeState.package_access_paths],
+  const accessPathByItem = new Map(
+    (activeState.package_access_paths || []).map((accessPath) => [accessPath.item_id, accessPath]),
   );
 
   const isPathToDoorClear = (target: PlacedItemUI): boolean =>
@@ -248,12 +243,10 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
   };
 
   // Số lượng kiện có lối ra cửa sau thông suốt
-  const clearCorridorCount = useMemo(() => {
-    return (activeState.placed_items || []).filter(isPathToDoorClear).length;
-  }, [activeState.placed_items, accessPathByItem]);
+  const clearCorridorCount = (activeState.placed_items || []).filter(isPathToDoorClear).length;
 
   // Gom nhóm kiện theo Đơn hàng có trên xe tại điểm này
-  const orderGroups = useMemo(() => {
+  const orderGroups = (() => {
     const groups = new Map<string, { orderKey: string; items: PlacedItemUI[]; totalWeight: number; color: typeof ORDER_COLOR_PALETTE[0] }>();
     (activeState.placed_items || []).forEach((item) => {
       const orderKey = item.order_id || item.item_id.split('#')[0] || 'DEFAULT';
@@ -266,14 +259,14 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
       grp.totalWeight += item.weight_kg;
     });
     return Array.from(groups.values());
-  }, [activeState.placed_items, orderColorMap]);
+  })();
 
   // Kiện được chọn hoặc hover để vẽ hành lang ra cửa sau
-  const activeHighlightedItem = useMemo(() => {
+  const activeHighlightedItem = (() => {
     const targetId = selectedItemId || hoveredItemId;
     if (!targetId) return null;
     return activeState.placed_items.find((item) => item.item_id === targetId) || null;
-  }, [selectedItemId, hoveredItemId, activeState.placed_items]);
+  })();
 
   // Kích thước khung vẽ SVG
   const cabinWidth = 72; // Đầu cabin phía trước bên trái
@@ -341,11 +334,11 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             {allRoutes && allRoutes.length > 1 && onSelectRoute ? (
               <Select
                 size="small"
-                value={route.vehicle_id}
+                value={route.route_id}
                 onChange={onSelectRoute}
                 popupMatchSelectWidth={false}
                 options={allRoutes.map((r, index) => ({
-                  value: r.vehicle_id,
+                  value: r.route_id,
                   label: (
                     <span>
                       <span
@@ -355,14 +348,14 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                         }}
                         aria-hidden="true"
                       />
-                      {r.plate_number} · {r.driver_name || 'Chưa có tài xế'}
+                      Ngày {r.service_day_index + 1} · {r.plate_number} · {r.driver_name || 'Chưa có tài xế'}
                     </span>
                   ),
                 }))}
               />
             ) : (
               <strong style={{ fontSize: 14, color: '#0f172a' }}>
-                {route.plate_number} · {route.driver_name || 'Chưa có tài xế'}
+                Ngày {route.service_day_index + 1} · {route.plate_number} · {route.driver_name || 'Chưa có tài xế'}
               </strong>
             )}
           </div>

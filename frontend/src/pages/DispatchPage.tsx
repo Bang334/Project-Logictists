@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Row,
   Col,
@@ -22,7 +22,6 @@ import {
   UserOutlined,
   CheckCircleOutlined,
   SendOutlined,
-  EnvironmentOutlined,
   ThunderboltOutlined,
   ArrowUpOutlined,
   ArrowDownOutlined,
@@ -100,6 +99,8 @@ const DispatchPage: React.FC = () => {
 
   useEffect(() => {
     fetchData();
+    // Initial load only; later refreshes are triggered explicitly after mutations.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchLoadProfile = async (tripId: string) => {
@@ -226,10 +227,12 @@ const DispatchPage: React.FC = () => {
   };
 
   const selectedVehicle = vehicles.find((v) => v.id === selectedVehicleId);
-  const selectedDriver = drivers.find((d) => d.id === selectedDriverId);
 
   // Tính tổng trọng tải tạm tính của các đơn đang chọn
-  const chosenOrders = orders.filter((o) => selectedOrderIds.includes(o.id));
+  const chosenOrders = useMemo(
+    () => orders.filter((o) => selectedOrderIds.includes(o.id)),
+    [orders, selectedOrderIds],
+  );
   const estimatedWeight = chosenOrders.reduce((sum, o) => sum + o.totalWeightKg, 0);
   const estimatedVolume = chosenOrders.reduce((sum, o) => sum + o.totalVolumeM3, 0);
   const selectedStopById = new Map(
@@ -320,10 +323,10 @@ const DispatchPage: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [chosenOrders.length, orderedStopIds, selectedVehicle?.homeBranch]);
+  }, [chosenOrders, orderedStopIds, selectedVehicle?.homeBranch]);
 
   // Chuẩn bị markers hiển thị trên Mapbox Map
-  let mapMarkers: any[] = [];
+  const mapMarkers: any[] = [];
   let routeGeometry: any = null;
 
   if (chosenOrders.length > 0) {
@@ -439,7 +442,7 @@ const DispatchPage: React.FC = () => {
   }
 
   return (
-    <div style={{ padding: '24px' }}>
+    <div className="tms-page">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
         <div>
           <Title level={4} style={{ margin: 0 }}>

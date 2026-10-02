@@ -1,64 +1,64 @@
 import React from 'react';
-import { Layout, Button, Space, Typography, Tag } from 'antd';
-import { CarOutlined, EnvironmentOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
+import { Avatar, Button, Grid, Layout, Space, Tag, Typography } from 'antd';
+import {
+  CarOutlined,
+  EnvironmentOutlined,
+  LogoutOutlined,
+  UserOutlined,
+} from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
 
 const { Header } = Layout;
 const { Text } = Typography;
 
+const ROLE_LABELS: Record<string, string> = {
+  ADMIN: 'Quản trị viên',
+  DISPATCHER: 'Điều phối viên',
+  STAFF: 'Nhân viên',
+  DRIVER: 'Tài xế',
+  CUSTOMER: 'Khách hàng',
+};
+
 const Navbar: React.FC = () => {
   const { user, logout } = useAuth();
+  const screens = Grid.useBreakpoint();
+  const displayName = user?.fullName || user?.username || 'Người dùng';
 
   return (
-    <Header
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '0 24px',
-        background: '#001529',
-        borderBottom: '1px solid #1e293b',
-        height: '64px',
-        position: 'sticky',
-        top: 0,
-        zIndex: 100,
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-        <CarOutlined aria-label="TMS Logistics" style={{ color: '#60a5fa', fontSize: '24px' }} />
-        <div>
-          <span style={{ color: '#ffffff', fontWeight: 700, fontSize: '18px', letterSpacing: '-0.02em' }}>
-            TMS LOGISTICS
-          </span>
-          <span style={{ color: '#94a3b8', fontSize: '12px', marginLeft: '8px' }}>
-            Phase 1: Core Dispatch
-          </span>
-        </div>
+    <Header className="tms-navbar">
+      <div className="tms-brand" aria-label="TMS Logistics">
+        <span className="tms-brand-mark"><CarOutlined /></span>
+        <span className="tms-brand-copy">
+          <strong>TMS Logistics</strong>
+          {screens.md && <small>Trung tâm vận hành</small>}
+        </span>
       </div>
 
-      <Space size="middle">
-        {user?.branch && (
-          <Tag icon={<EnvironmentOutlined />} color="blue" style={{ padding: '4px 10px', fontSize: '13px' }}>
+      <Space size={screens.md ? 16 : 8} className="tms-navbar-actions">
+        {screens.lg && user?.branch && (
+          <Tag className="tms-branch-tag" icon={<EnvironmentOutlined />}>
             {user.branch.name}
           </Tag>
         )}
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Tag color="geekblue" icon={<UserOutlined />}>
-            {user?.role}
-          </Tag>
-          <Text style={{ color: '#ffffff', fontWeight: 500 }}>
-            {user?.fullName || user?.username}
-          </Text>
+        <div className="tms-user-summary">
+          <Avatar className="tms-user-avatar" icon={<UserOutlined />} />
+          {screens.md && (
+            <span className="tms-user-copy">
+              <Text>{displayName}</Text>
+              <small>{ROLE_LABELS[user?.role || ''] || user?.role}</small>
+            </span>
+          )}
         </div>
 
         <Button
+          className="tms-logout-button"
           type="text"
           icon={<LogoutOutlined />}
           onClick={logout}
-          style={{ color: '#cbd5e1' }}
+          aria-label="Đăng xuất"
         >
-          Đăng xuất
+          {screens.lg ? 'Đăng xuất' : null}
         </Button>
       </Space>
     </Header>

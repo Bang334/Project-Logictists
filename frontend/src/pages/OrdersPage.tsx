@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Table,
   Button,
@@ -37,6 +37,7 @@ import { branchesApi, customersApi, mapboxApi, ordersApi } from '../api/client';
 import { Branch, Order } from '../types';
 import { MapLocationPickerModal } from '../components/MapLocationPickerModal';
 import { OrderDetailDrawer } from '../components/OrderDetailDrawer';
+import { ExpandableText } from '../components/ExpandableText';
 
 const { Title, Text } = Typography;
 
@@ -91,7 +92,7 @@ const OrdersPage: React.FC = () => {
   } | undefined>(undefined);
   const [mapPickerTitle, setMapPickerTitle] = useState('Chọn Vị Trí Trên Bản Đồ');
 
-  const fetchOrders = async (status?: string, customerId?: string, branchId?: string) => {
+  const fetchOrders = useCallback(async (status?: string, customerId?: string, branchId?: string) => {
     try {
       setLoading(true);
       const res = await ordersApi.getAll({
@@ -100,17 +101,17 @@ const OrdersPage: React.FC = () => {
         branchId: branchId || undefined,
       });
       setOrders(res.data);
-    } catch (error) {
+    } catch {
       message.error('Không thể tải danh sách đơn hàng');
     } finally {
       setLoading(false);
     }
-  };
+  }, [message]);
 
   // Tải danh sách đơn hàng theo filter server
   useEffect(() => {
     void fetchOrders(filterStatus, filterCustomerId, filterBranchId);
-  }, [filterStatus, filterCustomerId, filterBranchId]);
+  }, [fetchOrders, filterStatus, filterCustomerId, filterBranchId]);
 
   // Tải dữ liệu master data (Khách hàng, Chi nhánh)
   useEffect(() => {
@@ -247,6 +248,8 @@ const OrdersPage: React.FC = () => {
       customerId: order.customer.id,
       branchId: order.branchId || order.branch?.id,
       notes: order.notes,
+      orderedAt: order.orderedAt.slice(0, 10),
+      totalAmount: Number(order.totalAmount),
       pickupAddress: pickup?.address || '',
       pickupContactName: pickup?.contactName || '',
       pickupContactPhone: pickup?.contactPhone || '',
@@ -284,6 +287,8 @@ const OrdersPage: React.FC = () => {
         customerId: values.customerId,
         branchId: values.branchId,
         notes: values.notes,
+        orderedAt: values.orderedAt,
+        totalAmount: values.totalAmount || 0,
         items: values.items.map((item: any) => ({
           ...item,
           volumeM3: (item.lengthCm * item.widthCm * item.heightCm * item.quantity) / 1_000_000,
@@ -344,6 +349,8 @@ const OrdersPage: React.FC = () => {
       const payload = {
         customerId: values.customerId,
         notes: values.notes,
+        orderedAt: values.orderedAt,
+        totalAmount: values.totalAmount || 0,
         items: values.items.map((item: any) => ({
           ...item,
           volumeM3: (item.lengthCm * item.widthCm * item.heightCm * item.quantity) / 1_000_000,
@@ -420,11 +427,21 @@ const OrdersPage: React.FC = () => {
       key: 'customer',
       width: 200,
       render: (_: any, r: Order) => (
-        <div>
-          <strong style={{ color: '#0f172a' }}>{r.customer.name}</strong>
-          <div style={{ color: '#64748b', fontSize: '12px' }}>{r.customer.code}</div>
-        </div>
+        <ExpandableText
+          text={r.customer.name}
+          maxChars={24}
+          strong
+          maxWidth={190}
+          subText={<div style={{ color: '#64748b', fontSize: '12px' }}>{r.customer.code}</div>}
+        />
       ),
+    },
+    {
+      title: 'Ngày Đặt Hàng',
+      dataIndex: 'orderedAt',
+      key: 'orderedAt',
+      width: 125,
+      render: (value: string) => new Intl.DateTimeFormat('vi-VN').format(new Date(value)),
     },
     {
       title: 'Chi Nhánh',
@@ -457,24 +474,12 @@ const OrdersPage: React.FC = () => {
             <Tag color="green" icon={<EnvironmentOutlined />}>
               Lấy hàng
             </Tag>
-            <Tooltip title={pickup?.address}>
-              <div
-                style={{
-                  fontSize: '12px',
-                  marginTop: '4px',
-                  color: '#334155',
-                  display: '-webkit-box',
-                  WebkitLineClamp: 2,
-                  WebkitBoxOrient: 'vertical',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  lineHeight: 1.4,
-                  cursor: 'pointer',
-                }}
-              >
-                {pickup?.address || 'Chưa có địa chỉ'}
-              </div>
-            </Tooltip>
+            <ExpandableText
+              text={pickup?.address || 'Chưa có địa chỉ'}
+              maxChars={26}
+              maxWidth={205}
+              style={{ fontSize: '12px', marginTop: '4px', color: '#334155' }}
+            />
           </div>
         );
       },
@@ -490,24 +495,12 @@ const OrdersPage: React.FC = () => {
             <Tag color="orange" icon={<EnvironmentOutlined />}>
               Giao hàng
             </Tag>
-            <Tooltip title={delivery?.address}>
-              <div
-                style={{
-                  fontSize: '12px',
-                  marginTop: '4px',
-                  color: '#334155',
-                  display: '-webkit-box',
-                  WebkitLineClamp: 2,
-                  WebkitBoxOrient: 'vertical',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  lineHeight: 1.4,
-                  cursor: 'pointer',
-                }}
-              >
-                {delivery?.address || 'Chưa có địa chỉ'}
-              </div>
-            </Tooltip>
+            <ExpandableText
+              text={delivery?.address || 'Chưa có địa chỉ'}
+              maxChars={26}
+              maxWidth={205}
+              style={{ fontSize: '12px', marginTop: '4px', color: '#334155' }}
+            />
           </div>
         );
       },
@@ -588,7 +581,7 @@ const OrdersPage: React.FC = () => {
   ];
 
   return (
-    <div style={{ padding: '24px' }}>
+    <div className="tms-page">
       {/* Header trang */}
       <div
         style={{
@@ -613,7 +606,11 @@ const OrdersPage: React.FC = () => {
             setCreatePickupCoord(null);
             setCreateDeliveryCoord(null);
             if (branches.length > 0) {
-              createForm.setFieldsValue({ branchId: branches[0].id });
+              createForm.setFieldsValue({
+                branchId: branches[0].id,
+                orderedAt: new Date().toISOString().slice(0, 10),
+                totalAmount: 0,
+              });
             }
             setIsCreateModalOpen(true);
           }}
@@ -834,6 +831,23 @@ const OrdersPage: React.FC = () => {
                     </Select.Option>
                   ))}
                 </Select>
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Row gutter={12}>
+            <Col xs={24} md={12}>
+              <Form.Item
+                label="Ngày Đặt Hàng"
+                name="orderedAt"
+                rules={[{ required: true, message: 'Chọn ngày đặt hàng' }]}
+              >
+                <Input type="date" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Giá Trị Đơn Hàng (₫)" name="totalAmount">
+                <InputNumber min={0} precision={0} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
           </Row>
@@ -1123,6 +1137,23 @@ const OrdersPage: React.FC = () => {
               ))}
             </Select>
           </Form.Item>
+
+          <Row gutter={12}>
+            <Col xs={24} md={12}>
+              <Form.Item
+                label="Ngày Đặt Hàng"
+                name="orderedAt"
+                rules={[{ required: true, message: 'Chọn ngày đặt hàng' }]}
+              >
+                <Input type="date" />
+              </Form.Item>
+            </Col>
+            <Col xs={24} md={12}>
+              <Form.Item label="Giá Trị Đơn Hàng (₫)" name="totalAmount">
+                <InputNumber min={0} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
 
           <Divider orientation="left" style={{ fontSize: '13px' }}>
             1. Điểm Lấy Hàng (PICKUP)

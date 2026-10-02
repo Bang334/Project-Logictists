@@ -42,7 +42,7 @@ export class TripsController {
     @Req() req: { user: { id: string; branchId?: string; role: Role } },
     @Body() body?: RunAutomaticOptimizationDto,
   ) {
-    return this.tripsService.runAutomaticOptimization(req.user, body?.branchId);
+    return this.tripsService.runAutomaticOptimization(req.user, body);
   }
 
   @Post('automatic-optimization/apply')

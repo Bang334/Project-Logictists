@@ -6,7 +6,6 @@ import {
   Typography,
   Tag,
   Space,
-  Button,
   Timeline,
   Statistic,
   Progress,
@@ -111,7 +110,7 @@ const TrackingDemoPage: React.FC = () => {
   }, []);
 
   return (
-    <div style={{ padding: '24px' }}>
+    <div className="tms-page">
       {/* Header Banner */}
       <div
         style={{

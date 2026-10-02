@@ -1,8 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, Input, Button, Space, Typography, Card, Spin, AutoComplete, Tag, Row, Col, Alert } from 'antd';
 import {
   EnvironmentOutlined,
-  AimOutlined,
   SearchOutlined,
   CheckOutlined,
   InfoCircleOutlined,
@@ -11,7 +10,7 @@ import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { mapboxApi } from '../api/client';
 
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
 interface MapLocationPickerModalProps {
   open: boolean;
@@ -46,7 +45,7 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
   const [searchValue, setSearchValue] = useState<string>('');
 
   // Hàm reverse geocode khi marker đổi tọa độ
-  const reverseGeocodeCoords = async (lng: number, lat: number) => {
+  const reverseGeocodeCoords = useCallback(async (lng: number, lat: number) => {
     setIsGeocoding(true);
     try {
       const resolvedAddress = await mapboxApi.reverseGeocode(lng, lat);
@@ -58,10 +57,10 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
     } finally {
       setIsGeocoding(false);
     }
-  };
+  }, []);
 
   // Cập nhật vị trí Marker
-  const setMarkerPosition = (lng: number, lat: number, shouldGeocode: boolean = true) => {
+  const setMarkerPosition = useCallback((lng: number, lat: number, shouldGeocode: boolean = true) => {
     setCoords({ lat, lng });
 
     if (markerRef.current) {
@@ -71,7 +70,7 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
     if (shouldGeocode) {
       void reverseGeocodeCoords(lng, lat);
     }
-  };
+  }, [reverseGeocodeCoords]);
 
   // Khởi tạo Mapbox Map khi Modal mở
   useEffect(() => {
@@ -149,7 +148,7 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
         markerRef.current = null;
       }
     };
-  }, [open, initialLocation]);
+  }, [open, initialLocation, reverseGeocodeCoords, setMarkerPosition]);
 
   // Tìm kiếm địa chỉ qua Geocoding để nhảy nhanh đến vị trí
   const handleSearch = async (query: string) => {
@@ -268,29 +267,21 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
         styles={{ body: { padding: '12px 16px' } }}
       >
         <Row gutter={[16, 8]} align="middle">
-          <Col xs={24} md={16}>
-            <Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
-              📍 Địa chỉ được giải mã tự động:
+          <Col xs={24} md={15}>
+            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 4 }}>
+              <EnvironmentOutlined /> Địa chỉ nhận hàng / Chân công trình:
             </Text>
-            <div style={{ marginTop: 2, minHeight: 22 }}>
-              {isGeocoding ? (
-                <Space>
-                  <Spin size="small" />
-                  <Text type="secondary" italic>
-                    Đang giải mã địa chỉ từ Mapbox...
-                  </Text>
-                </Space>
-              ) : (
-                <Text strong style={{ color: '#0f172a', fontSize: 13 }}>
-                  {address || 'Chưa xác định tên đường (Click lên bản đồ để chọn)'}
-                </Text>
-              )}
-            </div>
+            <Input
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              placeholder="Nhập hoặc chỉnh sửa chi tiết tên công trình, số nhà..."
+              suffix={isGeocoding ? <Spin size="small" /> : null}
+            />
           </Col>
-          <Col xs={24} md={8} style={{ textAlign: 'right' }}>
+          <Col xs={24} md={9} style={{ textAlign: 'right' }}>
             <Space size={6} wrap>
-              <Tag color="blue">Lat: {coords.lat.toFixed(5)}</Tag>
-              <Tag color="cyan">Lng: {coords.lng.toFixed(5)}</Tag>
+              <Tag color="blue">Vĩ độ: {coords.lat.toFixed(5)}</Tag>
+              <Tag color="cyan">Kinh độ: {coords.lng.toFixed(5)}</Tag>
             </Space>
           </Col>
         </Row>

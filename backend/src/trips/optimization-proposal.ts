@@ -13,6 +13,7 @@ export type OptimizationResourceVersions = {
 export type OptimizationProposal = {
   branchId: string;
   planningEpochIso: string;
+  scheduleMode?: string;
   expiresAt: string;
   resources: OptimizationResourceVersions;
   result: FleetOptimizationResult;
@@ -59,6 +60,12 @@ export function assertOptimizationProposal(
   }
   if (!isValidDateString(value.expiresAt)) {
     throw new Error('Proposal thiếu expiresAt hợp lệ');
+  }
+  if (
+    value.scheduleMode !== undefined &&
+    typeof value.scheduleMode !== 'string'
+  ) {
+    throw new Error('Proposal có scheduleMode không hợp lệ');
   }
   if (!isRecord(value.resources)) {
     throw new Error('Proposal thiếu resources');

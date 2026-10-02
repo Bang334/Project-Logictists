@@ -25,7 +25,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const res = await authApi.getProfile();
           setUser(res.data);
         } catch {
-          logout();
+          localStorage.removeItem('tms_token');
+          setToken(null);
+          setUser(null);
         }
       }
       setLoading(false);

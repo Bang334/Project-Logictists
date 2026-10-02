@@ -14,7 +14,7 @@ export interface MapMarker {
   latitude: number;
   longitude: number;
   title: string;
-  type: 'DEPOT' | 'PICKUP' | 'DELIVERY' | 'VEHICLE';
+  type: 'DEPOT' | 'WAREHOUSE' | 'PICKUP_POINT' | 'STORE' | 'PICKUP' | 'DELIVERY' | 'VEHICLE';
   subtitle?: string;
   sequence?: number;
   routeIndex?: number;
@@ -51,6 +51,7 @@ interface MapboxMapProps {
     speedKmh: number,
     traveledKm: number,
   ) => void;
+  onSimulationStop?: () => void;
 }
 
 const TRUCK_SVG_HTML = `
@@ -99,6 +100,27 @@ const DEPOT_SVG_HTML = `
   </svg>
 `;
 
+const WAREHOUSE_SVG_HTML = `
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path d="M3 9.5 12 4l9 5.5V21H3V9.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M7 21v-7h10v7M7 11h2M11 11h2M15 11h2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+  </svg>
+`;
+
+const PICKUP_POINT_SVG_HTML = `
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path d="M12 21s6-5.2 6-11a6 6 0 1 0-12 0c0 5.8 6 11 6 11Z" fill="none" stroke="currentColor" stroke-width="2"/>
+    <path d="M9 9h6v5H9zM10 7h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+  </svg>
+`;
+
+const STORE_SVG_HTML = `
+  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path d="M4 10v10h16V10M3 10l2-6h14l2 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M8 20v-6h5v6M3 10c0 1.4 1 2.5 2.3 2.5S7.7 11.4 7.7 10c0 1.4 1 2.5 2.3 2.5s2.3-1.1 2.3-2.5c0 1.4 1 2.5 2.4 2.5S17 11.4 17 10c0 1.4 1 2.5 2.3 2.5S21.7 11.4 21.7 10" fill="none" stroke="currentColor" stroke-width="1.5"/>
+  </svg>
+`;
+
 const ROUTE_COLOR_EXPRESSION = [
   'match',
   ['get', 'routeIndex'],
@@ -118,7 +140,9 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   vehiclePlate = '29C-678.92',
   driverName = 'Tài xế',
   onSimulationProgress,
+  onSimulationStop,
 }) => {
+  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
@@ -126,7 +150,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   const truckElementRef = useRef<HTMLDivElement | null>(null);
 
   // Simulation State
-  const [isPlaying, setIsPlaying] = useState<boolean>(autoPlaySimulation);
+  const [isPlaying, setIsPlaying] = useState<boolean>(autoPlaySimulation && !prefersReducedMotion);
   const [progress, setProgress] = useState<number>(0);
   const [speedMultiplier, setSpeedMultiplier] = useState<number>(1);
   const [currentSpeedKmh, setCurrentSpeedKmh] = useState<number>(45);
@@ -136,6 +160,10 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   const speedMultiplierRef = useRef<number>(1);
   const animationFrameRef = useRef<number | null>(null);
   const lastTimestampRef = useRef<number | null>(null);
+  const lastUiUpdateRef = useRef<number>(0);
+  const lastProgressUpdateRef = useRef<number>(0);
+  const simulationIdentity = `${vehiclePlate}:${driverName}`;
+  const previousSimulationIdentityRef = useRef(simulationIdentity);
 
   // Sync refs with states
   useEffect(() => {
@@ -236,10 +264,16 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }
+      markersRef.current.forEach((marker) => marker.remove());
+      markersRef.current = [];
+      truckMarkerRef.current?.remove();
+      truckMarkerRef.current = null;
+      truckElementRef.current = null;
+      lastTimestampRef.current = null;
       map.remove();
       mapRef.current = null;
     };
-  }, [interactive]);
+  }, [interactive, routeCoordinates]);
 
   // Reset tiến độ xe khi đổi tuyến / xe
   useEffect(() => {
@@ -250,6 +284,19 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       isPlayingRef.current = true;
     }
   }, [routeCoordinates, enableSimulation]);
+
+  // Một phiên mô phỏng chỉ thuộc về đúng một cặp xe - tài xế.
+  useEffect(() => {
+    const identityChanged = previousSimulationIdentityRef.current !== simulationIdentity;
+    previousSimulationIdentityRef.current = simulationIdentity;
+
+    if (!identityChanged || !enableSimulation) return;
+
+    setIsPlaying(false);
+    isPlayingRef.current = false;
+    lastTimestampRef.current = null;
+    onSimulationStop?.();
+  }, [enableSimulation, onSimulationStop, simulationIdentity]);
 
   // Vẽ Tuyến đường và Markers
   useEffect(() => {
@@ -281,12 +328,19 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         (marker.routeIndex !== undefined
           ? MAP_ROUTE_COLORS[marker.routeIndex % MAP_ROUTE_COLORS.length]
           : '#2563eb');
-      pin.style.borderColor = marker.type === 'DEPOT' ? '#ffffff' : routeColor;
+      const isNetworkPoint = ['DEPOT', 'WAREHOUSE', 'PICKUP_POINT', 'STORE'].includes(marker.type);
+      pin.style.borderColor = isNetworkPoint ? '#ffffff' : routeColor;
       pin.style.borderWidth = '3px';
       pin.style.boxShadow = `0 3px 8px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255,255,255,0.85)`;
 
       if (marker.type === 'DEPOT') {
         pin.innerHTML = DEPOT_SVG_HTML;
+      } else if (marker.type === 'WAREHOUSE') {
+        pin.innerHTML = WAREHOUSE_SVG_HTML;
+      } else if (marker.type === 'PICKUP_POINT') {
+        pin.innerHTML = PICKUP_POINT_SVG_HTML;
+      } else if (marker.type === 'STORE') {
+        pin.innerHTML = STORE_SVG_HTML;
       } else {
         pin.textContent = marker.sequence
           ? String(marker.sequence)
@@ -514,7 +568,11 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       const simulatedSpeed = isPlayingRef.current
         ? Math.round(45 + Math.sin(currentProg * 50) * 8 + Math.random() * 3)
         : 0;
-      setCurrentSpeedKmh(simulatedSpeed);
+      const now = performance.now();
+      if (now - lastUiUpdateRef.current >= 100) {
+        setCurrentSpeedKmh(simulatedSpeed);
+        lastUiUpdateRef.current = now;
+      }
 
       const speedPill = truckEl.querySelector('.speed-pill');
       if (speedPill) {
@@ -584,7 +642,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
 
   // Animation Loop chạy mô phỏng 60 FPS
   useEffect(() => {
-    if (!enableSimulation) return;
+    if (!enableSimulation || prefersReducedMotion) return;
 
     const animate = (timestamp: number) => {
       if (!lastTimestampRef.current) {
@@ -601,10 +659,15 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
 
         let nextProgress = progressRef.current + progressIncrement;
         if (nextProgress >= 1) {
-          nextProgress = 0; // Tự động lặp lại (Loop) chạy liên tục!
+          nextProgress = 1;
+          isPlayingRef.current = false;
+          setIsPlaying(false);
         }
 
-        setProgress(nextProgress);
+        if (timestamp - lastProgressUpdateRef.current >= 100 || nextProgress === 1) {
+          setProgress(nextProgress);
+          lastProgressUpdateRef.current = timestamp;
+        }
         progressRef.current = nextProgress;
         updateTruckPosition(nextProgress);
       }
@@ -619,7 +682,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [enableSimulation, routeProfile.totalDistanceKm, updateTruckPosition]);
+  }, [enableSimulation, prefersReducedMotion, routeProfile.totalDistanceKm, updateTruckPosition]);
 
   // Handlers
   const handleTogglePlay = () => {

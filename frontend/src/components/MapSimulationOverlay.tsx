@@ -46,10 +46,11 @@ export const MapSimulationOverlay: React.FC<MapSimulationOverlayProps> = ({
           size="small"
           icon={isPlaying ? <PauseOutlined style={{ fontSize: 11 }} /> : <CaretRightOutlined style={{ fontSize: 11 }} />}
           onClick={onTogglePlay}
+          aria-label={isPlaying ? 'Tạm dừng mô phỏng' : 'Chạy mô phỏng'}
           style={{
-            width: 24,
-            height: 24,
-            minWidth: 24,
+            width: 44,
+            height: 44,
+            minWidth: 44,
             backgroundColor: isPlaying ? '#f59e0b' : '#10b981',
             borderColor: 'transparent',
             display: 'flex',
@@ -68,7 +69,8 @@ export const MapSimulationOverlay: React.FC<MapSimulationOverlayProps> = ({
           size="small"
           icon={<ReloadOutlined style={{ color: '#cbd5e1', fontSize: 12 }} />}
           onClick={onReset}
-          style={{ width: 22, height: 22, minWidth: 22, padding: 0 }}
+          aria-label="Chạy lại mô phỏng từ đầu"
+          style={{ width: 44, height: 44, minWidth: 44, padding: 0 }}
         />
       </Tooltip>
 
@@ -100,8 +102,9 @@ export const MapSimulationOverlay: React.FC<MapSimulationOverlayProps> = ({
             style={{
               fontSize: 10,
               padding: '0 5px',
-              height: 20,
-              lineHeight: '20px',
+              minWidth: 44,
+              height: 44,
+              lineHeight: '44px',
               backgroundColor: speedMultiplier === speed ? '#3b82f6' : 'transparent',
               color: speedMultiplier === speed ? '#ffffff' : '#94a3b8',
               borderRadius: 4,

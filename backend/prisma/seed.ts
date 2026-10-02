@@ -1,6 +1,9 @@
-import { PrismaClient, Role, VehicleStatus, DriverStatus, OrderStatus, StopType, TaskAction } from '@prisma/client';
+import { PrismaClient, Role, VehicleStatus, DriverStatus, OrderStatus, StopType } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { seedCentralBranchData } from './seed-central';
+import { seedRetailCatalog } from './seed-retail-catalog';
+import { seedRetailPilotFlow } from './seed-retail-pilot-flow';
+import { seedBuildingMaterials } from './seed-building-materials';
 
 const prisma = new PrismaClient();
 
@@ -80,7 +83,7 @@ async function main() {
   const adminPassword = await bcrypt.hash('admin123', salt);
   const dispatcherPassword = await bcrypt.hash('dispatcher123', salt);
 
-  const admin = await prisma.user.upsert({
+  await prisma.user.upsert({
     where: { username: 'admin' },
     update: {},
     create: {
@@ -94,7 +97,7 @@ async function main() {
     },
   });
 
-  const dispatcherHN = await prisma.user.upsert({
+  await prisma.user.upsert({
     where: { username: 'dispatcher_hn' },
     update: {},
     create: {
@@ -103,12 +106,12 @@ async function main() {
       fullName: 'Nguyễn Văn Hùng (Điều phối HN)',
       email: 'hung.nv@tms-logistics.vn',
       phone: '0912345678',
-      role: Role.DISPATCHER,
+      role: Role.STAFF,
       branchId: branchHN.id,
     },
   });
 
-  const dispatcherSGN = await prisma.user.upsert({
+  await prisma.user.upsert({
     where: { username: 'dispatcher_sgn' },
     update: {},
     create: {
@@ -117,7 +120,7 @@ async function main() {
       fullName: 'Lê Hoàng Nam (Điều phối HCM)',
       email: 'nam.lh@tms-logistics.vn',
       phone: '0987654321',
-      role: Role.DISPATCHER,
+      role: Role.STAFF,
       branchId: branchSGN.id,
     },
   });
@@ -398,7 +401,7 @@ async function main() {
 
   // 6. Tạo Các Đơn hàng Vận tải Thực tế (Orders with accurate Mapbox coordinates)
   // Đơn hàng 1: Sữa Vinamilk từ KCN Tiên Sơn về Kho Minh Khai (Hai Bà Trưng, HN)
-  const order1 = await prisma.order.upsert({
+  await prisma.order.upsert({
     where: { orderNumber: 'ORD-20260909-001' },
     update: { branchId: branchHN.id },
     create: {
@@ -436,8 +439,6 @@ async function main() {
             contactName: 'Kho Tiên Sơn - Anh Bình',
             contactPhone: '0912111333',
             serviceDurationMinutes: 30,
-            windowStart: new Date('2026-09-10T08:00:00Z'),
-            windowEnd: new Date('2026-09-10T10:30:00Z'),
           },
           {
             type: StopType.DELIVERY,
@@ -448,8 +449,6 @@ async function main() {
             contactName: 'Thủ kho Minh Khai - Chị Nga',
             contactPhone: '0913222444',
             serviceDurationMinutes: 30,
-            windowStart: new Date('2026-09-10T11:00:00Z'),
-            windowEnd: new Date('2026-09-10T15:00:00Z'),
           },
         ],
       },
@@ -457,7 +456,7 @@ async function main() {
   });
 
   // Đơn hàng 2: Sunhouse gia dụng từ Ngọc Hồi về Siêu thị MediaMart Phạm Văn Đồng
-  const order2 = await prisma.order.upsert({
+  await prisma.order.upsert({
     where: { orderNumber: 'ORD-20260909-002' },
     update: { branchId: branchHN.id },
     create: {
@@ -495,8 +494,6 @@ async function main() {
             contactName: 'Anh Hùng - Kho Ngọc Hồi',
             contactPhone: '0988776655',
             serviceDurationMinutes: 25,
-            windowStart: new Date('2026-09-10T08:30:00Z'),
-            windowEnd: new Date('2026-09-10T11:00:00Z'),
           },
           {
             type: StopType.DELIVERY,
@@ -507,8 +504,6 @@ async function main() {
             contactName: 'Nhận hàng MediaMart - Anh Cường',
             contactPhone: '0977665544',
             serviceDurationMinutes: 25,
-            windowStart: new Date('2026-09-10T13:00:00Z'),
-            windowEnd: new Date('2026-09-10T16:30:00Z'),
           },
         ],
       },
@@ -516,7 +511,7 @@ async function main() {
   });
 
   // Đơn hàng 3: Panasonic giao từ KCN Thăng Long về Trung tâm Trần Thái Tông
-  const order3 = await prisma.order.upsert({
+  await prisma.order.upsert({
     where: { orderNumber: 'ORD-20260909-003' },
     update: { branchId: branchHN.id },
     create: {
@@ -554,8 +549,6 @@ async function main() {
             contactName: 'Xuất hàng Pana - Anh Thắng',
             contactPhone: '0934567890',
             serviceDurationMinutes: 20,
-            windowStart: new Date('2026-09-10T09:00:00Z'),
-            windowEnd: new Date('2026-09-10T11:30:00Z'),
           },
           {
             type: StopType.DELIVERY,
@@ -566,8 +559,6 @@ async function main() {
             contactName: 'Nhận linh kiện - Chị Yến',
             contactPhone: '0945678901',
             serviceDurationMinutes: 20,
-            windowStart: new Date('2026-09-10T14:00:00Z'),
-            windowEnd: new Date('2026-09-10T17:00:00Z'),
           },
         ],
       },
@@ -713,8 +704,6 @@ async function main() {
               contactName: `Kho xuất demo ${index + 1}`,
               contactPhone: `09010000${index + 1}`,
               serviceDurationMinutes: 20,
-              windowStart: new Date('2026-09-11T01:00:00Z'),
-              windowEnd: new Date('2026-09-11T05:00:00Z'),
             },
             {
               type: StopType.DELIVERY,
@@ -725,8 +714,6 @@ async function main() {
               contactName: `Điểm nhận demo ${index + 1}`,
               contactPhone: `09110000${index + 1}`,
               serviceDurationMinutes: 20,
-              windowStart: new Date('2026-09-11T03:00:00Z'),
-              windowEnd: new Date('2026-09-11T11:00:00Z'),
             },
           ],
         },
@@ -828,8 +815,6 @@ async function main() {
               contactName: `Kho demo miền Nam ${index + 1}`,
               contactPhone: `090200000${index + 1}`,
               serviceDurationMinutes: 20,
-              windowStart: new Date('2026-09-11T01:00:00Z'),
-              windowEnd: new Date('2026-09-11T02:00:00Z'),
             },
             {
               type: StopType.DELIVERY,
@@ -840,8 +825,6 @@ async function main() {
               contactName: `Điểm nhận demo miền Nam ${index + 1}`,
               contactPhone: `091200000${index + 1}`,
               serviceDurationMinutes: 20,
-              windowStart: new Date(demo.deliveryWindow[0]),
-              windowEnd: new Date(demo.deliveryWindow[1]),
             },
           ],
         },
@@ -855,6 +838,15 @@ async function main() {
 
   // 7. Khởi tạo 30 đơn hàng, đội xe, tài xế cho Chi nhánh Miền Trung (Đà Nẵng - BRANCH-DAD)
   await seedCentralBranchData();
+
+  // 8. Khởi tạo Master Data Vật Liệu Xây Dựng & Đơn hàng Giao tận chân công trình
+  await seedBuildingMaterials(prisma);
+
+  // 9. Dọn dẹp hoàn toàn các sản phẩm thực phẩm cũ (Gạo, sữa, mì)
+  await seedRetailCatalog(prisma);
+
+  // 10. Khởi tạo Dữ liệu chuỗi luồng End-to-End Pilot VLXD
+  await seedRetailPilotFlow(prisma);
 
   console.log('🎉 KHỞI TẠO MASTER DATA THÀNH CÔNG VÀO POSTGRESQL SUPABASE!');
 }

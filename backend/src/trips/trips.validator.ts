@@ -1,16 +1,39 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
-import { Vehicle, Order, OrderStop, OrderItem, StopType } from '@prisma/client';
+import { BadRequestException } from "@nestjs/common";
+import { Vehicle, StopType } from "@prisma/client";
 
 export interface StopWithItems {
-  orderStop: OrderStop;
-  order: Order & { items: OrderItem[] };
+  orderStop: {
+    id?: string;
+    orderId: string;
+    type: StopType;
+    address: string;
+    latitude?: number;
+    longitude?: number;
+    contactName?: string | null;
+    contactPhone?: string | null;
+    [key: string]: unknown;
+  };
+  order: {
+    id: string;
+    orderNumber: string;
+    totalWeightKg: number;
+    totalVolumeM3: number;
+    items: Array<{
+      id?: string;
+      quantity: number;
+      weightKg: number;
+      volumeM3: number;
+      [key: string]: unknown;
+    }>;
+    [key: string]: unknown;
+  };
 }
 
 export interface LegLoadStatus {
   stopIndex: number;
   stopAddress: string;
   stopType: StopType;
-  action: 'LOAD' | 'UNLOAD';
+  action: "LOAD" | "UNLOAD";
   deltaWeightKg: number;
   deltaVolumeM3: number;
   currentWeightKg: number;
@@ -76,8 +99,14 @@ export class TripsValidator {
 
     orderedStops.forEach((stop, index) => {
       // Tính tổng khối lượng và thể tích của order tại stop này
-      const stopWeight = stop.order.items.reduce((sum, item) => sum + item.weightKg, 0);
-      const stopVolume = stop.order.items.reduce((sum, item) => sum + item.volumeM3, 0);
+      const stopWeight = stop.order.items.reduce(
+        (sum, item) => sum + item.weightKg,
+        0,
+      );
+      const stopVolume = stop.order.items.reduce(
+        (sum, item) => sum + item.volumeM3,
+        0,
+      );
 
       const isPickup = stop.orderStop.type === StopType.PICKUP;
       const deltaWeight = isPickup ? stopWeight : -stopWeight;
@@ -93,8 +122,10 @@ export class TripsValidator {
       if (currentWeight > maxWeight) maxWeight = currentWeight;
       if (currentVolume > maxVolume) maxVolume = currentVolume;
 
-      const weightUtilization = Math.round((currentWeight / vehicle.payloadCapacityKg) * 1000) / 10;
-      const volumeUtilization = Math.round((currentVolume / vehicle.volumeCapacityM3) * 1000) / 10;
+      const weightUtilization =
+        Math.round((currentWeight / vehicle.payloadCapacityKg) * 1000) / 10;
+      const volumeUtilization =
+        Math.round((currentVolume / vehicle.volumeCapacityM3) * 1000) / 10;
 
       // Kiểm tra vi phạm tải trọng
       if (currentWeight > vehicle.payloadCapacityKg) {
@@ -114,7 +145,7 @@ export class TripsValidator {
         stopIndex: index + 1,
         stopAddress: stop.orderStop.address,
         stopType: stop.orderStop.type,
-        action: isPickup ? 'LOAD' : 'UNLOAD',
+        action: isPickup ? "LOAD" : "UNLOAD",
         deltaWeightKg: deltaWeight,
         deltaVolumeM3: deltaVolume,
         currentWeightKg: currentWeight,
@@ -125,7 +156,7 @@ export class TripsValidator {
     });
 
     if (errors.length > 0) {
-      throw new BadRequestException(errors.join(' | '));
+      throw new BadRequestException(errors.join(" | "));
     }
 
     return {

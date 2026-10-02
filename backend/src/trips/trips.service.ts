@@ -5,13 +5,13 @@ import {
   Injectable,
   NotFoundException,
   ServiceUnavailableException,
-} from '@nestjs/common';
-import axios from 'axios';
-import { randomUUID } from 'crypto';
-import { PrismaService } from '../prisma/prisma.service';
-import { MapboxService } from '../mapbox/mapbox.service';
-import { CreateTripDto } from './dto/create-trip.dto';
-import { TripsValidator, StopWithItems } from './trips.validator';
+} from "@nestjs/common";
+import axios from "axios";
+import { randomUUID } from "crypto";
+import { PrismaService } from "../prisma/prisma.service";
+import { MapboxService } from "../mapbox/mapbox.service";
+import { CreateTripDto } from "./dto/create-trip.dto";
+import { TripsValidator, StopWithItems } from "./trips.validator";
 import {
   DriverStatus,
   Driver as DriverRecord,
@@ -23,18 +23,29 @@ import {
   TripStatus,
   VehicleStatus,
   Vehicle as VehicleRecord,
-} from '@prisma/client';
-import { OptimizeTripDto } from './dto/optimize-trip.dto';
-import { expandOrderItemsToCargoUnits } from './optimizer-payload';
-import { assertFleetOptimizationResult } from './optimizer-contract';
-import { resolveBranchScope } from '../auth/branch-scope';
-import { ApplyAutomaticOptimizationDto } from './dto/apply-automatic-optimization.dto';
+} from "@prisma/client";
+import { OptimizeTripDto } from "./dto/optimize-trip.dto";
+import { expandOrderItemsToCargoUnits } from "./optimizer-payload";
+import { assertFleetOptimizationResult } from "./optimizer-contract";
+import { resolveBranchScope } from "../auth/branch-scope";
+import { ApplyAutomaticOptimizationDto } from "./dto/apply-automatic-optimization.dto";
 import {
   assertOptimizationProposal,
   OptimizationProposal,
   signOptimizationProposal,
   verifyOptimizationProposalSignature,
-} from './optimization-proposal';
+} from "./optimization-proposal";
+import {
+  AutomaticDispatchScheduleMode,
+  RunAutomaticOptimizationDto,
+} from "./dto/run-automatic-optimization.dto";
+import {
+  buildServiceDayWindows,
+  getFullServiceDayPlanningEpoch,
+  getNextDayPlanningEpoch,
+  getPlanningEpoch,
+  ServiceDayWindow,
+} from "./service-day";
 
 const ACTIVE_TRIP_STATUSES = [
   TripStatus.PLANNED,
@@ -42,6 +53,7 @@ const ACTIVE_TRIP_STATUSES = [
   TripStatus.IN_PROGRESS,
 ];
 const OPTIMIZATION_PROPOSAL_TTL_MS = 30 * 60 * 1000;
+const AUTOMATIC_PLANNING_DAY_COUNT = 7;
 const LOCK_NAMESPACE_VEHICLE = 4101;
 const LOCK_NAMESPACE_DRIVER = 4102;
 const LOCK_NAMESPACE_ORDER = 4103;
@@ -95,18 +107,11 @@ export class TripsService {
           include: { driver: true },
         },
         stops: {
-          orderBy: { sequence: 'asc' },
+          orderBy: { sequence: "asc" },
           include: { tasks: true },
         },
-        allocations: {
-          include: {
-            orderItem: {
-              include: { order: { include: { customer: true } } },
-            },
-          },
-        },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: "desc" },
     });
   }
 
@@ -117,21 +122,13 @@ export class TripsService {
         vehicle: { include: { homeBranch: true } },
         assignments: { include: { driver: true } },
         stops: {
-          orderBy: { sequence: 'asc' },
+          orderBy: { sequence: "asc" },
           include: {
             tasks: {
               include: {
-                allocation: {
-                  include: { orderItem: { include: { order: true } } },
-                },
+                order: { include: { items: true, customer: true } },
+                package: true,
               },
-            },
-          },
-        },
-        allocations: {
-          include: {
-            orderItem: {
-              include: { order: { include: { customer: true } } },
             },
           },
         },
@@ -153,7 +150,9 @@ export class TripsService {
     const plannedEnd = new Date(dto.plannedEndTime);
 
     if (plannedStart >= plannedEnd) {
-      throw new BadRequestException('Thời gian bắt đầu chuyến đi phải trước thời gian kết thúc');
+      throw new BadRequestException(
+        "Thời gian bắt đầu chuyến đi phải trước thời gian kết thúc",
+      );
     }
 
     // 1. Kiểm tra Xe và kiểm tra trùng lịch (BR06)
@@ -168,7 +167,13 @@ export class TripsService {
     const vehicleOverlap = await this.prisma.trip.findFirst({
       where: {
         vehicleId: dto.vehicleId,
-        status: { in: [TripStatus.PLANNED, TripStatus.DISPATCHED, TripStatus.IN_PROGRESS] },
+        status: {
+          in: [
+            TripStatus.PLANNED,
+            TripStatus.DISPATCHED,
+            TripStatus.IN_PROGRESS,
+          ],
+        },
         OR: [
           {
             plannedStartTime: { lte: plannedEnd },
@@ -191,14 +196,22 @@ export class TripsService {
       throw new NotFoundException(`Không tìm thấy tài xế [${dto.driverId}]`);
     }
     if (driver.licenseExpiry <= new Date()) {
-      throw new BadRequestException(`Bằng lái của tài xế ${driver.fullName} đã hết hạn!`);
+      throw new BadRequestException(
+        `Bằng lái của tài xế ${driver.fullName} đã hết hạn!`,
+      );
     }
 
     const driverOverlap = await this.prisma.driverAssignment.findFirst({
       where: {
         driverId: dto.driverId,
         trip: {
-          status: { in: [TripStatus.PLANNED, TripStatus.DISPATCHED, TripStatus.IN_PROGRESS] },
+          status: {
+            in: [
+              TripStatus.PLANNED,
+              TripStatus.DISPATCHED,
+              TripStatus.IN_PROGRESS,
+            ],
+          },
         },
         startTime: { lte: plannedEnd },
         endTime: { gte: plannedStart },
@@ -215,13 +228,15 @@ export class TripsService {
     const orders = await this.prisma.order.findMany({
       where: { id: { in: dto.orderIds } },
       include: {
-        stops: { orderBy: { sequence: 'asc' } },
+        stops: { orderBy: { sequence: "asc" } },
         items: true,
       },
     });
 
     if (orders.length !== dto.orderIds.length) {
-      throw new BadRequestException('Một số đơn hàng không tồn tại trong hệ thống');
+      throw new BadRequestException(
+        "Một số đơn hàng không tồn tại trong hệ thống",
+      );
     }
 
     // 4. Sắp xếp thứ tự các điểm dừng (Ordered Stops)
@@ -257,23 +272,26 @@ export class TripsService {
 
     // 5. Kiểm tra các bất biến cốt lõi (Invariants BR03 & BR04)
     TripsValidator.validatePickupBeforeDelivery(stopWithItemsList);
-    const loadValidation = TripsValidator.calculateAndValidateLoad(vehicle, stopWithItemsList);
+    TripsValidator.calculateAndValidateLoad(vehicle, stopWithItemsList);
 
     // 6. Tích hợp Mapbox Directions API để tính cự ly, thời gian và lộ trình thực tế
     // Điểm bắt đầu là Chi nhánh quản lý xe (Home Branch Depot)
     const routeCoords: [number, number][] = [
       [vehicle.homeBranch.longitude, vehicle.homeBranch.latitude],
-      ...stopWithItemsList.map((s) => [s.orderStop.longitude, s.orderStop.latitude] as [number, number]),
+      ...stopWithItemsList.map(
+        (s) =>
+          [s.orderStop.longitude, s.orderStop.latitude] as [number, number],
+      ),
     ];
 
     const routeResult = await this.mapboxService.getRoute(routeCoords);
 
     // 7. Tạo mã chuyến đi tự động: TRIP-YYYYMMDD-XXXX
-    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     const countToday = await this.prisma.trip.count({
       where: { tripNumber: { startsWith: `TRIP-${dateStr}` } },
     });
-    const seq = String(countToday + 1).padStart(3, '0');
+    const seq = String(countToday + 1).padStart(3, "0");
     const tripNumber = `TRIP-${dateStr}-${seq}`;
 
     // 8. Thực thi Transaction lưu toàn bộ vào PostgreSQL
@@ -287,7 +305,9 @@ export class TripsService {
           plannedEndTime: plannedEnd,
           totalDistanceKm: routeResult.distanceKm,
           totalDurationMinutes: routeResult.durationMinutes,
-          routeGeometry: routeResult.geometry ? JSON.stringify(routeResult.geometry) : null,
+          routeGeometry: routeResult.geometry
+            ? JSON.stringify(routeResult.geometry)
+            : null,
           notes: dto.notes,
         },
       });
@@ -296,6 +316,9 @@ export class TripsService {
       for (let i = 0; i < stopWithItemsList.length; i++) {
         const item = stopWithItemsList[i];
         const isPickup = item.orderStop.type === StopType.PICKUP;
+        if (item.orderStop.latitude === undefined || item.orderStop.longitude === undefined) {
+          throw new BadRequestException('Điểm dừng thiếu tọa độ');
+        }
 
         const tripStop = await tx.tripStop.create({
           data: {
@@ -311,32 +334,18 @@ export class TripsService {
         });
 
         // Tạo Allocation và Tasks cho từng OrderItem của đơn
-        for (const orderItem of item.order.items) {
-          // Tìm allocation đã tạo cho orderItem này trong chuyến chưa
-          let allocation = await tx.allocation.findFirst({
-            where: { tripId: trip.id, orderItemId: orderItem.id },
-          });
-
-          if (!allocation) {
-            allocation = await tx.allocation.create({
-              data: {
-                tripId: trip.id,
-                orderItemId: orderItem.id,
-                allocatedQuantity: orderItem.quantity,
-              },
-            });
-          }
-
-          // Tạo StopTask
-          await tx.stopTask.create({
-            data: {
-              tripStopId: tripStop.id,
-              allocationId: allocation.id,
-              action: isPickup ? TaskAction.LOAD : TaskAction.UNLOAD,
-              plannedQuantity: orderItem.quantity,
-            },
-          });
-        }
+        await tx.stopTask.create({
+          data: {
+            tripStopId: tripStop.id,
+            orderId: item.order.id,
+            orderStopId: item.orderStop.id,
+            action: isPickup ? TaskAction.LOAD : TaskAction.UNLOAD,
+            plannedQuantity: item.order.items.reduce(
+              (sum, orderItem) => sum + orderItem.quantity,
+              0,
+            ),
+          },
+        });
       }
 
       // Phân công tài xế
@@ -346,7 +355,7 @@ export class TripsService {
           driverId: dto.driverId,
           startTime: plannedStart,
           endTime: plannedEnd,
-          role: 'PRIMARY',
+          role: "PRIMARY",
         },
       });
 
@@ -367,8 +376,13 @@ export class TripsService {
    */
   async publish(id: string) {
     const trip = await this.findOne(id);
-    if (trip.status !== TripStatus.PLANNED && trip.status !== TripStatus.DRAFT) {
-      throw new BadRequestException(`Chuyến đi ở trạng thái [${trip.status}] không thể phát hành`);
+    if (
+      trip.status !== TripStatus.PLANNED &&
+      trip.status !== TripStatus.DRAFT
+    ) {
+      throw new BadRequestException(
+        `Chuyến đi ở trạng thái [${trip.status}] không thể phát hành`,
+      );
     }
 
     return this.prisma.trip.update({
@@ -388,81 +402,78 @@ export class TripsService {
   async getLoadProfile(id: string) {
     const trip = await this.findOne(id);
     const stopsWithItems: StopWithItems[] = [];
-
     for (const stop of trip.stops) {
-      // Mock StopWithItems từ dữ liệu lưu trong DB để tính profile
-      const items = trip.allocations.map((a) => a.orderItem);
-      stopsWithItems.push({
-        orderStop: {
-          id: stop.id,
-          orderId: '',
-          type: stop.stopType,
-          sequence: stop.sequence,
-          address: stop.address,
-          latitude: stop.latitude,
-          longitude: stop.longitude,
-          contactName: stop.contactName || '',
-          contactPhone: stop.contactPhone || '',
-          windowStart: null,
-          windowEnd: null,
-          serviceDurationMinutes: 20,
-          createdAt: new Date(),
-        },
-        order: {
-          id: '',
-          orderNumber: '',
-          customerId: '',
-          branchId: '',
-          status: OrderStatus.ASSIGNED,
-          totalWeightKg: 0,
-          totalVolumeM3: 0,
-          totalPackages: 0,
-          version: 1,
-          notes: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          items: items as any,
-        },
-      });
+      for (const task of stop.tasks) {
+        if (!task.order) continue;
+        stopsWithItems.push({
+          orderStop: {
+            orderId: task.order.id,
+            type: stop.stopType,
+            address: stop.address,
+          },
+          order: {
+            id: task.order.id,
+            orderNumber: task.order.orderNumber,
+            totalWeightKg: task.order.totalWeightKg,
+            totalVolumeM3: task.order.totalVolumeM3,
+            items: task.order.items,
+          },
+        });
+      }
     }
-
-    return TripsValidator.calculateAndValidateLoad(trip.vehicle, stopsWithItems);
+    return TripsValidator.calculateAndValidateLoad(
+      trip.vehicle,
+      stopsWithItems,
+    );
   }
 
-  /**
-   * Gọi Optimization Engine (Google OR-Tools + Dynamic 2D Spatial Packing)
-   */
   async runOptimization(body: OptimizeTripDto) {
     if (new Set(body.orderIds).size !== body.orderIds.length) {
-      throw new BadRequestException('Danh sách orderIds không được chứa ID trùng');
+      throw new BadRequestException(
+        "Danh sách orderIds không được chứa ID trùng",
+      );
     }
     const vehicle = await this.prisma.vehicle.findUnique({
       where: { id: body.vehicleId },
       include: { homeBranch: true },
     });
     if (!vehicle) {
-      throw new NotFoundException('Không tìm thấy xe');
+      throw new NotFoundException("Không tìm thấy xe");
     }
 
     const orders = await this.prisma.order.findMany({
       where: { id: { in: body.orderIds } },
       include: {
-        stops: { orderBy: { sequence: 'asc' } },
+        stops: { orderBy: { sequence: "asc" } },
         items: true,
       },
     });
     if (orders.length !== body.orderIds.length) {
-      throw new BadRequestException('Một số đơn hàng tối ưu không tồn tại');
+      throw new BadRequestException("Một số đơn hàng tối ưu không tồn tại");
     }
 
-    const orderedOrders = body.orderIds.map((id) => orders.find((order) => order.id === id)!);
-    const planningEpoch = this.getPlanningEpoch(orderedOrders);
-    const optimizerOrders = this.buildOptimizerOrders(orderedOrders, planningEpoch);
+    const orderedOrders = body.orderIds.map((id) =>
+      orders.find((order) => order.id === id)!,
+    );
+    const planningEpoch = getPlanningEpoch(
+      orderedOrders.map((order) => order.orderedAt),
+      vehicle.homeBranch.timezone,
+    );
+    const optimizerOrders = this.buildOptimizerOrders(
+      orderedOrders,
+      planningEpoch,
+    );
     const matrixCoordinates: [number, number][] = [
       [vehicle.homeBranch.longitude, vehicle.homeBranch.latitude],
       ...optimizerOrders.flatMap((order) => [
-        [order.pickup_location.longitude, order.pickup_location.latitude] as [number, number],
-        [order.delivery_location.longitude, order.delivery_location.latitude] as [number, number],
+        [order.pickup_location.longitude, order.pickup_location.latitude] as [
+          number,
+          number,
+        ],
+        [
+          order.delivery_location.longitude,
+          order.delivery_location.latitude,
+        ] as [number, number],
       ]),
     ];
     const matrix = await this.mapboxService.getRoadMatrix(matrixCoordinates);
@@ -476,7 +487,7 @@ export class TripsService {
         width_cm: vehicle.widthCm,
         height_cm: vehicle.heightCm,
         payload_limit_kg: vehicle.payloadCapacityKg,
-        door_position: 'REAR',
+        door_position: "REAR",
       },
       depot: {
         id: vehicle.homeBranch.id,
@@ -491,88 +502,176 @@ export class TripsService {
     };
 
     try {
-      const res = await axios.post(`${this.optimizerUrl}/optimize`, payload, { timeout: 10000 });
-      if (!res.data || typeof res.data.job_id !== 'string' || !Array.isArray(res.data.stops)) {
-        throw new Error('Optimization Engine trả response sai contract');
+      const res = await axios.post(`${this.optimizerUrl}/optimize`, payload, {
+        timeout: 10000,
+      });
+      if (
+        !res.data ||
+        typeof res.data.job_id !== "string" ||
+        !Array.isArray(res.data.stops)
+      ) {
+        throw new Error("Optimization Engine trả response sai contract");
       }
       return res.data;
     } catch (error) {
       throw new BadRequestException(
-        error.response?.data?.detail || error.message || 'Lỗi khi gọi Optimization Engine',
+        error.response?.data?.detail ||
+          error.message ||
+          "Lỗi khi gọi Optimization Engine",
       );
     }
   }
 
   async runAutomaticOptimization(
     user: { id: string; branchId?: string; role: Role },
-    requestedBranchId?: string,
+    dto?: RunAutomaticOptimizationDto | string,
   ) {
+    const requestedBranchId = typeof dto === "string" ? dto : dto?.branchId;
+    const scheduleMode =
+      typeof dto === "object" ? dto?.scheduleMode : undefined;
+    const customStartTimeStr =
+      typeof dto === "object" ? dto?.customStartTime : undefined;
     const branchId = resolveBranchScope(user, requestedBranchId);
 
     const [branch, vehicles, drivers, orders] = await Promise.all([
       this.prisma.branch.findFirst({ where: { id: branchId, active: true } }),
       this.prisma.vehicle.findMany({
-        where: { homeBranchId: branchId, status: 'AVAILABLE' },
+        where: { homeBranchId: branchId, status: "AVAILABLE" },
         include: { homeBranch: true },
-        orderBy: { plateNumber: 'asc' },
+        orderBy: { plateNumber: "asc" },
       }),
       this.prisma.driver.findMany({
         where: {
           homeBranchId: branchId,
-          status: 'AVAILABLE',
+          status: "AVAILABLE",
           licenseExpiry: { gt: new Date() },
         },
-        orderBy: { fullName: 'asc' },
+        orderBy: { fullName: "asc" },
       }),
       this.prisma.order.findMany({
         where: { branchId, status: OrderStatus.CONFIRMED },
-        include: { stops: { orderBy: { sequence: 'asc' } }, items: true },
-        orderBy: { createdAt: 'asc' },
+        include: { stops: { orderBy: { sequence: "asc" } }, items: true },
+        orderBy: { orderedAt: "asc" },
       }),
     ]);
 
-    if (!branch) throw new NotFoundException('Không tìm thấy chi nhánh đang hoạt động');
-    if (vehicles.length === 0) throw new BadRequestException('Không có xe khả dụng trong chi nhánh');
-    if (drivers.length === 0) throw new BadRequestException('Không có tài xế khả dụng trong chi nhánh');
-    if (orders.length === 0) throw new BadRequestException('Không có đơn CONFIRMED để tối ưu');
+    if (!branch)
+      throw new NotFoundException("Không tìm thấy chi nhánh đang hoạt động");
+    if (vehicles.length === 0)
+      throw new BadRequestException("Không có xe khả dụng trong chi nhánh");
+    if (drivers.length === 0)
+      throw new BadRequestException("Không có tài xế khả dụng trong chi nhánh");
+    if (orders.length === 0)
+      throw new BadRequestException("Không có đơn CONFIRMED để tối ưu");
 
     const candidateVehicles = vehicles.slice(0, drivers.length);
 
-    const planningEpoch = this.getPlanningEpoch(orders);
-    const snapshot = {
-      vehicles: candidateVehicles.map((vehicle) => ({
-        id: vehicle.id,
-        plate_number: vehicle.plateNumber,
-        model: vehicle.model,
-        vehicle_type: vehicle.vehicleType,
-        length_cm: vehicle.lengthCm,
-        width_cm: vehicle.widthCm,
-        height_cm: vehicle.heightCm,
-        payload_limit_kg: vehicle.payloadCapacityKg,
-        door_position: 'REAR',
-        depot: {
-          id: vehicle.homeBranch.id,
-          name: vehicle.homeBranch.name,
-          latitude: vehicle.homeBranch.latitude,
-          longitude: vehicle.homeBranch.longitude,
+    const now = new Date();
+    let planningEpoch: Date;
+    let effectiveStartTime: Date | undefined;
+
+    if (scheduleMode === AutomaticDispatchScheduleMode.NEXT_DAY) {
+      planningEpoch = getNextDayPlanningEpoch(
+        orders.map((order) => order.orderedAt),
+        branch.timezone,
+        now,
+      );
+    } else if (scheduleMode === AutomaticDispatchScheduleMode.CURRENT_TIME) {
+      planningEpoch = getPlanningEpoch(
+        orders.map((order) => order.orderedAt),
+        branch.timezone,
+        now,
+      );
+      if (customStartTimeStr) {
+        effectiveStartTime = new Date(customStartTimeStr);
+        if (Number.isNaN(effectiveStartTime.getTime())) {
+          throw new BadRequestException("customStartTime không hợp lệ");
+        }
+      } else {
+        effectiveStartTime = now;
+      }
+    } else {
+      planningEpoch = getFullServiceDayPlanningEpoch(
+        orders.map((order) => order.orderedAt),
+        branch.timezone,
+        branch.workStartTime,
+        now,
+      );
+    }
+
+    let serviceDays: ServiceDayWindow[];
+    try {
+      serviceDays = buildServiceDayWindows(
+        planningEpoch,
+        branch.timezone,
+        branch.workStartTime,
+        branch.workEndTime,
+        AUTOMATIC_PLANNING_DAY_COUNT,
+        {
+          scheduleMode,
+          effectiveStartTime,
         },
-        fuel_consumption_liters_per_100_km: Number(
-          vehicle.fuelConsumptionLitersPer100Km,
-        ),
-        load_fuel_surcharge_percent_at_full_payload: Number(
-          vehicle.loadFuelSurchargePercentAtFullPayload,
-        ),
-        fixed_operating_cost_vnd: Number(vehicle.fixedOperatingCostPerTrip),
-      })),
-      drivers: drivers.map((driver) => ({
-        id: driver.id,
-        full_name: driver.fullName,
-        license_class: driver.licenseClass,
-        fixed_salary_monthly_vnd: Number(driver.fixedSalaryMonthly),
-        trip_base_pay_vnd: Number(driver.tripBasePay),
-        per_km_pay_vnd: Number(driver.perKmPay),
-      })),
-      orders: this.buildOptimizerOrders(orders, planningEpoch),
+      );
+    } catch (error: any) {
+      throw new BadRequestException(
+        error.message || "Không thể tạo cửa sổ thời gian điều phối",
+      );
+    }
+    const baseVehicles = candidateVehicles.map((vehicle) => ({
+      sourceVehicleId: vehicle.id,
+      plate_number: vehicle.plateNumber,
+      model: vehicle.model,
+      vehicle_type: vehicle.vehicleType,
+      length_cm: vehicle.lengthCm,
+      width_cm: vehicle.widthCm,
+      height_cm: vehicle.heightCm,
+      payload_limit_kg: vehicle.payloadCapacityKg,
+      door_position: "REAR",
+      depot: {
+        id: vehicle.homeBranch.id,
+        name: vehicle.homeBranch.name,
+        latitude: vehicle.homeBranch.latitude,
+        longitude: vehicle.homeBranch.longitude,
+      },
+      fuel_consumption_liters_per_100_km: Number(
+        vehicle.fuelConsumptionLitersPer100Km,
+      ),
+      load_fuel_surcharge_percent_at_full_payload: Number(
+        vehicle.loadFuelSurchargePercentAtFullPayload,
+      ),
+      fixed_operating_cost_vnd: Number(vehicle.fixedOperatingCostPerTrip),
+    }));
+    const baseDrivers = drivers.map((driver) => ({
+      sourceDriverId: driver.id,
+      full_name: driver.fullName,
+      license_class: driver.licenseClass,
+      fixed_salary_monthly_vnd: Number(driver.fixedSalaryMonthly),
+      trip_base_pay_vnd: Number(driver.tripBasePay),
+      per_km_pay_vnd: Number(driver.perKmPay),
+    }));
+    const snapshot = {
+      vehicles: serviceDays.flatMap((day) =>
+        baseVehicles.map((vehicle) => ({
+          ...vehicle,
+          id: `${vehicle.sourceVehicleId}::day:${day.serviceDayIndex}`,
+          source_vehicle_id: vehicle.sourceVehicleId,
+          service_day_index: day.serviceDayIndex,
+          available_start_sec: day.startSec,
+          available_end_sec: day.endSec,
+        })),
+      ),
+      drivers: serviceDays.flatMap((day) =>
+        baseDrivers.map((driver) => ({
+          ...driver,
+          id: `${driver.sourceDriverId}::day:${day.serviceDayIndex}`,
+          source_driver_id: driver.sourceDriverId,
+          service_day_index: day.serviceDayIndex,
+        })),
+      ),
+      orders: this.buildOptimizerOrders(
+        orders,
+        planningEpoch,
+      ),
       policy: {
         fuel_price_per_liter_vnd: Number(branch.fuelPricePerLiter),
         monthly_working_minutes: branch.monthlyWorkingMinutes,
@@ -580,9 +679,15 @@ export class TripsService {
           branch.cargoHoldingCostVndPerTonHour,
         ),
         unassigned_order_penalty_vnd: 1_000_000_000,
+        delivery_grace_days: branch.deliveryGraceDays,
+        late_delivery_penalty_mode: branch.lateDeliveryPenaltyMode,
+        late_delivery_penalty_value: Number(branch.lateDeliveryPenaltyValue),
       },
       planning_epoch_iso: planningEpoch.toISOString(),
-      max_time_seconds: Math.min(30, Math.max(12, Math.round(orders.length * 0.8))),
+      max_time_seconds: Math.min(
+        30,
+        Math.max(12, Math.round(orders.length * 0.8)),
+      ),
     };
     const vehicleCount = snapshot.vehicles.length;
     const orderCount = snapshot.orders.length;
@@ -602,14 +707,24 @@ export class TripsService {
       const compactCoordinates: [number, number][] = [
         [firstDepot.longitude, firstDepot.latitude],
         ...snapshot.orders.flatMap((order) => [
-          [order.pickup_location.longitude, order.pickup_location.latitude] as [number, number],
-          [order.delivery_location.longitude, order.delivery_location.latitude] as [number, number],
+          [order.pickup_location.longitude, order.pickup_location.latitude] as [
+            number,
+            number,
+          ],
+          [
+            order.delivery_location.longitude,
+            order.delivery_location.latitude,
+          ] as [number, number],
         ]),
       ];
       const matrix = await this.mapboxService.getRoadMatrix(compactCoordinates);
       const fullSize = vehicleCount + orderCount * 2;
-      fullDistances = Array.from({ length: fullSize }, () => Array(fullSize).fill(0));
-      fullDurations = Array.from({ length: fullSize }, () => Array(fullSize).fill(0));
+      fullDistances = Array.from({ length: fullSize }, () =>
+        Array(fullSize).fill(0),
+      );
+      fullDurations = Array.from({ length: fullSize }, () =>
+        Array(fullSize).fill(0),
+      );
 
       for (let i = 0; i < fullSize; i++) {
         const mapboxI = i < vehicleCount ? 0 : i - vehicleCount + 1;
@@ -624,11 +739,20 @@ export class TripsService {
       const coordinates: [number, number][] = [
         ...snapshot.vehicles.map(
           (vehicle) =>
-            [vehicle.depot.longitude, vehicle.depot.latitude] as [number, number],
+            [vehicle.depot.longitude, vehicle.depot.latitude] as [
+              number,
+              number,
+            ],
         ),
         ...snapshot.orders.flatMap((order) => [
-          [order.pickup_location.longitude, order.pickup_location.latitude] as [number, number],
-          [order.delivery_location.longitude, order.delivery_location.latitude] as [number, number],
+          [order.pickup_location.longitude, order.pickup_location.latitude] as [
+            number,
+            number,
+          ],
+          [
+            order.delivery_location.longitude,
+            order.delivery_location.latitude,
+          ] as [number, number],
         ]),
       ];
       const matrix = await this.mapboxService.getRoadMatrix(coordinates);
@@ -649,23 +773,30 @@ export class TripsService {
 
     let result;
     try {
-      const response = await axios.post(`${this.optimizerUrl}/optimize-fleet`, payload, {
-        timeout: Math.max(120000, (snapshot.max_time_seconds + 60) * 1000),
-      });
+      const response = await axios.post(
+        `${this.optimizerUrl}/optimize-fleet`,
+        payload,
+        {
+          timeout: Math.max(120000, (snapshot.max_time_seconds + 60) * 1000),
+        },
+      );
       assertFleetOptimizationResult(response.data);
       result = response.data;
     } catch (error) {
       throw new ServiceUnavailableException(
         error.response?.data?.detail ||
           error.message ||
-          'Không thể nhận kết quả từ Optimization Engine',
+          "Không thể nhận kết quả từ Optimization Engine",
       );
     }
 
     await Promise.all(
       result.routes.map(async (route) => {
-        const vehicle = snapshot.vehicles.find((item) => item.id === route.vehicle_id);
-        if (!vehicle) throw new Error(`Optimizer trả vehicle_id lạ: ${route.vehicle_id}`);
+        const vehicle = snapshot.vehicles.find(
+          (item) => item.id === route.route_id,
+        );
+        if (!vehicle)
+          throw new Error(`Optimizer trả route_id lạ: ${route.route_id}`);
         const routeCoordinates: [number, number][] = [
           [vehicle.depot.longitude, vehicle.depot.latitude],
           ...route.stops.map(
@@ -673,7 +804,8 @@ export class TripsService {
           ),
           [vehicle.depot.longitude, vehicle.depot.latitude],
         ];
-        const routeDetails = await this.mapboxService.getRoute(routeCoordinates);
+        const routeDetails =
+          await this.mapboxService.getRoute(routeCoordinates);
         route.depot = vehicle.depot;
         route.route_geometry = routeDetails.geometry;
       }),
@@ -682,9 +814,15 @@ export class TripsService {
     const proposal: OptimizationProposal = {
       branchId,
       planningEpochIso: planningEpoch.toISOString(),
-      expiresAt: new Date(Date.now() + OPTIMIZATION_PROPOSAL_TTL_MS).toISOString(),
+      scheduleMode,
+      expiresAt: new Date(
+        Date.now() + OPTIMIZATION_PROPOSAL_TTL_MS,
+      ).toISOString(),
       resources: {
-        orders: orders.map((order) => ({ id: order.id, version: order.version })),
+        orders: orders.map((order) => ({
+          id: order.id,
+          version: order.version,
+        })),
         vehicles: candidateVehicles.map((vehicle) => ({
           id: vehicle.id,
           updatedAt: vehicle.updatedAt.toISOString(),
@@ -699,7 +837,10 @@ export class TripsService {
 
     return {
       proposal,
-      signature: signOptimizationProposal(proposal, this.optimizationProposalSecret),
+      signature: signOptimizationProposal(
+        proposal,
+        this.optimizationProposalSecret,
+      ),
     };
   }
 
@@ -710,12 +851,16 @@ export class TripsService {
     try {
       assertOptimizationProposal(dto.proposal);
     } catch (error) {
-      throw new BadRequestException(error.message || 'Proposal tối ưu không hợp lệ');
+      throw new BadRequestException(
+        error.message || "Proposal tối ưu không hợp lệ",
+      );
     }
     const proposal = dto.proposal;
     const branchId = resolveBranchScope(user, proposal.branchId);
     if (branchId !== proposal.branchId) {
-      throw new ForbiddenException('Không có quyền áp dụng kế hoạch ngoài chi nhánh');
+      throw new ForbiddenException(
+        "Không có quyền áp dụng kế hoạch ngoài chi nhánh",
+      );
     }
     if (
       !verifyOptimizationProposalSignature(
@@ -724,38 +869,51 @@ export class TripsService {
         this.optimizationProposalSecret,
       )
     ) {
-      throw new ForbiddenException('Kết quả tối ưu đã bị thay đổi hoặc chữ ký không hợp lệ');
+      throw new ForbiddenException(
+        "Kết quả tối ưu đã bị thay đổi hoặc chữ ký không hợp lệ",
+      );
     }
     if (Date.parse(proposal.expiresAt) <= Date.now()) {
-      throw new ConflictException('Kết quả tối ưu đã hết hạn; hãy chạy tối ưu lại');
+      throw new ConflictException(
+        "Kết quả tối ưu đã hết hạn; hãy chạy tối ưu lại",
+      );
     }
-    if (!['SUCCESS', 'PARTIAL'].includes(proposal.result.status)) {
+    if (!["SUCCESS", "PARTIAL"].includes(proposal.result.status)) {
       throw new BadRequestException(
         `Không thể áp dụng kết quả ở trạng thái [${proposal.result.status}]`,
       );
     }
     if (proposal.result.routes.length === 0) {
-      throw new BadRequestException('Kết quả tối ưu không có tuyến nào để áp dụng');
+      throw new BadRequestException(
+        "Kết quả tối ưu không có tuyến nào để áp dụng",
+      );
     }
 
     const orderIds = Array.from(
-      new Set(proposal.result.routes.flatMap((route) => route.stops.map((stop) => stop.order_id))),
+      new Set(
+        proposal.result.routes.flatMap((route) =>
+          route.stops.map((stop) => stop.order_id),
+        ),
+      ),
     );
     const vehicleIds = Array.from(
       new Set(proposal.result.routes.map((route) => route.vehicle_id)),
     );
     const driverIds = Array.from(
       new Set(
-        proposal.result.routes.map((route) => route.driver_id).filter(Boolean) as string[],
+        proposal.result.routes
+          .map((route) => route.driver_id)
+          .filter(Boolean) as string[],
       ),
     );
     if (
       orderIds.length === 0 ||
-      driverIds.length !== proposal.result.routes.length ||
-      vehicleIds.length !== proposal.result.routes.length
+      driverIds.length === 0 ||
+      vehicleIds.length === 0 ||
+      proposal.result.routes.some((route) => !route.driver_id)
     ) {
       throw new BadRequestException(
-        'Mỗi tuyến phải có xe, tài xế riêng và ít nhất một đơn hàng',
+        "Mỗi tuyến phải có xe, tài xế và ít nhất một đơn hàng",
       );
     }
 
@@ -768,11 +926,20 @@ export class TripsService {
             where: { id: { in: orderIds }, branchId },
             include: { stops: true, items: true },
           }),
-          tx.vehicle.findMany({ where: { id: { in: vehicleIds }, homeBranchId: branchId } }),
-          tx.driver.findMany({ where: { id: { in: driverIds }, homeBranchId: branchId } }),
+          tx.vehicle.findMany({
+            where: { id: { in: vehicleIds }, homeBranchId: branchId },
+          }),
+          tx.driver.findMany({
+            where: { id: { in: driverIds }, homeBranchId: branchId },
+          }),
         ]);
 
-        this.assertProposalResourcesCurrent(proposal, orders, vehicles, drivers);
+        this.assertProposalResourcesCurrent(
+          proposal,
+          orders,
+          vehicles,
+          drivers,
+        );
         const plannedTrips = this.buildPlannedAutomaticTrips(
           proposal,
           orders,
@@ -785,7 +952,10 @@ export class TripsService {
           await this.assertNoResourceOverlap(tx, trip);
         }
 
-        const tripNumbers = await this.allocateTripNumbers(tx, plannedTrips.length);
+        const tripNumbers = await this.allocateTripNumbers(
+          tx,
+          plannedTrips.length,
+        );
         const createdTrips: Array<{
           id: string;
           tripNumber: string;
@@ -817,14 +987,15 @@ export class TripsService {
   }
 
   private get optimizerUrl() {
-    return process.env.OPTIMIZER_URL || 'http://localhost:8000';
+    return process.env.OPTIMIZER_URL || "http://localhost:8000";
   }
 
   private get optimizationProposalSecret() {
-    const secret = process.env.OPTIMIZATION_PROPOSAL_SECRET || process.env.JWT_SECRET;
+    const secret =
+      process.env.OPTIMIZATION_PROPOSAL_SECRET || process.env.JWT_SECRET;
     if (!secret) {
       throw new ServiceUnavailableException(
-        'Thiếu OPTIMIZATION_PROPOSAL_SECRET hoặc JWT_SECRET để ký kết quả tối ưu',
+        "Thiếu OPTIMIZATION_PROPOSAL_SECRET hoặc JWT_SECRET để ký kết quả tối ưu",
       );
     }
     return secret;
@@ -837,11 +1008,17 @@ export class TripsService {
     drivers: DriverRecord[],
   ): void {
     const usedOrderIds = new Set(
-      proposal.result.routes.flatMap((route) => route.stops.map((stop) => stop.order_id)),
+      proposal.result.routes.flatMap((route) =>
+        route.stops.map((stop) => stop.order_id),
+      ),
     );
-    const usedVehicleIds = new Set(proposal.result.routes.map((route) => route.vehicle_id));
+    const usedVehicleIds = new Set(
+      proposal.result.routes.map((route) => route.vehicle_id),
+    );
     const usedDriverIds = new Set(
-      proposal.result.routes.map((route) => route.driver_id).filter(Boolean) as string[],
+      proposal.result.routes
+        .map((route) => route.driver_id)
+        .filter(Boolean) as string[],
     );
     if (
       orders.length !== usedOrderIds.size ||
@@ -849,7 +1026,7 @@ export class TripsService {
       drivers.length !== usedDriverIds.size
     ) {
       throw new ConflictException(
-        'Đơn hàng, xe hoặc tài xế của phương án không còn tồn tại trong chi nhánh',
+        "Đơn hàng, xe hoặc tài xế của phương án không còn tồn tại trong chi nhánh",
       );
     }
 
@@ -915,7 +1092,9 @@ export class TripsService {
     drivers: DriverRecord[],
   ): PlannedAutomaticTrip[] {
     const orderById = new Map(orders.map((order) => [order.id, order]));
-    const vehicleById = new Map(vehicles.map((vehicle) => [vehicle.id, vehicle]));
+    const vehicleById = new Map(
+      vehicles.map((vehicle) => [vehicle.id, vehicle]),
+    );
     const driverById = new Map(drivers.map((driver) => [driver.id, driver]));
     const planningEpoch = new Date(proposal.planningEpochIso);
     const globallyAssignedOrders = new Set<string>();
@@ -926,11 +1105,15 @@ export class TripsService {
         throw new ConflictException(`Không tìm thấy xe [${route.vehicle_id}]`);
       }
       if (!route.driver_id) {
-        throw new BadRequestException(`Tuyến xe ${vehicle.plateNumber} chưa có tài xế`);
+        throw new BadRequestException(
+          `Tuyến xe ${vehicle.plateNumber} chưa có tài xế`,
+        );
       }
       const driver = driverById.get(route.driver_id);
       if (!driver) {
-        throw new ConflictException(`Không tìm thấy tài xế [${route.driver_id}]`);
+        throw new ConflictException(
+          `Không tìm thấy tài xế [${route.driver_id}]`,
+        );
       }
       if (
         route.driver_license_class &&
@@ -956,8 +1139,10 @@ export class TripsService {
         { pickup: number; delivery: number }
       >();
       const seenStopIds = new Set<string>();
-      const sortedStops = [...route.stops].sort((left, right) => left.sequence - right.sequence);
-      const plannedStops: PlannedAutomaticTrip['stops'] = [];
+      const sortedStops = [...route.stops].sort(
+        (left, right) => left.sequence - right.sequence,
+      );
+      const plannedStops: PlannedAutomaticTrip["stops"] = [];
       const stopsWithItems: StopWithItems[] = [];
 
       for (let index = 0; index < sortedStops.length; index++) {
@@ -976,9 +1161,13 @@ export class TripsService {
 
         const order = orderById.get(stop.order_id);
         if (!order) {
-          throw new ConflictException(`Không tìm thấy đơn [${stop.order_id}] trong chi nhánh`);
+          throw new ConflictException(
+            `Không tìm thấy đơn [${stop.order_id}] trong chi nhánh`,
+          );
         }
-        const orderStop = order.stops.find((item) => item.id === stop.location_id);
+        const orderStop = order.stops.find(
+          (item) => item.id === stop.location_id,
+        );
         if (!orderStop || orderStop.type !== stop.stop_type) {
           throw new BadRequestException(
             `Điểm dừng [${stop.location_id}] không thuộc đúng đơn hoặc sai loại thao tác`,
@@ -995,7 +1184,10 @@ export class TripsService {
           );
         }
 
-        const counts = routeOrderCounts.get(order.id) ?? { pickup: 0, delivery: 0 };
+        const counts = routeOrderCounts.get(order.id) ?? {
+          pickup: 0,
+          delivery: 0,
+        };
         if (stop.stop_type === StopType.PICKUP) counts.pickup += 1;
         else counts.delivery += 1;
         routeOrderCounts.set(order.id, counts);
@@ -1026,7 +1218,9 @@ export class TripsService {
           );
         }
         if (globallyAssignedOrders.has(orderId)) {
-          throw new BadRequestException(`Đơn [${orderId}] xuất hiện trên nhiều tuyến`);
+          throw new BadRequestException(
+            `Đơn [${orderId}] xuất hiện trên nhiều tuyến`,
+          );
         }
         globallyAssignedOrders.add(orderId);
       }
@@ -1040,14 +1234,18 @@ export class TripsService {
       );
       const plannedEndSeconds = Math.max(
         lastDepartureSeconds,
-        Math.round(route.total_duration_minutes * 60),
+        route.end_time_sec,
       );
 
       return {
         vehicleId: vehicle.id,
         driverId: driver.id,
-        plannedStartTime: planningEpoch,
-        plannedEndTime: new Date(planningEpoch.getTime() + plannedEndSeconds * 1000),
+        plannedStartTime: new Date(
+          planningEpoch.getTime() + route.start_time_sec * 1000,
+        ),
+        plannedEndTime: new Date(
+          planningEpoch.getTime() + plannedEndSeconds * 1000,
+        ),
         totalDistanceKm: route.total_distance_km,
         totalDurationMinutes: route.total_duration_minutes,
         routeGeometry: route.route_geometry
@@ -1083,21 +1281,17 @@ export class TripsService {
     tx: Prisma.TransactionClient,
     orderIds: string[],
   ): Promise<void> {
-    const conflicting = await tx.allocation.findFirst({
+    const conflicting = await tx.stopTask.findFirst({
       where: {
-        orderItem: { orderId: { in: orderIds } },
-        trip: { status: { in: ACTIVE_TRIP_STATUSES } },
+        orderId: { in: orderIds },
+        tripStop: { trip: { status: { in: ACTIVE_TRIP_STATUSES } } },
       },
-      include: {
-        trip: { select: { tripNumber: true } },
-        orderItem: { select: { order: { select: { orderNumber: true } } } },
-      },
+      include: { tripStop: { include: { trip: true } }, order: true },
     });
-    if (conflicting) {
+    if (conflicting)
       throw new ConflictException(
-        `Đơn ${conflicting.orderItem.order.orderNumber} đã nằm trên chuyến ${conflicting.trip.tripNumber}`,
+        `Đơn ${conflicting.order?.orderNumber} đã nằm trên chuyến ${conflicting.tripStop.trip.tripNumber}`,
       );
-    }
   }
 
   private async assertNoResourceOverlap(
@@ -1139,7 +1333,7 @@ export class TripsService {
     tx: Prisma.TransactionClient,
     count: number,
   ): Promise<string[]> {
-    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     await tx.$queryRaw`SELECT pg_advisory_xact_lock(${LOCK_NAMESPACE_TRIP_NUMBER}::int4, hashtext(${dateStr})::int4)`;
     const existing = await tx.trip.count({
       where: { tripNumber: { startsWith: `TRIP-${dateStr}` } },
@@ -1147,7 +1341,7 @@ export class TripsService {
     return Array.from(
       { length: count },
       (_, index) =>
-        `TRIP-${dateStr}-${String(existing + index + 1).padStart(3, '0')}`,
+        `TRIP-${dateStr}-${String(existing + index + 1).padStart(3, "0")}`,
     );
   }
 
@@ -1168,7 +1362,7 @@ export class TripsService {
         totalDistanceKm: plannedTrip.totalDistanceKm,
         totalDurationMinutes: plannedTrip.totalDurationMinutes,
         routeGeometry: plannedTrip.routeGeometry,
-        notes: 'Sinh từ kết quả tối ưu tự động không lưu job',
+        notes: "Sinh từ kết quả tối ưu tự động không lưu job",
       },
     });
 
@@ -1176,20 +1370,6 @@ export class TripsService {
       where: { id: { in: plannedTrip.orderIds } },
       include: { items: true },
     });
-    const allocationIdByItemId = new Map<string, string>();
-    for (const order of orders) {
-      for (const item of order.items) {
-        const allocation = await tx.allocation.create({
-          data: {
-            tripId: trip.id,
-            orderItemId: item.id,
-            allocatedQuantity: item.quantity,
-          },
-        });
-        allocationIdByItemId.set(item.id, allocation.id);
-      }
-    }
-
     const orderById = new Map(orders.map((order) => [order.id, order]));
     for (const stop of plannedTrip.stops) {
       const tripStop = await tx.tripStop.create({
@@ -1208,22 +1388,21 @@ export class TripsService {
       });
       const order = orderById.get(stop.orderId);
       if (!order) throw new Error(`Thiếu đơn [${stop.orderId}] khi lưu chuyến`);
-      for (const item of order.items) {
-        const allocationId = allocationIdByItemId.get(item.id);
-        if (!allocationId) throw new Error(`Thiếu allocation cho dòng hàng [${item.id}]`);
-        await tx.stopTask.create({
-          data: {
-            tripStopId: tripStop.id,
-            allocationId,
-            orderStopId: stop.orderStopId,
-            action:
-              stop.stopType === StopType.PICKUP
-                ? TaskAction.LOAD
-                : TaskAction.UNLOAD,
-            plannedQuantity: item.quantity,
-          },
-        });
-      }
+      await tx.stopTask.create({
+        data: {
+          tripStopId: tripStop.id,
+          orderId: order.id,
+          orderStopId: stop.orderStopId,
+          action:
+            stop.stopType === StopType.PICKUP
+              ? TaskAction.LOAD
+              : TaskAction.UNLOAD,
+          plannedQuantity: order.items.reduce(
+            (sum, item) => sum + item.quantity,
+            0,
+          ),
+        },
+      });
     }
 
     await tx.driverAssignment.create({
@@ -1232,7 +1411,7 @@ export class TripsService {
         driverId: plannedTrip.driverId,
         startTime: plannedTrip.plannedStartTime,
         endTime: plannedTrip.plannedEndTime,
-        role: 'PRIMARY',
+        role: "PRIMARY",
       },
     });
 
@@ -1245,7 +1424,7 @@ export class TripsService {
     });
     if (updatedOrders.count !== plannedTrip.orderIds.length) {
       throw new ConflictException(
-        'Trạng thái đơn đã thay đổi trong lúc áp dụng; toàn bộ thao tác đã rollback',
+        "Trạng thái đơn đã thay đổi trong lúc áp dụng; toàn bộ thao tác đã rollback",
       );
     }
 
@@ -1260,29 +1439,18 @@ export class TripsService {
     };
   }
 
-  private getPlanningEpoch(orders: Array<{ stops: Array<{ windowStart: Date | null }> }>) {
-    const windowStarts = orders
-      .flatMap((order) => order.stops.map((stop) => stop.windowStart))
-      .filter((value): value is Date => value instanceof Date);
-    const epoch = windowStarts.length > 0
-      ? new Date(Math.min(...windowStarts.map((value) => value.getTime())))
-      : new Date();
-    epoch.setUTCHours(0, 0, 0, 0);
-    return epoch;
-  }
-
   private buildOptimizerOrders(
     orders: Array<{
       id: string;
       orderNumber: string;
+      orderedAt: Date;
+      totalAmount: { toString(): string };
       stops: Array<{
         id: string;
         type: StopType;
         address: string;
         latitude: number;
         longitude: number;
-        windowStart: Date | null;
-        windowEnd: Date | null;
         serviceDurationMinutes: number;
       }>;
       items: Array<{
@@ -1298,14 +1466,15 @@ export class TripsService {
     }>,
     planningEpoch: Date,
   ) {
-    const secondsFromEpoch = (value: Date | null, fallback: number) =>
-      value ? Math.max(0, Math.round((value.getTime() - planningEpoch.getTime()) / 1000)) : fallback;
-
     return orders.map((order) => {
       const pickup = order.stops.find((stop) => stop.type === StopType.PICKUP);
-      const delivery = order.stops.find((stop) => stop.type === StopType.DELIVERY);
+      const delivery = order.stops.find(
+        (stop) => stop.type === StopType.DELIVERY,
+      );
       if (!pickup || !delivery) {
-        throw new BadRequestException(`Đơn ${order.orderNumber} thiếu pickup hoặc delivery`);
+        throw new BadRequestException(
+          `Đơn ${order.orderNumber} thiếu pickup hoặc delivery`,
+        );
       }
       let items;
       try {
@@ -1329,14 +1498,15 @@ export class TripsService {
           longitude: delivery.longitude,
         },
         items,
-        pickup_window_start_sec: secondsFromEpoch(pickup.windowStart, 0),
-        pickup_window_end_sec: secondsFromEpoch(pickup.windowEnd, 7 * 86400),
-        delivery_window_start_sec: secondsFromEpoch(delivery.windowStart, 0),
-        delivery_window_end_sec: secondsFromEpoch(delivery.windowEnd, 7 * 86400),
-        service_time_sec: Math.max(
-          pickup.serviceDurationMinutes,
-          delivery.serviceDurationMinutes,
-        ) * 60,
+        ordered_at_sec: Math.round(
+          (order.orderedAt.getTime() - planningEpoch.getTime()) / 1000,
+        ),
+        order_value_vnd: Math.round(Number(order.totalAmount)),
+        service_time_sec:
+          Math.max(
+            pickup.serviceDurationMinutes,
+            delivery.serviceDurationMinutes,
+          ) * 60,
       };
     });
   }

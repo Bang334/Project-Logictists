@@ -14,7 +14,11 @@ export type OptimizerStop = {
 };
 
 export type OptimizedRouteResult = {
+  route_id: string;
   vehicle_id: string;
+  service_day_index: number;
+  start_time_sec: number;
+  end_time_sec: number;
   plate_number: string;
   vehicle_length_cm: number;
   vehicle_width_cm: number;
@@ -44,6 +48,7 @@ export type OptimizedRouteResult = {
     load_fuel_surcharge_vnd: number;
     fuel_cost_vnd: number;
     cargo_holding_cost_vnd: number;
+    late_delivery_penalty_vnd: number;
     cargo_distance_ton_km: number;
     cargo_time_ton_hours: number;
     vehicle_fixed_cost_vnd: number;
@@ -65,6 +70,7 @@ export type BenchmarkMetric = {
   vehicle_fixed_cost_vnd: number;
   driver_cost_vnd: number;
   cargo_holding_cost_vnd: number;
+  late_delivery_penalty_vnd: number;
   is_feasible: boolean;
   violations: string[];
 };
@@ -130,6 +136,7 @@ export function assertFleetOptimizationResult(
   for (const route of value.routes) {
     if (
       !isRecord(route) ||
+      typeof route.route_id !== 'string' ||
       typeof route.vehicle_id !== 'string' ||
       !Array.isArray(route.stops) ||
       !isRecord(route.spatial_validation) ||
@@ -138,6 +145,9 @@ export function assertFleetOptimizationResult(
       throw new Error('Optimizer trả route thiếu dữ liệu hoặc chưa vượt spatial validator');
     }
     for (const field of [
+      'service_day_index',
+      'start_time_sec',
+      'end_time_sec',
       'vehicle_length_cm',
       'vehicle_width_cm',
       'total_distance_km',
@@ -146,6 +156,12 @@ export function assertFleetOptimizationResult(
       if (!isFiniteNumber(route[field]) || Number(route[field]) < 0) {
         throw new Error(`Optimizer trả route.${field} không hợp lệ`);
       }
+    }
+    if (
+      !Number.isInteger(route.service_day_index) ||
+      Number(route.end_time_sec) <= Number(route.start_time_sec)
+    ) {
+      throw new Error('Optimizer trả khung thời gian tuyến không hợp lệ');
     }
     if (
       typeof route.plate_number !== 'string' ||
@@ -182,6 +198,7 @@ export function assertFleetOptimizationResult(
       'load_fuel_surcharge_vnd',
       'fuel_cost_vnd',
       'cargo_holding_cost_vnd',
+      'late_delivery_penalty_vnd',
       'cargo_distance_ton_km',
       'cargo_time_ton_hours',
       'vehicle_fixed_cost_vnd',
@@ -236,6 +253,7 @@ export function assertFleetOptimizationResult(
         'vehicle_fixed_cost_vnd',
         'driver_cost_vnd',
         'cargo_holding_cost_vnd',
+        'late_delivery_penalty_vnd',
       ]) {
         const fieldValue = metric[field];
         if (typeof fieldValue !== 'number' || !Number.isFinite(fieldValue)) {

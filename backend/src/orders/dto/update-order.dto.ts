@@ -1,22 +1,30 @@
 import {
   ArrayMinSize,
   IsArray,
+  IsDate,
   IsEnum,
-  IsInt,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
-  IsPositive,
   IsString,
-  Max,
+  IsNumber,
   Min,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { StopType, OrderStatus } from '@prisma/client';
+import { OrderStatus } from '@prisma/client';
 import { CreateOrderItemDto, CreateOrderStopDto } from './create-order.dto';
 
 export class UpdateOrderDto {
+  @IsOptional()
+  @Type(() => Date)
+  @IsDate()
+  orderedAt?: Date;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  totalAmount?: number;
+
   @IsOptional()
   @IsString()
   @IsNotEmpty()

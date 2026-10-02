@@ -5,19 +5,21 @@ import {
   AutomaticOptimizationResponseUI,
   Driver,
   LoadProfileResult,
+  Location,
   OptimizationResultUI,
   Order,
+  RunAutomaticOptimizationPayloadUI,
   Trip,
   Vehicle,
 } from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 
-const client = axios.create({
+export const apiClient = axios.create({
   baseURL: API_URL,
 });
 
-client.interceptors.request.use((config) => {
+apiClient.interceptors.request.use((config) => {
   const token = localStorage.getItem('tms_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
@@ -27,58 +29,58 @@ client.interceptors.request.use((config) => {
 
 export const authApi = {
   login: (username: string, pass: string) =>
-    client.post('/auth/login', { username, pass }),
-  getProfile: () => client.get('/auth/profile'),
+    apiClient.post('/auth/login', { username, pass }),
+  getProfile: () => apiClient.get('/auth/profile'),
 };
 
 export const branchesApi = {
-  getAll: () => client.get<Branch[]>('/branches'),
-  getById: (id: string) => client.get<Branch>(`/branches/${id}`),
+  getAll: () => apiClient.get<Branch[]>('/branches'),
+  getById: (id: string) => apiClient.get<Branch>(`/branches/${id}`),
   update: (id: string, data: Partial<Branch>) =>
-    client.patch<Branch>(`/branches/${id}`, data),
+    apiClient.patch<Branch>(`/branches/${id}`, data),
 };
 
 export const customersApi = {
-  getAll: () => client.get<Array<{ id: string; code: string; name: string }>>('/customers'),
+  getAll: () => apiClient.get<Array<{ id: string; code: string; name: string }>>('/customers'),
 };
 
 export const vehiclesApi = {
   getAll: (branchId?: string, status?: string) =>
-    client.get<Vehicle[]>('/vehicles', { params: { branchId, status } }),
+    apiClient.get<Vehicle[]>('/vehicles', { params: { branchId, status } }),
   getAvailable: (branchId?: string) =>
-    client.get<Vehicle[]>('/vehicles/available', { params: { branchId } }),
-  getById: (id: string) => client.get<Vehicle>(`/vehicles/${id}`),
+    apiClient.get<Vehicle[]>('/vehicles/available', { params: { branchId } }),
+  getById: (id: string) => apiClient.get<Vehicle>(`/vehicles/${id}`),
   update: (id: string, data: Partial<Vehicle>) =>
-    client.patch<Vehicle>(`/vehicles/${id}`, data),
+    apiClient.patch<Vehicle>(`/vehicles/${id}`, data),
 };
 
 export const driversApi = {
   getAll: (branchId?: string, status?: string) =>
-    client.get<Driver[]>('/drivers', { params: { branchId, status } }),
+    apiClient.get<Driver[]>('/drivers', { params: { branchId, status } }),
   getAvailable: (branchId?: string) =>
-    client.get<Driver[]>('/drivers/available', { params: { branchId } }),
-  getById: (id: string) => client.get<Driver>(`/drivers/${id}`),
+    apiClient.get<Driver[]>('/drivers/available', { params: { branchId } }),
+  getById: (id: string) => apiClient.get<Driver>(`/drivers/${id}`),
   update: (id: string, data: Partial<Driver>) =>
-    client.patch<Driver>(`/drivers/${id}`, data),
+    apiClient.patch<Driver>(`/drivers/${id}`, data),
 };
 
 export const ordersApi = {
   getAll: (params?: { status?: string; customerId?: string; branchId?: string } | string) => {
     if (typeof params === 'string') {
-      return client.get<Order[]>('/orders', { params: { status: params } });
+      return apiClient.get<Order[]>('/orders', { params: { status: params } });
     }
-    return client.get<Order[]>('/orders', { params });
+    return apiClient.get<Order[]>('/orders', { params });
   },
   getAvailableForDispatch: (branchId?: string) =>
-    client.get<Order[]>('/orders/available-for-dispatch', { params: { branchId } }),
-  create: (data: any) => client.post<Order>('/orders', data),
-  update: (id: string, data: any) => client.patch<Order>(`/orders/${id}`, data),
+    apiClient.get<Order[]>('/orders/available-for-dispatch', { params: { branchId } }),
+  create: (data: any) => apiClient.post<Order>('/orders', data),
+  update: (id: string, data: any) => apiClient.patch<Order>(`/orders/${id}`, data),
 };
 
 export const tripsApi = {
   getAll: (status?: string) =>
-    client.get<Trip[]>('/trips', { params: { status } }),
-  getOne: (id: string) => client.get<Trip>(`/trips/${id}`),
+    apiClient.get<Trip[]>('/trips', { params: { status } }),
+  getOne: (id: string) => apiClient.get<Trip>(`/trips/${id}`),
   create: (data: {
     vehicleId: string;
     driverId: string;
@@ -87,21 +89,30 @@ export const tripsApi = {
     orderIds: string[];
     orderedStopIds?: string[];
     notes?: string;
-  }) => client.post<Trip>('/trips', data),
-  publish: (id: string) => client.patch<Trip>(`/trips/${id}/publish`),
+  }) => apiClient.post<Trip>('/trips', data),
+  publish: (id: string) => apiClient.patch<Trip>(`/trips/${id}/publish`),
   getLoadProfile: (id: string) =>
-    client.get<LoadProfileResult>(`/trips/${id}/load-profile`),
+    apiClient.get<LoadProfileResult>(`/trips/${id}/load-profile`),
   optimize: (data: { vehicleId: string; orderIds: string[] }) =>
-    client.post<OptimizationResultUI>('/trips/optimize', data),
-  runAutomaticOptimization: (branchId: string) =>
-    client.post<AutomaticOptimizationResponseUI>('/trips/automatic-optimization', {
-      branchId,
-    }),
+    apiClient.post<OptimizationResultUI>('/trips/optimize', data),
+  runAutomaticOptimization: (
+    param: string | RunAutomaticOptimizationPayloadUI,
+  ) => {
+    const data = typeof param === 'string' ? { branchId: param } : param;
+    return apiClient.post<AutomaticOptimizationResponseUI>(
+      '/trips/automatic-optimization',
+      data,
+    );
+  },
   applyAutomaticOptimization: (data: AutomaticOptimizationResponseUI) =>
-    client.post<ApplyOptimizationResponseUI>(
+    apiClient.post<ApplyOptimizationResponseUI>(
       '/trips/automatic-optimization/apply',
       data,
     ),
+};
+
+export const locationsApi = {
+  getAll: () => apiClient.get<Location[]>('/locations'),
 };
 
 export const mapboxApi = {

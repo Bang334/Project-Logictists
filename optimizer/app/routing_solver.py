@@ -1,6 +1,6 @@
 import itertools
 import time
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Set, Tuple, Optional
 
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
@@ -13,7 +13,9 @@ from .models import (
     OptimizationRequest,
     OptimizationResponse,
     OptimizedRoute,
+    OrderPair,
     ScheduledStop,
+    SpatialValidationResult,
     StopAction,
     UnassignedOrder,
     can_driver_drive_vehicle,
@@ -24,6 +26,7 @@ from .route_costing import (
     build_route_cost_breakdown,
     calculate_driver_cost,
     calculate_route_economic_metrics,
+    late_delivery_daily_penalty,
 )
 
 
@@ -41,6 +44,34 @@ class FleetRoutingSolver:
         self.vehicle_count = len(request.vehicles)
         self.nodes = self._build_nodes()
         self.order_by_id = {order.id: order for order in request.orders}
+        self.driver_safe_vehicle_indices = self._find_driver_safe_vehicle_indices()
+
+    def _find_driver_safe_vehicle_indices(self) -> Set[int]:
+        """Return a maximum vehicle subset with a one-to-one legal driver match."""
+        driver_to_vehicle: Dict[int, int] = {}
+
+        def assign(vehicle_index: int, seen_drivers: Set[int]) -> bool:
+            vehicle = self.request.vehicles[vehicle_index]
+            vehicle_type = vehicle.vehicle_type or vehicle.model or ""
+            for driver_index, driver in enumerate(self.request.drivers):
+                if driver_index in seen_drivers or not can_driver_drive_vehicle(
+                    driver.license_class,
+                    vehicle.payload_limit_kg,
+                    vehicle_type,
+                ):
+                    continue
+                if driver.service_day_index != vehicle.service_day_index:
+                    continue
+                seen_drivers.add(driver_index)
+                previous_vehicle = driver_to_vehicle.get(driver_index)
+                if previous_vehicle is None or assign(previous_vehicle, seen_drivers):
+                    driver_to_vehicle[driver_index] = vehicle_index
+                    return True
+            return False
+
+        for vehicle_index in range(len(self.request.vehicles)):
+            assign(vehicle_index, set())
+        return set(driver_to_vehicle.values())
 
     def _build_nodes(self) -> List[dict]:
         nodes: List[dict] = []
@@ -83,6 +114,25 @@ class FleetRoutingSolver:
 
     def solve(self) -> FleetOptimizationResponse:
         started_at = time.monotonic()
+        if not self.driver_safe_vehicle_indices:
+            return FleetOptimizationResponse(
+                job_id=self.request.job_id,
+                status="INFEASIBLE",
+                unassigned_orders=[
+                    UnassignedOrder(
+                        order_id=order.id,
+                        order_number=order.order_number,
+                        reason_code="NO_COMPATIBLE_DRIVER",
+                        reason_message=(
+                            "Không có cặp xe–tài xế nào đáp ứng hạng bằng lái."
+                        ),
+                    )
+                    for order in self.request.orders
+                ],
+                diagnostics=[
+                    "Không chạy solver vì không có xe nào ghép được với tài xế đủ hạng bằng."
+                ],
+            )
         vehicle_count = self.vehicle_count
         starts = list(range(vehicle_count))
         ends = list(range(vehicle_count))
@@ -132,9 +182,21 @@ class FleetRoutingSolver:
                 cost_callback = routing.RegisterTransitCallback(vehicle_cost)
                 routing.SetArcCostEvaluatorOfVehicle(cost_callback, vehicle_index)
 
+            # Solver-only delay penalty: prefer the earliest service day and
+            # spill into later days only when earlier daily slots are full.
+            # This penalty is not reported as a financial operating cost.
+            day_delay_penalty_vnd = (
+                self.request.policy.unassigned_order_penalty_vnd
+                // 1000
+                * vehicle.service_day_index
+            )
             routing.SetFixedCostOfVehicle(
                 round(
-                    (vehicle.fixed_operating_cost_vnd + average_driver_trip_base_vnd)
+                    (
+                        vehicle.fixed_operating_cost_vnd
+                        + average_driver_trip_base_vnd
+                        + day_delay_penalty_vnd
+                    )
                     * OBJECTIVE_COST_SCALE
                 ),
                 vehicle_index,
@@ -150,8 +212,15 @@ class FleetRoutingSolver:
 
         time_callback_index = routing.RegisterTransitCallback(time_callback)
         max_time_horizon = 30 * 86400  # 30 ngày = 2.592.000 giây
-        routing.AddDimension(time_callback_index, max_time_horizon, max_time_horizon, True, "Time")
+        routing.AddDimension(time_callback_index, max_time_horizon, max_time_horizon, False, "Time")
         time_dimension = routing.GetDimensionOrDie("Time")
+        for vehicle_index, vehicle in enumerate(self.request.vehicles):
+            time_dimension.CumulVar(routing.Start(vehicle_index)).SetRange(
+                vehicle.available_start_sec, vehicle.available_start_sec
+            )
+            time_dimension.CumulVar(routing.End(vehicle_index)).SetRange(
+                vehicle.available_start_sec, vehicle.available_end_sec
+            )
         driver_time_cost_coefficient = round(
             average_driver_time_vnd_per_second * OBJECTIVE_COST_SCALE
         )
@@ -223,6 +292,13 @@ class FleetRoutingSolver:
             pickup_index = manager.NodeToIndex(pickup_node)
             delivery_index = manager.NodeToIndex(delivery_node)
 
+            routing.SetAllowedVehiclesForIndex(
+                sorted(self.driver_safe_vehicle_indices), pickup_index
+            )
+            routing.SetAllowedVehiclesForIndex(
+                sorted(self.driver_safe_vehicle_indices), delivery_index
+            )
+
             routing.AddPickupAndDelivery(pickup_index, delivery_index)
             routing.solver().Add(
                 routing.VehicleVar(pickup_index) == routing.VehicleVar(delivery_index)
@@ -240,12 +316,24 @@ class FleetRoutingSolver:
             routing.AddDisjunction([pickup_index], pair_penalty // 2)
             routing.AddDisjunction([delivery_index], pair_penalty - pair_penalty // 2)
 
-            time_dimension.CumulVar(pickup_index).SetRange(
-                order.pickup_window_start_sec, order.pickup_window_end_sec
+            time_dimension.CumulVar(pickup_index).SetRange(0, max_time_horizon)
+            time_dimension.CumulVar(delivery_index).SetRange(0, max_time_horizon)
+
+            daily_late_penalty = late_delivery_daily_penalty(
+                order, self.request.policy
             )
-            time_dimension.CumulVar(delivery_index).SetRange(
-                order.delivery_window_start_sec, order.delivery_window_end_sec
+            late_penalty_per_second = round(
+                daily_late_penalty * OBJECTIVE_COST_SCALE / 86_400
             )
+            if late_penalty_per_second > 0:
+                grace_end_sec = max(
+                    0,
+                    order.ordered_at_sec
+                    + self.request.policy.delivery_grace_days * 86_400,
+                )
+                time_dimension.SetCumulVarSoftUpperBound(
+                    delivery_index, grace_end_sec, late_penalty_per_second
+                )
 
             cargo_weight_kg = sum(item.weight_kg for item in order.items)
             cargo_holding_cost_coefficient = round(
@@ -274,11 +362,6 @@ class FleetRoutingSolver:
         )
         search.time_limit.seconds = self.request.max_time_seconds
         solution = routing.SolveWithParameters(search)
-        print(
-            f"[DEBUG-bmk2] routing_finished elapsed={time.monotonic() - started_at:.3f}s",
-            flush=True,
-        )
-
         if solution is None:
             elapsed = time.monotonic() - started_at
             status = "TIMEOUT" if elapsed >= self.request.max_time_seconds * 0.9 else "INFEASIBLE"
@@ -294,10 +377,11 @@ class FleetRoutingSolver:
 
         routes: List[OptimizedRoute] = []
         assigned_order_ids = set()
-        spatially_rejected: Dict[str, str] = {}
+        rejected_reasons: Dict[str, Tuple[str, str]] = {}
 
         for vehicle_index, vehicle in enumerate(self.request.vehicles):
             index = routing.Start(vehicle_index)
+            route_start_seconds = solution.Value(time_dimension.CumulVar(index))
             route_distance_meters = 0
             scheduled_stops: List[ScheduledStop] = []
             stop_actions: List[StopAction] = []
@@ -359,24 +443,9 @@ class FleetRoutingSolver:
             if not scheduled_stops:
                 continue
 
-            print(
-                f"[DEBUG-bmk2] spatial_start vehicle={vehicle.plate_number} "
-                f"orders={len(route_order_ids)} stops={len(stop_actions)} "
-                f"order_numbers={[self.order_by_id[order_id].order_number for order_id in route_order_ids]}",
-                flush=True,
-            )
             spatial = SpatialValidator(vehicle).validate_plan(stop_actions)
-            print(
-                f"[DEBUG-bmk2] spatial_done vehicle={vehicle.plate_number} "
-                f"valid={spatial.is_valid} elapsed={time.monotonic() - started_at:.3f}s",
-                flush=True,
-            )
             if not spatial.is_valid:
                 # Phối hợp định tuyến & bố trí hàng: tìm kiếm hoán vị chuỗi stop không bị chắn lối ra cửa (T24/T26)
-                print(
-                    f"[DEBUG-bmk2] resequence_start vehicle={vehicle.plate_number}",
-                    flush=True,
-                )
                 orders_on_route = [self.order_by_id[oid] for oid in route_order_ids if oid in self.order_by_id]
                 reseq = self._resequence_stops_for_spatial_feasibility(
                     vehicle,
@@ -384,7 +453,7 @@ class FleetRoutingSolver:
                     orders_on_route,
                 )
                 if reseq is not None:
-                    scheduled_stops, stop_actions, route_distance_meters, route_duration_seconds, spatial = reseq
+                    scheduled_stops, stop_actions, route_distance_meters, route_end_seconds, spatial = reseq
                 elif len(orders_on_route) > 1:
                     # Fallback thông minh: Thử loại bớt 1 đơn để xe vẫn phục vụ được các đơn còn lại
                     sub_reseq = None
@@ -400,24 +469,33 @@ class FleetRoutingSolver:
                             dropped_order_id = next(o.id for o in orders_on_route if o.id not in {x.id for x in sub})
                             break
                     if sub_reseq is not None:
-                        scheduled_stops, stop_actions, route_distance_meters, route_duration_seconds, spatial = sub_reseq
-                        spatially_rejected[dropped_order_id] = "Thùng xe không đủ diện tích sàn để xếp thêm đơn này cùng các đơn khác."
+                        scheduled_stops, stop_actions, route_distance_meters, route_end_seconds, spatial = sub_reseq
+                        rejected_reasons[dropped_order_id] = (
+                            "SPATIAL_ROUTE_CONFLICT",
+                            "Đơn xung đột bố trí với tuyến ban đầu; sẽ thử tái phân công sang tuyến khác.",
+                        )
                         route_order_ids = {s.order_id for s in scheduled_stops if s.order_id}
                     else:
                         for order_id in route_order_ids:
-                            spatially_rejected[order_id] = spatial.error_message or "Bố trí xếp/dỡ không hợp lệ"
+                            rejected_reasons[order_id] = self._spatial_rejection(spatial)
                         continue
                 else:
                     for order_id in route_order_ids:
-                        spatially_rejected[order_id] = spatial.error_message or "Bố trí xếp/dỡ không hợp lệ"
+                        rejected_reasons[order_id] = self._spatial_rejection(spatial)
                     continue
             else:
-                route_duration_seconds = solution.Value(
+                route_end_seconds = solution.Value(
                     time_dimension.CumulVar(routing.End(vehicle_index))
                 )
+            route_end_seconds = round(route_end_seconds)
+            route_duration_seconds = route_end_seconds - route_start_seconds
             routes.append(
                 OptimizedRoute(
-                    vehicle_id=vehicle.id,
+                    route_id=vehicle.id,
+                    vehicle_id=vehicle.source_vehicle_id or vehicle.id,
+                    service_day_index=vehicle.service_day_index,
+                    start_time_sec=route_start_seconds,
+                    end_time_sec=route_end_seconds,
                     plate_number=vehicle.plate_number,
                     vehicle_length_cm=vehicle.length_cm,
                     vehicle_width_cm=vehicle.width_cm,
@@ -429,124 +507,12 @@ class FleetRoutingSolver:
             )
             assigned_order_ids.update(route_order_ids)
 
-        # Recovery Pass: Tận dụng các xe rảnh trong đội xe nếu còn đơn chưa được xếp
-        unassigned_candidates = [
-            order for order in self.request.orders if order.id not in assigned_order_ids
-        ]
-        used_vehicle_ids = {r.vehicle_id for r in routes}
-        idle_vehicles = [
-            (v_idx, v) for v_idx, v in enumerate(self.request.vehicles) if v.id not in used_vehicle_ids
-        ]
-
-        if unassigned_candidates and idle_vehicles:
-            for v_idx, vehicle in idle_vehicles:
-                if not unassigned_candidates:
-                    break
-                for order in list(unassigned_candidates):
-                    order_weight = sum(item.weight_kg for item in order.items)
-                    if order_weight > vehicle.payload_limit_kg:
-                        continue
-
-                    order_index = self.request.orders.index(order)
-                    pickup_node = vehicle_count + 2 * order_index
-                    delivery_node = pickup_node + 1
-                    depot_node = v_idx
-
-                    d1 = self.request.distance_matrix_meters[depot_node][pickup_node]
-                    d2 = self.request.distance_matrix_meters[pickup_node][delivery_node]
-                    d3 = self.request.distance_matrix_meters[delivery_node][depot_node]
-                    total_distance_m = d1 + d2 + d3
-
-                    t1 = self.request.duration_matrix_seconds[depot_node][pickup_node]
-                    t2 = self.request.duration_matrix_seconds[pickup_node][delivery_node]
-                    t3 = self.request.duration_matrix_seconds[delivery_node][depot_node]
-
-                    t_depart_depot = max(0, order.pickup_window_start_sec - t1)
-                    t_arr_pickup = t_depart_depot + t1
-                    if t_arr_pickup > order.pickup_window_end_sec:
-                        continue
-
-                    t_start_pickup = max(t_arr_pickup, order.pickup_window_start_sec)
-                    t_depart_pickup = t_start_pickup + order.service_time_sec
-
-                    t_arr_delivery = t_depart_pickup + t2
-                    if t_arr_delivery > order.delivery_window_end_sec:
-                        continue
-
-                    t_start_delivery = max(t_arr_delivery, order.delivery_window_start_sec)
-                    t_depart_delivery = t_start_delivery + order.service_time_sec
-                    t_end_depot = t_depart_delivery + t3
-                    total_duration_sec = t_end_depot - t_depart_depot
-
-                    p_info = self.nodes[pickup_node]
-                    d_info = self.nodes[delivery_node]
-                    single_stop_actions = [
-                        StopAction(
-                            stop_id=p_info["id"],
-                            sequence=1,
-                            stop_type="PICKUP",
-                            address=p_info["name"],
-                            latitude=p_info["lat"],
-                            longitude=p_info["lon"],
-                            items_to_load=order.items,
-                            items_to_unload=[],
-                        ),
-                        StopAction(
-                            stop_id=d_info["id"],
-                            sequence=2,
-                            stop_type="DELIVERY",
-                            address=d_info["name"],
-                            latitude=d_info["lat"],
-                            longitude=d_info["lon"],
-                            items_to_load=[],
-                            items_to_unload=[item.id for item in order.items],
-                        ),
-                    ]
-                    spatial = SpatialValidator(vehicle).validate_plan(single_stop_actions)
-                    if not spatial.is_valid:
-                        continue
-
-                    scheduled_stops = [
-                        ScheduledStop(
-                            sequence=1,
-                            location_id=p_info["id"],
-                            location_name=p_info["name"],
-                            stop_type="PICKUP",
-                            order_id=order.id,
-                            latitude=p_info["lat"],
-                            longitude=p_info["lon"],
-                            arrival_time_sec=int(round(t_arr_pickup)),
-                            departure_time_sec=int(round(t_depart_pickup)),
-                        ),
-                        ScheduledStop(
-                            sequence=2,
-                            location_id=d_info["id"],
-                            location_name=d_info["name"],
-                            stop_type="DELIVERY",
-                            order_id=order.id,
-                            latitude=d_info["lat"],
-                            longitude=d_info["lon"],
-                            arrival_time_sec=int(round(t_arr_delivery)),
-                            departure_time_sec=int(round(t_depart_delivery)),
-                        ),
-                    ]
-
-                    routes.append(
-                        OptimizedRoute(
-                            vehicle_id=vehicle.id,
-                            plate_number=vehicle.plate_number,
-                            vehicle_length_cm=vehicle.length_cm,
-                            vehicle_width_cm=vehicle.width_cm,
-                            total_distance_km=round(total_distance_m / 1000, 2),
-                            total_duration_minutes=round(total_duration_sec / 60, 1),
-                            stops=scheduled_stops,
-                            spatial_validation=spatial,
-                        )
-                    )
-                    assigned_order_ids.add(order.id)
-                    spatially_rejected.pop(order.id, None)
-                    unassigned_candidates.remove(order)
-                    break
+        recovery_limit_reached = self._recover_unassigned_orders(
+            routes,
+            assigned_order_ids,
+            rejected_reasons,
+            deadline=time.monotonic() + max(5.0, self.request.max_time_seconds),
+        )
 
         self._assign_drivers_and_costs(routes)
 
@@ -554,12 +520,17 @@ class FleetRoutingSolver:
         for order in self.request.orders:
             if order.id in assigned_order_ids:
                 continue
-            if order.id in spatially_rejected:
-                code = "SPATIAL_VALIDATION_FAILED"
-                message = spatially_rejected[order.id]
+            rejected_reason = rejected_reasons.get(order.id)
+            if recovery_limit_reached and (
+                rejected_reason is None
+                or rejected_reason[0] == "SPATIAL_ROUTE_CONFLICT"
+            ):
+                code = "RECOVERY_SEARCH_LIMIT_REACHED"
+                message = "Hết ngân sách tìm kiếm tái phân công; chưa kết luận đơn bất khả thi."
+            elif rejected_reason is not None:
+                code, message = rejected_reason
             else:
-                code = "NO_FEASIBLE_ASSIGNMENT"
-                message = "Không còn xe/tài xế hoặc không thỏa tải trọng và time window."
+                code, message = self._classify_unassigned_order(order)
             unassigned.append(
                 UnassignedOrder(
                     order_id=order.id,
@@ -613,6 +584,208 @@ class FleetRoutingSolver:
             ] + ([benchmark_diagnostic] if benchmark_diagnostic else []),
         )
 
+    @staticmethod
+    def _spatial_rejection(
+        spatial: SpatialValidationResult,
+    ) -> Tuple[str, str]:
+        if spatial.violation_code == "PLACEMENT_SEARCH_LIMIT_REACHED":
+            return (
+                "SPATIAL_SEARCH_LIMIT_REACHED",
+                spatial.error_message
+                or "Hết ngân sách tìm bố trí; chưa kết luận chuyến bất khả thi.",
+            )
+        return (
+            "SPATIAL_VALIDATION_FAILED",
+            spatial.error_message or "Bố trí xếp/dỡ không hợp lệ.",
+        )
+
+    def _recover_unassigned_orders(
+        self,
+        routes: List[OptimizedRoute],
+        assigned_order_ids: Set[str],
+        rejected_reasons: Dict[str, Tuple[str, str]],
+        *,
+        deadline: float,
+    ) -> bool:
+        """Try every vehicle, including vehicles already used by another route.
+
+        OR-Tools only models aggregate floor area. A route can therefore be
+        rejected by the exact spatial validator after routing. Recovery must
+        reinsert the dropped order across the whole fleet instead of looking
+        only at idle vehicles.
+        """
+        vehicle_index_by_id = {
+            vehicle.id: index for index, vehicle in enumerate(self.request.vehicles)
+        }
+        limit_reached = False
+
+        for order in self.request.orders:
+            if order.id in assigned_order_ids:
+                continue
+            if time.monotonic() >= deadline:
+                limit_reached = True
+                break
+
+            route_index_by_vehicle_id = {
+                route.route_id or route.vehicle_id: index
+                for index, route in enumerate(routes)
+            }
+            candidate_vehicle_slots = sorted(
+                enumerate(self.request.vehicles),
+                key=lambda item: (
+                    item[1].id in route_index_by_vehicle_id,
+                    item[1].service_day_index,
+                    item[0],
+                ),
+            )
+            best_candidate = None
+            for vehicle_index, vehicle in candidate_vehicle_slots:
+                if vehicle_index not in self.driver_safe_vehicle_indices:
+                    continue
+                if time.monotonic() >= deadline:
+                    limit_reached = True
+                    break
+                if not self._order_physically_fits_vehicle(order, vehicle):
+                    continue
+
+                route_index = route_index_by_vehicle_id.get(vehicle.id)
+                if (
+                    best_candidate is not None
+                    and best_candidate[1] is None
+                    and (
+                        route_index is not None
+                        or vehicle.service_day_index
+                        > best_candidate[2].service_day_index
+                    )
+                ):
+                    break
+                existing_order_ids: List[str] = []
+                if route_index is not None:
+                    for stop in routes[route_index].stops:
+                        if (
+                            stop.order_id
+                            and stop.order_id not in existing_order_ids
+                        ):
+                            existing_order_ids.append(stop.order_id)
+
+                candidate_orders = [
+                    self.order_by_id[order_id]
+                    for order_id in existing_order_ids
+                    if order_id in self.order_by_id
+                ] + [order]
+                recovered = self._resequence_stops_for_spatial_feasibility(
+                    vehicle,
+                    vehicle_index,
+                    candidate_orders,
+                )
+                if recovered is None:
+                    continue
+
+                scheduled, _, distance_meters, duration_seconds, spatial = recovered
+                candidate_score = distance_meters
+                if best_candidate is None or candidate_score < best_candidate[0]:
+                    best_candidate = (
+                        candidate_score,
+                        route_index,
+                        vehicle,
+                        scheduled,
+                        distance_meters,
+                        duration_seconds,
+                        spatial,
+                    )
+
+            if best_candidate is None:
+                continue
+
+            (
+                _,
+                route_index,
+                vehicle,
+                scheduled,
+                distance_meters,
+                duration_seconds,
+                spatial,
+            ) = best_candidate
+            recovered_route = OptimizedRoute(
+                route_id=vehicle.id,
+                vehicle_id=vehicle.source_vehicle_id or vehicle.id,
+                service_day_index=vehicle.service_day_index,
+                start_time_sec=vehicle.available_start_sec,
+                end_time_sec=round(duration_seconds),
+                plate_number=vehicle.plate_number,
+                vehicle_length_cm=vehicle.length_cm,
+                vehicle_width_cm=vehicle.width_cm,
+                total_distance_km=round(distance_meters / 1000, 2),
+                total_duration_minutes=round(
+                    (duration_seconds - vehicle.available_start_sec) / 60, 1
+                ),
+                stops=scheduled,
+                spatial_validation=spatial,
+            )
+            if route_index is None:
+                routes.append(recovered_route)
+            else:
+                routes[route_index] = recovered_route
+            assigned_order_ids.add(order.id)
+            rejected_reasons.pop(order.id, None)
+
+        # This lookup also guards against accidental route creation for an
+        # unknown vehicle while the recovery code evolves.
+        assert all((route.route_id or route.vehicle_id) in vehicle_index_by_id for route in routes)
+        return limit_reached
+
+    @staticmethod
+    def _order_physically_fits_vehicle(
+        order: OrderPair, vehicle: FleetVehicle
+    ) -> bool:
+        if sum(item.weight_kg for item in order.items) > vehicle.payload_limit_kg:
+            return False
+        if (
+            sum(item.length_cm * item.width_cm for item in order.items)
+            > vehicle.length_cm * vehicle.width_cm
+        ):
+            return False
+        for item in order.items:
+            orientations = [(item.length_cm, item.width_cm)]
+            if item.can_rotate:
+                orientations.append((item.width_cm, item.length_cm))
+            if item.height_cm > vehicle.height_cm or not any(
+                length <= vehicle.length_cm and width <= vehicle.width_cm
+                for length, width in orientations
+            ):
+                return False
+        return True
+
+    def _classify_unassigned_order(self, order: OrderPair) -> Tuple[str, str]:
+        weight_compatible = [
+            vehicle
+            for index, vehicle in enumerate(self.request.vehicles)
+            if index in self.driver_safe_vehicle_indices
+            if sum(item.weight_kg for item in order.items)
+            <= vehicle.payload_limit_kg
+        ]
+        if not weight_compatible:
+            return (
+                "PAYLOAD_EXCEEDED",
+                "Khối lượng đơn vượt tải trọng của mọi xe khả dụng.",
+            )
+
+        physical_compatible = [
+            vehicle
+            for vehicle in weight_compatible
+            if self._order_physically_fits_vehicle(order, vehicle)
+        ]
+        if not physical_compatible:
+            return (
+                "FLOOR_CAPACITY_EXCEEDED",
+                "Kiện hàng không vừa kích thước hoặc diện tích sàn của mọi xe khả dụng.",
+            )
+
+        return (
+            "NO_FEASIBLE_ASSIGNMENT",
+            "Chưa tìm được cách ghép đơn vào các tuyến hiện tại trong ngân sách tìm kiếm; không khẳng định bất khả thi.",
+        )
+
     def _assign_drivers_and_costs(self, routes: List[OptimizedRoute]) -> None:
         if not routes:
             return
@@ -627,51 +800,57 @@ class FleetRoutingSolver:
                 route.total_distance_km,
             )
 
-        best_assignment = None
-        best_cost = None
+        for service_day_index in sorted({route.service_day_index for route in routes}):
+            day_routes = [
+                route for route in routes if route.service_day_index == service_day_index
+            ]
+            day_drivers = [
+                driver for driver in drivers if driver.service_day_index == service_day_index
+            ]
+            best_assignment = None
+            best_cost = None
 
-        # 1. Lọc các hoán vị thỏa mãn 100% quy chuẩn Giấy phép lái xe (GPLX)
-        for candidate in itertools.permutations(drivers, len(routes)):
-            is_valid_licenses = True
-            for route, driver in zip(routes, candidate):
-                vehicle = vehicle_by_id[route.vehicle_id]
-                v_type = getattr(vehicle, "vehicle_type", "") or getattr(vehicle, "model", "")
-                if not can_driver_drive_vehicle(driver.license_class, vehicle.payload_limit_kg, v_type):
-                    is_valid_licenses = False
-                    break
+            for candidate in itertools.permutations(day_drivers, len(day_routes)):
+                compatible = True
+                for route, driver in zip(day_routes, candidate):
+                    vehicle = vehicle_by_id[route.route_id or route.vehicle_id]
+                    vehicle_type = vehicle.vehicle_type or vehicle.model or ""
+                    if not can_driver_drive_vehicle(
+                        driver.license_class, vehicle.payload_limit_kg, vehicle_type
+                    ):
+                        compatible = False
+                        break
+                if not compatible:
+                    continue
 
-            if not is_valid_licenses:
-                continue
-
-            total = sum(driver_cost(route, driver)[0] for route, driver in zip(routes, candidate))
-            if best_cost is None or total < best_cost:
-                best_cost = total
-                best_assignment = candidate
-
-        # 2. Fallback an toàn nếu đội ngũ tài xế không đủ hạng bằng đáp ứng
-        if best_assignment is None:
-            for candidate in itertools.permutations(drivers, len(routes)):
-                total = sum(driver_cost(route, driver)[0] for route, driver in zip(routes, candidate))
+                total = sum(
+                    driver_cost(route, driver)[0]
+                    for route, driver in zip(day_routes, candidate)
+                )
                 if best_cost is None or total < best_cost:
                     best_cost = total
                     best_assignment = candidate
 
-        assert best_assignment is not None
-        for route, driver in zip(routes, best_assignment):
-            vehicle = vehicle_by_id[route.vehicle_id]
-            route.driver_id = driver.id
-            route.driver_name = driver.full_name
-            route.driver_license_class = driver.license_class
-            route.cost = build_route_cost_breakdown(
-                self.request,
-                self.nodes,
-                self.order_by_id,
-                vehicle,
-                driver,
-                route.stops,
-                route.total_distance_km,
-                route.total_duration_minutes,
-            )
+            if best_assignment is None:
+                raise ValueError(
+                    "Không thể ghép tài xế có hạng bằng lái phù hợp cho tất cả tuyến."
+                )
+
+            for route, driver in zip(day_routes, best_assignment):
+                vehicle = vehicle_by_id[route.route_id or route.vehicle_id]
+                route.driver_id = driver.source_driver_id or driver.id
+                route.driver_name = driver.full_name
+                route.driver_license_class = driver.license_class
+                route.cost = build_route_cost_breakdown(
+                    self.request,
+                    self.nodes,
+                    self.order_by_id,
+                    vehicle,
+                    driver,
+                    route.stops,
+                    route.total_distance_km,
+                    route.total_duration_minutes,
+                )
 
     def _calculate_route_economic_metrics(
         self, vehicle: FleetVehicle, stops: List[ScheduledStop]
@@ -801,12 +980,12 @@ class FleetRoutingSolver:
         actions: List[StopAction],
         node_id_to_idx: Dict[str, int],
     ) -> Optional[Tuple[List[ScheduledStop], float, float, float]]:
-        """Build and economically score a spatial fallback without bypassing windows."""
+        """Build and economically score a spatial fallback within vehicle availability."""
         scheduled: List[ScheduledStop] = []
         current_weight = 0.0
         current_area = 0.0
         max_vehicle_area = vehicle.length_cm * vehicle.width_cm
-        current_time = 0.0
+        current_time = float(vehicle.available_start_sec)
         previous_index = vehicle_index
         total_distance = 0.0
         item_weight_by_id = {
@@ -831,14 +1010,8 @@ class FleetRoutingSolver:
 
             total_distance += self.request.distance_matrix_meters[previous_index][node_index]
             current_time += self.request.duration_matrix_seconds[previous_index][node_index]
-            if action.stop_type == "PICKUP":
-                window_start = order.pickup_window_start_sec
-                window_end = order.pickup_window_end_sec
-            else:
-                window_start = order.delivery_window_start_sec
-                window_end = order.delivery_window_end_sec
-            arrival = max(current_time, window_start)
-            if arrival > window_end:
+            arrival = current_time
+            if arrival > vehicle.available_end_sec:
                 return None
 
             current_weight += sum(item.weight_kg for item in action.items_to_load)
@@ -879,6 +1052,8 @@ class FleetRoutingSolver:
 
         total_distance += self.request.distance_matrix_meters[previous_index][vehicle_index]
         current_time += self.request.duration_matrix_seconds[previous_index][vehicle_index]
+        if current_time > vehicle.available_end_sec:
+            return None
         (
             base_fuel_cost,
             load_fuel_surcharge,
