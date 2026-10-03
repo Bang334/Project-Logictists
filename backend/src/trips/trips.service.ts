@@ -199,7 +199,7 @@ export class TripsService {
       },
     });
     if (!loadPlan) {
-      throw new NotFoundException(`Chuyáº¿n ${trip.tripNumber} chÆ°a cÃ³ Load Plan`);
+      throw new NotFoundException(`Chuyến ${trip.tripNumber} chưa có Load Plan`);
     }
     return loadPlan;
   }
@@ -226,14 +226,14 @@ export class TripsService {
     if (existingCommand) {
       if (existingCommand.requestHash !== commandHash) {
         throw new ConflictException(
-          'Idempotency key Ä‘Ã£ Ä‘Æ°á»£c dÃ¹ng vá»›i ná»™i dung táº¡o chuyáº¿n khÃ¡c',
+          'Idempotency key đã được dùng với nội dung tạo chuyến khác',
         );
       }
       const result = existingCommand.result as { tripId?: unknown } | null;
       if (existingCommand.status === 'COMPLETED' && typeof result?.tripId === 'string') {
         return this.findOne(result.tripId);
       }
-      throw new ConflictException('Lá»‡nh táº¡o chuyáº¿n vá»›i idempotency key nÃ y Ä‘ang xá»­ lÃ½');
+      throw new ConflictException('Lệnh tạo chuyến với idempotency key này đang xử lý');
     }
     const plannedStart = new Date(dto.plannedStartTime);
     const plannedEnd = new Date(dto.plannedEndTime);
@@ -351,7 +351,7 @@ export class TripsService {
         dto.orderedStopIds.some((id) => !requiredStopIds.includes(id))
       ) {
         throw new BadRequestException(
-          'orderedStopIds pháº£i chá»©a Ä‘Ãºng má»—i pickup/delivery má»™t láº§n',
+          'orderedStopIds phải chứa đúng mỗi pickup/delivery một lần',
         );
       }
       // Điều phối viên chủ động sắp xếp thứ tự các stop
@@ -414,7 +414,7 @@ export class TripsService {
       plannedEnd.getTime()
     ) {
       throw new BadRequestException(
-        'Khung giá» chuyáº¿n khÃ´ng Ä‘á»§ cho thá»i gian cháº¡y Mapbox vÃ  phá»¥c vá»¥ táº¡i cÃ¡c stop',
+        'Khung giờ chuyến không đủ cho thời gian chạy Mapbox và phục vụ tại các stop',
       );
     }
 
@@ -434,14 +434,14 @@ export class TripsService {
       if (command) {
         if (command.requestHash !== commandHash) {
           throw new ConflictException(
-            'Idempotency key Ä‘Ã£ Ä‘Æ°á»£c dÃ¹ng vá»›i ná»™i dung táº¡o chuyáº¿n khÃ¡c',
+            'Idempotency key đã được dùng với nội dung tạo chuyến khác',
           );
         }
         const result = command.result as { tripId?: unknown } | null;
         if (command.status === 'COMPLETED' && typeof result?.tripId === 'string') {
           return result.tripId;
         }
-        throw new ConflictException('Lá»‡nh táº¡o chuyáº¿n trÆ°á»›c Ä‘ang xá»­ lÃ½');
+        throw new ConflictException('Lệnh tạo chuyến trước đang xử lý');
       }
 
       await this.acquireApplicationLocks(
@@ -488,12 +488,12 @@ export class TripsService {
         ]);
       if (!currentVehicle || !currentDriver) {
         throw new ConflictException(
-          'Xe hoáº·c tÃ i xáº¿ khÃ´ng cÃ²n kháº£ dá»¥ng trong chi nhÃ¡nh',
+          'Xe hoặc tài xế không còn khả dụng trong chi nhánh',
         );
       }
       if (lockedVehicleOverlap || lockedDriverOverlap) {
         throw new ConflictException(
-          `Lá»‹ch xe/tÃ i xáº¿ Ä‘Ã£ thay Ä‘á»•i trong lÃºc táº¡o chuyáº¿n`,
+          `Lịch xe/tài xế đã thay đổi trong lúc tạo chuyến`,
         );
       }
       const [tripNumber] = await this.allocateTripNumbers(tx, 1);
@@ -583,7 +583,7 @@ export class TripsService {
       });
       if (updatedOrders.count !== dto.orderIds.length) {
         throw new ConflictException(
-          'Má»™t sá»‘ Ä‘Æ¡n khÃ´ng cÃ²n CONFIRMED hoáº·c Ä‘Ã£ thay Ä‘á»•i chi nhÃ¡nh',
+          'Một số đơn không còn CONFIRMED hoặc đã thay đổi chi nhánh',
         );
       }
 
@@ -946,7 +946,7 @@ export class TripsService {
       );
     }
     const baseVehicles = candidateVehicles.map((vehicle) => ({
-      sourceVehicleId: vehicle.id,
+      source_vehicle_id: vehicle.id,
       plate_number: vehicle.plateNumber,
       model: vehicle.model,
       vehicle_type: vehicle.vehicleType,
@@ -962,7 +962,7 @@ export class TripsService {
             : vehicle.homeBranch.id,
         name:
           vehicle.currentLatitude != null && vehicle.currentLongitude != null
-            ? `Vá»‹ trÃ­ hiá»‡n táº¡i ${vehicle.plateNumber}`
+            ? `Vị trí hiện tại ${vehicle.plateNumber}`
             : vehicle.homeBranch.name,
         latitude: vehicle.currentLatitude ?? vehicle.homeBranch.latitude,
         longitude: vehicle.currentLongitude ?? vehicle.homeBranch.longitude,
@@ -976,7 +976,7 @@ export class TripsService {
       fixed_operating_cost_vnd: Number(vehicle.fixedOperatingCostPerTrip),
     }));
     const baseDrivers = drivers.map((driver) => ({
-      sourceDriverId: driver.id,
+      source_driver_id: driver.id,
       full_name: driver.fullName,
       license_class: driver.licenseClass,
       fixed_salary_monthly_vnd: Number(driver.fixedSalaryMonthly),
@@ -987,8 +987,7 @@ export class TripsService {
       vehicles: serviceDays.flatMap((day) =>
         baseVehicles.map((vehicle) => ({
           ...vehicle,
-          id: `${vehicle.sourceVehicleId}::day:${day.serviceDayIndex}`,
-          source_vehicle_id: vehicle.sourceVehicleId,
+          id: `${vehicle.source_vehicle_id}::day:${day.serviceDayIndex}`,
           service_day_index: day.serviceDayIndex,
           available_start_sec: day.startSec,
           available_end_sec: day.endSec,
@@ -997,8 +996,7 @@ export class TripsService {
       drivers: serviceDays.flatMap((day) =>
         baseDrivers.map((driver) => ({
           ...driver,
-          id: `${driver.sourceDriverId}::day:${day.serviceDayIndex}`,
-          source_driver_id: driver.sourceDriverId,
+          id: `${driver.source_driver_id}::day:${day.serviceDayIndex}`,
           service_day_index: day.serviceDayIndex,
         })),
       ),
@@ -1180,9 +1178,16 @@ export class TripsService {
       );
       assertFleetOptimizationResult(response.data);
       result = response.data;
-    } catch (error) {
+    } catch (error: any) {
+      const detail = error.response?.data?.detail;
+      const detailMsg = Array.isArray(detail)
+        ? detail.map((d: any) => `${d.loc?.join('.')}: ${d.msg}`).join('; ')
+        : typeof detail === 'string'
+          ? detail
+          : null;
       throw new ServiceUnavailableException(
-        error.response?.data?.detail ||
+        detailMsg ||
+          error.response?.data?.message ||
           error.message ||
           "Không thể nhận kết quả từ Optimization Engine",
       );
@@ -1451,12 +1456,12 @@ export class TripsService {
         typeof response.data.is_valid !== 'boolean' ||
         !Array.isArray(response.data.step_states)
       ) {
-        throw new Error('Spatial validator tráº£ response sai contract');
+        throw new Error('Spatial validator trả response sai contract');
       }
       if (!response.data.is_valid) {
         throw new BadRequestException(
           response.data.error_message ||
-            `Bá»‘ trÃ­ xáº¿p/dá»¡ khÃ´ng há»£p lá»‡ (${response.data.violation_code || 'UNKNOWN'})`,
+            `Bố trí xếp/dỡ không hợp lệ (${response.data.violation_code || 'UNKNOWN'})`,
         );
       }
       return response.data;
@@ -1465,7 +1470,7 @@ export class TripsService {
       throw new ServiceUnavailableException(
         error.response?.data?.detail ||
           error.message ||
-          'KhÃ´ng thá»ƒ kiá»ƒm tra bá»‘ trÃ­ xáº¿p/dá»¡',
+          'Không thể kiểm tra bố trí xếp/dỡ',
       );
     }
   }
@@ -1959,11 +1964,11 @@ export class TripsService {
   ) {
     if (!spatialValidation.is_valid || spatialValidation.step_states.length === 0) {
       throw new ConflictException(
-        'KhÃ´ng thá»ƒ lÆ°u chuyáº¿n khi chÆ°a cÃ³ Load Plan há»£p lá»‡',
+        'Không thể lưu chuyến khi chưa có Load Plan hợp lệ',
       );
     }
     const vehicle = await tx.vehicle.findUnique({ where: { id: vehicleId } });
-    if (!vehicle) throw new ConflictException('Xe cá»§a Load Plan khÃ´ng cÃ²n tá»“n táº¡i');
+    if (!vehicle) throw new ConflictException('Xe của Load Plan không còn tồn tại');
     const packageIdByCargoUnit = await this.ensurePhysicalPackageMapping(
       tx,
       orders,
@@ -1994,7 +1999,7 @@ export class TripsService {
       const stopTaskId = stopTaskIdByOrderStopId.get(state.stop_id);
       if (!stopTaskId) {
         throw new ConflictException(
-          `KhÃ´ng Ã¡nh xáº¡ Ä‘Æ°á»£c spatial stop ${state.stop_id} sang StopTask`,
+          `Không ánh xạ được spatial stop ${state.stop_id} sang StopTask`,
         );
       }
       await tx.loadPlanStep.create({
@@ -2011,7 +2016,7 @@ export class TripsService {
               const packageId = packageIdByCargoUnit.get(placed.item_id);
               if (!packageId) {
                 throw new ConflictException(
-                  `KhÃ´ng Ã¡nh xáº¡ Ä‘Æ°á»£c cargo unit ${placed.item_id} sang Package váº­t lÃ½`,
+                  `Không ánh xạ được cargo unit ${placed.item_id} sang Package vật lý`,
                 );
               }
               return {
@@ -2065,7 +2070,7 @@ export class TripsService {
             existing.weightG === BigInt(Math.round(cargo.weight_kg * 1000));
           if (!dimensionsMatch) {
             throw new ConflictException(
-              `Package ${existing.packageCode} khÃ´ng cÃ²n khá»›p kÃ­ch thÆ°á»›c/khá»‘i lÆ°á»£ng snapshot`,
+              `Package ${existing.packageCode} không còn khớp kích thước/khối lượng snapshot`,
             );
           }
           packageId = existing.id;
@@ -2099,7 +2104,7 @@ export class TripsService {
   private cmToMm(value: number): number {
     const millimeters = Math.round(value * 10);
     if (!Number.isSafeInteger(millimeters) || millimeters < 0) {
-      throw new BadRequestException(`GiÃ¡ trá»‹ hÃ¬nh há»c ${value} cm khÃ´ng thá»ƒ Ä‘á»•i sang mm`);
+      throw new BadRequestException(`Giá trị hình học ${value} cm không thể đổi sang mm`);
     }
     return millimeters;
   }

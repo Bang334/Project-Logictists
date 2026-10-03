@@ -278,7 +278,7 @@ export class MapboxService {
         latitude < -90 ||
         latitude > 90
       ) {
-        throw new BadRequestException(`Tá»a Ä‘á»™ Mapbox táº¡i index ${index} khÃ´ng há»£p lá»‡`);
+        throw new BadRequestException(`Tọa độ Mapbox tại index ${index} không hợp lệ`);
       }
     }
   }
@@ -296,13 +296,13 @@ export class MapboxService {
       )
     ) {
       throw new Error(
-        `Matrix response sai kÃ­ch thÆ°á»›c, cáº§n ${expectedRows}x${expectedColumns}`,
+        `Matrix response sai kích thước, cần ${expectedRows}x${expectedColumns}`,
       );
     }
     for (const row of matrix) {
       for (const value of row) {
         if (value !== null && (!Number.isFinite(value) || value < 0)) {
-          throw new Error('Matrix response chá»©a khoáº£ng cÃ¡ch/thá»i gian khÃ´ng há»£p lá»‡');
+          throw new Error('Matrix response chứa khoảng cách/thời gian không hợp lệ');
         }
       }
     }

@@ -42,12 +42,12 @@ import { LocationsModule } from './locations/locations.module';
           config.NODE_ENV === 'production' &&
           (typeof config.REDIS_URL !== 'string' || !config.REDIS_URL.trim())
         ) {
-          throw new Error('Thiáº¿u biáº¿n mÃ´i trÆ°á»ng báº¯t buá»™c: REDIS_URL');
+          throw new Error('Thiếu biến môi trường bắt buộc: REDIS_URL');
         }
         if (typeof config.REDIS_URL === 'string') {
           const redisUrl = new URL(config.REDIS_URL);
           if (!['redis:', 'rediss:'].includes(redisUrl.protocol)) {
-            throw new Error('REDIS_URL pháº£i dÃ¹ng redis:// hoáº·c rediss://');
+            throw new Error('REDIS_URL phải dùng redis:// hoặc rediss://');
           }
         }
         if ((config.JWT_SECRET as string).length < 32) {

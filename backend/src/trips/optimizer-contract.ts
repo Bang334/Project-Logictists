@@ -211,11 +211,11 @@ export function assertFleetOptimizationResult(
         !Array.isArray(step.package_access_paths) ||
         step.is_valid !== true
       ) {
-        throw new Error('Optimizer tráº£ spatial step khÃ´ng há»£p lá»‡');
+        throw new Error('Optimizer trả spatial step không hợp lệ');
       }
       for (const placed of step.placed_items) {
         if (!isRecord(placed) || typeof placed.item_id !== 'string') {
-          throw new Error('Optimizer tráº£ placement khÃ´ng há»£p lá»‡');
+          throw new Error('Optimizer trả placement không hợp lệ');
         }
         for (const field of [
           'x',
@@ -226,7 +226,7 @@ export function assertFleetOptimizationResult(
           'weight_kg',
         ]) {
           if (!isFiniteNumber(placed[field]) || Number(placed[field]) < 0) {
-            throw new Error(`Optimizer tráº£ placement.${field} khÃ´ng há»£p lá»‡`);
+            throw new Error(`Optimizer trả placement.${field} không hợp lệ`);
           }
         }
       }

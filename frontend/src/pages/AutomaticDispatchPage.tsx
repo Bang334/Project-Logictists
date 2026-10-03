@@ -410,7 +410,7 @@ const AutomaticDispatchPage: React.FC = () => {
         } else {
           setStarting(false);
           if (['SUCCEEDED', 'PARTIAL'].includes(response.data.status)) {
-            message.success('PhÆ°Æ¡ng Ã¡n tá»‘i Æ°u Ä‘Ã£ sáºµn sÃ ng Ä‘á»ƒ kiá»ƒm tra');
+            message.success('Phương án tối ưu đã sẵn sàng để kiểm tra');
           } else if (response.data.error?.message) {
             message.error(response.data.error.message);
           }
@@ -2272,11 +2272,11 @@ const AutomaticDispatchPage: React.FC = () => {
               : 'info'
           }
           showIcon
-          message={`Job tá»‘i Æ°u: ${optimization.status}`}
+          message={`Job tối ưu: ${optimization.status}`}
           description={
             optimization.error?.message ||
             (starting
-              ? 'Job Ä‘ang cháº¡y ná»n. Báº¡n cÃ³ thá»ƒ táº£i láº¡i trang mÃ  khÃ´ng máº¥t káº¿t quáº£.'
+              ? 'Job đang chạy ngầm. Bạn có thể tải lại trang mà không mất kết quả.'
               : undefined)
           }
           style={{ marginBottom: 16 }}
@@ -2287,10 +2287,10 @@ const AutomaticDispatchPage: React.FC = () => {
         <Alert
           type="warning"
           showIcon
-          message={`Káº¿t quáº£ ${optimization?.status}`}
+          message={`Kết quả ${optimization?.status}`}
           description={
-            result.diagnostics.join(' Â· ') ||
-            'KhÃ´ng cÃ³ phÆ°Æ¡ng Ã¡n kháº£ thi Ä‘á»ƒ Ã¡p dá»¥ng.'
+            result.diagnostics.join(' · ') ||
+            'Không có phương án khả thi để áp dụng.'
           }
           style={{ marginBottom: 16 }}
         />

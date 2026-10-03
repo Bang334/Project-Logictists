@@ -11,7 +11,7 @@ import { OptimizationRecoveryService } from './optimization-recovery.service';
 function redisConnection(urlValue: string | undefined) {
   const url = new URL(urlValue || 'redis://127.0.0.1:6379');
   if (!['redis:', 'rediss:'].includes(url.protocol)) {
-    throw new Error('REDIS_URL pháº£i dÃ¹ng giao thá»©c redis:// hoáº·c rediss://');
+    throw new Error('REDIS_URL phải dùng giao thức redis:// hoặc rediss://');
   }
   return {
     host: url.hostname,

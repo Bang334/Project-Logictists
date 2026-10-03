@@ -94,7 +94,7 @@ export class OptimizationJobsService {
   async cancel(user: JobUser, id: string) {
     const job = await this.getAuthorizedJob(user, id);
     if (['SUCCEEDED', 'PARTIAL', 'INFEASIBLE', 'FAILED', 'TIMEOUT', 'APPLIED', 'CANCELLED'].includes(job.status)) {
-      throw new ConflictException(`KhÃ´ng thá»ƒ há»§y job á»Ÿ tráº¡ng thÃ¡i ${job.status}`);
+      throw new ConflictException(`Không thể hủy job ở trạng thái ${job.status}`);
     }
     const nextStatus = job.status === 'RUNNING' ? 'CANCEL_REQUESTED' : 'CANCELLED';
     const updated = await this.prisma.optimizationJob.update({
@@ -115,11 +115,11 @@ export class OptimizationJobsService {
   async apply(user: JobUser, id: string) {
     const job = await this.getAuthorizedJob(user, id);
     if (!['SUCCEEDED', 'PARTIAL'].includes(job.status)) {
-      throw new ConflictException(`Job ${id} chÆ°a sáºµn sÃ ng Ä‘á»ƒ Ã¡p dá»¥ng`);
+      throw new ConflictException(`Job ${id} chưa sẵn sàng để áp dụng`);
     }
     const stored = job.result as unknown as StoredJobResult | null;
     if (!stored?.proposal || !stored.signature) {
-      throw new ConflictException(`Job ${id} thiáº¿u káº¿t quáº£ Ä‘Ã£ lÆ°u`);
+      throw new ConflictException(`Job ${id} thiếu kết quả đã lưu`);
     }
 
     const claimed = await this.prisma.optimizationJob.updateMany({
@@ -127,7 +127,7 @@ export class OptimizationJobsService {
       data: { status: 'APPLYING' },
     });
     if (claimed.count !== 1) {
-      throw new ConflictException(`Job ${id} Ä‘ang Ä‘Æ°á»£c Ã¡p dá»¥ng bá»Ÿi request khÃ¡c`);
+      throw new ConflictException(`Job ${id} đang được áp dụng bởi request khác`);
     }
 
     try {
@@ -155,7 +155,7 @@ export class OptimizationJobsService {
 
   private async getAuthorizedJob(user: JobUser, id: string) {
     const job = await this.prisma.optimizationJob.findUnique({ where: { id } });
-    if (!job) throw new NotFoundException(`KhÃ´ng tÃ¬m tháº¥y optimization job ${id}`);
+    if (!job) throw new NotFoundException(`Không tìm thấy optimization job ${id}`);
     if (user.role !== Role.ADMIN && user.branchId !== job.branchId) {
       throw new ForbiddenException('KhÃ´ng cÃ³ quyá»n truy cáº­p job ngoÃ i chi nhÃ¡nh');
     }
