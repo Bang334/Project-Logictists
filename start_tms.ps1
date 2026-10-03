@@ -14,6 +14,13 @@ Write-Host ""
 $ROOT_DIR = if ($PSScriptRoot) { $PSScriptRoot } else { "e:\Projects\Coursework\Project-Logictists" }
 $PORTS = @(4000, 5173, 8000)
 
+function Start-TMSRedis {
+    docker compose -f "$ROOT_DIR\compose.yaml" up -d redis
+    if ($LASTEXITCODE -ne 0) {
+        throw "Redis queue could not be started with Docker Compose."
+    }
+}
+
 function Stop-TMSPorts {
     Write-Host "  -> Đang quét và giải phóng các dịch vụ TMS..." -ForegroundColor Yellow
 
@@ -67,6 +74,7 @@ try {
     Write-Host "[1/4] Đang kiểm tra và giải phóng các cổng mạng (4000, 5173, 8000)..." -ForegroundColor Cyan
     Stop-TMSPorts
     Start-Sleep -Seconds 1
+    Start-TMSRedis
     Write-Host "  [OK] Các cổng mạng đã sẵn sàng!" -ForegroundColor Green
     Write-Host ""
 
@@ -98,6 +106,7 @@ try {
     Write-Host "Đang kiểm tra kết nối các dịch vụ..." -ForegroundColor Yellow
 
     $services = @(
+        @{ Name = "Redis Queue";      Port = 6379; Ready = $false },
         @{ Name = "Python Optimizer"; Port = 8000; Ready = $false },
         @{ Name = "Backend API";     Port = 4000; Ready = $false },
         @{ Name = "Frontend Web";    Port = 5173; Ready = $false }

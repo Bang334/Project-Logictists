@@ -164,6 +164,60 @@ def test_t25_disconnected_space_rejected(standard_truck):
     assert result.violation_scenario == "T25"
     assert "chia cắt rời rạc" in result.error_message
 
+def test_t26_floor_space_exists_but_ingress_path_is_blocked(standard_truck):
+    """T26: free floor space is unusable when cargo cannot reach it from the door."""
+    validator = SpatialValidator(standard_truck)
+
+    inner_item = CargoItem(
+        id="item-inner",
+        order_id="ord-inner",
+        length_cm=300,
+        width_cm=100,
+        height_cm=100,
+        weight_kg=500,
+        can_rotate=False,
+    )
+    barrier = CargoItem(
+        id="item-barrier",
+        order_id="ord-barrier",
+        length_cm=100,
+        width_cm=200,
+        height_cm=100,
+        weight_kg=500,
+        can_rotate=False,
+    )
+    blocked_item = CargoItem(
+        id="item-blocked",
+        order_id="ord-blocked",
+        length_cm=250,
+        width_cm=100,
+        height_cm=100,
+        weight_kg=500,
+        can_rotate=False,
+    )
+
+    stops = [
+        StopAction(
+            stop_id="s1",
+            sequence=1,
+            stop_type="PICKUP",
+            items_to_load=[inner_item, barrier],
+        ),
+        StopAction(
+            stop_id="s2",
+            sequence=2,
+            stop_type="PICKUP",
+            items_to_load=[blocked_item],
+        ),
+    ]
+
+    result = validator.validate_plan(stops)
+
+    assert result.is_valid is False
+    assert result.violation_code == "LOAD_PATH_BLOCKED"
+    assert result.violation_scenario == "T26"
+
+
 def test_t27_unload_before_load_at_same_stop(standard_truck):
     """
     Kịch bản T27:

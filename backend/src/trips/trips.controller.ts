@@ -15,56 +15,119 @@ import { CreateTripDto } from './dto/create-trip.dto';
 import { Role, TripStatus } from '@prisma/client';
 import { OptimizeTripDto } from './dto/optimize-trip.dto';
 import { RunAutomaticOptimizationDto } from './dto/run-automatic-optimization.dto';
-import { ApplyAutomaticOptimizationDto } from './dto/apply-automatic-optimization.dto';
+import { OptimizationJobsService } from './optimization-jobs.service';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
+import { PublishTripDto } from './dto/publish-trip.dto';
 
 @Controller('trips')
-@UseGuards(AuthGuard('jwt'))
+@UseGuards(AuthGuard('jwt'), RolesGuard)
 export class TripsController {
-  constructor(private readonly tripsService: TripsService) {}
+  constructor(
+    private readonly tripsService: TripsService,
+    private readonly optimizationJobs: OptimizationJobsService,
+  ) {}
 
   @Get()
-  findAll(@Query('status') status?: TripStatus) {
-    return this.tripsService.findAll(status);
+  findAll(
+    @Req() req: { user: { branchId?: string; role: Role } },
+    @Query('status') status?: TripStatus,
+  ) {
+    return this.tripsService.findAll(status, req.user);
   }
 
   @Post()
-  create(@Body() createTripDto: CreateTripDto) {
-    return this.tripsService.create(createTripDto);
+  @Roles(Role.ADMIN, Role.DISPATCHER)
+  create(
+    @Req() req: { user: { id: string; branchId?: string; role: Role } },
+    @Body() createTripDto: CreateTripDto,
+  ) {
+    return this.tripsService.create(createTripDto, req.user);
   }
 
   @Post('optimize')
+  @Roles(Role.ADMIN, Role.DISPATCHER)
   optimize(@Body() body: OptimizeTripDto) {
     return this.tripsService.runOptimization(body);
   }
 
   @Post('automatic-optimization')
+  @Roles(Role.ADMIN, Role.DISPATCHER)
   runAutomaticOptimization(
     @Req() req: { user: { id: string; branchId?: string; role: Role } },
     @Body() body?: RunAutomaticOptimizationDto,
   ) {
-    return this.tripsService.runAutomaticOptimization(req.user, body);
+    return this.optimizationJobs.create(req.user, body);
   }
 
-  @Post('automatic-optimization/apply')
-  applyAutomaticOptimization(
+  @Get('automatic-optimization/jobs')
+  @Roles(Role.ADMIN, Role.DISPATCHER)
+  listAutomaticOptimizationJobs(
     @Req() req: { user: { id: string; branchId?: string; role: Role } },
-    @Body() body: ApplyAutomaticOptimizationDto,
+    @Query('branchId') branchId?: string,
   ) {
-    return this.tripsService.applyAutomaticOptimization(body, req.user);
+    return this.optimizationJobs.list(req.user, branchId);
+  }
+
+  @Get('automatic-optimization/jobs/:jobId')
+  @Roles(Role.ADMIN, Role.DISPATCHER)
+  getAutomaticOptimizationJob(
+    @Req() req: { user: { id: string; branchId?: string; role: Role } },
+    @Param('jobId') jobId: string,
+  ) {
+    return this.optimizationJobs.get(req.user, jobId);
+  }
+
+  @Post('automatic-optimization/jobs/:jobId/cancel')
+  @Roles(Role.ADMIN, Role.DISPATCHER)
+  cancelAutomaticOptimizationJob(
+    @Req() req: { user: { id: string; branchId?: string; role: Role } },
+    @Param('jobId') jobId: string,
+  ) {
+    return this.optimizationJobs.cancel(req.user, jobId);
+  }
+
+  @Post('automatic-optimization/jobs/:jobId/apply')
+  @Roles(Role.ADMIN, Role.DISPATCHER)
+  applyAutomaticOptimizationJob(
+    @Req() req: { user: { id: string; branchId?: string; role: Role } },
+    @Param('jobId') jobId: string,
+  ) {
+    return this.optimizationJobs.apply(req.user, jobId);
   }
 
   @Get(':id/load-profile')
-  getLoadProfile(@Param('id') id: string) {
-    return this.tripsService.getLoadProfile(id);
+  getLoadProfile(
+    @Req() req: { user: { branchId?: string; role: Role } },
+    @Param('id') id: string,
+  ) {
+    return this.tripsService.getLoadProfile(id, req.user);
+  }
+
+  @Get(':id/load-plan')
+  @Roles(Role.ADMIN, Role.DISPATCHER, Role.DRIVER)
+  getLoadPlan(
+    @Req() req: { user: { branchId?: string; role: Role } },
+    @Param('id') id: string,
+  ) {
+    return this.tripsService.getLoadPlan(id, req.user);
   }
 
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.tripsService.findOne(id);
+  findOne(
+    @Req() req: { user: { branchId?: string; role: Role } },
+    @Param('id') id: string,
+  ) {
+    return this.tripsService.findOneAuthorized(id, req.user);
   }
 
   @Patch(':id/publish')
-  publish(@Param('id') id: string) {
-    return this.tripsService.publish(id);
+  @Roles(Role.ADMIN, Role.DISPATCHER)
+  publish(
+    @Req() req: { user: { id: string; branchId?: string; role: Role } },
+    @Param('id') id: string,
+    @Body() body: PublishTripDto,
+  ) {
+    return this.tripsService.publish(id, body, req.user);
   }
 }

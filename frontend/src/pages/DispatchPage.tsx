@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Row,
   Col,
@@ -43,6 +43,7 @@ import FloorPackingVisualizer from '../components/FloorPackingVisualizer';
 const { Title, Text } = Typography;
 
 const DispatchPage: React.FC = () => {
+  const createCommandRef = useRef<{ payloadHash: string; key: string } | null>(null);
   const { message } = AntdApp.useApp();
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
@@ -128,6 +129,16 @@ const DispatchPage: React.FC = () => {
       return message.warning('Vui lòng chọn ít nhất một đơn hàng để ghép vào chuyến');
     }
 
+    const payloadHash = JSON.stringify({
+      selectedVehicleId,
+      selectedDriverId,
+      selectedOrderIds,
+      orderedStopIds,
+    });
+    if (createCommandRef.current?.payloadHash !== payloadHash) {
+      createCommandRef.current = { payloadHash, key: crypto.randomUUID() };
+    }
+
     try {
       setSubmitting(true);
       const now = new Date();
@@ -135,6 +146,7 @@ const DispatchPage: React.FC = () => {
       const endTime = new Date(now.getTime() + 8 * 3600 * 1000).toISOString();
 
       const res = await tripsApi.create({
+        idempotencyKey: createCommandRef.current.key,
         vehicleId: selectedVehicleId,
         driverId: selectedDriverId,
         plannedStartTime: startTime,
@@ -146,6 +158,7 @@ const DispatchPage: React.FC = () => {
 
       message.success(`Đã tạo thành công chuyến đi ${res.data.tripNumber}!`);
       setActiveTrip(res.data);
+      createCommandRef.current = null;
       setSelectedOrderIds([]);
       fetchLoadProfile(res.data.id);
       fetchData();
@@ -160,7 +173,7 @@ const DispatchPage: React.FC = () => {
     if (!activeTrip) return;
     try {
       setSubmitting(true);
-      const res = await tripsApi.publish(activeTrip.id);
+      const res = await tripsApi.publish(activeTrip.id, activeTrip.version);
       message.success(`Chuyến đi ${res.data.tripNumber} đã được phát hành (DISPATCHED)!`);
       setActiveTrip(res.data);
       fetchData();

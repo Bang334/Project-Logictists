@@ -1,16 +1,20 @@
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class LocationPoint(BaseModel):
+class StrictContractModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class LocationPoint(StrictContractModel):
     id: str
     name: str
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
 
 
-class VehicleFloor(BaseModel):
+class VehicleFloor(StrictContractModel):
     id: str
     plate_number: str
     length_cm: float = Field(gt=0, description="Chiều dài lọt lòng thùng xe (cm)")
@@ -44,7 +48,7 @@ class FleetVehicle(VehicleFloor):
         return self
 
 
-class DriverOption(BaseModel):
+class DriverOption(StrictContractModel):
     source_driver_id: Optional[str] = None
     service_day_index: int = Field(default=0, ge=0)
     id: str
@@ -86,7 +90,7 @@ def can_driver_drive_vehicle(
     return False
 
 
-class CostPolicy(BaseModel):
+class CostPolicy(StrictContractModel):
     fuel_price_per_liter_vnd: int = Field(gt=0)
     monthly_working_minutes: int = Field(gt=0)
     cargo_holding_cost_vnd_per_ton_hour: int = Field(default=0, ge=0)
@@ -107,7 +111,7 @@ class CostPolicy(BaseModel):
         return self
 
 
-class CargoItem(BaseModel):
+class CargoItem(StrictContractModel):
     id: str
     order_id: str
     order_item_id: Optional[str] = None
@@ -119,7 +123,7 @@ class CargoItem(BaseModel):
     can_rotate: bool = True
 
 
-class PlacedItem(BaseModel):
+class PlacedItem(StrictContractModel):
     item_id: str
     order_id: str
     x: float
@@ -130,19 +134,19 @@ class PlacedItem(BaseModel):
     weight_kg: float
 
 
-class MovementPoint(BaseModel):
+class MovementPoint(StrictContractModel):
     x: float
     y: float
 
 
-class PackageAccessPath(BaseModel):
+class PackageAccessPath(StrictContractModel):
     item_id: str
     is_clear: bool
     points: List[MovementPoint] = Field(default_factory=list)
     blocker_item_ids: List[str] = Field(default_factory=list)
 
 
-class StopAction(BaseModel):
+class StopAction(StrictContractModel):
     stop_id: str
     sequence: int = Field(ge=1)
     stop_type: Literal["PICKUP", "DELIVERY"]
@@ -153,7 +157,7 @@ class StopAction(BaseModel):
     items_to_unload: List[str] = Field(default_factory=list)
 
 
-class FloorState(BaseModel):
+class FloorState(StrictContractModel):
     step_index: int
     stop_id: str
     stop_type: str
@@ -170,7 +174,7 @@ class FloorState(BaseModel):
     error_message: Optional[str] = None
 
 
-class SpatialValidationResult(BaseModel):
+class SpatialValidationResult(StrictContractModel):
     is_valid: bool
     violation_code: Optional[str] = None
     violation_scenario: Optional[str] = None
@@ -180,7 +184,7 @@ class SpatialValidationResult(BaseModel):
     step_states: List[FloorState] = Field(default_factory=list)
 
 
-class OrderPair(BaseModel):
+class OrderPair(StrictContractModel):
     id: str
     order_number: str
     pickup_location: LocationPoint
@@ -189,9 +193,21 @@ class OrderPair(BaseModel):
     ordered_at_sec: int = 0
     order_value_vnd: int = Field(default=0, ge=0)
     service_time_sec: int = Field(default=1200, ge=0)
+    pickup_window_start_sec: int = Field(default=0, ge=0)
+    pickup_window_end_sec: int = Field(default=30 * 86400, ge=0)
+    delivery_window_start_sec: int = Field(default=0, ge=0)
+    delivery_window_end_sec: int = Field(default=30 * 86400, ge=0)
+
+    @model_validator(mode="after")
+    def validate_time_windows(self):
+        if self.pickup_window_start_sec > self.pickup_window_end_sec:
+            raise ValueError("pickup time window is invalid")
+        if self.delivery_window_start_sec > self.delivery_window_end_sec:
+            raise ValueError("delivery time window is invalid")
+        return self
 
 
-class OptimizationRequest(BaseModel):
+class OptimizationRequest(StrictContractModel):
     job_id: str
     vehicle: VehicleFloor
     depot: LocationPoint
@@ -201,7 +217,7 @@ class OptimizationRequest(BaseModel):
     duration_matrix_seconds: List[List[float]]
 
 
-class FleetOptimizationRequest(BaseModel):
+class FleetOptimizationRequest(StrictContractModel):
     job_id: str
     vehicles: List[FleetVehicle] = Field(min_length=1)
     drivers: List[DriverOption] = Field(min_length=1)
@@ -227,7 +243,7 @@ class FleetOptimizationRequest(BaseModel):
         return self
 
 
-class ScheduledStop(BaseModel):
+class ScheduledStop(StrictContractModel):
     sequence: int
     location_id: str
     location_name: str
@@ -242,7 +258,7 @@ class ScheduledStop(BaseModel):
     current_weight_kg: float = 0.0
 
 
-class RouteCostBreakdown(BaseModel):
+class RouteCostBreakdown(StrictContractModel):
     base_fuel_cost_vnd: int
     load_fuel_surcharge_vnd: int
     fuel_cost_vnd: int
@@ -256,7 +272,7 @@ class RouteCostBreakdown(BaseModel):
     total_cost_vnd: int
 
 
-class OptimizedRoute(BaseModel):
+class OptimizedRoute(StrictContractModel):
     route_id: Optional[str] = None
     vehicle_id: str
     service_day_index: int = Field(default=0, ge=0)
@@ -276,14 +292,14 @@ class OptimizedRoute(BaseModel):
     route_geometry: Optional[Dict] = None
 
 
-class UnassignedOrder(BaseModel):
+class UnassignedOrder(StrictContractModel):
     order_id: str
     order_number: str
     reason_code: str
     reason_message: str
 
 
-class BenchmarkMetric(BaseModel):
+class BenchmarkMetric(StrictContractModel):
     method_name: str
     description: str
     total_cost_vnd: int
@@ -299,14 +315,14 @@ class BenchmarkMetric(BaseModel):
     violations: List[str] = Field(default_factory=list)
 
 
-class BenchmarkComparisonResponse(BaseModel):
+class BenchmarkComparisonResponse(StrictContractModel):
     or_tools: BenchmarkMetric
     direct_dedicated: BenchmarkMetric
     savings_vs_direct_vnd: Optional[int] = None
     savings_vs_direct_percent: Optional[float] = None
 
 
-class FleetOptimizationResponse(BaseModel):
+class FleetOptimizationResponse(StrictContractModel):
     job_id: str
     status: Literal["SUCCESS", "PARTIAL", "INFEASIBLE", "TIMEOUT", "ERROR"]
     routes: List[OptimizedRoute] = Field(default_factory=list)
@@ -318,7 +334,7 @@ class FleetOptimizationResponse(BaseModel):
     diagnostics: List[str] = Field(default_factory=list)
 
 
-class OptimizationResponse(BaseModel):
+class OptimizationResponse(StrictContractModel):
     job_id: str
     status: Literal["SUCCESS", "PARTIAL", "FAILED", "INFEASIBLE", "TIMEOUT"]
     total_distance_km: float = 0.0

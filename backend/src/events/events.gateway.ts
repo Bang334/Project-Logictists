@@ -67,6 +67,14 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server.to(`branch:${branchId}`).emit('trip:updated', trip);
   }
 
+  emitOptimizationJobUpdate(
+    branchId: string,
+    payload: { jobId: string; status: string },
+  ) {
+    if (!this.server) return;
+    this.server.to(`branch:${branchId}`).emit('optimization:job-updated', payload);
+  }
+
   /**
    * Phát sự kiện cập nhật vị trí GPS xe
    */

@@ -1,4 +1,11 @@
-import { IsString, IsNotEmpty, IsArray, IsDateString, IsOptional } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsArray,
+  IsDateString,
+  IsOptional,
+  IsUUID,
+} from 'class-validator';
 
 export class TripStopInputDto {
   @IsString()
@@ -11,6 +18,9 @@ export class TripStopInputDto {
 }
 
 export class CreateTripDto {
+  @IsUUID()
+  idempotencyKey: string;
+
   @IsString()
   @IsNotEmpty()
   vehicleId: string;

@@ -41,7 +41,36 @@ export type OptimizedRouteResult = {
     error_message?: string;
     max_weight_kg: number;
     max_area_cm2: number;
-    step_states: unknown[];
+    step_states: Array<{
+      step_index: number;
+      stop_id: string;
+      stop_type: string;
+      action_description: string;
+      placed_items: Array<{
+        item_id: string;
+        order_id: string;
+        x: number;
+        y: number;
+        length_cm: number;
+        width_cm: number;
+        height_cm: number;
+        weight_kg: number;
+      }>;
+      current_weight_kg: number;
+      current_occupied_area_cm2: number;
+      floor_area_cm2: number;
+      weight_utilization_percent: number;
+      area_utilization_percent: number;
+      is_valid: boolean;
+      package_access_paths: Array<{
+        item_id: string;
+        is_clear: boolean;
+        points: Array<{ x: number; y: number }>;
+        blocker_item_ids: string[];
+      }>;
+      error_code?: string;
+      error_message?: string;
+    }>;
   };
   cost: {
     base_fuel_cost_vnd: number;
@@ -170,6 +199,37 @@ export function assertFleetOptimizationResult(
       !Array.isArray(route.spatial_validation.step_states)
     ) {
       throw new Error('Optimizer trả thông tin xe/tài xế/spatial không hợp lệ');
+    }
+    for (const step of route.spatial_validation.step_states) {
+      if (
+        !isRecord(step) ||
+        !Number.isInteger(step.step_index) ||
+        typeof step.stop_id !== 'string' ||
+        typeof step.stop_type !== 'string' ||
+        typeof step.action_description !== 'string' ||
+        !Array.isArray(step.placed_items) ||
+        !Array.isArray(step.package_access_paths) ||
+        step.is_valid !== true
+      ) {
+        throw new Error('Optimizer tráº£ spatial step khÃ´ng há»£p lá»‡');
+      }
+      for (const placed of step.placed_items) {
+        if (!isRecord(placed) || typeof placed.item_id !== 'string') {
+          throw new Error('Optimizer tráº£ placement khÃ´ng há»£p lá»‡');
+        }
+        for (const field of [
+          'x',
+          'y',
+          'length_cm',
+          'width_cm',
+          'height_cm',
+          'weight_kg',
+        ]) {
+          if (!isFiniteNumber(placed[field]) || Number(placed[field]) < 0) {
+            throw new Error(`Optimizer tráº£ placement.${field} khÃ´ng há»£p lá»‡`);
+          }
+        }
+      }
     }
     for (const stop of route.stops) {
       if (

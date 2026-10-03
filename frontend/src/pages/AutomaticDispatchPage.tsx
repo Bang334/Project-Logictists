@@ -281,31 +281,38 @@ const AutomaticDispatchPage: React.FC = () => {
     [branches, selectedBranchId],
   );
 
-  const restoreStateForBranch = useCallback((branchId: string): boolean => {
+  const restoreStateForBranch = useCallback(async (branchId: string): Promise<boolean> => {
     const stored = getAutoDispatchState(branchId);
-    if (stored && stored.optimization && stored.optimization.proposal) {
-      setOptimization(stored.optimization);
-      setAppliedTripCount(stored.appliedTripCount ?? null);
-      if (stored.scheduleMode) {
-        setScheduleMode(stored.scheduleMode);
+    if (stored) {
+      try {
+        const response = await tripsApi.getAutomaticOptimizationJob(
+          stored.optimizationJobId,
+        );
+        if (response.data.branchId !== branchId) return false;
+        setOptimization(response.data);
+        setAppliedTripCount(stored.appliedTripCount ?? null);
+        if (stored.scheduleMode) {
+          setScheduleMode(stored.scheduleMode);
+        }
+        if (stored.useCustomTime !== undefined) {
+          setUseCustomTime(stored.useCustomTime);
+        }
+        if (stored.customStartTimeStr) {
+          setCustomStartTime(dayjs(stored.customStartTimeStr));
+        }
+        if (stored.selectedVehicleForMap) {
+          setSelectedVehicleForMap(stored.selectedVehicleForMap);
+        }
+        setIsRestoredFromStorage(true);
+        return true;
+      } catch {
+        clearAutoDispatchState(branchId);
       }
-      if (stored.useCustomTime !== undefined) {
-        setUseCustomTime(stored.useCustomTime);
-      }
-      if (stored.customStartTimeStr) {
-        setCustomStartTime(dayjs(stored.customStartTimeStr));
-      }
-      if (stored.selectedVehicleForMap) {
-        setSelectedVehicleForMap(stored.selectedVehicleForMap);
-      }
-      setIsRestoredFromStorage(true);
-      return true;
-    } else {
-      setOptimization(null);
-      setAppliedTripCount(null);
-      setIsRestoredFromStorage(false);
-      return false;
     }
+    setOptimization(null);
+    setAppliedTripCount(null);
+    setIsRestoredFromStorage(false);
+    return false;
   }, []);
 
   const loadCounts = useCallback(async (branchId: string, isCurrent: () => boolean) => {
@@ -374,13 +381,50 @@ const AutomaticDispatchPage: React.FC = () => {
       return;
     }
     saveLastSelectedBranch(selectedBranchId);
-    restoreStateForBranch(selectedBranchId);
+    void restoreStateForBranch(selectedBranchId);
     let active = true;
     void loadCounts(selectedBranchId, () => active);
     return () => {
       active = false;
     };
   }, [loadCounts, selectedBranchId, restoreStateForBranch]);
+
+  useEffect(() => {
+    if (!optimization) return;
+    const activeStatuses = ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED'];
+    if (!activeStatuses.includes(optimization.status)) {
+      setStarting(false);
+      return;
+    }
+
+    setStarting(true);
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const response = await tripsApi.getAutomaticOptimizationJob(optimization.id);
+        if (cancelled) return;
+        setOptimization(response.data);
+        if (activeStatuses.includes(response.data.status)) {
+          timer = window.setTimeout(poll, 1500);
+        } else {
+          setStarting(false);
+          if (['SUCCEEDED', 'PARTIAL'].includes(response.data.status)) {
+            message.success('PhÆ°Æ¡ng Ã¡n tá»‘i Æ°u Ä‘Ã£ sáºµn sÃ ng Ä‘á»ƒ kiá»ƒm tra');
+          } else if (response.data.error?.message) {
+            message.error(response.data.error.message);
+          }
+        }
+      } catch {
+        if (!cancelled) timer = window.setTimeout(poll, 3000);
+      }
+    };
+    timer = window.setTimeout(poll, 500);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [message, optimization?.id, optimization?.status]);
 
   const startOptimization = async () => {
     if (!selectedBranchId) {
@@ -404,7 +448,7 @@ const AutomaticDispatchPage: React.FC = () => {
 
       saveAutoDispatchState({
         branchId: selectedBranchId,
-        optimization: response.data,
+        optimizationJobId: response.data.id,
         appliedTripCount: null,
         scheduleMode,
         customStartTimeStr:
@@ -428,14 +472,14 @@ const AutomaticDispatchPage: React.FC = () => {
     if (!optimization) return;
     try {
       setApplying(true);
-      const response = await tripsApi.applyAutomaticOptimization(optimization);
+      const response = await tripsApi.applyAutomaticOptimization(optimization.id);
       const tripCount = response.data.trips.length;
       setAppliedTripCount(tripCount);
 
       if (selectedBranchId) {
         saveAutoDispatchState({
           branchId: selectedBranchId,
-          optimization,
+          optimizationJobId: optimization.id,
           appliedTripCount: tripCount,
           scheduleMode,
           customStartTimeStr:
@@ -449,7 +493,7 @@ const AutomaticDispatchPage: React.FC = () => {
       }
 
       message.success(
-        `Đã tạo ${tripCount} chuyến và phân công tài xế`,
+        `Đã tạo ${tripCount} chuyến và phân công tài xế. Bạn có thể sang Bàn Điều Phối để kiểm tra và Phát hành chuyến.`,
       );
       if (selectedBranchId) {
         await loadCounts(selectedBranchId, () => true);
@@ -464,7 +508,15 @@ const AutomaticDispatchPage: React.FC = () => {
     }
   };
 
-  const clearOptimization = () => {
+  const clearOptimization = async () => {
+    if (
+      optimization &&
+      ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED'].includes(
+        optimization.status,
+      )
+    ) {
+      await tripsApi.cancelAutomaticOptimization(optimization.id).catch(() => undefined);
+    }
     if (selectedBranchId) {
       clearAutoDispatchState(selectedBranchId);
     }
@@ -487,12 +539,12 @@ const AutomaticDispatchPage: React.FC = () => {
     setSelectedVehicleForMap('ALL');
     setEnableSim(false);
     setActiveStepIndex(0);
-    restoreStateForBranch(branchId);
+    void restoreStateForBranch(branchId);
   };
 
-  const result = optimization?.proposal.result;
+  const result = optimization?.result;
   const formatRouteStart = (route: OptimizedRouteUI) =>
-    dayjs(optimization?.proposal.planningEpochIso)
+    dayjs(optimization?.planningEpochIso)
       .add(route.start_time_sec, 'second')
       .format('DD/MM/YYYY HH:mm');
 
@@ -2157,7 +2209,8 @@ const AutomaticDispatchPage: React.FC = () => {
             loading={applying}
             disabled={
               !optimization ||
-              optimization.proposal.result.routes.length === 0 ||
+              optimization.result?.routes.length === 0 ||
+              !['SUCCEEDED', 'PARTIAL'].includes(optimization.status) ||
               appliedTripCount !== null ||
               starting
             }
@@ -2167,6 +2220,19 @@ const AutomaticDispatchPage: React.FC = () => {
               ? 'Áp dụng phân công'
               : `Đã áp dụng ${appliedTripCount} chuyến`}
           </Button>
+          {appliedTripCount !== null && (
+            <Button
+              type="primary"
+              size="large"
+              icon={<ArrowRightOutlined />}
+              style={{ background: '#059669', borderColor: '#059669' }}
+              onClick={() => {
+                window.location.hash = 'dispatch-manual';
+              }}
+            >
+              Mở Bàn điều phối để Phát hành
+            </Button>
+          )}
           {optimization && (
             <Popconfirm
               title="Xóa phương án hiện tại?"
@@ -2174,13 +2240,13 @@ const AutomaticDispatchPage: React.FC = () => {
               onConfirm={clearOptimization}
               okText="Xóa"
               cancelText="Hủy"
-              disabled={starting || applying}
+              disabled={applying}
             >
               <Button
                 size="large"
                 danger
                 icon={<DeleteOutlined />}
-                disabled={starting || applying}
+                disabled={applying}
               >
                 Tạo phương án mới
               </Button>
@@ -2194,6 +2260,38 @@ const AutomaticDispatchPage: React.FC = () => {
           type="warning"
           showIcon
           message="Tài khoản chưa có chi nhánh khả dụng để điều phối"
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
+      {optimization && !result && (
+        <Alert
+          type={
+            ['FAILED', 'TIMEOUT', 'CANCELLED'].includes(optimization.status)
+              ? 'error'
+              : 'info'
+          }
+          showIcon
+          message={`Job tá»‘i Æ°u: ${optimization.status}`}
+          description={
+            optimization.error?.message ||
+            (starting
+              ? 'Job Ä‘ang cháº¡y ná»n. Báº¡n cÃ³ thá»ƒ táº£i láº¡i trang mÃ  khÃ´ng máº¥t káº¿t quáº£.'
+              : undefined)
+          }
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
+      {result && ['INFEASIBLE', 'TIMEOUT'].includes(optimization?.status ?? '') && (
+        <Alert
+          type="warning"
+          showIcon
+          message={`Káº¿t quáº£ ${optimization?.status}`}
+          description={
+            result.diagnostics.join(' Â· ') ||
+            'KhÃ´ng cÃ³ phÆ°Æ¡ng Ã¡n kháº£ thi Ä‘á»ƒ Ã¡p dá»¥ng.'
+          }
           style={{ marginBottom: 16 }}
         />
       )}
@@ -2416,11 +2514,11 @@ const AutomaticDispatchPage: React.FC = () => {
                   <Space wrap>
                     <NodeIndexOutlined style={{ color: '#1677ff', fontSize: 16 }} />
                     <span>Bản đồ lộ trình</span>
-                    {optimization?.proposal.scheduleMode === 'CURRENT_TIME' ? (
+                    {optimization?.scheduleMode === 'CURRENT_TIME' ? (
                       <Tag color="cyan" icon={<ClockCircleOutlined />}>
                         Khởi hành từ giờ hiện tại
                       </Tag>
-                    ) : optimization?.proposal.scheduleMode === 'NEXT_DAY' ? (
+                    ) : optimization?.scheduleMode === 'NEXT_DAY' ? (
                       <Tag color="purple" icon={<ScheduleOutlined />}>
                         Khởi hành từ ca ngày tiếp theo
                       </Tag>

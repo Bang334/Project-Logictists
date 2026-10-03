@@ -316,8 +316,14 @@ class FleetRoutingSolver:
             routing.AddDisjunction([pickup_index], pair_penalty // 2)
             routing.AddDisjunction([delivery_index], pair_penalty - pair_penalty // 2)
 
-            time_dimension.CumulVar(pickup_index).SetRange(0, max_time_horizon)
-            time_dimension.CumulVar(delivery_index).SetRange(0, max_time_horizon)
+            time_dimension.CumulVar(pickup_index).SetRange(
+                max(0, order.pickup_window_start_sec),
+                min(max_time_horizon, order.pickup_window_end_sec),
+            )
+            time_dimension.CumulVar(delivery_index).SetRange(
+                max(0, order.delivery_window_start_sec),
+                min(max_time_horizon, order.delivery_window_end_sec),
+            )
 
             daily_late_penalty = late_delivery_daily_penalty(
                 order, self.request.policy
@@ -617,6 +623,7 @@ class FleetRoutingSolver:
         vehicle_index_by_id = {
             vehicle.id: index for index, vehicle in enumerate(self.request.vehicles)
         }
+        self._active_recovery_deadline = deadline
         limit_reached = False
 
         for order in self.request.orders:
@@ -906,6 +913,8 @@ class FleetRoutingSolver:
         vehicle: FleetVehicle,
         vehicle_index: int,
         orders: List[any],
+        *,
+        deadline: Optional[float] = None,
     ) -> Optional[Tuple[List[ScheduledStop], List[StopAction], float, float, any]]:
         """
         Phối hợp định tuyến và bố trí hàng động (Mục 10.5 KE_HOACH_TMS.md):
@@ -913,7 +922,6 @@ class FleetRoutingSolver:
         thuật toán tự động tìm kiếm hoán vị chuỗi dừng theo nguyên tắc LIFO tổng quát
         sao cho tối thiểu hóa quãng đường và vượt qua 100% kiểm định hình học của SpatialValidator.
         """
-        val = SpatialValidator(vehicle, max_time_seconds=1.2, max_search_nodes=5000)
         if not orders:
             return None
 
@@ -960,12 +968,23 @@ class FleetRoutingSolver:
         candidates.sort(key=lambda c: c[0])
 
         # Khống chế tổng thời gian tìm kiếm hoán vị hình học tối đa 8 giây và thử tối đa 10 ứng viên tốt nhất
-        reseq_start_time = time.monotonic()
-        max_reseq_time_seconds = 8.0
+        effective_deadline = (
+            deadline
+            or getattr(self, "_active_recovery_deadline", None)
+            or (time.monotonic() + 8.0)
+        )
 
-        for score, cand_actions, evaluated in candidates[:10]:
-            if time.monotonic() - reseq_start_time > max_reseq_time_seconds:
+        # Recovery is bounded per vehicle so one difficult layout cannot starve
+        # every later vehicle that may accept the order immediately.
+        for score, cand_actions, evaluated in candidates[:3]:
+            remaining_seconds = effective_deadline - time.monotonic()
+            if remaining_seconds <= 0:
                 break
+            val = SpatialValidator(
+                vehicle,
+                max_time_seconds=min(0.8, remaining_seconds),
+                max_search_nodes=5000,
+            )
             sp = val.validate_plan(cand_actions)
             if sp.is_valid:
                 best_schedule, best_dist, best_score, best_duration = evaluated

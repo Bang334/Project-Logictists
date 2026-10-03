@@ -1,11 +1,8 @@
-import {
-  AutomaticDispatchScheduleModeUI,
-  AutomaticOptimizationResponseUI,
-} from '../types';
+import { AutomaticDispatchScheduleModeUI } from '../types';
 
 export interface StoredAutoDispatchState {
   branchId: string;
-  optimization: AutomaticOptimizationResponseUI;
+  optimizationJobId: string;
   appliedTripCount: number | null;
   scheduleMode: AutomaticDispatchScheduleModeUI;
   customStartTimeStr?: string | null;
@@ -42,7 +39,12 @@ export const getAutoDispatchState = (
     const raw = localStorage.getItem(`${STORAGE_PREFIX}${branchId}`);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as StoredAutoDispatchState;
-    if (parsed && parsed.optimization && parsed.optimization.proposal) {
+    if (
+      parsed &&
+      parsed.branchId === branchId &&
+      typeof parsed.optimizationJobId === 'string' &&
+      parsed.optimizationJobId.length > 0
+    ) {
       return parsed;
     }
   } catch (error) {

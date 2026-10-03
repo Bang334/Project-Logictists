@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
-from pydantic import BaseModel
 
 from .models import (
     FleetOptimizationRequest,
@@ -11,6 +10,7 @@ from .models import (
     VehicleFloor,
     StopAction,
     SpatialValidationResult,
+    StrictContractModel,
 )
 from .spatial_validator import SpatialValidator
 from .routing_solver import FleetRoutingSolver, OrToolsRoutingSolver
@@ -29,7 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class ValidatePlanRequest(BaseModel):
+class ValidatePlanRequest(StrictContractModel):
     vehicle: VehicleFloor
     stops: List[StopAction]
 

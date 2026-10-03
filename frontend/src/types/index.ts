@@ -158,6 +158,7 @@ export interface TripStop {
 export interface Trip {
   id: string;
   tripNumber: string;
+  version: number;
   vehicleId: string;
   vehicle: Vehicle;
   status: 'DRAFT' | 'PLANNED' | 'DISPATCHED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
@@ -367,12 +368,39 @@ export interface OptimizationProposalUI {
   result: FleetOptimizationResultUI;
 }
 
+export type OptimizationJobStatusUI =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'RETRYING'
+  | 'CANCEL_REQUESTED'
+  | 'CANCELLED'
+  | 'SUCCEEDED'
+  | 'PARTIAL'
+  | 'INFEASIBLE'
+  | 'TIMEOUT'
+  | 'FAILED'
+  | 'APPLYING'
+  | 'APPLIED';
+
 export interface AutomaticOptimizationResponseUI {
-  proposal: OptimizationProposalUI;
-  signature: string;
+  id: string;
+  branchId: string;
+  status: OptimizationJobStatusUI;
+  schemaVersion: string;
+  planningEpochIso: string | null;
+  scheduleMode: AutomaticDispatchScheduleModeUI | null;
+  result: FleetOptimizationResultUI | null;
+  error: { code: string; message: string | null } | null;
+  attemptCount: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ApplyOptimizationResponseUI {
+  jobId: string;
+  status: 'APPLIED';
   appliedAt: string;
   trips: Array<{
     id: string;

@@ -82,6 +82,7 @@ export const tripsApi = {
     apiClient.get<Trip[]>('/trips', { params: { status } }),
   getOne: (id: string) => apiClient.get<Trip>(`/trips/${id}`),
   create: (data: {
+    idempotencyKey: string;
     vehicleId: string;
     driverId: string;
     plannedStartTime: string;
@@ -90,7 +91,8 @@ export const tripsApi = {
     orderedStopIds?: string[];
     notes?: string;
   }) => apiClient.post<Trip>('/trips', data),
-  publish: (id: string) => apiClient.patch<Trip>(`/trips/${id}/publish`),
+  publish: (id: string, expectedVersion: number) =>
+    apiClient.patch<Trip>(`/trips/${id}/publish`, { expectedVersion }),
   getLoadProfile: (id: string) =>
     apiClient.get<LoadProfileResult>(`/trips/${id}/load-profile`),
   optimize: (data: { vehicleId: string; orderIds: string[] }) =>
@@ -104,10 +106,22 @@ export const tripsApi = {
       data,
     );
   },
-  applyAutomaticOptimization: (data: AutomaticOptimizationResponseUI) =>
+  getAutomaticOptimizationJob: (jobId: string) =>
+    apiClient.get<AutomaticOptimizationResponseUI>(
+      `/trips/automatic-optimization/jobs/${jobId}`,
+    ),
+  listAutomaticOptimizationJobs: (branchId: string) =>
+    apiClient.get<AutomaticOptimizationResponseUI[]>(
+      '/trips/automatic-optimization/jobs',
+      { params: { branchId } },
+    ),
+  cancelAutomaticOptimization: (jobId: string) =>
+    apiClient.post<AutomaticOptimizationResponseUI>(
+      `/trips/automatic-optimization/jobs/${jobId}/cancel`,
+    ),
+  applyAutomaticOptimization: (jobId: string) =>
     apiClient.post<ApplyOptimizationResponseUI>(
-      '/trips/automatic-optimization/apply',
-      data,
+      `/trips/automatic-optimization/jobs/${jobId}/apply`,
     ),
 };
 
@@ -170,4 +184,3 @@ export const mapboxApi = {
     }
   },
 };
-

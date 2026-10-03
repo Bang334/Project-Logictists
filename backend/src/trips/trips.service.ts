@@ -7,7 +7,7 @@ import {
   ServiceUnavailableException,
 } from "@nestjs/common";
 import axios from "axios";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { PrismaService } from "../prisma/prisma.service";
 import { MapboxService } from "../mapbox/mapbox.service";
 import { CreateTripDto } from "./dto/create-trip.dto";
@@ -15,7 +15,9 @@ import { TripsValidator, StopWithItems } from "./trips.validator";
 import {
   DriverStatus,
   Driver as DriverRecord,
+  LoadValidationStatus,
   OrderStatus,
+  PackageStatus,
   Prisma,
   Role,
   StopType,
@@ -26,7 +28,10 @@ import {
 } from "@prisma/client";
 import { OptimizeTripDto } from "./dto/optimize-trip.dto";
 import { expandOrderItemsToCargoUnits } from "./optimizer-payload";
-import { assertFleetOptimizationResult } from "./optimizer-contract";
+import {
+  assertFleetOptimizationResult,
+  OptimizedRouteResult,
+} from "./optimizer-contract";
 import { resolveBranchScope } from "../auth/branch-scope";
 import { ApplyAutomaticOptimizationDto } from "./dto/apply-automatic-optimization.dto";
 import {
@@ -46,6 +51,8 @@ import {
   getPlanningEpoch,
   ServiceDayWindow,
 } from "./service-day";
+import { OutboxService } from '../common/services/outbox.service';
+import { PublishTripDto } from './dto/publish-trip.dto';
 
 const ACTIVE_TRIP_STATUSES = [
   TripStatus.PLANNED,
@@ -58,10 +65,16 @@ const LOCK_NAMESPACE_VEHICLE = 4101;
 const LOCK_NAMESPACE_DRIVER = 4102;
 const LOCK_NAMESPACE_ORDER = 4103;
 const LOCK_NAMESPACE_TRIP_NUMBER = 4104;
+const LOCK_NAMESPACE_TRIP_COMMAND = 4105;
 
 type OrderWithStopsAndItems = Prisma.OrderGetPayload<{
   include: { stops: true; items: true };
 }>;
+
+type DispatchStopWithItems = {
+  orderStop: OrderWithStopsAndItems['stops'][number];
+  order: OrderWithStopsAndItems;
+};
 
 type PlannedAutomaticTrip = {
   vehicleId: string;
@@ -71,6 +84,7 @@ type PlannedAutomaticTrip = {
   totalDistanceKm: number;
   totalDurationMinutes: number;
   routeGeometry: string | null;
+  spatialValidation: OptimizedRouteResult['spatial_validation'];
   orderIds: string[];
   stops: Array<{
     orderId: string;
@@ -92,12 +106,24 @@ export class TripsService {
   constructor(
     private prisma: PrismaService,
     private mapboxService: MapboxService,
+    private outbox: OutboxService,
   ) {}
 
-  async findAll(status?: TripStatus) {
+  async findAll(
+    status?: TripStatus,
+    user?: { branchId?: string; role: Role },
+  ) {
     return this.prisma.trip.findMany({
       where: {
         ...(status ? { status } : {}),
+        ...(user && user.role !== Role.ADMIN
+          ? {
+              OR: [
+                { managingBranchId: user.branchId },
+                { managingBranchId: null, vehicle: { homeBranchId: user.branchId } },
+              ],
+            }
+          : {}),
       },
       include: {
         vehicle: {
@@ -142,10 +168,73 @@ export class TripsService {
     return trip;
   }
 
+  async findOneAuthorized(
+    id: string,
+    user: { branchId?: string; role: Role },
+  ) {
+    const trip = await this.findOne(id);
+    this.assertTripAccess(trip, user);
+    return trip;
+  }
+
+  async getLoadPlan(
+    tripId: string,
+    user: { branchId?: string; role: Role },
+  ) {
+    const trip = await this.findOne(tripId);
+    this.assertTripAccess(trip, user);
+    const loadPlan = await this.prisma.loadPlan.findFirst({
+      where: { tripId },
+      orderBy: { revision: 'desc' },
+      include: {
+        steps: {
+          orderBy: { stepNumber: 'asc' },
+          include: {
+            placements: {
+              include: { package: true },
+              orderBy: { packageId: 'asc' },
+            },
+          },
+        },
+      },
+    });
+    if (!loadPlan) {
+      throw new NotFoundException(`Chuyáº¿n ${trip.tripNumber} chÆ°a cÃ³ Load Plan`);
+    }
+    return loadPlan;
+  }
+
   /**
    * Tạo chuyến đi mới (Lập kế hoạch Trip)
    */
-  async create(dto: CreateTripDto) {
+  async create(
+    dto: CreateTripDto,
+    user: { id: string; branchId?: string; role: Role },
+  ) {
+    const commandHash = createHash('sha256')
+      .update(JSON.stringify(dto))
+      .digest('hex');
+    const existingCommand = await this.prisma.processedCommand.findUnique({
+      where: {
+        actorUserId_commandType_idempotencyKey: {
+          actorUserId: user.id,
+          commandType: 'CREATE_TRIP',
+          idempotencyKey: dto.idempotencyKey,
+        },
+      },
+    });
+    if (existingCommand) {
+      if (existingCommand.requestHash !== commandHash) {
+        throw new ConflictException(
+          'Idempotency key Ä‘Ã£ Ä‘Æ°á»£c dÃ¹ng vá»›i ná»™i dung táº¡o chuyáº¿n khÃ¡c',
+        );
+      }
+      const result = existingCommand.result as { tripId?: unknown } | null;
+      if (existingCommand.status === 'COMPLETED' && typeof result?.tripId === 'string') {
+        return this.findOne(result.tripId);
+      }
+      throw new ConflictException('Lá»‡nh táº¡o chuyáº¿n vá»›i idempotency key nÃ y Ä‘ang xá»­ lÃ½');
+    }
     const plannedStart = new Date(dto.plannedStartTime);
     const plannedEnd = new Date(dto.plannedEndTime);
 
@@ -156,13 +245,15 @@ export class TripsService {
     }
 
     // 1. Kiểm tra Xe và kiểm tra trùng lịch (BR06)
-    const vehicle = await this.prisma.vehicle.findUnique({
-      where: { id: dto.vehicleId },
+    const vehicle = await this.prisma.vehicle.findFirst({
+      where: { id: dto.vehicleId, status: VehicleStatus.AVAILABLE },
       include: { homeBranch: true },
     });
     if (!vehicle) {
       throw new NotFoundException(`Không tìm thấy xe [${dto.vehicleId}]`);
     }
+
+    resolveBranchScope(user, vehicle.homeBranchId);
 
     const vehicleOverlap = await this.prisma.trip.findFirst({
       where: {
@@ -176,8 +267,8 @@ export class TripsService {
         },
         OR: [
           {
-            plannedStartTime: { lte: plannedEnd },
-            plannedEndTime: { gte: plannedStart },
+            plannedStartTime: { lt: plannedEnd },
+            plannedEndTime: { gt: plannedStart },
           },
         ],
       },
@@ -189,8 +280,12 @@ export class TripsService {
     }
 
     // 2. Kiểm tra Tài xế và kiểm tra trùng lịch (BR06)
-    const driver = await this.prisma.driver.findUnique({
-      where: { id: dto.driverId },
+    const driver = await this.prisma.driver.findFirst({
+      where: {
+        id: dto.driverId,
+        homeBranchId: vehicle.homeBranchId,
+        status: DriverStatus.AVAILABLE,
+      },
     });
     if (!driver) {
       throw new NotFoundException(`Không tìm thấy tài xế [${dto.driverId}]`);
@@ -213,8 +308,8 @@ export class TripsService {
             ],
           },
         },
-        startTime: { lte: plannedEnd },
-        endTime: { gte: plannedStart },
+        startTime: { lt: plannedEnd },
+        endTime: { gt: plannedStart },
       },
       include: { trip: true },
     });
@@ -226,7 +321,11 @@ export class TripsService {
 
     // 3. Tải danh sách đơn hàng được chọn
     const orders = await this.prisma.order.findMany({
-      where: { id: { in: dto.orderIds } },
+      where: {
+        id: { in: dto.orderIds },
+        branchId: vehicle.homeBranchId,
+        status: OrderStatus.CONFIRMED,
+      },
       include: {
         stops: { orderBy: { sequence: "asc" } },
         items: true,
@@ -240,9 +339,21 @@ export class TripsService {
     }
 
     // 4. Sắp xếp thứ tự các điểm dừng (Ordered Stops)
-    const stopWithItemsList: StopWithItems[] = [];
+    const stopWithItemsList: DispatchStopWithItems[] = [];
 
     if (dto.orderedStopIds && dto.orderedStopIds.length > 0) {
+      const requiredStopIds = orders.flatMap((order) =>
+        order.stops.map((stop) => stop.id),
+      );
+      if (
+        dto.orderedStopIds.length !== requiredStopIds.length ||
+        new Set(dto.orderedStopIds).size !== dto.orderedStopIds.length ||
+        dto.orderedStopIds.some((id) => !requiredStopIds.includes(id))
+      ) {
+        throw new BadRequestException(
+          'orderedStopIds pháº£i chá»©a Ä‘Ãºng má»—i pickup/delivery má»™t láº§n',
+        );
+      }
       // Điều phối viên chủ động sắp xếp thứ tự các stop
       for (const stopId of dto.orderedStopIds) {
         for (const order of orders) {
@@ -255,8 +366,8 @@ export class TripsService {
       }
     } else {
       // Mặc định: gom tất cả các điểm PICKUP lên trước, sau đó là các điểm DELIVERY
-      const pickups: StopWithItems[] = [];
-      const deliveries: StopWithItems[] = [];
+      const pickups: DispatchStopWithItems[] = [];
+      const deliveries: DispatchStopWithItems[] = [];
 
       for (const order of orders) {
         for (const stop of order.stops) {
@@ -277,7 +388,10 @@ export class TripsService {
     // 6. Tích hợp Mapbox Directions API để tính cự ly, thời gian và lộ trình thực tế
     // Điểm bắt đầu là Chi nhánh quản lý xe (Home Branch Depot)
     const routeCoords: [number, number][] = [
-      [vehicle.homeBranch.longitude, vehicle.homeBranch.latitude],
+      [
+        vehicle.currentLongitude ?? vehicle.homeBranch.longitude,
+        vehicle.currentLatitude ?? vehicle.homeBranch.latitude,
+      ],
       ...stopWithItemsList.map(
         (s) =>
           [s.orderStop.longitude, s.orderStop.latitude] as [number, number],
@@ -285,21 +399,109 @@ export class TripsService {
     ];
 
     const routeResult = await this.mapboxService.getRoute(routeCoords);
+    const spatialValidation = await this.validateSpatialPlan(
+      vehicle,
+      stopWithItemsList,
+    );
+    const requiredDurationMinutes =
+      routeResult.durationMinutes +
+      stopWithItemsList.reduce(
+        (sum, item) => sum + item.orderStop.serviceDurationMinutes,
+        0,
+      );
+    if (
+      plannedStart.getTime() + requiredDurationMinutes * 60_000 >
+      plannedEnd.getTime()
+    ) {
+      throw new BadRequestException(
+        'Khung giá» chuyáº¿n khÃ´ng Ä‘á»§ cho thá»i gian cháº¡y Mapbox vÃ  phá»¥c vá»¥ táº¡i cÃ¡c stop',
+      );
+    }
 
     // 7. Tạo mã chuyến đi tự động: TRIP-YYYYMMDD-XXXX
-    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-    const countToday = await this.prisma.trip.count({
-      where: { tripNumber: { startsWith: `TRIP-${dateStr}` } },
-    });
-    const seq = String(countToday + 1).padStart(3, "0");
-    const tripNumber = `TRIP-${dateStr}-${seq}`;
-
     // 8. Thực thi Transaction lưu toàn bộ vào PostgreSQL
-    const createdTrip = await this.prisma.$transaction(async (tx) => {
+    const createdTripId = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(${LOCK_NAMESPACE_TRIP_COMMAND}::int4, hashtext(${`${user.id}:CREATE_TRIP:${dto.idempotencyKey}`})::int4)`;
+      const command = await tx.processedCommand.findUnique({
+        where: {
+          actorUserId_commandType_idempotencyKey: {
+            actorUserId: user.id,
+            commandType: 'CREATE_TRIP',
+            idempotencyKey: dto.idempotencyKey,
+          },
+        },
+      });
+      if (command) {
+        if (command.requestHash !== commandHash) {
+          throw new ConflictException(
+            'Idempotency key Ä‘Ã£ Ä‘Æ°á»£c dÃ¹ng vá»›i ná»™i dung táº¡o chuyáº¿n khÃ¡c',
+          );
+        }
+        const result = command.result as { tripId?: unknown } | null;
+        if (command.status === 'COMPLETED' && typeof result?.tripId === 'string') {
+          return result.tripId;
+        }
+        throw new ConflictException('Lá»‡nh táº¡o chuyáº¿n trÆ°á»›c Ä‘ang xá»­ lÃ½');
+      }
+
+      await this.acquireApplicationLocks(
+        tx,
+        [dto.vehicleId],
+        [dto.driverId],
+        dto.orderIds,
+      );
+      const [currentVehicle, currentDriver, lockedVehicleOverlap, lockedDriverOverlap] =
+        await Promise.all([
+          tx.vehicle.findFirst({
+            where: {
+              id: dto.vehicleId,
+              homeBranchId: vehicle.homeBranchId,
+              status: VehicleStatus.AVAILABLE,
+            },
+          }),
+          tx.driver.findFirst({
+            where: {
+              id: dto.driverId,
+              homeBranchId: vehicle.homeBranchId,
+              status: DriverStatus.AVAILABLE,
+              licenseExpiry: { gt: new Date() },
+            },
+          }),
+          tx.trip.findFirst({
+            where: {
+              vehicleId: dto.vehicleId,
+              status: { in: ACTIVE_TRIP_STATUSES },
+              plannedStartTime: { lt: plannedEnd },
+              plannedEndTime: { gt: plannedStart },
+            },
+            select: { tripNumber: true },
+          }),
+          tx.driverAssignment.findFirst({
+            where: {
+              driverId: dto.driverId,
+              trip: { status: { in: ACTIVE_TRIP_STATUSES } },
+              startTime: { lt: plannedEnd },
+              endTime: { gt: plannedStart },
+            },
+            include: { trip: { select: { tripNumber: true } } },
+          }),
+        ]);
+      if (!currentVehicle || !currentDriver) {
+        throw new ConflictException(
+          'Xe hoáº·c tÃ i xáº¿ khÃ´ng cÃ²n kháº£ dá»¥ng trong chi nhÃ¡nh',
+        );
+      }
+      if (lockedVehicleOverlap || lockedDriverOverlap) {
+        throw new ConflictException(
+          `Lá»‹ch xe/tÃ i xáº¿ Ä‘Ã£ thay Ä‘á»•i trong lÃºc táº¡o chuyáº¿n`,
+        );
+      }
+      const [tripNumber] = await this.allocateTripNumbers(tx, 1);
       const trip = await tx.trip.create({
         data: {
           tripNumber,
           vehicleId: dto.vehicleId,
+          managingBranchId: vehicle.homeBranchId,
           status: TripStatus.PLANNED,
           plannedStartTime: plannedStart,
           plannedEndTime: plannedEnd,
@@ -311,6 +513,7 @@ export class TripsService {
           notes: dto.notes,
         },
       });
+      const stopTaskIdByOrderStopId = new Map<string, string>();
 
       // Tạo TripStops & StopTasks
       for (let i = 0; i < stopWithItemsList.length; i++) {
@@ -334,7 +537,7 @@ export class TripsService {
         });
 
         // Tạo Allocation và Tasks cho từng OrderItem của đơn
-        await tx.stopTask.create({
+        const stopTask = await tx.stopTask.create({
           data: {
             tripStopId: tripStop.id,
             orderId: item.order.id,
@@ -346,7 +549,17 @@ export class TripsService {
             ),
           },
         });
+        stopTaskIdByOrderStopId.set(item.orderStop.id, stopTask.id);
       }
+
+      await this.persistValidatedLoadPlan(
+        tx,
+        trip.id,
+        dto.vehicleId,
+        orders,
+        stopTaskIdByOrderStopId,
+        spatialValidation,
+      );
 
       // Phân công tài xế
       await tx.driverAssignment.create({
@@ -360,47 +573,161 @@ export class TripsService {
       });
 
       // Cập nhật trạng thái các đơn hàng sang ASSIGNED
-      await tx.order.updateMany({
-        where: { id: { in: dto.orderIds } },
-        data: { status: OrderStatus.ASSIGNED },
+      const updatedOrders = await tx.order.updateMany({
+        where: {
+          id: { in: dto.orderIds },
+          branchId: vehicle.homeBranchId,
+          status: OrderStatus.CONFIRMED,
+        },
+        data: { status: OrderStatus.ASSIGNED, version: { increment: 1 } },
       });
+      if (updatedOrders.count !== dto.orderIds.length) {
+        throw new ConflictException(
+          'Má»™t sá»‘ Ä‘Æ¡n khÃ´ng cÃ²n CONFIRMED hoáº·c Ä‘Ã£ thay Ä‘á»•i chi nhÃ¡nh',
+        );
+      }
 
-      return trip;
+      await tx.processedCommand.create({
+        data: {
+          actorUserId: user.id,
+          commandType: 'CREATE_TRIP',
+          idempotencyKey: dto.idempotencyKey,
+          requestHash: commandHash,
+          status: 'COMPLETED',
+          result: { tripId: trip.id },
+        },
+      });
+      await this.outbox.enqueue(
+        {
+          aggregateType: 'Trip',
+          aggregateId: trip.id,
+          aggregateVersion: trip.version,
+          eventType: 'TRIP_CREATED',
+          payload: { tripId: trip.id, branchId: vehicle.homeBranchId },
+        },
+        tx,
+      );
+
+      return trip.id;
     });
 
-    return this.findOne(createdTrip.id);
+    return this.findOne(createdTripId);
   }
 
   /**
    * Phát hành chuyến đi (Publish Trip)
    */
-  async publish(id: string) {
-    const trip = await this.findOne(id);
-    if (
-      trip.status !== TripStatus.PLANNED &&
-      trip.status !== TripStatus.DRAFT
-    ) {
-      throw new BadRequestException(
-        `Chuyến đi ở trạng thái [${trip.status}] không thể phát hành`,
-      );
-    }
+  async publish(
+    id: string,
+    dto: PublishTripDto,
+    user: { id: string; branchId?: string; role: Role },
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(${LOCK_NAMESPACE_TRIP_COMMAND}::int4, hashtext(${`PUBLISH_TRIP:${id}`})::int4)`;
+      const trip = await tx.trip.findUnique({
+        where: { id },
+        include: {
+          vehicle: true,
+          assignments: { include: { driver: true } },
+          stops: {
+            orderBy: { sequence: 'asc' },
+            include: { tasks: true },
+          },
+        },
+      });
+      if (!trip) {
+        throw new NotFoundException(`Không tìm thấy chuyến đi [${id}]`);
+      }
+      this.assertTripAccess(trip, user);
+      if (
+        trip.status !== TripStatus.PLANNED &&
+        trip.status !== TripStatus.DRAFT
+      ) {
+        throw new BadRequestException(
+          `Chuyến đi ở trạng thái [${trip.status}] không thể phát hành`,
+        );
+      }
+      if (trip.version !== dto.expectedVersion) {
+        throw new ConflictException(
+          `Chuyến đi đã thay đổi (version ${trip.version}); hãy tải lại trước khi phát hành`,
+        );
+      }
+      if (!trip.assignments.some((assignment) => assignment.role === 'PRIMARY')) {
+        throw new ConflictException(
+          'Chuyến đi chưa có tài xế PRIMARY nên không thể phát hành',
+        );
+      }
 
-    return this.prisma.trip.update({
-      where: { id },
-      data: { status: TripStatus.DISPATCHED },
-      include: {
-        vehicle: true,
-        assignments: { include: { driver: true } },
-        stops: true,
-      },
+      const loadPlan = await tx.loadPlan.findFirst({
+        where: { tripId: id },
+        orderBy: { revision: 'desc' },
+        include: { steps: { select: { stopTaskId: true } } },
+      });
+      if (!loadPlan || loadPlan.validationStatus !== LoadValidationStatus.VALID) {
+        throw new ConflictException(
+          'Chuyến đi chưa có Load Plan hợp lệ nên không thể phát hành',
+        );
+      }
+      const requiredTaskIds = new Set(
+        trip.stops.flatMap((stop) => stop.tasks.map((task) => task.id)),
+      );
+      const plannedTaskIds = new Set(
+        loadPlan.steps
+          .map((step) => step.stopTaskId)
+          .filter((taskId): taskId is string => typeof taskId === 'string'),
+      );
+      if (
+        requiredTaskIds.size === 0 ||
+        plannedTaskIds.size !== requiredTaskIds.size ||
+        [...requiredTaskIds].some((taskId) => !plannedTaskIds.has(taskId))
+      ) {
+        throw new ConflictException(
+          'Load Plan không bao phủ đầy đủ các thao tác xếp/dỡ của chuyến',
+        );
+      }
+
+      const updated = await tx.trip.updateMany({
+        where: { id, version: dto.expectedVersion, status: trip.status },
+        data: { status: TripStatus.DISPATCHED, version: { increment: 1 } },
+      });
+      if (updated.count !== 1) {
+        throw new ConflictException(
+          'Chuyến đi đã được thay đổi bởi request khác; hãy tải lại',
+        );
+      }
+      await this.outbox.enqueue(
+        {
+          aggregateType: 'Trip',
+          aggregateId: id,
+          aggregateVersion: dto.expectedVersion + 1,
+          eventType: 'TRIP_PUBLISHED',
+          payload: {
+            tripId: id,
+            branchId: trip.managingBranchId ?? trip.vehicle.homeBranchId,
+            publishedBy: user.id,
+            loadPlanId: loadPlan.id,
+          },
+        },
+        tx,
+      );
+      return {
+        ...trip,
+        status: TripStatus.DISPATCHED,
+        version: dto.expectedVersion + 1,
+      };
     });
   }
 
   /**
    * Lấy biểu đồ phân tích tải trọng xe qua từng điểm dừng (Load Profile)
    */
-  async getLoadProfile(id: string) {
-    const trip = await this.findOne(id);
+  async getLoadProfile(
+    id: string,
+    user?: { branchId?: string; role: Role },
+  ) {
+    const trip = user
+      ? await this.findOneAuthorized(id, user)
+      : await this.findOne(id);
     const stopsWithItems: StopWithItems[] = [];
     for (const stop of trip.stops) {
       for (const task of stop.tasks) {
@@ -522,9 +849,10 @@ export class TripsService {
     }
   }
 
-  async runAutomaticOptimization(
+  async executeAutomaticOptimization(
     user: { id: string; branchId?: string; role: Role },
     dto?: RunAutomaticOptimizationDto | string,
+    persistedJobId?: string,
   ) {
     const requestedBranchId = typeof dto === "string" ? dto : dto?.branchId;
     const scheduleMode =
@@ -628,10 +956,16 @@ export class TripsService {
       payload_limit_kg: vehicle.payloadCapacityKg,
       door_position: "REAR",
       depot: {
-        id: vehicle.homeBranch.id,
-        name: vehicle.homeBranch.name,
-        latitude: vehicle.homeBranch.latitude,
-        longitude: vehicle.homeBranch.longitude,
+        id:
+          vehicle.currentLatitude != null && vehicle.currentLongitude != null
+            ? `vehicle-current:${vehicle.id}`
+            : vehicle.homeBranch.id,
+        name:
+          vehicle.currentLatitude != null && vehicle.currentLongitude != null
+            ? `Vá»‹ trÃ­ hiá»‡n táº¡i ${vehicle.plateNumber}`
+            : vehicle.homeBranch.name,
+        latitude: vehicle.currentLatitude ?? vehicle.homeBranch.latitude,
+        longitude: vehicle.currentLongitude ?? vehicle.homeBranch.longitude,
       },
       fuel_consumption_liters_per_100_km: Number(
         vehicle.fuelConsumptionLitersPer100Km,
@@ -700,6 +1034,7 @@ export class TripsService {
           vehicle.depot.latitude === firstDepot.latitude,
       );
 
+    const matrixQueriedAt = new Date();
     let fullDistances: number[][];
     let fullDurations: number[][];
 
@@ -761,7 +1096,7 @@ export class TripsService {
     }
 
     const payload = {
-      job_id: `request-${randomUUID()}`,
+      job_id: persistedJobId ?? `request-${randomUUID()}`,
       vehicles: snapshot.vehicles,
       drivers: snapshot.drivers,
       orders: snapshot.orders,
@@ -770,6 +1105,69 @@ export class TripsService {
       distance_matrix_meters: fullDistances,
       duration_matrix_seconds: fullDurations,
     };
+
+    if (persistedJobId) {
+      const requestSnapshot = {
+        branchId,
+        planningEpochIso: planningEpoch.toISOString(),
+        scheduleMode: scheduleMode ?? null,
+        resources: {
+          orders: orders.map((order) => ({ id: order.id, version: order.version })),
+          vehicles: candidateVehicles.map((vehicle) => ({
+            id: vehicle.id,
+            updatedAt: vehicle.updatedAt.toISOString(),
+          })),
+          drivers: drivers.map((driver) => ({
+            id: driver.id,
+            updatedAt: driver.updatedAt.toISOString(),
+          })),
+        },
+        vehicleLocationProvenance: candidateVehicles.map((vehicle) => ({
+          vehicleId: vehicle.id,
+          source:
+            vehicle.currentLatitude != null && vehicle.currentLongitude != null
+              ? 'CURRENT_GPS'
+              : 'HOME_BRANCH_FALLBACK',
+          measuredAt: vehicle.lastLocationAt?.toISOString() ?? null,
+        })),
+        matrixProvenance: {
+          provider: 'MAPBOX',
+          profile: 'mapbox/driving',
+          queriedAt: matrixQueriedAt.toISOString(),
+          indexes: [
+            ...snapshot.vehicles.map((vehicle, index) => ({
+              index,
+              kind: 'VEHICLE_START',
+              id: vehicle.id,
+            })),
+            ...snapshot.orders.flatMap((order, orderIndex) => [
+              {
+                index: vehicleCount + orderIndex * 2,
+                kind: 'PICKUP',
+                id: order.pickup_location.id,
+                orderId: order.id,
+              },
+              {
+                index: vehicleCount + orderIndex * 2 + 1,
+                kind: 'DELIVERY',
+                id: order.delivery_location.id,
+                orderId: order.id,
+              },
+            ]),
+          ],
+        },
+        optimizerPayload: payload,
+      };
+      await this.prisma.optimizationJob.update({
+        where: { id: persistedJobId },
+        data: {
+          requestSnapshot: requestSnapshot as unknown as Prisma.InputJsonValue,
+          requestHash: createHash('sha256')
+            .update(JSON.stringify(requestSnapshot))
+            .digest('hex'),
+        },
+      });
+    }
 
     let result;
     try {
@@ -847,6 +1245,7 @@ export class TripsService {
   async applyAutomaticOptimization(
     dto: ApplyAutomaticOptimizationDto,
     user: { id: string; branchId?: string; role: Role },
+    sourceJobId?: string,
   ) {
     try {
       assertOptimizationProposal(dto.proposal);
@@ -972,6 +1371,7 @@ export class TripsService {
               plannedTrips[index],
               tripNumbers[index],
               branchId,
+              sourceJobId,
             ),
           );
         }
@@ -988,6 +1388,86 @@ export class TripsService {
 
   private get optimizerUrl() {
     return process.env.OPTIMIZER_URL || "http://localhost:8000";
+  }
+
+  private assertTripAccess(
+    trip: { managingBranchId: string | null; vehicle: { homeBranchId: string } },
+    user: { branchId?: string; role: Role },
+  ) {
+    if (user.role === Role.ADMIN) return;
+    const branchId = trip.managingBranchId ?? trip.vehicle.homeBranchId;
+    if (!user.branchId || user.branchId !== branchId) {
+      throw new ForbiddenException('KhÃ´ng cÃ³ quyá»n truy cáº­p chuyáº¿n ngoÃ i chi nhÃ¡nh');
+    }
+  }
+
+  private async validateSpatialPlan(
+    vehicle: VehicleRecord,
+    stopsWithItems: DispatchStopWithItems[],
+  ) {
+    const cargoByOrderId = new Map<string, ReturnType<typeof expandOrderItemsToCargoUnits>>();
+    for (const entry of stopsWithItems) {
+      if (!cargoByOrderId.has(entry.order.id)) {
+        cargoByOrderId.set(
+          entry.order.id,
+          expandOrderItemsToCargoUnits(entry.order.items),
+        );
+      }
+    }
+    const stops = stopsWithItems.map((entry, index) => {
+      const cargo = cargoByOrderId.get(entry.order.id) ?? [];
+      const isPickup = entry.orderStop.type === StopType.PICKUP;
+      return {
+        stop_id: entry.orderStop.id,
+        sequence: index + 1,
+        stop_type: entry.orderStop.type,
+        address: entry.orderStop.address,
+        latitude: entry.orderStop.latitude,
+        longitude: entry.orderStop.longitude,
+        items_to_load: isPickup ? cargo : [],
+        items_to_unload: isPickup ? [] : cargo.map((item) => item.id),
+      };
+    });
+
+    try {
+      const response = await axios.post(
+        `${this.optimizerUrl}/validate-spatial`,
+        {
+          vehicle: {
+            id: vehicle.id,
+            plate_number: vehicle.plateNumber,
+            length_cm: vehicle.lengthCm,
+            width_cm: vehicle.widthCm,
+            height_cm: vehicle.heightCm,
+            payload_limit_kg: vehicle.payloadCapacityKg,
+            door_position: 'REAR',
+          },
+          stops,
+        },
+        { timeout: 10_000 },
+      );
+      if (
+        !response.data ||
+        typeof response.data.is_valid !== 'boolean' ||
+        !Array.isArray(response.data.step_states)
+      ) {
+        throw new Error('Spatial validator tráº£ response sai contract');
+      }
+      if (!response.data.is_valid) {
+        throw new BadRequestException(
+          response.data.error_message ||
+            `Bá»‘ trÃ­ xáº¿p/dá»¡ khÃ´ng há»£p lá»‡ (${response.data.violation_code || 'UNKNOWN'})`,
+        );
+      }
+      return response.data;
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+      throw new ServiceUnavailableException(
+        error.response?.data?.detail ||
+          error.message ||
+          'KhÃ´ng thá»ƒ kiá»ƒm tra bá»‘ trÃ­ xáº¿p/dá»¡',
+      );
+    }
   }
 
   private get optimizationProposalSecret() {
@@ -1251,6 +1731,7 @@ export class TripsService {
         routeGeometry: route.route_geometry
           ? JSON.stringify(route.route_geometry)
           : null,
+        spatialValidation: route.spatial_validation,
         orderIds: Array.from(routeOrderCounts.keys()),
         stops: plannedStops,
       };
@@ -1302,8 +1783,8 @@ export class TripsService {
       where: {
         vehicleId: plannedTrip.vehicleId,
         status: { in: ACTIVE_TRIP_STATUSES },
-        plannedStartTime: { lte: plannedTrip.plannedEndTime },
-        plannedEndTime: { gte: plannedTrip.plannedStartTime },
+        plannedStartTime: { lt: plannedTrip.plannedEndTime },
+        plannedEndTime: { gt: plannedTrip.plannedStartTime },
       },
       select: { tripNumber: true },
     });
@@ -1317,8 +1798,8 @@ export class TripsService {
       where: {
         driverId: plannedTrip.driverId,
         trip: { status: { in: ACTIVE_TRIP_STATUSES } },
-        startTime: { lte: plannedTrip.plannedEndTime },
-        endTime: { gte: plannedTrip.plannedStartTime },
+        startTime: { lt: plannedTrip.plannedEndTime },
+        endTime: { gt: plannedTrip.plannedStartTime },
       },
       include: { trip: { select: { tripNumber: true } } },
     });
@@ -1350,6 +1831,7 @@ export class TripsService {
     plannedTrip: PlannedAutomaticTrip,
     tripNumber: string,
     branchId: string,
+    sourceJobId?: string,
   ) {
     const trip = await tx.trip.create({
       data: {
@@ -1362,15 +1844,18 @@ export class TripsService {
         totalDistanceKm: plannedTrip.totalDistanceKm,
         totalDurationMinutes: plannedTrip.totalDurationMinutes,
         routeGeometry: plannedTrip.routeGeometry,
-        notes: "Sinh từ kết quả tối ưu tự động không lưu job",
+        notes: sourceJobId
+          ? `Sinh từ optimization job ${sourceJobId}`
+          : 'Sinh từ kết quả tối ưu tự động',
       },
     });
 
     const orders = await tx.order.findMany({
       where: { id: { in: plannedTrip.orderIds } },
-      include: { items: true },
+      include: { items: true, stops: true },
     });
     const orderById = new Map(orders.map((order) => [order.id, order]));
+    const stopTaskIdByOrderStopId = new Map<string, string>();
     for (const stop of plannedTrip.stops) {
       const tripStop = await tx.tripStop.create({
         data: {
@@ -1388,7 +1873,7 @@ export class TripsService {
       });
       const order = orderById.get(stop.orderId);
       if (!order) throw new Error(`Thiếu đơn [${stop.orderId}] khi lưu chuyến`);
-      await tx.stopTask.create({
+      const stopTask = await tx.stopTask.create({
         data: {
           tripStopId: tripStop.id,
           orderId: order.id,
@@ -1403,7 +1888,17 @@ export class TripsService {
           ),
         },
       });
+      stopTaskIdByOrderStopId.set(stop.orderStopId, stopTask.id);
     }
+
+    await this.persistValidatedLoadPlan(
+      tx,
+      trip.id,
+      plannedTrip.vehicleId,
+      orders,
+      stopTaskIdByOrderStopId,
+      plannedTrip.spatialValidation,
+    );
 
     await tx.driverAssignment.create({
       data: {
@@ -1428,6 +1923,21 @@ export class TripsService {
       );
     }
 
+    await this.outbox.enqueue(
+      {
+        aggregateType: 'Trip',
+        aggregateId: trip.id,
+        aggregateVersion: trip.version,
+        eventType: 'OPTIMIZATION_TRIP_APPLIED',
+        payload: {
+          tripId: trip.id,
+          branchId,
+          optimizationJobId: sourceJobId ?? null,
+        },
+      },
+      tx,
+    );
+
     return {
       id: trip.id,
       tripNumber,
@@ -1437,6 +1947,161 @@ export class TripsService {
       plannedStartTime: plannedTrip.plannedStartTime,
       plannedEndTime: plannedTrip.plannedEndTime,
     };
+  }
+
+  private async persistValidatedLoadPlan(
+    tx: Prisma.TransactionClient,
+    tripId: string,
+    vehicleId: string,
+    orders: OrderWithStopsAndItems[],
+    stopTaskIdByOrderStopId: Map<string, string>,
+    spatialValidation: OptimizedRouteResult['spatial_validation'],
+  ) {
+    if (!spatialValidation.is_valid || spatialValidation.step_states.length === 0) {
+      throw new ConflictException(
+        'KhÃ´ng thá»ƒ lÆ°u chuyáº¿n khi chÆ°a cÃ³ Load Plan há»£p lá»‡',
+      );
+    }
+    const vehicle = await tx.vehicle.findUnique({ where: { id: vehicleId } });
+    if (!vehicle) throw new ConflictException('Xe cá»§a Load Plan khÃ´ng cÃ²n tá»“n táº¡i');
+    const packageIdByCargoUnit = await this.ensurePhysicalPackageMapping(
+      tx,
+      orders,
+    );
+    const inputHash = createHash('sha256')
+      .update(JSON.stringify(spatialValidation))
+      .digest('hex');
+    const loadPlan = await tx.loadPlan.create({
+      data: {
+        tripId,
+        revision: 1,
+        initialStateSnapshot: { placements: [] },
+        geometrySnapshot: {
+          vehicleId,
+          lengthMm: this.cmToMm(vehicle.lengthCm),
+          widthMm: this.cmToMm(vehicle.widthCm),
+          heightMm: this.cmToMm(vehicle.heightCm),
+          doorPosition: 'REAR',
+          spatialValidation,
+        } as unknown as Prisma.InputJsonValue,
+        validationStatus: 'VALID',
+        validatorVersion: 'spatial-validator-v1',
+        inputHash,
+      },
+    });
+
+    for (const state of spatialValidation.step_states) {
+      const stopTaskId = stopTaskIdByOrderStopId.get(state.stop_id);
+      if (!stopTaskId) {
+        throw new ConflictException(
+          `KhÃ´ng Ã¡nh xáº¡ Ä‘Æ°á»£c spatial stop ${state.stop_id} sang StopTask`,
+        );
+      }
+      await tx.loadPlanStep.create({
+        data: {
+          loadPlanId: loadPlan.id,
+          stepNumber: state.step_index,
+          stopTaskId,
+          operationType: state.stop_type,
+          handlingPath:
+            state.package_access_paths as unknown as Prisma.InputJsonValue,
+          validationResult: state as unknown as Prisma.InputJsonValue,
+          placements: {
+            create: state.placed_items.map((placed) => {
+              const packageId = packageIdByCargoUnit.get(placed.item_id);
+              if (!packageId) {
+                throw new ConflictException(
+                  `KhÃ´ng Ã¡nh xáº¡ Ä‘Æ°á»£c cargo unit ${placed.item_id} sang Package váº­t lÃ½`,
+                );
+              }
+              return {
+                packageId,
+                xMm: this.cmToMm(placed.x),
+                yMm: this.cmToMm(placed.y),
+                zMm: 0,
+                orientation: 'VALIDATED',
+                effectiveLengthMm: this.cmToMm(placed.length_cm),
+                effectiveWidthMm: this.cmToMm(placed.width_cm),
+                effectiveHeightMm: this.cmToMm(placed.height_cm),
+              };
+            }),
+          },
+        },
+      });
+    }
+  }
+
+  private async ensurePhysicalPackageMapping(
+    tx: Prisma.TransactionClient,
+    orders: OrderWithStopsAndItems[],
+  ): Promise<Map<string, string>> {
+    const existingPackages = await tx.package.findMany({
+      where: { orderId: { in: orders.map((order) => order.id) } },
+      include: { items: true },
+      orderBy: { packageCode: 'asc' },
+    });
+    const packagesByOrderItem = new Map<string, typeof existingPackages>();
+    for (const pkg of existingPackages) {
+      if (pkg.items.length !== 1 || pkg.items[0].quantity !== 1) continue;
+      const orderItemId = pkg.items[0].orderItemId;
+      const current = packagesByOrderItem.get(orderItemId) ?? [];
+      current.push(pkg);
+      packagesByOrderItem.set(orderItemId, current);
+    }
+
+    const mapping = new Map<string, string>();
+    for (const order of orders) {
+      const cargoUnits = expandOrderItemsToCargoUnits(order.items);
+      const usedByOrderItem = new Map<string, number>();
+      for (const cargo of cargoUnits) {
+        const used = usedByOrderItem.get(cargo.order_item_id) ?? 0;
+        const existing = packagesByOrderItem.get(cargo.order_item_id)?.[used];
+        let packageId: string;
+        if (existing) {
+          const dimensionsMatch =
+            existing.lengthMm === this.cmToMm(cargo.length_cm) &&
+            existing.widthMm === this.cmToMm(cargo.width_cm) &&
+            existing.heightMm === this.cmToMm(cargo.height_cm) &&
+            existing.weightG === BigInt(Math.round(cargo.weight_kg * 1000));
+          if (!dimensionsMatch) {
+            throw new ConflictException(
+              `Package ${existing.packageCode} khÃ´ng cÃ²n khá»›p kÃ­ch thÆ°á»›c/khá»‘i lÆ°á»£ng snapshot`,
+            );
+          }
+          packageId = existing.id;
+        } else {
+          const unitNumber = cargo.id.split('#').pop() ?? String(used + 1);
+          const created = await tx.package.create({
+            data: {
+              orderId: order.id,
+              packageCode: `PKG-TMS-${order.orderNumber}-${cargo.order_item_id.slice(0, 8)}-${unitNumber}`,
+              lengthMm: this.cmToMm(cargo.length_cm),
+              widthMm: this.cmToMm(cargo.width_cm),
+              heightMm: this.cmToMm(cargo.height_cm),
+              weightG: BigInt(Math.round(cargo.weight_kg * 1000)),
+              allowedOrientations: ['DEFAULT'],
+              measurementSource: 'ORDER_ITEM_SNAPSHOT',
+              status: PackageStatus.READY,
+              items: {
+                create: { orderItemId: cargo.order_item_id, quantity: 1 },
+              },
+            },
+          });
+          packageId = created.id;
+        }
+        mapping.set(cargo.id, packageId);
+        usedByOrderItem.set(cargo.order_item_id, used + 1);
+      }
+    }
+    return mapping;
+  }
+
+  private cmToMm(value: number): number {
+    const millimeters = Math.round(value * 10);
+    if (!Number.isSafeInteger(millimeters) || millimeters < 0) {
+      throw new BadRequestException(`GiÃ¡ trá»‹ hÃ¬nh há»c ${value} cm khÃ´ng thá»ƒ Ä‘á»•i sang mm`);
+    }
+    return millimeters;
   }
 
   private buildOptimizerOrders(

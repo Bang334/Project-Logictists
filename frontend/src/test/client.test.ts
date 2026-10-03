@@ -39,3 +39,32 @@ describe('apiClient authentication', () => {
     expect(request.headers.Authorization).toBeUndefined();
   });
 });
+
+describe('tripsApi.publish contract', () => {
+  it('sends PATCH /trips/:id/publish with expectedVersion payload', async () => {
+    let captured: InternalAxiosRequestConfig | undefined;
+
+    await apiClient.patch(
+      '/trips/trip-123/publish',
+      { expectedVersion: 2 },
+      {
+        adapter: async (config): Promise<AxiosResponse> => {
+          captured = config;
+          return {
+            config,
+            data: { id: 'trip-123', status: 'DISPATCHED', version: 3 },
+            headers: {},
+            status: 200,
+            statusText: 'OK',
+          };
+        },
+      },
+    );
+
+    expect(captured).toBeDefined();
+    expect(captured?.url).toBe('/trips/trip-123/publish');
+    expect(captured?.method?.toLowerCase()).toBe('patch');
+    expect(JSON.parse(captured?.data as string)).toEqual({ expectedVersion: 2 });
+  });
+});
+
