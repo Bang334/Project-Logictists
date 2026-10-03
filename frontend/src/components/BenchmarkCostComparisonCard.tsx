@@ -252,8 +252,8 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
                 <div style={{ fontWeight: 600, color: '#1e293b' }}>{or_tools.total_duration_minutes} p</div>
               </Col>
               <Col span={8}>
-                <Text type="secondary" style={{ fontSize: 11 }}>Số xe dùng</Text>
-                <div style={{ fontWeight: 600, color: '#1e293b' }}>{or_tools.vehicles_used} xe</div>
+                <Text type="secondary" style={{ fontSize: 11 }}>Lượt chuyến</Text>
+                <div style={{ fontWeight: 600, color: '#1e293b' }}>{or_tools.vehicles_used} lượt</div>
               </Col>
             </Row>
 
