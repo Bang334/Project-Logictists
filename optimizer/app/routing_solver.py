@@ -395,8 +395,20 @@ class FleetRoutingSolver:
         assigned_order_ids = set()
         rejected_reasons: Dict[str, Tuple[str, str]] = {}
 
+        # Cấp ngân sách độc lập cho giai đoạn thẩm định hình học và phục hồi tuyến,
+        # tránh để một tuyến phức tạp làm cạn kiệt toàn bộ thời gian của các xe còn lại.
+        validation_deadline = time.monotonic() + max(
+            8.0, float(self.request.max_time_seconds)
+        )
+
+        active_vehicle_indices = [
+            v_idx
+            for v_idx in range(len(self.request.vehicles))
+            if not routing.IsEnd(solution.Value(routing.NextVar(routing.Start(v_idx))))
+        ]
+
         for vehicle_index, vehicle in enumerate(self.request.vehicles):
-            if time.monotonic() >= total_deadline:
+            if time.monotonic() >= validation_deadline:
                 break
             index = routing.Start(vehicle_index)
             route_start_seconds = solution.Value(time_dimension.CumulVar(index))
@@ -461,7 +473,10 @@ class FleetRoutingSolver:
             if not scheduled_stops:
                 continue
 
-            remaining_seconds = total_deadline - time.monotonic()
+            remaining_active = len(
+                [idx for idx in active_vehicle_indices if idx >= vehicle_index]
+            )
+            remaining_seconds = validation_deadline - time.monotonic()
             if remaining_seconds <= 0:
                 for order_id in route_order_ids:
                     rejected_reasons[order_id] = (
@@ -469,9 +484,17 @@ class FleetRoutingSolver:
                         "Hết ngân sách trước khi hoàn tất kiểm tra bố trí; chưa kết luận bất khả thi.",
                     )
                 break
+
+            vehicle_budget = max(
+                1.0, remaining_seconds / max(1, remaining_active)
+            )
+            vehicle_deadline = min(
+                validation_deadline, time.monotonic() + vehicle_budget
+            )
+
             spatial = SpatialValidator(
                 vehicle,
-                max_time_seconds=min(1.0, remaining_seconds),
+                max_time_seconds=min(0.8, vehicle_budget),
             ).validate_plan(stop_actions)
             if not spatial.is_valid:
                 # Phối hợp định tuyến & bố trí hàng: tìm kiếm hoán vị chuỗi stop không bị chắn lối ra cửa (T24/T26)
@@ -480,7 +503,7 @@ class FleetRoutingSolver:
                     vehicle,
                     vehicle_index,
                     orders_on_route,
-                    deadline=total_deadline,
+                    deadline=vehicle_deadline,
                 )
                 if reseq is not None:
                     scheduled_stops, stop_actions, route_distance_meters, route_end_seconds, spatial = reseq
@@ -493,7 +516,7 @@ class FleetRoutingSolver:
                             vehicle,
                             vehicle_index,
                             list(sub),
-                            deadline=total_deadline,
+                            deadline=vehicle_deadline,
                         )
                         if sub_attempt is not None:
                             sub_reseq = sub_attempt
@@ -542,7 +565,7 @@ class FleetRoutingSolver:
             routes,
             assigned_order_ids,
             rejected_reasons,
-            deadline=total_deadline,
+            deadline=validation_deadline,
         )
 
         self._assign_drivers_and_costs(routes)
@@ -907,14 +930,14 @@ class FleetRoutingSolver:
         self, orders: List[any], deadline: Optional[float] = None
     ) -> List[List[Tuple[str, str, any]]]:
         """
-        Sinh các chuỗi dừng thỏa mãn nguyên tắc LIFO (Last-In First-Out) tổng quát:
-        Thao tác bốc hàng (Pickup) push vào stack, thao tác dỡ hàng (Delivery) pop phần tử đỉnh stack.
-        Bảo đảm 100% không bao giờ có cặp A, B mà P(A) < P(B) < D(A) < D(B) (loại bỏ tận gốc vi phạm T24/T26).
+        Sinh các chuỗi dừng thỏa mãn ràng buộc tiên quyết bốc trước dỡ (Pickup trước Delivery)
+        cho mọi đơn hàng, hỗ trợ cả LIFO và FIFO khi bố trí không gian
+        thùng xe cho phép dỡ độc lập ra cửa sau.
         """
         n = len(orders)
         valid_sequences = []
 
-        def backtrack(current_seq, stack, remaining_pickups):
+        def backtrack(current_seq, onboard, remaining_pickups):
             if deadline is not None and time.monotonic() >= deadline:
                 return
             if len(current_seq) == 2 * n:
@@ -927,19 +950,19 @@ class FleetRoutingSolver:
             for o in remaining_pickups:
                 rem = [x for x in remaining_pickups if x.id != o.id]
                 current_seq.append((o.id, "PICKUP", o))
-                stack.append(o.id)
-                backtrack(current_seq, stack, rem)
-                stack.pop()
+                onboard.append(o.id)
+                backtrack(current_seq, onboard, rem)
+                onboard.pop()
                 current_seq.pop()
 
-            # 2. Có thể delivery đơn hàng ở đỉnh ngăn xếp (LIFO chuẩn xác)
-            if stack:
-                top_order_id = stack[-1]
-                top_order = next(o for o in orders if o.id == top_order_id)
-                current_seq.append((top_order_id, "DELIVERY", top_order))
-                stack.pop()
-                backtrack(current_seq, stack, remaining_pickups)
-                stack.append(top_order_id)
+            # 2. Có thể delivery bất kỳ đơn hàng nào đã được pickup (onboard)
+            # Thử từ đơn bốc mới nhất (LIFO) đến các đơn bốc sớm hơn (FIFO)
+            for i in reversed(range(len(onboard))):
+                oid = onboard[i]
+                target_order = next(o for o in orders if o.id == oid)
+                rem_onboard = [x for idx, x in enumerate(onboard) if idx != i]
+                current_seq.append((oid, "DELIVERY", target_order))
+                backtrack(current_seq, rem_onboard, remaining_pickups)
                 current_seq.pop()
 
         backtrack([], [], list(orders))

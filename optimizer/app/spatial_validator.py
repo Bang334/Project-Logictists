@@ -38,6 +38,9 @@ class _SearchContext:
     best_failure: Optional[_SearchFailure] = None
     max_time_seconds: float = 6.0
     start_time: float = field(default_factory=time.monotonic)
+    # Packages with the same class are physically interchangeable for the rest
+    # of the plan (same order, footprint, height, weight and unload step).
+    item_class_by_id: Dict[str, Tuple[object, ...]] = field(default_factory=dict)
 
     def consume_node(self) -> bool:
         if self.visited_nodes >= self.max_nodes or (time.monotonic() - self.start_time) >= self.max_time_seconds:
@@ -355,6 +358,7 @@ class SpatialValidator:
         context = _SearchContext(
             max_nodes=self.max_search_nodes,
             max_time_seconds=self.max_time_seconds,
+            item_class_by_id=self._build_item_classes(stops, unload_step_by_item),
         )
         failed_states: Set[Tuple[int, Tuple[Tuple[object, ...], ...]]] = set()
 
@@ -409,6 +413,25 @@ class SpatialValidator:
             step_states=failure.step_states,
         )
 
+    def _build_item_classes(
+        self,
+        stops: List[StopAction],
+        unload_step_by_item: Dict[str, int],
+    ) -> Dict[str, Tuple[object, ...]]:
+        item_classes: Dict[str, Tuple[object, ...]] = {}
+        for stop in stops:
+            for item in stop.items_to_load:
+                item_classes[item.id] = (
+                    item.order_id,
+                    round(item.length_cm, 6),
+                    round(item.width_cm, 6),
+                    round(item.height_cm, 6),
+                    round(item.weight_kg, 6),
+                    item.can_rotate,
+                    unload_step_by_item.get(item.id, -1),
+                )
+        return item_classes
+
     def _build_unload_steps(self, stops: List[StopAction]) -> Dict[str, int]:
         unload_steps: Dict[str, int] = {}
         for stop_index, stop in enumerate(stops):
@@ -435,7 +458,10 @@ class SpatialValidator:
         if stop_index >= len(stops):
             return step_states, max_weight, max_area
 
-        state_key = (stop_index, self._layout_key(current_items.values()))
+        state_key = (
+            stop_index,
+            self._layout_key(current_items.values(), context.item_class_by_id),
+        )
         if state_key in failed_states:
             return None
 
@@ -503,6 +529,44 @@ class SpatialValidator:
         for item_id in unload_sequence:
             del after_unload[item_id]
 
+        # Kiểm tra sơ bộ: nếu tổng tải trọng hoặc tổng diện tích hàng sau khi bốc
+        # vượt quá giới hạn thùng xe thì không thể có nghiệm 2D hợp lệ (loại sớm không tốn node search).
+        post_load_weight = sum(
+            it.weight_kg for it in after_unload.values()
+        ) + sum(it.weight_kg for it in stop.items_to_load)
+        if post_load_weight > self.vehicle.payload_limit_kg + _GEOMETRY_TOLERANCE_CM:
+            self._record_failure(
+                context,
+                stop_index,
+                0,
+                "PAYLOAD_LIMIT_EXCEEDED",
+                "T23",
+                f"Vi phạm T23: Quá tải trọng xe ({post_load_weight:.1f}kg > {self.vehicle.payload_limit_kg:.1f}kg).",
+                step_states,
+                max_weight,
+                max_area,
+            )
+            failed_states.add(state_key)
+            return None
+
+        post_load_area = sum(
+            it.length_cm * it.width_cm for it in after_unload.values()
+        ) + sum(it.length_cm * it.width_cm for it in stop.items_to_load)
+        if post_load_area > self.total_floor_area + _GEOMETRY_TOLERANCE_CM:
+            self._record_failure(
+                context,
+                stop_index,
+                0,
+                "FLOOR_AREA_EXCEEDED",
+                "T22",
+                f"Vi phạm T22: CẤM XẾP CHỒNG. Tổng diện tích hàng ({post_load_area:.1f}cm2) vượt diện tích sàn xe ({self.total_floor_area:.1f}cm2).",
+                step_states,
+                max_weight,
+                max_area,
+            )
+            failed_states.add(state_key)
+            return None
+
         load_items = sorted(
             stop.items_to_load,
             key=lambda item: (
@@ -514,6 +578,7 @@ class SpatialValidator:
         )
 
         produced_layout = False
+        explored_layouts: Set[Tuple[Tuple[object, ...], ...]] = set()
         for loaded_items in self._search_load_placements(
             items=load_items,
             item_index=0,
@@ -528,6 +593,12 @@ class SpatialValidator:
             context=context,
         ):
             produced_layout = True
+            layout_key = self._layout_key(
+                loaded_items.values(), context.item_class_by_id
+            )
+            if layout_key in explored_layouts:
+                continue
+            explored_layouts.add(layout_key)
             current_weight = sum(item.weight_kg for item in loaded_items.values())
             occupied_area = sum(
                 item.length_cm * item.width_cm for item in loaded_items.values()
@@ -727,7 +798,28 @@ class SpatialValidator:
             )
             return
 
-        candidates = self._candidate_placements(item, list(current_items.values()))
+        unload_step = unload_step_by_item.get(item.id)
+        max_unload_step = (
+            max(unload_step_by_item.values(), default=None)
+            if unload_step_by_item
+            else None
+        )
+        early_items = [
+            it for it in items
+            if unload_step_by_item.get(it.id, 0) < (max_unload_step or 0)
+        ]
+        early_area = sum(it.length_cm * it.width_cm for it in early_items)
+        allow_door = (
+            len(early_items) <= 4
+            and early_area <= self.total_floor_area * 0.35
+        )
+        candidates = self._candidate_placements(
+            item,
+            list(current_items.values()),
+            unload_step=unload_step,
+            max_unload_step=max_unload_step,
+            allow_door_placement=allow_door,
+        )
         if not candidates:
             self._record_no_candidate_failure(
                 item,
@@ -775,9 +867,6 @@ class SpatialValidator:
         for candidate in candidates:
             if not context.consume_node():
                 return
-            # Các kiện được bốc cùng đợt, cùng đơn, cùng kích thước/khối lượng và
-            # cùng điểm dỡ là đối xứng. Chỉ giữ thứ tự vị trí chuẩn để không thử
-            # lại cùng một bố trí chỉ vì hoán đổi ID kiện.
             if (
                 minimum_symmetric_position is not None
                 and candidate < minimum_symmetric_position
@@ -848,6 +937,9 @@ class SpatialValidator:
         self,
         item: CargoItem,
         current_placed: List[PlacedItem],
+        unload_step: Optional[int] = None,
+        max_unload_step: Optional[int] = None,
+        allow_door_placement: bool = False,
     ) -> List[Tuple[float, float, float, float]]:
         orientations = [(item.length_cm, item.width_cm)]
         if item.can_rotate and abs(item.length_cm - item.width_cm) > _GEOMETRY_TOLERANCE_CM:
@@ -858,6 +950,26 @@ class SpatialValidator:
         current_max_x = max(
             (placed.x + placed.length_cm for placed in current_placed), default=0.0
         )
+
+        # Delivery-aware door placement preference:
+        # A package only prioritizes the rear door if:
+        # 1. It unloads before later packages on the vehicle (unload_step < max_unload_step)
+        # 2. The order is compact (allow_door_placement is True: few items, small floor share)
+        # 3. Its width leaves a sufficient ingress corridor (<= 65% floor width) for later loading stops
+        prefer_door = False
+        if (
+            allow_door_placement
+            and unload_step is not None
+            and max_unload_step is not None
+            and unload_step < max_unload_step
+        ):
+            min_width = (
+                min(item.length_cm, item.width_cm)
+                if item.can_rotate
+                else item.width_cm
+            )
+            if min_width <= self.floor_width * 0.65:
+                prefer_door = True
 
         for orientation_index, (length, width) in enumerate(orientations):
             if (
@@ -913,8 +1025,12 @@ class SpatialValidator:
                     if key in seen:
                         continue
                     seen.add(key)
-                    bounding_x = max(current_max_x, x + length)
-                    score = (bounding_x, x, y, float(orientation_index))
+                    if prefer_door:
+                        dist_to_door = self.floor_length - (x + length)
+                        score = (dist_to_door, y, float(orientation_index))
+                    else:
+                        bounding_x = max(current_max_x, x + length)
+                        score = (bounding_x, x, y, float(orientation_index))
                     candidates.append((score, candidate))
 
         candidates.sort(key=lambda entry: entry[0])
@@ -1082,12 +1198,14 @@ class SpatialValidator:
         )
 
     def _layout_key(
-        self, placed_items: Iterable[PlacedItem]
+        self,
+        placed_items: Iterable[PlacedItem],
+        item_class_by_id: Dict[str, Tuple[object, ...]],
     ) -> Tuple[Tuple[object, ...], ...]:
         return tuple(
             sorted(
                 (
-                    item.item_id,
+                    item_class_by_id.get(item.item_id, (item.item_id,)),
                     round(item.x, 6),
                     round(item.y, 6),
                     round(item.length_cm, 6),

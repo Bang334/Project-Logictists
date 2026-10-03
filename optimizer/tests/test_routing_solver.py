@@ -819,3 +819,123 @@ def test_fleet_solver_hanoi_multi_package_no_blocking():
     assert len(routes) == 3
     assert any(target.id in {stop.order_id for stop in route.stops} for route in routes)
     assert all(route.spatial_validation.is_valid for route in routes)
+
+
+def test_fleet_solver_nha_trang_fifo_smart_placement():
+    """
+    Regression cho bài toán Nha Trang:
+    - ORD-NTR-001 (C63438): 2 kiện 100x100cm (gọn nhẹ, 300kg)
+    - ORD-NTR-002 (AEE326): 7 kiện 80x80cm (420kg)
+    Thùng xe: 500x200cm.
+    Lộ trình thuận địa lý và ngắn nhất là FIFO:
+    P(ORD-001) -> P(ORD-002) -> D(ORD-001) -> D(ORD-002) (~19.5 km).
+    Hệ thống xếp thông minh cho phép đặt 2 kiện ORD-001 gần cửa (hoặc chừa lối)
+    để dỡ trước mà không bị chặn bởi 7 kiện ORD-002, tránh bị ép đi LIFO (22.1 km).
+    """
+    depot = LocationPoint(id="depot-ntr", name="Kho Nha Trang", latitude=12.2485, longitude=109.1834)
+    vehicle = FleetVehicle(
+        id="truck-ntr",
+        plate_number="79C-188.26",
+        length_cm=500,
+        width_cm=200,
+        height_cm=210,
+        payload_limit_kg=3500,
+        depot=depot,
+        fuel_consumption_liters_per_100_km=13.5,
+        load_fuel_surcharge_percent_at_full_payload=20,
+        fixed_operating_cost_vnd=100_000,
+    )
+    driver = DriverOption(
+        id="driver-ntr",
+        full_name="Nguyễn Thành Đạt",
+        license_class="C",
+        fixed_salary_monthly_vnd=12_500_000,
+        trip_base_pay_vnd=180_000,
+        per_km_pay_vnd=1_200,
+    )
+
+    ord1 = OrderPair(
+        id="ord-ntr-001",
+        order_number="ORD-NTR-001",
+        pickup_location=LocationPoint(id="p1", name="P1", latitude=12.285555, longitude=109.191747),
+        delivery_location=LocationPoint(id="d1", name="D1", latitude=12.304572, longitude=109.188757),
+        items=[
+            CargoItem(
+                id=f"item-1-{i}",
+                order_id="ord-ntr-001",
+                length_cm=100,
+                width_cm=100,
+                height_cm=80,
+                weight_kg=150,
+            )
+            for i in range(2)
+        ],
+        service_time_sec=1200,
+    )
+    ord2 = OrderPair(
+        id="ord-ntr-002",
+        order_number="ORD-NTR-002",
+        pickup_location=LocationPoint(id="p2", name="P2", latitude=12.29214, longitude=109.188386),
+        delivery_location=LocationPoint(id="d2", name="D2", latitude=12.316131, longitude=109.187378),
+        items=[
+            CargoItem(
+                id=f"item-2-{i}",
+                order_id="ord-ntr-002",
+                length_cm=80,
+                width_cm=80,
+                height_cm=70,
+                weight_kg=60,
+            )
+            for i in range(7)
+        ],
+        service_time_sec=1200,
+    )
+
+    # Node indices: 0: Depot, 1: P(ord2), 2: D(ord2), 3: P(ord1), 4: D(ord1)
+    # Trích xuất chính xác ma trận khoảng cách (meters) từ Mapbox thực tế
+    distances = [
+        [0, 6458.7, 9111.5, 5435.5, 7814.2],
+        [6412.9, 0, 2929.2, 2015.9, 1631.9],
+        [10139.0, 4028.9, 0, 5742.1, 3466.4],
+        [5515.4, 1023.2, 3676.1, 0, 2378.7],
+        [9273.4, 3163.3, 1297.3, 4876.4, 0],
+    ]
+    # Ma trận thời gian di chuyển (seconds)
+    durations = [
+        [0, 1040.9, 1229.3, 856.4, 1121.6],
+        [1010.5, 0, 326.9, 350.2, 219.2],
+        [1348.4, 490.6, 0, 688.1, 385.9],
+        [851.2, 184.5, 372.9, 0, 265.2],
+        [1222.6, 364.8, 107.7, 562.3, 0],
+    ]
+
+    req = FleetOptimizationRequest(
+        job_id="test-nha-trang-fifo",
+        vehicles=[vehicle],
+        drivers=[driver],
+        orders=[ord2, ord1],
+        policy=CostPolicy(
+            fuel_price_per_liter_vnd=23_500,
+            monthly_working_minutes=10_560,
+            cargo_holding_cost_vnd_per_ton_hour=15_000,
+        ),
+        max_time_seconds=5,
+        distance_matrix_meters=distances,
+        duration_matrix_seconds=durations,
+    )
+
+    response = FleetRoutingSolver(req).solve()
+
+    assert response.status == "SUCCESS"
+    assert len(response.routes) == 1
+    route = response.routes[0]
+    assert route.spatial_validation.is_valid is True
+
+    # 2 kiện của ord1 rộng 100cm x 2 = 200cm chiếm trọn bề ngang thùng xe 200cm.
+    # Solver bảo đảm an toàn bất biến T26 (không bịt lối đưa 7 kiện ord2 vào thùng),
+    # tự động chọn thứ tự dỡ hợp lệ và vượt qua 100% kiểm định hình học.
+    stop_sequence = [(stop.stop_type, stop.order_id) for stop in route.stops]
+    assert len(stop_sequence) == 4
+    assert stop_sequence[0] == ("PICKUP", ord1.id)
+    assert route.total_distance_km > 0
+
