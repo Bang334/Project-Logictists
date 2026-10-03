@@ -114,6 +114,7 @@ class FleetRoutingSolver:
 
     def solve(self) -> FleetOptimizationResponse:
         started_at = time.monotonic()
+        total_deadline = started_at + self.request.max_time_seconds
         if not self.driver_safe_vehicle_indices:
             return FleetOptimizationResponse(
                 job_id=self.request.job_id,
@@ -366,18 +367,27 @@ class FleetRoutingSolver:
         search.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
         )
-        search.time_limit.seconds = self.request.max_time_seconds
+        routing_budget_seconds = max(0.1, self.request.max_time_seconds * 0.65)
+        search.time_limit.seconds = int(routing_budget_seconds)
+        search.time_limit.nanos = int(
+            (routing_budget_seconds - int(routing_budget_seconds)) * 1_000_000_000
+        )
         solution = routing.SolveWithParameters(search)
         if solution is None:
-            elapsed = time.monotonic() - started_at
-            status = "TIMEOUT" if elapsed >= self.request.max_time_seconds * 0.9 else "INFEASIBLE"
+            routing_status = routing.status()
+            status = (
+                "INFEASIBLE"
+                if routing_status
+                == routing_enums_pb2.RoutingSearchStatus.ROUTING_FAIL
+                else "TIMEOUT"
+            )
             return FleetOptimizationResponse(
                 job_id=self.request.job_id,
                 status=status,
                 diagnostics=[
-                    "Không tìm được nghiệm trong ngân sách thời gian; chưa suy diễn timeout thành bất khả thi."
+                    "Không tìm được nghiệm và OR-Tools chưa chứng minh bất khả thi trong ngân sách thời gian."
                     if status == "TIMEOUT"
-                    else "Bài toán không có nghiệm với tải trọng, thời gian và cặp pickup-delivery đã cung cấp."
+                    else "OR-Tools đã trả ROUTING_FAIL cho các hard constraint đã cung cấp."
                 ],
             )
 
@@ -386,6 +396,8 @@ class FleetRoutingSolver:
         rejected_reasons: Dict[str, Tuple[str, str]] = {}
 
         for vehicle_index, vehicle in enumerate(self.request.vehicles):
+            if time.monotonic() >= total_deadline:
+                break
             index = routing.Start(vehicle_index)
             route_start_seconds = solution.Value(time_dimension.CumulVar(index))
             route_distance_meters = 0
@@ -449,7 +461,18 @@ class FleetRoutingSolver:
             if not scheduled_stops:
                 continue
 
-            spatial = SpatialValidator(vehicle).validate_plan(stop_actions)
+            remaining_seconds = total_deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                for order_id in route_order_ids:
+                    rejected_reasons[order_id] = (
+                        "VALIDATION_TIMEOUT",
+                        "Hết ngân sách trước khi hoàn tất kiểm tra bố trí; chưa kết luận bất khả thi.",
+                    )
+                break
+            spatial = SpatialValidator(
+                vehicle,
+                max_time_seconds=min(1.0, remaining_seconds),
+            ).validate_plan(stop_actions)
             if not spatial.is_valid:
                 # Phối hợp định tuyến & bố trí hàng: tìm kiếm hoán vị chuỗi stop không bị chắn lối ra cửa (T24/T26)
                 orders_on_route = [self.order_by_id[oid] for oid in route_order_ids if oid in self.order_by_id]
@@ -457,6 +480,7 @@ class FleetRoutingSolver:
                     vehicle,
                     vehicle_index,
                     orders_on_route,
+                    deadline=total_deadline,
                 )
                 if reseq is not None:
                     scheduled_stops, stop_actions, route_distance_meters, route_end_seconds, spatial = reseq
@@ -469,6 +493,7 @@ class FleetRoutingSolver:
                             vehicle,
                             vehicle_index,
                             list(sub),
+                            deadline=total_deadline,
                         )
                         if sub_attempt is not None:
                             sub_reseq = sub_attempt
@@ -517,7 +542,7 @@ class FleetRoutingSolver:
             routes,
             assigned_order_ids,
             rejected_reasons,
-            deadline=time.monotonic() + max(5.0, self.request.max_time_seconds),
+            deadline=total_deadline,
         )
 
         self._assign_drivers_and_costs(routes)
@@ -546,7 +571,15 @@ class FleetRoutingSolver:
                 )
             )
 
-        result_status = "SUCCESS" if routes and not unassigned else "PARTIAL" if routes else "INFEASIBLE"
+        result_status = (
+            "SUCCESS"
+            if routes and not unassigned
+            else "PARTIAL"
+            if routes
+            else "TIMEOUT"
+            if recovery_limit_reached
+            else "INFEASIBLE"
+        )
         total_dist_km = round(sum(route.total_distance_km for route in routes), 2)
         total_dur_min = round(sum(route.total_duration_minutes for route in routes), 1)
         total_cost_vnd = sum(route.cost.total_cost_vnd for route in routes if route.cost)
@@ -870,7 +903,9 @@ class FleetRoutingSolver:
             stops,
         )
 
-    def _generate_lifo_sequences(self, orders: List[any]) -> List[List[Tuple[str, str, any]]]:
+    def _generate_lifo_sequences(
+        self, orders: List[any], deadline: Optional[float] = None
+    ) -> List[List[Tuple[str, str, any]]]:
         """
         Sinh các chuỗi dừng thỏa mãn nguyên tắc LIFO (Last-In First-Out) tổng quát:
         Thao tác bốc hàng (Pickup) push vào stack, thao tác dỡ hàng (Delivery) pop phần tử đỉnh stack.
@@ -880,6 +915,8 @@ class FleetRoutingSolver:
         valid_sequences = []
 
         def backtrack(current_seq, stack, remaining_pickups):
+            if deadline is not None and time.monotonic() >= deadline:
+                return
             if len(current_seq) == 2 * n:
                 valid_sequences.append(list(current_seq))
                 return
@@ -925,12 +962,22 @@ class FleetRoutingSolver:
         if not orders:
             return None
 
+        effective_deadline = (
+            deadline
+            or getattr(self, "_active_recovery_deadline", None)
+            or (time.monotonic() + 8.0)
+        )
+        if time.monotonic() >= effective_deadline:
+            return None
+
         node_id_to_idx = {node["id"]: idx for idx, node in enumerate(self.nodes)}
 
-        lifo_sequences = self._generate_lifo_sequences(orders)
+        lifo_sequences = self._generate_lifo_sequences(orders, effective_deadline)
 
         candidates = []
         for seq in lifo_sequences:
+            if time.monotonic() >= effective_deadline:
+                break
             cand_actions = []
             for i, (oid, st_type, o) in enumerate(seq, 1):
                 if st_type == "PICKUP":
@@ -968,12 +1015,6 @@ class FleetRoutingSolver:
         candidates.sort(key=lambda c: c[0])
 
         # Khống chế tổng thời gian tìm kiếm hoán vị hình học tối đa 8 giây và thử tối đa 10 ứng viên tốt nhất
-        effective_deadline = (
-            deadline
-            or getattr(self, "_active_recovery_deadline", None)
-            or (time.monotonic() + 8.0)
-        )
-
         # Recovery is bounded per vehicle so one difficult layout cannot starve
         # every later vehicle that may accept the order immediately.
         for score, cand_actions, evaluated in candidates[:3]:

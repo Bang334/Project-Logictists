@@ -3,7 +3,6 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
-  ServiceUnavailableException,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Prisma, Role } from '@prisma/client';
@@ -13,6 +12,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { resolveBranchScope } from '../auth/branch-scope';
 import { RunAutomaticOptimizationDto } from './dto/run-automatic-optimization.dto';
 import { TripsService } from './trips.service';
+import { OutboxService } from '../common/services/outbox.service';
 
 export const OPTIMIZATION_QUEUE = 'optimization';
 export const OPTIMIZATION_JOB_NAME = 'run-automatic-optimization';
@@ -29,48 +29,79 @@ export class OptimizationJobsService {
     private readonly prisma: PrismaService,
     @InjectQueue(OPTIMIZATION_QUEUE) private readonly queue: Queue,
     private readonly tripsService: TripsService,
+    private readonly outbox: OutboxService,
   ) {}
 
-  async create(user: JobUser, dto?: RunAutomaticOptimizationDto) {
-    const branchId = resolveBranchScope(user, dto?.branchId);
+  async create(user: JobUser, dto: RunAutomaticOptimizationDto) {
+    const branchId = resolveBranchScope(user, dto.branchId);
     const request = {
       branchId,
-      scheduleMode: dto?.scheduleMode ?? null,
-      customStartTime: dto?.customStartTime ?? null,
+      scheduleMode: dto.scheduleMode ?? null,
+      customStartTime: dto.customStartTime ?? null,
     };
     const requestHash = createHash('sha256')
       .update(JSON.stringify(request))
       .digest('hex');
 
-    const job = await this.prisma.optimizationJob.create({
-      data: {
-        status: 'PENDING',
-        branchId,
-        createdById: user.id,
-        requestHash,
-        requestSnapshot: request,
-        schemaVersion: '2',
-        parameters: request,
+    const existing = await this.prisma.optimizationJob.findUnique({
+      where: {
+        createdById_idempotencyKey: {
+          createdById: user.id,
+          idempotencyKey: dto.idempotencyKey,
+        },
       },
     });
+    if (existing) {
+      if (existing.requestHash !== requestHash) {
+        throw new ConflictException(
+          'Cùng idempotency key nhưng nội dung yêu cầu tối ưu khác lần gửi trước',
+        );
+      }
+      return this.toPublicJob(existing);
+    }
 
+    let job;
     try {
-      await this.queue.add(
-        OPTIMIZATION_JOB_NAME,
-        { jobId: job.id },
-        {
-          jobId: job.id,
-          attempts: 3,
-          backoff: { type: 'exponential', delay: 2_000 },
-          removeOnComplete: 100,
-          removeOnFail: 500,
-        },
-      );
+      job = await this.prisma.$transaction(async (tx) => {
+        const created = await tx.optimizationJob.create({
+          data: {
+            status: 'PENDING',
+            branchId,
+            createdById: user.id,
+            idempotencyKey: dto.idempotencyKey,
+            requestHash,
+            requestSnapshot: request,
+            schemaVersion: '2',
+            parameters: request,
+          },
+        });
+        await this.outbox.enqueue(
+          {
+            aggregateType: 'OptimizationJob',
+            aggregateId: created.id,
+            eventType: 'OPTIMIZATION_JOB_CREATED',
+            payload: { jobId: created.id, branchId },
+          },
+          tx,
+        );
+        return created;
+      });
     } catch (error) {
-      throw new ServiceUnavailableException(
-        `ÄÃ£ lÆ°u job ${job.id} nhÆ°ng Redis queue chÆ°a nháº­n Ä‘Æ°á»£c; job sáº½ Ä‘Æ°á»£c phá»¥c há»“i khi worker khá»Ÿi Ä‘á»™ng láº¡i`,
-        { cause: error },
-      );
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        const concurrent = await this.prisma.optimizationJob.findUnique({
+          where: {
+            createdById_idempotencyKey: {
+              createdById: user.id,
+              idempotencyKey: dto.idempotencyKey,
+            },
+          },
+        });
+        if (concurrent?.requestHash === requestHash) return this.toPublicJob(concurrent);
+        throw new ConflictException(
+          'Cùng idempotency key nhưng nội dung yêu cầu tối ưu khác lần gửi trước',
+        );
+      }
+      throw error;
     }
 
     return this.toPublicJob(job);
@@ -122,35 +153,15 @@ export class OptimizationJobsService {
       throw new ConflictException(`Job ${id} thiếu kết quả đã lưu`);
     }
 
-    const claimed = await this.prisma.optimizationJob.updateMany({
-      where: { id, status: job.status },
-      data: { status: 'APPLYING' },
-    });
-    if (claimed.count !== 1) {
-      throw new ConflictException(`Job ${id} đang được áp dụng bởi request khác`);
-    }
-
-    try {
-      const applied = await this.tripsService.applyAutomaticOptimization(
-        {
-          proposal: stored.proposal,
-          signature: stored.signature,
-        },
-        { ...user, branchId: user.branchId ?? undefined },
-        id,
-      );
-      await this.prisma.optimizationJob.update({
-        where: { id },
-        data: { status: 'APPLIED', completedAt: new Date() },
-      });
-      return { jobId: id, status: 'APPLIED', ...applied };
-    } catch (error) {
-      await this.prisma.optimizationJob.updateMany({
-        where: { id, status: 'APPLYING' },
-        data: { status: job.status },
-      });
-      throw error;
-    }
+    const applied = await this.tripsService.applyAutomaticOptimization(
+      {
+        proposal: stored.proposal,
+        signature: stored.signature,
+      },
+      { ...user, branchId: user.branchId ?? undefined },
+      id,
+    );
+    return { jobId: id, status: 'APPLIED', ...applied };
   }
 
   private async getAuthorizedJob(user: JobUser, id: string) {

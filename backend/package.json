@@ -20,7 +20,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
-    "test:postgres": "node scripts/require-test-database.cjs && jest --runInBand --testPathPattern=inventory.postgres.spec.ts",
+    "test:postgres": "node scripts/require-test-database.cjs && jest --runInBand --testPathPattern=.postgres.spec.ts",
     "prisma:migrate:status": "prisma migrate status"
   },
   "dependencies": {

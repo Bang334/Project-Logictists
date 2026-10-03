@@ -87,10 +87,23 @@ export const tripsApi = {
     driverId: string;
     plannedStartTime: string;
     plannedEndTime: string;
+    startLocation: { address: string; latitude: number; longitude: number };
+    endLocation: { address: string; latitude: number; longitude: number };
     orderIds: string[];
     orderedStopIds?: string[];
     notes?: string;
   }) => apiClient.post<Trip>('/trips', data),
+  updatePlan: (id: string, data: {
+    expectedVersion: number;
+    vehicleId: string;
+    driverId: string;
+    plannedStartTime: string;
+    plannedEndTime: string;
+    startLocation: { address: string; latitude: number; longitude: number };
+    endLocation: { address: string; latitude: number; longitude: number };
+    orderedStopIds: string[];
+    notes?: string;
+  }) => apiClient.patch<Trip>(`/trips/${id}/plan`, data),
   publish: (id: string, expectedVersion: number) =>
     apiClient.patch<Trip>(`/trips/${id}/publish`, { expectedVersion }),
   getLoadProfile: (id: string) =>
@@ -100,7 +113,9 @@ export const tripsApi = {
   runAutomaticOptimization: (
     param: string | RunAutomaticOptimizationPayloadUI,
   ) => {
-    const data = typeof param === 'string' ? { branchId: param } : param;
+    const data = typeof param === 'string'
+      ? { branchId: param, idempotencyKey: crypto.randomUUID() }
+      : param;
     return apiClient.post<AutomaticOptimizationResponseUI>(
       '/trips/automatic-optimization',
       data,

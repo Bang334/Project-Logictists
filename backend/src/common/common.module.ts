@@ -12,10 +12,35 @@ import { OutboxAdminController } from './outbox-admin.controller';
 import { FilesController } from './files.controller';
 
 import { CloudinaryService } from './services/cloudinary.service';
+import { BullModule } from '@nestjs/bullmq';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+
+function redisConnection(urlValue: string | undefined) {
+  const url = new URL(urlValue || 'redis://127.0.0.1:6379');
+  return {
+    host: url.hostname,
+    port: Number(url.port || 6379),
+    username: url.username || undefined,
+    password: url.password || undefined,
+    db: url.pathname.length > 1 ? Number(url.pathname.slice(1)) : 0,
+    ...(url.protocol === 'rediss:' ? { tls: {} } : {}),
+  };
+}
 
 @Global()
 @Module({
-  imports: [PrismaModule, EventsModule],
+  imports: [
+    PrismaModule,
+    EventsModule,
+    BullModule.registerQueueAsync({
+      name: 'optimization',
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        connection: redisConnection(config.get<string>('REDIS_URL')),
+      }),
+    }),
+  ],
   controllers: [HealthController, OutboxAdminController, FilesController],
   providers: [
     IdempotencyService,

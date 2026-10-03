@@ -56,7 +56,7 @@ export class OptimizationRecoveryService
       if (job.status === 'RUNNING') {
         await this.prisma.optimizationJob.updateMany({
           where: { id: job.id, status: 'RUNNING', leaseUntil: { lt: now } },
-          data: { status: 'RETRYING' },
+          data: { status: 'RETRYING', leaseUntil: null, leaseOwner: null },
         });
       }
       await this.queue

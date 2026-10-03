@@ -19,6 +19,7 @@ import {
   OrderStatus,
   PackageStatus,
   Prisma,
+  ReservationStatus,
   Role,
   StopType,
   TaskAction,
@@ -53,6 +54,11 @@ import {
 } from "./service-day";
 import { OutboxService } from '../common/services/outbox.service';
 import { PublishTripDto } from './dto/publish-trip.dto';
+import { UpdateTripPlanDto } from './dto/update-trip-plan.dto';
+import {
+  resolveVehiclePlanningStart,
+  VEHICLE_HOME_DEPOT_SELECT,
+} from './vehicle-planning-start';
 
 const ACTIVE_TRIP_STATUSES = [
   TripStatus.PLANNED,
@@ -76,6 +82,12 @@ type DispatchStopWithItems = {
   order: OrderWithStopsAndItems;
 };
 
+type TripPlanningSnapshot = {
+  orders: Array<{ id: string; version: number }>;
+  vehicle: { id: string; updatedAt: string };
+  driver: { id: string; updatedAt: string };
+};
+
 type PlannedAutomaticTrip = {
   vehicleId: string;
   driverId: string;
@@ -86,6 +98,11 @@ type PlannedAutomaticTrip = {
   routeGeometry: string | null;
   spatialValidation: OptimizedRouteResult['spatial_validation'];
   orderIds: string[];
+  planningSnapshot: {
+    orders: Array<{ id: string; version: number }>;
+    vehicle: { id: string; updatedAt: string };
+    driver: { id: string; updatedAt: string };
+  };
   stops: Array<{
     orderId: string;
     orderStopId: string;
@@ -247,13 +264,17 @@ export class TripsService {
     // 1. Kiểm tra Xe và kiểm tra trùng lịch (BR06)
     const vehicle = await this.prisma.vehicle.findFirst({
       where: { id: dto.vehicleId, status: VehicleStatus.AVAILABLE },
-      include: { homeBranch: true },
+      include: {
+        homeBranch: true,
+        homeDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT },
+      },
     });
     if (!vehicle) {
       throw new NotFoundException(`Không tìm thấy xe [${dto.vehicleId}]`);
     }
 
     resolveBranchScope(user, vehicle.homeBranchId);
+    const planningStart = resolveVehiclePlanningStart(vehicle);
 
     const vehicleOverlap = await this.prisma.trip.findFirst({
       where: {
@@ -386,16 +407,15 @@ export class TripsService {
     TripsValidator.calculateAndValidateLoad(vehicle, stopWithItemsList);
 
     // 6. Tích hợp Mapbox Directions API để tính cự ly, thời gian và lộ trình thực tế
-    // Điểm bắt đầu là Chi nhánh quản lý xe (Home Branch Depot)
+    // Điểm bắt đầu là kho đỗ của xe (quyết định lập lịch theo kho)
     const routeCoords: [number, number][] = [
-      [
-        vehicle.currentLongitude ?? vehicle.homeBranch.longitude,
-        vehicle.currentLatitude ?? vehicle.homeBranch.latitude,
-      ],
+      [planningStart.longitude, planningStart.latitude],
+      [dto.startLocation.longitude, dto.startLocation.latitude],
       ...stopWithItemsList.map(
         (s) =>
           [s.orderStop.longitude, s.orderStop.latitude] as [number, number],
       ),
+      [dto.endLocation.longitude, dto.endLocation.latitude],
     ];
 
     const routeResult = await this.mapboxService.getRoute(routeCoords);
@@ -450,7 +470,13 @@ export class TripsService {
         [dto.driverId],
         dto.orderIds,
       );
-      const [currentVehicle, currentDriver, lockedVehicleOverlap, lockedDriverOverlap] =
+      const [
+        currentVehicle,
+        currentDriver,
+        currentOrders,
+        lockedVehicleOverlap,
+        lockedDriverOverlap,
+      ] =
         await Promise.all([
           tx.vehicle.findFirst({
             where: {
@@ -466,6 +492,14 @@ export class TripsService {
               status: DriverStatus.AVAILABLE,
               licenseExpiry: { gt: new Date() },
             },
+          }),
+          tx.order.findMany({
+            where: {
+              id: { in: dto.orderIds },
+              branchId: vehicle.homeBranchId,
+              status: OrderStatus.CONFIRMED,
+            },
+            select: { id: true, version: true },
           }),
           tx.trip.findFirst({
             where: {
@@ -486,9 +520,21 @@ export class TripsService {
             include: { trip: { select: { tripNumber: true } } },
           }),
         ]);
-      if (!currentVehicle || !currentDriver) {
+      if (!currentVehicle || !currentDriver || currentOrders.length !== dto.orderIds.length) {
         throw new ConflictException(
           'Xe hoặc tài xế không còn khả dụng trong chi nhánh',
+        );
+      }
+      const originalOrderVersions = new Map(
+        orders.map((order) => [order.id, order.version]),
+      );
+      if (
+        currentOrders.some(
+          (order) => originalOrderVersions.get(order.id) !== order.version,
+        )
+      ) {
+        throw new ConflictException(
+          'Một số đơn đã thay đổi sau khi kiểm tra tuyến; hãy lập lại phương án',
         );
       }
       if (lockedVehicleOverlap || lockedDriverOverlap) {
@@ -510,10 +556,45 @@ export class TripsService {
           routeGeometry: routeResult.geometry
             ? JSON.stringify(routeResult.geometry)
             : null,
+          planningSnapshot: {
+            orders: currentOrders.map((order) => ({
+              id: order.id,
+              version: order.version + 1,
+            })),
+            vehicle: {
+              id: currentVehicle.id,
+              updatedAt: currentVehicle.updatedAt.toISOString(),
+            },
+            driver: {
+              id: currentDriver.id,
+              updatedAt: currentDriver.updatedAt.toISOString(),
+            },
+            startLocation: {
+              address: dto.startLocation.address,
+              latitude: dto.startLocation.latitude,
+              longitude: dto.startLocation.longitude,
+            },
+            endLocation: {
+              address: dto.endLocation.address,
+              latitude: dto.endLocation.latitude,
+              longitude: dto.endLocation.longitude,
+            },
+          },
           notes: dto.notes,
         },
       });
       const stopTaskIdByOrderStopId = new Map<string, string>();
+
+      await tx.tripStop.create({
+        data: {
+          tripId: trip.id,
+          sequence: 1,
+          stopType: StopType.DEPOT_START,
+          address: dto.startLocation.address,
+          latitude: dto.startLocation.latitude,
+          longitude: dto.startLocation.longitude,
+        },
+      });
 
       // Tạo TripStops & StopTasks
       for (let i = 0; i < stopWithItemsList.length; i++) {
@@ -526,7 +607,7 @@ export class TripsService {
         const tripStop = await tx.tripStop.create({
           data: {
             tripId: trip.id,
-            sequence: i + 1,
+            sequence: i + 2,
             stopType: item.orderStop.type,
             address: item.orderStop.address,
             latitude: item.orderStop.latitude,
@@ -552,6 +633,17 @@ export class TripsService {
         stopTaskIdByOrderStopId.set(item.orderStop.id, stopTask.id);
       }
 
+      await tx.tripStop.create({
+        data: {
+          tripId: trip.id,
+          sequence: stopWithItemsList.length + 2,
+          stopType: StopType.DEPOT_END,
+          address: dto.endLocation.address,
+          latitude: dto.endLocation.latitude,
+          longitude: dto.endLocation.longitude,
+        },
+      });
+
       await this.persistValidatedLoadPlan(
         tx,
         trip.id,
@@ -570,6 +662,24 @@ export class TripsService {
           endTime: plannedEnd,
           role: "PRIMARY",
         },
+      });
+      await tx.resourceReservation.createMany({
+        data: [
+          {
+            tripId: trip.id,
+            vehicleId: dto.vehicleId,
+            startsAt: plannedStart,
+            endsAt: plannedEnd,
+            status: ReservationStatus.HELD,
+          },
+          {
+            tripId: trip.id,
+            driverId: dto.driverId,
+            startsAt: plannedStart,
+            endsAt: plannedEnd,
+            status: ReservationStatus.HELD,
+          },
+        ],
       });
 
       // Cập nhật trạng thái các đơn hàng sang ASSIGNED
@@ -612,6 +722,308 @@ export class TripsService {
     });
 
     return this.findOne(createdTripId);
+  }
+
+  async updatePlan(
+    id: string,
+    dto: UpdateTripPlanDto,
+    user: { id: string; branchId?: string; role: Role },
+  ) {
+    const existing = await this.findOne(id);
+    this.assertTripAccess(existing, user);
+    if (
+      existing.status !== TripStatus.DRAFT &&
+      existing.status !== TripStatus.PLANNED
+    ) {
+      throw new ConflictException('Chỉ được chỉnh kế hoạch của chuyến DRAFT/PLANNED');
+    }
+    if (existing.version !== dto.expectedVersion) {
+      throw new ConflictException('Trip Plan đã thay đổi; hãy tải lại trước khi sửa');
+    }
+    const plannedStart = new Date(dto.plannedStartTime);
+    const plannedEnd = new Date(dto.plannedEndTime);
+    if (plannedStart >= plannedEnd) {
+      throw new BadRequestException('Thời gian bắt đầu phải trước thời gian kết thúc');
+    }
+    const branchId = existing.managingBranchId ?? existing.vehicle.homeBranchId;
+    resolveBranchScope(user, branchId);
+    const orderIds = Array.from(
+      new Set(
+        existing.stops.flatMap((stop) =>
+          stop.tasks
+            .map((task) => task.orderId)
+            .filter((orderId): orderId is string => typeof orderId === 'string'),
+        ),
+      ),
+    );
+    const [vehicle, driver, orders] = await Promise.all([
+      this.prisma.vehicle.findFirst({
+        where: {
+          id: dto.vehicleId,
+          homeBranchId: branchId,
+          status: VehicleStatus.AVAILABLE,
+        },
+        include: { homeDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT } },
+      }),
+      this.prisma.driver.findFirst({
+        where: {
+          id: dto.driverId,
+          homeBranchId: branchId,
+          status: DriverStatus.AVAILABLE,
+          licenseExpiry: { gt: plannedEnd },
+        },
+      }),
+      this.prisma.order.findMany({
+        where: { id: { in: orderIds }, branchId, status: OrderStatus.ASSIGNED },
+        include: { stops: true, items: true },
+      }),
+    ]);
+    if (!vehicle || !driver || orders.length !== orderIds.length) {
+      throw new ConflictException('Xe, tài xế hoặc đơn không còn hợp lệ để sửa kế hoạch');
+    }
+    const planningStart = resolveVehiclePlanningStart(vehicle);
+    const requiredStopIds = orders.flatMap((order) => order.stops.map((stop) => stop.id));
+    if (
+      dto.orderedStopIds.length !== requiredStopIds.length ||
+      new Set(dto.orderedStopIds).size !== requiredStopIds.length ||
+      dto.orderedStopIds.some((stopId) => !requiredStopIds.includes(stopId))
+    ) {
+      throw new BadRequestException(
+        'orderedStopIds phải chứa đúng mỗi pickup/delivery một lần',
+      );
+    }
+    const stopWithItems: DispatchStopWithItems[] = dto.orderedStopIds.map((stopId) => {
+      for (const order of orders) {
+        const orderStop = order.stops.find((stop) => stop.id === stopId);
+        if (orderStop) return { orderStop, order };
+      }
+      throw new BadRequestException(`Không tìm thấy điểm dừng [${stopId}]`);
+    });
+    TripsValidator.validatePickupBeforeDelivery(stopWithItems);
+    TripsValidator.calculateAndValidateLoad(vehicle, stopWithItems);
+    const route = await this.mapboxService.getRoute([
+      [planningStart.longitude, planningStart.latitude],
+      [dto.startLocation.longitude, dto.startLocation.latitude],
+      ...stopWithItems.map(
+        (item) => [item.orderStop.longitude, item.orderStop.latitude] as [number, number],
+      ),
+      [dto.endLocation.longitude, dto.endLocation.latitude],
+    ]);
+    const spatial = await this.validateSpatialPlan(vehicle, stopWithItems);
+    const requiredDurationMinutes =
+      route.durationMinutes +
+      stopWithItems.reduce(
+        (sum, item) => sum + item.orderStop.serviceDurationMinutes,
+        0,
+      );
+    if (plannedStart.getTime() + requiredDurationMinutes * 60_000 > plannedEnd.getTime()) {
+      throw new BadRequestException('Khung giờ mới không đủ cho tuyến và thời gian phục vụ');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(${LOCK_NAMESPACE_TRIP_COMMAND}::int4, hashtext(${`UPDATE_TRIP:${id}`})::int4)`;
+      await this.acquireApplicationLocks(tx, [dto.vehicleId], [dto.driverId], orderIds);
+      const [currentTrip, currentVehicle, currentDriver, currentOrders] = await Promise.all([
+        tx.trip.findUnique({ where: { id }, select: { version: true, status: true } }),
+        tx.vehicle.findFirst({
+          where: { id: dto.vehicleId, homeBranchId: branchId, status: VehicleStatus.AVAILABLE },
+        }),
+        tx.driver.findFirst({
+          where: {
+            id: dto.driverId,
+            homeBranchId: branchId,
+            status: DriverStatus.AVAILABLE,
+            licenseExpiry: { gt: plannedEnd },
+          },
+        }),
+        tx.order.findMany({
+          where: { id: { in: orderIds }, branchId, status: OrderStatus.ASSIGNED },
+          select: { id: true, version: true },
+        }),
+      ]);
+      if (
+        !currentTrip ||
+        currentTrip.version !== dto.expectedVersion ||
+        (currentTrip.status !== TripStatus.DRAFT &&
+          currentTrip.status !== TripStatus.PLANNED) ||
+        !currentVehicle ||
+        !currentDriver ||
+        currentOrders.length !== orderIds.length
+      ) {
+        throw new ConflictException('Trip Plan hoặc tài nguyên đã thay đổi trong lúc sửa');
+      }
+      const originalVersions = new Map(orders.map((order) => [order.id, order.version]));
+      if (currentOrders.some((order) => originalVersions.get(order.id) !== order.version)) {
+        throw new ConflictException('Đơn hàng đã thay đổi trong lúc sửa Trip Plan');
+      }
+      const [vehicleOverlap, driverOverlap] = await Promise.all([
+        tx.trip.findFirst({
+          where: {
+            id: { not: id },
+            vehicleId: dto.vehicleId,
+            status: { in: ACTIVE_TRIP_STATUSES },
+            plannedStartTime: { lt: plannedEnd },
+            plannedEndTime: { gt: plannedStart },
+          },
+        }),
+        tx.driverAssignment.findFirst({
+          where: {
+            tripId: { not: id },
+            driverId: dto.driverId,
+            trip: { status: { in: ACTIVE_TRIP_STATUSES } },
+            startTime: { lt: plannedEnd },
+            endTime: { gt: plannedStart },
+          },
+        }),
+      ]);
+      if (vehicleOverlap || driverOverlap) {
+        throw new ConflictException('Lịch xe hoặc tài xế bị trùng với chuyến khác');
+      }
+
+      const stopTaskIdByOrderStopId = new Map<string, string>();
+      const tripStopIdByOrderStopId = new Map<string, string>();
+      for (const stop of existing.stops) {
+        for (const task of stop.tasks) {
+          if (task.orderStopId) {
+            stopTaskIdByOrderStopId.set(task.orderStopId, task.id);
+            tripStopIdByOrderStopId.set(task.orderStopId, stop.id);
+          }
+        }
+      }
+      await tx.tripStop.updateMany({
+        where: { tripId: id },
+        data: { sequence: { increment: 10_000 } },
+      });
+      const startStop = existing.stops.find((stop) => stop.stopType === StopType.DEPOT_START);
+      const endStop = existing.stops.find((stop) => stop.stopType === StopType.DEPOT_END);
+      if (startStop) {
+        await tx.tripStop.update({
+          where: { id: startStop.id },
+          data: { sequence: 1, ...dto.startLocation },
+        });
+      } else {
+        await tx.tripStop.create({
+          data: {
+            tripId: id,
+            sequence: 1,
+            stopType: StopType.DEPOT_START,
+            ...dto.startLocation,
+          },
+        });
+      }
+      for (let index = 0; index < dto.orderedStopIds.length; index++) {
+        const tripStopId = tripStopIdByOrderStopId.get(dto.orderedStopIds[index]);
+        if (!tripStopId) throw new ConflictException('Trip Stop không còn khớp Order Stop');
+        await tx.tripStop.update({
+          where: { id: tripStopId },
+          data: { sequence: index + 2 },
+        });
+      }
+      if (endStop) {
+        await tx.tripStop.update({
+          where: { id: endStop.id },
+          data: { sequence: dto.orderedStopIds.length + 2, ...dto.endLocation },
+        });
+      } else {
+        await tx.tripStop.create({
+          data: {
+            tripId: id,
+            sequence: dto.orderedStopIds.length + 2,
+            stopType: StopType.DEPOT_END,
+            ...dto.endLocation,
+          },
+        });
+      }
+      const latestLoadPlan = await tx.loadPlan.findFirst({
+        where: { tripId: id },
+        orderBy: { revision: 'desc' },
+        select: { revision: true },
+      });
+      await this.persistValidatedLoadPlan(
+        tx,
+        id,
+        dto.vehicleId,
+        orders,
+        stopTaskIdByOrderStopId,
+        spatial,
+        (latestLoadPlan?.revision ?? 0) + 1,
+      );
+      await tx.driverAssignment.updateMany({
+        where: { tripId: id, role: 'PRIMARY' },
+        data: {
+          driverId: dto.driverId,
+          startTime: plannedStart,
+          endTime: plannedEnd,
+        },
+      });
+      await tx.resourceReservation.deleteMany({ where: { tripId: id } });
+      await tx.resourceReservation.createMany({
+        data: [
+          {
+            tripId: id,
+            vehicleId: dto.vehicleId,
+            startsAt: plannedStart,
+            endsAt: plannedEnd,
+            status: ReservationStatus.HELD,
+          },
+          {
+            tripId: id,
+            driverId: dto.driverId,
+            startsAt: plannedStart,
+            endsAt: plannedEnd,
+            status: ReservationStatus.HELD,
+          },
+        ],
+      });
+      const updated = await tx.trip.updateMany({
+        where: { id, version: dto.expectedVersion, status: currentTrip.status },
+        data: {
+          vehicleId: dto.vehicleId,
+          plannedStartTime: plannedStart,
+          plannedEndTime: plannedEnd,
+          totalDistanceKm: route.distanceKm,
+          totalDurationMinutes: route.durationMinutes,
+          routeGeometry: route.geometry ? JSON.stringify(route.geometry) : null,
+          notes: dto.notes,
+          planningSnapshot: {
+            orders: currentOrders,
+            vehicle: {
+              id: currentVehicle.id,
+              updatedAt: currentVehicle.updatedAt.toISOString(),
+            },
+            driver: {
+              id: currentDriver.id,
+              updatedAt: currentDriver.updatedAt.toISOString(),
+            },
+            startLocation: {
+              address: dto.startLocation.address,
+              latitude: dto.startLocation.latitude,
+              longitude: dto.startLocation.longitude,
+            },
+            endLocation: {
+              address: dto.endLocation.address,
+              latitude: dto.endLocation.latitude,
+              longitude: dto.endLocation.longitude,
+            },
+          },
+          version: { increment: 1 },
+        },
+      });
+      if (updated.count !== 1) {
+        throw new ConflictException('Trip Plan đã bị request khác cập nhật');
+      }
+      await this.outbox.enqueue(
+        {
+          aggregateType: 'Trip',
+          aggregateId: id,
+          aggregateVersion: dto.expectedVersion + 1,
+          eventType: 'TRIP_PLAN_UPDATED',
+          payload: { tripId: id, branchId, updatedBy: user.id },
+        },
+        tx,
+      );
+    });
+    return this.findOne(id);
   }
 
   /**
@@ -657,6 +1069,110 @@ export class TripsService {
           'Chuyến đi chưa có tài xế PRIMARY nên không thể phát hành',
         );
       }
+      const primaryAssignment = trip.assignments.find(
+        (assignment) => assignment.role === 'PRIMARY',
+      );
+      if (
+        trip.vehicle.status !== VehicleStatus.AVAILABLE ||
+        !primaryAssignment ||
+        primaryAssignment.driver.status !== DriverStatus.AVAILABLE ||
+        primaryAssignment.driver.licenseExpiry <= trip.plannedEndTime
+      ) {
+        throw new ConflictException(
+          'Xe hoặc tài xế không còn khả dụng cho toàn bộ khoảng thời gian chuyến',
+        );
+      }
+      const planningSnapshot = this.parsePlanningSnapshot(trip.planningSnapshot);
+      if (
+        planningSnapshot.vehicle.id !== trip.vehicleId ||
+        planningSnapshot.driver.id !== primaryAssignment.driverId
+      ) {
+        throw new ConflictException(
+          'Planning snapshot không khớp xe hoặc tài xế của chuyến',
+        );
+      }
+      const orderIds = planningSnapshot.orders.map((order) => order.id);
+      await this.acquireApplicationLocks(
+        tx,
+        [trip.vehicleId],
+        [primaryAssignment.driverId],
+        orderIds,
+      );
+      const [currentOrders, currentVehicle, currentDriver, vehicleOverlap, driverOverlap] =
+        await Promise.all([
+        tx.order.findMany({
+          where: { id: { in: orderIds } },
+          select: { id: true, version: true, status: true },
+        }),
+        tx.vehicle.findUnique({ where: { id: trip.vehicleId } }),
+        tx.driver.findUnique({ where: { id: primaryAssignment.driverId } }),
+        tx.trip.findFirst({
+          where: {
+            id: { not: id },
+            vehicleId: trip.vehicleId,
+            status: { in: ACTIVE_TRIP_STATUSES },
+            plannedStartTime: { lt: trip.plannedEndTime },
+            plannedEndTime: { gt: trip.plannedStartTime },
+          },
+          select: { tripNumber: true },
+        }),
+        tx.driverAssignment.findFirst({
+          where: {
+            driverId: primaryAssignment.driverId,
+            tripId: { not: id },
+            trip: { status: { in: ACTIVE_TRIP_STATUSES } },
+            startTime: { lt: trip.plannedEndTime },
+            endTime: { gt: trip.plannedStartTime },
+          },
+          select: { tripId: true },
+        }),
+      ]);
+      const expectedOrderVersions = new Map(
+        planningSnapshot.orders.map((order) => [order.id, order.version]),
+      );
+      if (
+        currentOrders.length !== planningSnapshot.orders.length ||
+        currentOrders.some(
+          (order) =>
+            order.status !== OrderStatus.ASSIGNED ||
+            expectedOrderVersions.get(order.id) !== order.version,
+        ) ||
+        !currentVehicle ||
+        currentVehicle.status !== VehicleStatus.AVAILABLE ||
+        currentVehicle.updatedAt.toISOString() !== planningSnapshot.vehicle.updatedAt ||
+        !currentDriver ||
+        currentDriver.status !== DriverStatus.AVAILABLE ||
+        currentDriver.licenseExpiry <= trip.plannedEndTime ||
+        currentDriver.updatedAt.toISOString() !== planningSnapshot.driver.updatedAt
+      ) {
+        throw new ConflictException(
+          'Đơn hàng, xe hoặc tài xế đã thay đổi sau khi lập kế hoạch',
+        );
+      }
+      if (vehicleOverlap || driverOverlap) {
+        throw new ConflictException(
+          'Lịch xe hoặc tài xế đã bị trùng trước khi phát hành chuyến',
+        );
+      }
+      const reservations = await tx.resourceReservation.findMany({
+        where: {
+          tripId: id,
+          status: { in: [ReservationStatus.HELD, ReservationStatus.ACTIVE] },
+          startsAt: trip.plannedStartTime,
+          endsAt: trip.plannedEndTime,
+        },
+      });
+      const hasVehicleReservation = reservations.some(
+        (reservation) => reservation.vehicleId === trip.vehicleId,
+      );
+      const hasDriverReservation = reservations.some(
+        (reservation) => reservation.driverId === primaryAssignment?.driverId,
+      );
+      if (!hasVehicleReservation || !hasDriverReservation) {
+        throw new ConflictException(
+          'Chuyến đi thiếu reservation hợp lệ cho xe hoặc tài xế',
+        );
+      }
 
       const loadPlan = await tx.loadPlan.findFirst({
         where: { tripId: id },
@@ -693,6 +1209,18 @@ export class TripsService {
       if (updated.count !== 1) {
         throw new ConflictException(
           'Chuyến đi đã được thay đổi bởi request khác; hãy tải lại',
+        );
+      }
+      const activatedReservations = await tx.resourceReservation.updateMany({
+        where: {
+          tripId: id,
+          status: ReservationStatus.HELD,
+        },
+        data: { status: ReservationStatus.ACTIVE },
+      });
+      if (activatedReservations.count > 0 && activatedReservations.count !== 2) {
+        throw new ConflictException(
+          'Không thể kích hoạt đầy đủ reservation xe và tài xế',
         );
       }
       await this.outbox.enqueue(
@@ -762,11 +1290,15 @@ export class TripsService {
     }
     const vehicle = await this.prisma.vehicle.findUnique({
       where: { id: body.vehicleId },
-      include: { homeBranch: true },
+      include: {
+        homeBranch: true,
+        homeDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT },
+      },
     });
     if (!vehicle) {
       throw new NotFoundException("Không tìm thấy xe");
     }
+    const planningStart = resolveVehiclePlanningStart(vehicle);
 
     const orders = await this.prisma.order.findMany({
       where: { id: { in: body.orderIds } },
@@ -791,7 +1323,7 @@ export class TripsService {
       planningEpoch,
     );
     const matrixCoordinates: [number, number][] = [
-      [vehicle.homeBranch.longitude, vehicle.homeBranch.latitude],
+      [planningStart.longitude, planningStart.latitude],
       ...optimizerOrders.flatMap((order) => [
         [order.pickup_location.longitude, order.pickup_location.latitude] as [
           number,
@@ -817,10 +1349,10 @@ export class TripsService {
         door_position: "REAR",
       },
       depot: {
-        id: vehicle.homeBranch.id,
-        name: vehicle.homeBranch.name,
-        latitude: vehicle.homeBranch.latitude,
-        longitude: vehicle.homeBranch.longitude,
+        id: `depot:${planningStart.locationId}`,
+        name: planningStart.name,
+        latitude: planningStart.latitude,
+        longitude: planningStart.longitude,
       },
       orders: optimizerOrders,
       max_time_seconds: 5,
@@ -864,8 +1396,15 @@ export class TripsService {
     const [branch, vehicles, drivers, orders] = await Promise.all([
       this.prisma.branch.findFirst({ where: { id: branchId, active: true } }),
       this.prisma.vehicle.findMany({
-        where: { homeBranchId: branchId, status: "AVAILABLE" },
-        include: { homeBranch: true },
+        where: {
+          homeBranchId: branchId,
+          status: "AVAILABLE",
+          homeDepotLocationId: { not: null },
+        },
+        include: {
+          homeBranch: true,
+          homeDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT },
+        },
         orderBy: { plateNumber: "asc" },
       }),
       this.prisma.driver.findMany({
@@ -886,13 +1425,20 @@ export class TripsService {
     if (!branch)
       throw new NotFoundException("Không tìm thấy chi nhánh đang hoạt động");
     if (vehicles.length === 0)
-      throw new BadRequestException("Không có xe khả dụng trong chi nhánh");
+      throw new BadRequestException(
+        "Không có xe khả dụng đã được gán kho đỗ trong chi nhánh",
+      );
     if (drivers.length === 0)
       throw new BadRequestException("Không có tài xế khả dụng trong chi nhánh");
     if (orders.length === 0)
       throw new BadRequestException("Không có đơn CONFIRMED để tối ưu");
 
-    const candidateVehicles = vehicles.slice(0, drivers.length);
+    const candidateVehicles = vehicles
+      .slice(0, drivers.length)
+      .map((vehicle) => ({
+        ...vehicle,
+        planningStart: resolveVehiclePlanningStart(vehicle),
+      }));
 
     const now = new Date();
     let planningEpoch: Date;
@@ -956,16 +1502,10 @@ export class TripsService {
       payload_limit_kg: vehicle.payloadCapacityKg,
       door_position: "REAR",
       depot: {
-        id:
-          vehicle.currentLatitude != null && vehicle.currentLongitude != null
-            ? `vehicle-current:${vehicle.id}`
-            : vehicle.homeBranch.id,
-        name:
-          vehicle.currentLatitude != null && vehicle.currentLongitude != null
-            ? `Vị trí hiện tại ${vehicle.plateNumber}`
-            : vehicle.homeBranch.name,
-        latitude: vehicle.currentLatitude ?? vehicle.homeBranch.latitude,
-        longitude: vehicle.currentLongitude ?? vehicle.homeBranch.longitude,
+        id: `depot:${vehicle.planningStart.locationId}`,
+        name: vehicle.planningStart.name,
+        latitude: vehicle.planningStart.latitude,
+        longitude: vehicle.planningStart.longitude,
       },
       fuel_consumption_liters_per_100_km: Number(
         vehicle.fuelConsumptionLitersPer100Km,
@@ -1122,11 +1662,10 @@ export class TripsService {
         },
         vehicleLocationProvenance: candidateVehicles.map((vehicle) => ({
           vehicleId: vehicle.id,
-          source:
-            vehicle.currentLatitude != null && vehicle.currentLongitude != null
-              ? 'CURRENT_GPS'
-              : 'HOME_BRANCH_FALLBACK',
-          measuredAt: vehicle.lastLocationAt?.toISOString() ?? null,
+          source: vehicle.planningStart.source,
+          depotLocationId: vehicle.planningStart.locationId,
+          depotLocationCode: vehicle.planningStart.locationCode,
+          lastGpsMeasuredAt: vehicle.lastLocationAt?.toISOString() ?? null,
         })),
         matrixProvenance: {
           provider: 'MAPBOX',
@@ -1323,6 +1862,21 @@ export class TripsService {
 
     const applied = await this.prisma.$transaction(
       async (tx) => {
+        if (sourceJobId) {
+          const claimedJob = await tx.optimizationJob.updateMany({
+            where: {
+              id: sourceJobId,
+              branchId,
+              status: { in: ['SUCCEEDED', 'PARTIAL'] },
+            },
+            data: { status: 'APPLYING' },
+          });
+          if (claimedJob.count !== 1) {
+            throw new ConflictException(
+              'Optimization job đang được áp dụng, đã áp dụng hoặc không còn hợp lệ',
+            );
+          }
+        }
         await this.acquireApplicationLocks(tx, vehicleIds, driverIds, orderIds);
 
         const [orders, vehicles, drivers] = await Promise.all([
@@ -1380,6 +1934,24 @@ export class TripsService {
             ),
           );
         }
+        if (sourceJobId) {
+          const finalizedJob = await tx.optimizationJob.updateMany({
+            where: {
+              id: sourceJobId,
+              branchId,
+              status: 'APPLYING',
+            },
+            data: {
+              status: 'APPLIED',
+              completedAt: new Date(),
+            },
+          });
+          if (finalizedJob.count !== 1) {
+            throw new ConflictException(
+              'Optimization job đã thay đổi trong lúc áp dụng; toàn bộ Trip sẽ được rollback',
+            );
+          }
+        }
         return createdTrips;
       },
       { maxWait: 5000, timeout: 20000 },
@@ -1393,6 +1965,55 @@ export class TripsService {
 
   private get optimizerUrl() {
     return process.env.OPTIMIZER_URL || "http://localhost:8000";
+  }
+
+  private parsePlanningSnapshot(value: Prisma.JsonValue | null): TripPlanningSnapshot {
+    if (!value || Array.isArray(value) || typeof value !== 'object') {
+      throw new ConflictException(
+        'Chuyến chưa có planning snapshot; cần lập lại phương án trước khi publish',
+      );
+    }
+    const candidate = value as Record<string, Prisma.JsonValue>;
+    const orders = candidate.orders;
+    const vehicle = candidate.vehicle;
+    const driver = candidate.driver;
+    if (
+      !Array.isArray(orders) ||
+      !vehicle ||
+      Array.isArray(vehicle) ||
+      typeof vehicle !== 'object' ||
+      !driver ||
+      Array.isArray(driver) ||
+      typeof driver !== 'object'
+    ) {
+      throw new ConflictException('Planning snapshot sai cấu trúc');
+    }
+    const parsedOrders = orders.map((order) => {
+      if (
+        !order ||
+        Array.isArray(order) ||
+        typeof order !== 'object' ||
+        typeof order.id !== 'string' ||
+        typeof order.version !== 'number'
+      ) {
+        throw new ConflictException('Planning snapshot chứa version đơn không hợp lệ');
+      }
+      return { id: order.id, version: order.version };
+    });
+    if (
+      parsedOrders.length === 0 ||
+      typeof vehicle.id !== 'string' ||
+      typeof vehicle.updatedAt !== 'string' ||
+      typeof driver.id !== 'string' ||
+      typeof driver.updatedAt !== 'string'
+    ) {
+      throw new ConflictException('Planning snapshot thiếu dữ liệu tài nguyên');
+    }
+    return {
+      orders: parsedOrders,
+      vehicle: { id: vehicle.id, updatedAt: vehicle.updatedAt },
+      driver: { id: driver.id, updatedAt: driver.updatedAt },
+    };
   }
 
   private assertTripAccess(
@@ -1738,6 +2359,27 @@ export class TripsService {
           : null,
         spatialValidation: route.spatial_validation,
         orderIds: Array.from(routeOrderCounts.keys()),
+        planningSnapshot: {
+          orders: Array.from(routeOrderCounts.keys()).map((id) => {
+            const resource = proposal.resources.orders.find(
+              (item) => item.id === id,
+            );
+            if (!resource) {
+              throw new ConflictException(
+                `Thiếu version của đơn [${id}] trong proposal`,
+              );
+            }
+            return { id, version: resource.version + 1 };
+          }),
+          vehicle: {
+            id: vehicle.id,
+            updatedAt: vehicle.updatedAt.toISOString(),
+          },
+          driver: {
+            id: driver.id,
+            updatedAt: driver.updatedAt.toISOString(),
+          },
+        },
         stops: plannedStops,
       };
     });
@@ -1849,6 +2491,7 @@ export class TripsService {
         totalDistanceKm: plannedTrip.totalDistanceKm,
         totalDurationMinutes: plannedTrip.totalDurationMinutes,
         routeGeometry: plannedTrip.routeGeometry,
+        planningSnapshot: plannedTrip.planningSnapshot,
         notes: sourceJobId
           ? `Sinh từ optimization job ${sourceJobId}`
           : 'Sinh từ kết quả tối ưu tự động',
@@ -1914,6 +2557,24 @@ export class TripsService {
         role: "PRIMARY",
       },
     });
+    await tx.resourceReservation.createMany({
+      data: [
+        {
+          tripId: trip.id,
+          vehicleId: plannedTrip.vehicleId,
+          startsAt: plannedTrip.plannedStartTime,
+          endsAt: plannedTrip.plannedEndTime,
+          status: ReservationStatus.HELD,
+        },
+        {
+          tripId: trip.id,
+          driverId: plannedTrip.driverId,
+          startsAt: plannedTrip.plannedStartTime,
+          endsAt: plannedTrip.plannedEndTime,
+          status: ReservationStatus.HELD,
+        },
+      ],
+    });
 
     const updatedOrders = await tx.order.updateMany({
       where: {
@@ -1961,6 +2622,7 @@ export class TripsService {
     orders: OrderWithStopsAndItems[],
     stopTaskIdByOrderStopId: Map<string, string>,
     spatialValidation: OptimizedRouteResult['spatial_validation'],
+    revision = 1,
   ) {
     if (!spatialValidation.is_valid || spatialValidation.step_states.length === 0) {
       throw new ConflictException(
@@ -1979,7 +2641,7 @@ export class TripsService {
     const loadPlan = await tx.loadPlan.create({
       data: {
         tripId,
-        revision: 1,
+        revision,
         initialStateSnapshot: { placements: [] },
         geometrySnapshot: {
           vehicleId,

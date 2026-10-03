@@ -9,7 +9,8 @@ jest.mock('axios');
 describe('OutboxEventPublisher', () => {
   const config = { get: jest.fn(), getOrThrow: jest.fn() } as unknown as ConfigService;
   const gateway = { emitToLocations: jest.fn() } as unknown as EventsGateway;
-  const publisher = new OutboxEventPublisher(config, gateway);
+  const optimizationQueue = { add: jest.fn() };
+  const publisher = new OutboxEventPublisher(config, gateway, optimizationQueue as never);
   const baseEvent = {
     eventId: 'event-1',
     aggregateType: 'SalesOrder',
@@ -19,6 +20,22 @@ describe('OutboxEventPublisher', () => {
   };
 
   beforeEach(() => jest.clearAllMocks());
+
+  it('đưa optimization job vào queue từ durable outbox event', async () => {
+    await publisher.publish({
+      ...baseEvent,
+      eventType: 'OPTIMIZATION_JOB_CREATED',
+      aggregateType: 'OptimizationJob',
+      aggregateId: 'job-1',
+      payload: { jobId: 'job-1', branchId: 'branch-1' },
+    });
+
+    expect(optimizationQueue.add).toHaveBeenCalledWith(
+      'run-automatic-optimization',
+      { jobId: 'job-1' },
+      expect.objectContaining({ jobId: 'job-1', attempts: 3 }),
+    );
+  });
 
   it('chỉ phát event vận hành vào location room và loại dữ liệu nhạy cảm', async () => {
     await publisher.publish({

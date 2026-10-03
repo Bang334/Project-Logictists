@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Prisma, Role } from '@prisma/client';
 import { Job } from 'bullmq';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 import { TripsService } from './trips.service';
@@ -16,6 +17,7 @@ type QueuePayload = { jobId: string };
 @Processor(OPTIMIZATION_QUEUE, { concurrency: 1 })
 export class OptimizationProcessor extends WorkerHost {
   private readonly logger = new Logger(OptimizationProcessor.name);
+  private readonly workerId = `optimizer-${process.pid}-${randomUUID()}`;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -43,13 +45,21 @@ export class OptimizationProcessor extends WorkerHost {
       return;
     }
 
+    const leaseUntil = new Date(Date.now() + 5 * 60 * 1000);
     const claimed = await this.prisma.optimizationJob.updateMany({
-      where: { id: optimizationJob.id, status: { in: ['PENDING', 'RETRYING', 'RUNNING'] } },
+      where: {
+        id: optimizationJob.id,
+        OR: [
+          { status: { in: ['PENDING', 'RETRYING'] } },
+          { status: 'RUNNING', leaseUntil: { lt: new Date() } },
+        ],
+      },
       data: {
         status: 'RUNNING',
         startedAt: optimizationJob.startedAt ?? new Date(),
         attemptCount: { increment: 1 },
-        leaseUntil: new Date(Date.now() + 5 * 60 * 1000),
+        leaseUntil,
+        leaseOwner: this.workerId,
         errorCode: null,
         errorMessage: null,
       },
@@ -60,7 +70,11 @@ export class OptimizationProcessor extends WorkerHost {
     const heartbeat = setInterval(() => {
       void this.prisma.optimizationJob
         .updateMany({
-          where: { id: optimizationJob.id, status: 'RUNNING' },
+          where: {
+            id: optimizationJob.id,
+            status: 'RUNNING',
+            leaseOwner: this.workerId,
+          },
           data: { leaseUntil: new Date(Date.now() + 5 * 60 * 1000) },
         })
         .catch((error: Error) =>
@@ -71,6 +85,7 @@ export class OptimizationProcessor extends WorkerHost {
 
     const request = optimizationJob.parameters as Prisma.JsonObject;
     const dto: RunAutomaticOptimizationDto = {
+      idempotencyKey: optimizationJob.id,
       branchId: optimizationJob.branchId,
       ...(typeof request.scheduleMode === 'string'
         ? { scheduleMode: request.scheduleMode as RunAutomaticOptimizationDto['scheduleMode'] }
@@ -101,6 +116,7 @@ export class OptimizationProcessor extends WorkerHost {
             status: 'CANCELLED',
             completedAt: new Date(),
             leaseUntil: null,
+            leaseOwner: null,
             result: Prisma.JsonNull,
           },
         });
@@ -115,18 +131,24 @@ export class OptimizationProcessor extends WorkerHost {
           : solverStatus === 'ERROR'
             ? 'FAILED'
             : solverStatus;
-      await this.prisma.$transaction([
-        this.prisma.optimizationJob.update({
-          where: { id: optimizationJob.id },
+      const stored = await this.prisma.$transaction(async (tx) => {
+        const finalized = await tx.optimizationJob.updateMany({
+          where: {
+            id: optimizationJob.id,
+            status: 'RUNNING',
+            leaseOwner: this.workerId,
+          },
           data: {
             status,
             result: storedResult as unknown as Prisma.InputJsonValue,
             completedAt: new Date(),
             leaseUntil: null,
+            leaseOwner: null,
             solverVersion: 'ortools-fastapi-v1',
           },
-        }),
-        this.prisma.optimizationResult.upsert({
+        });
+        if (finalized.count !== 1) return false;
+        await tx.optimizationResult.upsert({
           where: {
             optimizationJobId_candidateNumber: {
               optimizationJobId: optimizationJob.id,
@@ -153,20 +175,27 @@ export class OptimizationProcessor extends WorkerHost {
               totalDurationMinutes: storedResult.proposal.result.total_duration_minutes,
             },
           },
-        }),
-      ]);
+        });
+        return true;
+      });
+      if (!stored) return;
       this.emitStatus(optimizationJob.branchId, optimizationJob.id, status);
     } catch (error) {
       const finalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
       const status = finalAttempt ? 'FAILED' : 'RETRYING';
-      await this.prisma.optimizationJob.update({
-        where: { id: optimizationJob.id },
+      await this.prisma.optimizationJob.updateMany({
+        where: {
+          id: optimizationJob.id,
+          status: 'RUNNING',
+          leaseOwner: this.workerId,
+        },
         data: {
           status,
           errorCode: this.errorCode(error),
           errorMessage: this.errorMessage(error),
           ...(finalAttempt ? { completedAt: new Date() } : {}),
           leaseUntil: null,
+          leaseOwner: null,
         },
       });
       this.emitStatus(optimizationJob.branchId, optimizationJob.id, status);

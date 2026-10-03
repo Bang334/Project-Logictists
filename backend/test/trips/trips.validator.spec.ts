@@ -18,6 +18,7 @@ describe('TripsValidator - TMS Invariants', () => {
     loadFuelSurchargePercentAtFullPayload: new Prisma.Decimal(0),
     fixedOperatingCostPerTrip: new Prisma.Decimal(120000),
     status: VehicleStatus.AVAILABLE,
+    homeDepotLocationId: null,
     currentLatitude: null,
     currentLongitude: null,
     lastLocationAt: null,

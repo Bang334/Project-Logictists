@@ -10,6 +10,7 @@ import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { Role } from '@prisma/client';
+import { randomUUID } from 'crypto';
 
 type SocketUser = {
   id: string;
@@ -72,7 +73,11 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     payload: { jobId: string; status: string },
   ) {
     if (!this.server) return;
-    this.server.to(`branch:${branchId}`).emit('optimization:job-updated', payload);
+    this.server.to(`branch:${branchId}`).emit('optimization:job-updated', {
+      eventId: randomUUID(),
+      occurredAt: new Date().toISOString(),
+      ...payload,
+    });
   }
 
   /**

@@ -318,6 +318,10 @@ model Vehicle {
   loadFuelSurchargePercentAtFullPayload Decimal                 @default(0) @db.Decimal(6, 3)
   fixedOperatingCostPerTrip             Decimal                 @default(0) @db.Decimal(14, 2)
   status                                VehicleStatus           @default(AVAILABLE)
+  // Kho đỗ của xe. Khi lập lịch, xe luôn được coi là xuất phát từ kho này;
+  // currentLatitude/Longitude chỉ phục vụ theo dõi GPS.
+  homeDepotLocationId                   String?
+  homeDepotLocation                     Location?               @relation("VehicleHomeDepots", fields: [homeDepotLocationId], references: [id], onDelete: Restrict)
   currentLatitude                       Float?
   currentLongitude                      Float?
   lastLocationAt                        DateTime?               @db.Timestamptz(3)
@@ -328,6 +332,7 @@ model Vehicle {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
+  @@index([homeDepotLocationId])
   @@map("vehicles")
 }
 
@@ -496,6 +501,7 @@ model Trip {
   totalDistanceKm      Float              @default(0)
   totalDurationMinutes Float              @default(0)
   routeGeometry        String? // GeoJSON string hoặc encoded polyline
+  planningSnapshot     Json?
   version              Int                @default(1)
   notes                String?
   stops                TripStop[]
@@ -620,6 +626,7 @@ model OptimizationJob {
   branch          Branch               @relation(fields: [branchId], references: [id])
   createdById     String
   createdBy       User                 @relation(fields: [createdById], references: [id])
+  idempotencyKey  String
   requestHash     String
   requestSnapshot Json
   schemaVersion   String               @default("1")
@@ -631,6 +638,7 @@ model OptimizationJob {
   errorMessage    String?
   attemptCount    Int                  @default(0)
   leaseUntil      DateTime?            @db.Timestamptz(3)
+  leaseOwner      String?
   cancelledAt     DateTime?            @db.Timestamptz(3)
   startedAt       DateTime?            @db.Timestamptz(3)
   completedAt     DateTime?            @db.Timestamptz(3)
@@ -639,6 +647,7 @@ model OptimizationJob {
 
   @@index([branchId, createdAt])
   @@index([status, createdAt])
+  @@unique([createdById, idempotencyKey])
   @@map("optimization_jobs")
 }
 
@@ -695,6 +704,7 @@ model Location {
   destTransferShipments   TransferShipment[]     @relation("DestTransferShipments")
   salesInvoices           SalesInvoice[]
   feedbackCases           FeedbackCase[]
+  depotVehicles           Vehicle[]              @relation("VehicleHomeDepots")
   createdAt               DateTime               @default(now()) @db.Timestamptz(3)
   updatedAt               DateTime               @updatedAt @db.Timestamptz(3)
 

@@ -5,7 +5,23 @@ import {
   IsDateString,
   IsOptional,
   IsUUID,
+  IsLatitude,
+  IsLongitude,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class TripEndpointDto {
+  @IsString()
+  @IsNotEmpty()
+  address: string;
+
+  @IsLatitude()
+  latitude: number;
+
+  @IsLongitude()
+  longitude: number;
+}
 
 export class TripStopInputDto {
   @IsString()
@@ -34,6 +50,14 @@ export class CreateTripDto {
 
   @IsDateString()
   plannedEndTime: string;
+
+  @ValidateNested()
+  @Type(() => TripEndpointDto)
+  startLocation: TripEndpointDto;
+
+  @ValidateNested()
+  @Type(() => TripEndpointDto)
+  endLocation: TripEndpointDto;
 
   @IsArray()
   @IsString({ each: true })

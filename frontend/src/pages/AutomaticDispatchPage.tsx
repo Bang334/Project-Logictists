@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -47,8 +47,10 @@ import {
   EyeOutlined,
   EnvironmentOutlined,
   DeleteOutlined,
+  ReloadOutlined,
 } from '@ant-design/icons';
 import { branchesApi, driversApi, ordersApi, tripsApi, vehiclesApi } from '../api/client';
+import { getRealtimeSocket } from '../api/realtime';
 import MapboxMap, { MAP_ROUTE_COLORS, MapMarker } from '../components/MapboxMap';
 import FloorPackingVisualizer from '../components/FloorPackingVisualizer';
 import { BenchmarkCostComparisonCard } from '../components/BenchmarkCostComparisonCard';
@@ -281,14 +283,36 @@ const AutomaticDispatchPage: React.FC = () => {
     [branches, selectedBranchId],
   );
 
-  const restoreStateForBranch = useCallback(async (branchId: string): Promise<boolean> => {
-    const stored = getAutoDispatchState(branchId);
-    if (stored) {
+  const restoreRequestIdRef = useRef<number>(0);
+  const optimizationIdempotencyKeyRef = useRef<string | null>(null);
+
+  const restoreStateForBranch = useCallback(
+    async (branchId: string, reqId: number): Promise<boolean> => {
+      const stored = getAutoDispatchState(branchId);
+      if (!stored) {
+        if (restoreRequestIdRef.current === reqId) {
+          setOptimization(null);
+          setAppliedTripCount(null);
+          setIsRestoredFromStorage(false);
+        }
+        return false;
+      }
       try {
         const response = await tripsApi.getAutomaticOptimizationJob(
           stored.optimizationJobId,
         );
-        if (response.data.branchId !== branchId) return false;
+        // Nếu đã có request đổi chi nhánh mới hơn, hủy bỏ kết quả cũ
+        if (restoreRequestIdRef.current !== reqId) return false;
+
+        // BẢO VỆ CHẶT CHẼ: Nếu phương án không thuộc chi nhánh này
+        if (response.data.branchId !== branchId) {
+          clearAutoDispatchState(branchId);
+          setOptimization(null);
+          setAppliedTripCount(null);
+          setIsRestoredFromStorage(false);
+          return false;
+        }
+
         setOptimization(response.data);
         setAppliedTripCount(stored.appliedTripCount ?? null);
         if (stored.scheduleMode) {
@@ -306,14 +330,17 @@ const AutomaticDispatchPage: React.FC = () => {
         setIsRestoredFromStorage(true);
         return true;
       } catch {
-        clearAutoDispatchState(branchId);
+        if (restoreRequestIdRef.current === reqId) {
+          clearAutoDispatchState(branchId);
+          setOptimization(null);
+          setAppliedTripCount(null);
+          setIsRestoredFromStorage(false);
+        }
       }
-    }
-    setOptimization(null);
-    setAppliedTripCount(null);
-    setIsRestoredFromStorage(false);
-    return false;
-  }, []);
+      return false;
+    },
+    [],
+  );
 
   const loadCounts = useCallback(async (branchId: string, isCurrent: () => boolean) => {
     try {
@@ -378,21 +405,42 @@ const AutomaticDispatchPage: React.FC = () => {
   useEffect(() => {
     if (!selectedBranchId) {
       setLoadingCounts(false);
+      setOptimization(null);
+      setAppliedTripCount(null);
       return;
     }
     saveLastSelectedBranch(selectedBranchId);
-    void restoreStateForBranch(selectedBranchId);
+    const currentReqId = ++restoreRequestIdRef.current;
     let active = true;
-    void loadCounts(selectedBranchId, () => active);
+
+    // Reset sạch sẽ phương án của chi nhánh cũ ngay khi đổi chi nhánh
+    setOptimization(null);
+    setAppliedTripCount(null);
+    setIsRestoredFromStorage(false);
+    setSelectedVehicleForMap('ALL');
+    setEnableSim(false);
+    setActiveStepIndex(0);
+
+    void restoreStateForBranch(selectedBranchId, currentReqId);
+    void loadCounts(selectedBranchId, () => active && restoreRequestIdRef.current === currentReqId);
     return () => {
       active = false;
     };
   }, [loadCounts, selectedBranchId, restoreStateForBranch]);
 
+  const activeOptimizationJobId = optimization?.id;
+  const activeOptimizationStatus = optimization?.status;
+  const activeOptimizationBranchId = optimization?.branchId;
+
   useEffect(() => {
-    if (!optimization) return;
+    if (!activeOptimizationJobId || !activeOptimizationStatus) return;
+    // BẢO VỆ: Nếu optimization không thuộc selectedBranchId đang chọn, dừng polling ngay lập tức
+    if (activeOptimizationBranchId !== selectedBranchId) {
+      return;
+    }
+
     const activeStatuses = ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED'];
-    if (!activeStatuses.includes(optimization.status)) {
+    if (!activeStatuses.includes(activeOptimizationStatus)) {
       setStarting(false);
       return;
     }
@@ -402,17 +450,20 @@ const AutomaticDispatchPage: React.FC = () => {
     let timer: number | undefined;
     const poll = async () => {
       try {
-        const response = await tripsApi.getAutomaticOptimizationJob(optimization.id);
+        const response = await tripsApi.getAutomaticOptimizationJob(activeOptimizationJobId);
         if (cancelled) return;
-        setOptimization(response.data);
-        if (activeStatuses.includes(response.data.status)) {
-          timer = window.setTimeout(poll, 1500);
-        } else {
-          setStarting(false);
-          if (['SUCCEEDED', 'PARTIAL'].includes(response.data.status)) {
-            message.success('Phương án tối ưu đã sẵn sàng để kiểm tra');
-          } else if (response.data.error?.message) {
-            message.error(response.data.error.message);
+        // BẢO VỆ: Chỉ setOptimization nếu response thuộc đúng selectedBranchId đang chọn
+        if (response.data.branchId === selectedBranchId) {
+          setOptimization(response.data);
+          if (activeStatuses.includes(response.data.status)) {
+            timer = window.setTimeout(poll, 1500);
+          } else {
+            setStarting(false);
+            if (['SUCCEEDED', 'PARTIAL'].includes(response.data.status)) {
+              message.success('Phương án tối ưu đã sẵn sàng để kiểm tra');
+            } else if (response.data.error?.message) {
+              message.error(response.data.error.message);
+            }
           }
         }
       } catch {
@@ -424,7 +475,56 @@ const AutomaticDispatchPage: React.FC = () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [message, optimization?.id, optimization?.status]);
+  }, [
+    activeOptimizationBranchId,
+    activeOptimizationJobId,
+    activeOptimizationStatus,
+    message,
+    selectedBranchId,
+  ]);
+
+  useEffect(() => {
+    if (!activeOptimizationJobId || !selectedBranchId) return;
+    const socket = getRealtimeSocket();
+    if (!socket) return;
+    const seenEventIds = new Set<string>();
+    let disposed = false;
+    const reloadSnapshot = async () => {
+      try {
+        const response = await tripsApi.getAutomaticOptimizationJob(
+          activeOptimizationJobId,
+        );
+        if (!disposed && response.data.branchId === selectedBranchId) {
+          setOptimization(response.data);
+        }
+      } catch {
+        // Polling effect remains the bounded fallback when realtime reload fails.
+      }
+    };
+    const onConnect = () => {
+      void reloadSnapshot();
+    };
+    const onJobUpdate = (event: {
+      eventId?: string;
+      jobId?: string;
+      status?: string;
+    }) => {
+      if (event.jobId !== activeOptimizationJobId) return;
+      if (event.eventId) {
+        if (seenEventIds.has(event.eventId)) return;
+        seenEventIds.add(event.eventId);
+      }
+      void reloadSnapshot();
+    };
+    socket.on('connect', onConnect);
+    socket.on('optimization:job-updated', onJobUpdate);
+    if (socket.connected) void reloadSnapshot();
+    return () => {
+      disposed = true;
+      socket.off('connect', onConnect);
+      socket.off('optimization:job-updated', onJobUpdate);
+    };
+  }, [activeOptimizationJobId, selectedBranchId]);
 
   const startOptimization = async () => {
     if (!selectedBranchId) {
@@ -435,6 +535,8 @@ const AutomaticDispatchPage: React.FC = () => {
       setStarting(true);
       setAppliedTripCount(null);
       const payload: RunAutomaticOptimizationPayloadUI = {
+        idempotencyKey:
+          optimizationIdempotencyKeyRef.current ?? crypto.randomUUID(),
         branchId: selectedBranchId,
         scheduleMode,
         customStartTime:
@@ -442,7 +544,9 @@ const AutomaticDispatchPage: React.FC = () => {
             ? customStartTime.toISOString()
             : undefined,
       };
+      optimizationIdempotencyKeyRef.current = payload.idempotencyKey;
       const response = await tripsApi.runAutomaticOptimization(payload);
+      optimizationIdempotencyKeyRef.current = null;
       setOptimization(response.data);
       setIsRestoredFromStorage(false);
 
@@ -470,6 +574,13 @@ const AutomaticDispatchPage: React.FC = () => {
 
   const applyOptimization = async () => {
     if (!optimization) return;
+    if (optimization.branchId !== selectedBranchId) {
+      message.error(
+        'Phương án tối ưu không thuộc chi nhánh đang chọn! Vui lòng chọn lại hoặc chạy tối ưu mới.',
+      );
+      setOptimization(null);
+      return;
+    }
     try {
       setApplying(true);
       const response = await tripsApi.applyAutomaticOptimization(optimization.id);
@@ -496,7 +607,8 @@ const AutomaticDispatchPage: React.FC = () => {
         `Đã tạo ${tripCount} chuyến và phân công tài xế. Bạn có thể sang Bàn Điều Phối để kiểm tra và Phát hành chuyến.`,
       );
       if (selectedBranchId) {
-        await loadCounts(selectedBranchId, () => true);
+        const currentReqId = restoreRequestIdRef.current;
+        await loadCounts(selectedBranchId, () => restoreRequestIdRef.current === currentReqId);
       }
     } catch (error: any) {
       message.error(
@@ -509,40 +621,66 @@ const AutomaticDispatchPage: React.FC = () => {
   };
 
   const clearOptimization = async () => {
-    if (
-      optimization &&
-      ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED'].includes(
-        optimization.status,
-      )
-    ) {
-      await tripsApi.cancelAutomaticOptimization(optimization.id).catch(() => undefined);
-    }
+    // Hủy bỏ bất kỳ request khôi phục nào đang chạy dở
+    restoreRequestIdRef.current += 1;
+
+    const optId = optimization?.id;
+    const optStatus = optimization?.status;
+    const optBranchId = optimization?.branchId;
+
+    // 1. DỌN SẠCH LOCALSTORAGE NGAY LẬP TỨC
     if (selectedBranchId) {
       clearAutoDispatchState(selectedBranchId);
     }
+    if (optBranchId && optBranchId !== selectedBranchId) {
+      clearAutoDispatchState(optBranchId);
+    }
+
+    // 2. DỌN SẠCH TOÀN BỘ REACT STATE
     setOptimization(null);
     setAppliedTripCount(null);
     setSelectedVehicleForMap('ALL');
     setEnableSim(false);
     setActiveStepIndex(0);
     setIsRestoredFromStorage(false);
-    message.info('Đã xóa phương án tạm thời. Bạn có thể tiến hành tối ưu mới.');
+
+    message.success('Đã xóa phương án và làm mới bộ nhớ tạm. Bạn có thể tiến hành tối ưu mới.');
+
+    // 3. HỦY JOB NGẦM NẾU ĐANG CHẠY
+    if (
+      optId &&
+      optStatus &&
+      ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED'].includes(optStatus)
+    ) {
+      tripsApi.cancelAutomaticOptimization(optId).catch(() => undefined);
+    }
   };
 
   const changeBranch = (branchId: string) => {
-    setSelectedBranchId(branchId);
-    saveLastSelectedBranch(branchId);
+    // Hủy bỏ bất kỳ request khôi phục nào đang chờ của chi nhánh cũ
+    restoreRequestIdRef.current += 1;
+
+    // Reset sạch sẽ state của chi nhánh cũ ngay lập tức để không bị treo phương án cũ
+    setOptimization(null);
+    setAppliedTripCount(null);
+    setIsRestoredFromStorage(false);
+    setSelectedVehicleForMap('ALL');
+    setEnableSim(false);
+    setActiveStepIndex(0);
     setCounts({ orders: 0, vehicles: 0, drivers: 0, packages: 0 });
     setAvailableOrders([]);
     setAvailableVehicles([]);
     setAvailableDrivers([]);
-    setSelectedVehicleForMap('ALL');
-    setEnableSim(false);
-    setActiveStepIndex(0);
-    void restoreStateForBranch(branchId);
+
+    // Cập nhật chi nhánh (sẽ kích hoạt useEffect bên trên 1 lần duy nhất)
+    setSelectedBranchId(branchId);
+    saveLastSelectedBranch(branchId);
   };
 
-  const result = optimization?.result;
+  const isOptimizationForCurrentBranch = Boolean(
+    optimization && selectedBranchId && optimization.branchId === selectedBranchId,
+  );
+  const result = isOptimizationForCurrentBranch ? optimization?.result : null;
   const formatRouteStart = (route: OptimizedRouteUI) =>
     dayjs(optimization?.planningEpochIso)
       .add(route.start_time_sec, 'second')
@@ -2208,6 +2346,7 @@ const AutomaticDispatchPage: React.FC = () => {
             icon={<CheckCircleOutlined />}
             loading={applying}
             disabled={
+              !isOptimizationForCurrentBranch ||
               !optimization ||
               optimization.result?.routes.length === 0 ||
               !['SUCCEEDED', 'PARTIAL'].includes(optimization.status) ||
@@ -2221,36 +2360,63 @@ const AutomaticDispatchPage: React.FC = () => {
               : `Đã áp dụng ${appliedTripCount} chuyến`}
           </Button>
           {appliedTripCount !== null && (
-            <Button
-              type="primary"
-              size="large"
-              icon={<ArrowRightOutlined />}
-              style={{ background: '#059669', borderColor: '#059669' }}
-              onClick={() => {
-                window.location.hash = 'dispatch-manual';
-              }}
-            >
-              Mở Bàn điều phối để Phát hành
-            </Button>
+            <>
+              <Button
+                type="primary"
+                size="large"
+                icon={<ArrowRightOutlined />}
+                style={{ background: '#059669', borderColor: '#059669' }}
+                onClick={() => {
+                  window.location.hash = 'dispatch-manual';
+                }}
+              >
+                Mở Bàn điều phối để Phát hành
+              </Button>
+              <Button
+                size="large"
+                icon={<ReloadOutlined />}
+                onClick={clearOptimization}
+                disabled={applying}
+                style={{
+                  borderColor: '#10b981',
+                  color: '#059669',
+                  fontWeight: 600,
+                }}
+              >
+                Bắt đầu đợt điều phối mới
+              </Button>
+            </>
           )}
-          {optimization && (
-            <Popconfirm
-              title="Xóa phương án hiện tại?"
-              description="Phương án này sẽ được xóa khỏi bộ nhớ tạm. Bạn có thể bắt đầu đợt tối ưu mới."
-              onConfirm={clearOptimization}
-              okText="Xóa"
-              cancelText="Hủy"
-              disabled={applying}
-            >
+          {appliedTripCount === null && isOptimizationForCurrentBranch && optimization && (
+            ['FAILED', 'TIMEOUT', 'CANCELLED', 'INFEASIBLE'].includes(optimization.status) ? (
               <Button
                 size="large"
                 danger
                 icon={<DeleteOutlined />}
+                onClick={clearOptimization}
                 disabled={applying}
               >
-                Tạo phương án mới
+                Xóa phương án lỗi
               </Button>
-            </Popconfirm>
+            ) : (
+              <Popconfirm
+                title="Xóa phương án đề xuất này?"
+                description="Phương án này sẽ được xóa sạch khỏi bộ nhớ tạm để bạn tối ưu lại từ đầu."
+                onConfirm={clearOptimization}
+                okText="Xóa phương án"
+                cancelText="Hủy"
+                disabled={applying}
+              >
+                <Button
+                  size="large"
+                  danger
+                  icon={<DeleteOutlined />}
+                  disabled={applying}
+                >
+                  Xóa phương án
+                </Button>
+              </Popconfirm>
+            )
           )}
         </Space>
       </div>
@@ -2264,7 +2430,7 @@ const AutomaticDispatchPage: React.FC = () => {
         />
       )}
 
-      {optimization && !result && (
+      {isOptimizationForCurrentBranch && optimization && !result && (
         <Alert
           type={
             ['FAILED', 'TIMEOUT', 'CANCELLED'].includes(optimization.status)
@@ -2283,7 +2449,7 @@ const AutomaticDispatchPage: React.FC = () => {
         />
       )}
 
-      {result && ['INFEASIBLE', 'TIMEOUT'].includes(optimization?.status ?? '') && (
+      {isOptimizationForCurrentBranch && result && ['INFEASIBLE', 'TIMEOUT'].includes(optimization?.status ?? '') && (
         <Alert
           type="warning"
           showIcon

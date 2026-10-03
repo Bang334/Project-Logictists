@@ -5,6 +5,8 @@ import axios from 'axios';
 import { createHmac } from 'crypto';
 import { EventsGateway } from '../../events/events.gateway';
 import { decryptSensitivePayload } from '../security/sensitive-payload.crypto';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 
 type PublishableOutboxEvent = Pick<
   OutboxEvent,
@@ -30,9 +32,14 @@ export class OutboxEventPublisher {
   constructor(
     private readonly config: ConfigService,
     private readonly eventsGateway: EventsGateway,
+    @InjectQueue('optimization') private readonly optimizationQueue: Queue,
   ) {}
 
   async publish(event: PublishableOutboxEvent): Promise<void> {
+    if (event.eventType === 'OPTIMIZATION_JOB_CREATED') {
+      await this.publishOptimizationJob(event);
+      return;
+    }
     if (event.eventType === 'RETAIL_READY_FOR_COLLECTION') {
       await this.publishCustomerNotification(event);
       return;
@@ -56,6 +63,25 @@ export class OutboxEventPublisher {
       occurredAt: event.createdAt.toISOString(),
       payload: safePayload,
     });
+  }
+
+  private async publishOptimizationJob(event: PublishableOutboxEvent) {
+    const payload = this.asObject(event.payload);
+    const jobId = payload.jobId;
+    if (typeof jobId !== 'string' || jobId !== event.aggregateId) {
+      throw new Error('Optimization outbox event có jobId không hợp lệ');
+    }
+    await this.optimizationQueue.add(
+      'run-automatic-optimization',
+      { jobId },
+      {
+        jobId,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 2_000 },
+        removeOnComplete: 100,
+        removeOnFail: 500,
+      },
+    );
   }
 
   private async publishCustomerNotification(event: PublishableOutboxEvent) {

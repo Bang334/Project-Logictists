@@ -1,6 +1,7 @@
 import time
 
 import pytest
+from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 from app.models import (
     CostPolicy,
     DriverOption,
@@ -269,7 +270,7 @@ def test_fleet_solver_rounds_fractional_resequenced_route_end_time(monkeypatch):
     monkeypatch.setattr(
         solver,
         "_resequence_stops_for_spatial_feasibility",
-        lambda *_: (
+        lambda *_, **__: (
             scheduled,
             [],
             180.75,
@@ -679,6 +680,32 @@ def test_cargo_holding_cost_penalizes_long_onboard_time():
     assert response.routes[0].cost is not None
     assert response.routes[0].cost.cargo_holding_cost_vnd > 0
     assert response.routes[0].cost.cargo_time_ton_hours == pytest.approx(0.022, abs=0.001)
+
+
+@pytest.mark.parametrize(
+    ("routing_status", "expected_status"),
+    [
+        (routing_enums_pb2.RoutingSearchStatus.ROUTING_FAIL_TIMEOUT, "TIMEOUT"),
+        (routing_enums_pb2.RoutingSearchStatus.ROUTING_FAIL, "INFEASIBLE"),
+    ],
+)
+def test_no_solution_uses_ortools_proof_status_not_elapsed_time(
+    monkeypatch, routing_status, expected_status
+):
+    monkeypatch.setattr(
+        pywrapcp.RoutingModel,
+        "SolveWithParameters",
+        lambda self, search: None,
+    )
+    monkeypatch.setattr(
+        pywrapcp.RoutingModel,
+        "status",
+        lambda self: routing_status,
+    )
+
+    response = FleetRoutingSolver(_economic_sequence_request()).solve()
+
+    assert response.status == expected_status
 
 
 def test_fleet_solver_hanoi_multi_package_no_blocking():

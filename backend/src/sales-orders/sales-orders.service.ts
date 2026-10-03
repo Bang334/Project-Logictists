@@ -37,7 +37,7 @@ export class SalesOrdersService {
     }
 
     return this.prisma.$transaction(async (tx) => {
-      let isDirectDelivery = Boolean(dto.deliveryAddress?.trim());
+      const isDirectDelivery = Boolean(dto.deliveryAddress?.trim());
       let point: any = null;
 
       if (!isDirectDelivery) {
@@ -71,9 +71,8 @@ export class SalesOrdersService {
         create: { code: `CUS-${randomUUID().slice(0, 8).toUpperCase()}`, name: dto.customerName, phone: dto.customerPhone, userId: user.role === Role.CUSTOMER ? user.id : undefined },
       });
 
-      let customerAddressId: string | null = null;
-      let deliveryLat = dto.deliveryLatitude || 21.0285;
-      let deliveryLng = dto.deliveryLongitude || 105.8542;
+      const deliveryLat = dto.deliveryLatitude || 21.0285;
+      const deliveryLng = dto.deliveryLongitude || 105.8542;
 
       if (isDirectDelivery) {
         await tx.customerAddress.create({
@@ -179,7 +178,7 @@ export class SalesOrdersService {
         const wG = BigInt(sku?.weightGrams || 10000);
 
         for (let q = 1; q <= line.quantity; q++) {
-          const pkg = await tx.package.create({
+          await tx.package.create({
             data: {
               orderId: order.id,
               packageCode: `PKG-${order.orderNumber.slice(-6)}-${String(packageIdx++).padStart(3, '0')}`,

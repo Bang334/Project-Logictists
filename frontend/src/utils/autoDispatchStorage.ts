@@ -65,6 +65,24 @@ export const clearAutoDispatchState = (branchId: string): void => {
 };
 
 /**
+ * Xóa toàn bộ trạng thái điều phối tự động đã lưu của tất cả các chi nhánh.
+ */
+export const clearAllAutoDispatchStates = (): void => {
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(STORAGE_PREFIX)) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
+  } catch (error) {
+    console.warn('Lỗi khi dọn dẹp toàn bộ phương án điều phối:', error);
+  }
+};
+
+/**
  * Lưu ID chi nhánh được chọn gần nhất.
  */
 export const saveLastSelectedBranch = (branchId: string): void => {

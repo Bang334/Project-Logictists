@@ -6,6 +6,9 @@ export enum AutomaticDispatchScheduleMode {
 }
 
 export class RunAutomaticOptimizationDto {
+  @IsUUID()
+  idempotencyKey!: string;
+
   @IsOptional()
   @IsUUID()
   branchId?: string;

@@ -60,8 +60,11 @@ export interface Vehicle {
   loadFuelSurchargePercentAtFullPayload?: string;
   fixedOperatingCostPerTrip?: string;
   status: 'AVAILABLE' | 'MAINTENANCE' | 'ON_TRIP' | 'DECOMMISSIONED';
+  homeDepotLocationId?: string;
+  homeDepotLocation?: Location;
   currentLatitude?: number;
   currentLongitude?: number;
+  lastLocationAt?: string;
 }
 
 export interface Driver {
@@ -149,9 +152,12 @@ export interface TripStop {
   status: string;
   tasks: Array<{
     id: string;
+    orderId?: string;
+    orderStopId?: string;
     action: 'LOAD' | 'UNLOAD';
     plannedQuantity: number;
     actualQuantity?: number;
+    order?: Pick<Order, 'id' | 'orderNumber' | 'customer' | 'items'>;
   }>;
 }
 
@@ -168,6 +174,10 @@ export interface Trip {
   totalDurationMinutes: number;
   routeGeometry?: string;
   notes?: string;
+  planningSnapshot?: {
+    startLocation?: { address: string; latitude: number; longitude: number };
+    endLocation?: { address: string; latitude: number; longitude: number };
+  };
   stops: TripStop[];
   assignments: Array<{
     id: string;
@@ -350,6 +360,7 @@ export interface FleetOptimizationResultUI {
 export type AutomaticDispatchScheduleModeUI = 'CURRENT_TIME' | 'NEXT_DAY';
 
 export interface RunAutomaticOptimizationPayloadUI {
+  idempotencyKey: string;
   branchId: string;
   scheduleMode?: AutomaticDispatchScheduleModeUI;
   customStartTime?: string;

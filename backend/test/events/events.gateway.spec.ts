@@ -58,4 +58,24 @@ describe('EventsGateway', () => {
     });
     expect(client.join).not.toHaveBeenCalled();
   });
+
+  it('gắn event ID và thời điểm cho cập nhật optimization job', () => {
+    const emit = jest.fn();
+    gateway.server = { to: jest.fn(() => ({ emit })) } as never;
+
+    gateway.emitOptimizationJobUpdate('branch-1', {
+      jobId: 'job-1',
+      status: 'RUNNING',
+    });
+
+    expect(emit).toHaveBeenCalledWith(
+      'optimization:job-updated',
+      expect.objectContaining({
+        eventId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        occurredAt: expect.any(String),
+        jobId: 'job-1',
+        status: 'RUNNING',
+      }),
+    );
+  });
 });

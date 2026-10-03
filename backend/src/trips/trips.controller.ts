@@ -19,6 +19,7 @@ import { OptimizationJobsService } from './optimization-jobs.service';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { PublishTripDto } from './dto/publish-trip.dto';
+import { UpdateTripPlanDto } from './dto/update-trip-plan.dto';
 
 @Controller('trips')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
@@ -55,7 +56,7 @@ export class TripsController {
   @Roles(Role.ADMIN, Role.DISPATCHER)
   runAutomaticOptimization(
     @Req() req: { user: { id: string; branchId?: string; role: Role } },
-    @Body() body?: RunAutomaticOptimizationDto,
+    @Body() body: RunAutomaticOptimizationDto,
   ) {
     return this.optimizationJobs.create(req.user, body);
   }
@@ -129,5 +130,15 @@ export class TripsController {
     @Body() body: PublishTripDto,
   ) {
     return this.tripsService.publish(id, body, req.user);
+  }
+
+  @Patch(':id/plan')
+  @Roles(Role.ADMIN, Role.DISPATCHER)
+  updatePlan(
+    @Req() req: { user: { id: string; branchId?: string; role: Role } },
+    @Param('id') id: string,
+    @Body() body: UpdateTripPlanDto,
+  ) {
+    return this.tripsService.updatePlan(id, body, req.user);
   }
 }
