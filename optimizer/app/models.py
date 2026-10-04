@@ -334,6 +334,22 @@ class FleetOptimizationResponse(StrictContractModel):
     diagnostics: List[str] = Field(default_factory=list)
 
 
+class FleetOptimizationCandidate(StrictContractModel):
+    rank: int = Field(ge=1)
+    search_strategy: str
+    solver_objective: int = Field(ge=0)
+    is_best_found: bool = False
+    result: FleetOptimizationResponse
+
+
+class FleetOptimizationBatchResponse(StrictContractModel):
+    job_id: str
+    solver_run_count: int = Field(ge=1)
+    fully_served_candidate_count: int = Field(ge=0, default=0)
+    candidates: List[FleetOptimizationCandidate]
+    diagnostics: List[str] = Field(default_factory=list)
+
+
 class OptimizationResponse(StrictContractModel):
     job_id: str
     status: Literal["SUCCESS", "PARTIAL", "FAILED", "INFEASIBLE", "TIMEOUT"]

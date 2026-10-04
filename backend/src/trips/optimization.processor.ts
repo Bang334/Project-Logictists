@@ -11,6 +11,10 @@ import {
   OPTIMIZATION_QUEUE,
 } from './optimization-jobs.service';
 import { RunAutomaticOptimizationDto } from './dto/run-automatic-optimization.dto';
+import {
+  OptimizationProgressDetails,
+  OptimizationProgressUpdate,
+} from './optimization-progress';
 
 type QueuePayload = { jobId: string };
 
@@ -45,6 +49,25 @@ export class OptimizationProcessor extends WorkerHost {
       return;
     }
 
+    const request = (
+      optimizationJob.parameters &&
+      typeof optimizationJob.parameters === 'object' &&
+      !Array.isArray(optimizationJob.parameters)
+        ? optimizationJob.parameters
+        : {}
+    ) as Prisma.JsonObject;
+    let latestProgressDetails: OptimizationProgressDetails = {};
+    const progressParameters = (
+      update: OptimizationProgressUpdate,
+    ): Prisma.InputJsonValue => ({
+      ...request,
+      progress: {
+        stage: update.stage,
+        details: latestProgressDetails,
+        updatedAt: new Date().toISOString(),
+      },
+    });
+
     const leaseUntil = new Date(Date.now() + 5 * 60 * 1000);
     const claimed = await this.prisma.optimizationJob.updateMany({
       where: {
@@ -56,6 +79,7 @@ export class OptimizationProcessor extends WorkerHost {
       },
       data: {
         status: 'RUNNING',
+        parameters: progressParameters({ stage: 'LOADING_INPUT' }),
         startedAt: optimizationJob.startedAt ?? new Date(),
         attemptCount: { increment: 1 },
         leaseUntil,
@@ -83,7 +107,32 @@ export class OptimizationProcessor extends WorkerHost {
     }, 60_000);
     heartbeat.unref();
 
-    const request = optimizationJob.parameters as Prisma.JsonObject;
+    const reportProgress = async (update: OptimizationProgressUpdate) => {
+      latestProgressDetails = {
+        ...latestProgressDetails,
+        ...(update.details ?? {}),
+      };
+      try {
+        const changed = await this.prisma.optimizationJob.updateMany({
+          where: {
+            id: optimizationJob.id,
+            status: 'RUNNING',
+            leaseOwner: this.workerId,
+          },
+          data: {
+            parameters: progressParameters(update),
+          },
+        });
+        if (changed.count === 1) {
+          this.emitStatus(optimizationJob.branchId, optimizationJob.id, 'RUNNING');
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Không thể cập nhật tiến độ job ${optimizationJob.id}: ${this.errorMessage(error)}`,
+        );
+      }
+    };
+
     const dto: RunAutomaticOptimizationDto = {
       idempotencyKey: optimizationJob.id,
       branchId: optimizationJob.branchId,
@@ -96,7 +145,7 @@ export class OptimizationProcessor extends WorkerHost {
     };
 
     try {
-      const storedResult = await this.tripsService.executeAutomaticOptimization(
+      const candidateBatch = await this.tripsService.executeAutomaticOptimization(
         {
           id: optimizationJob.createdById,
           branchId: optimizationJob.branchId,
@@ -104,7 +153,12 @@ export class OptimizationProcessor extends WorkerHost {
         },
         dto,
         optimizationJob.id,
+        reportProgress,
       );
+      await reportProgress({
+        stage: 'SAVING_RESULTS',
+        details: latestProgressDetails,
+      });
       const latest = await this.prisma.optimizationJob.findUnique({
         where: { id: optimizationJob.id },
         select: { status: true },
@@ -124,6 +178,7 @@ export class OptimizationProcessor extends WorkerHost {
         return;
       }
 
+      const storedResult = candidateBatch.best;
       const solverStatus = storedResult.proposal.result.status;
       const status =
         solverStatus === 'SUCCESS'
@@ -131,6 +186,36 @@ export class OptimizationProcessor extends WorkerHost {
           : solverStatus === 'ERROR'
             ? 'FAILED'
             : solverStatus;
+      // Rows are built before opening the transaction and written in one
+      // statement: snapshots carry Mapbox geometry, so sequential inserts
+      // exceeded Prisma's 5s default and BullMQ re-ran the whole solve.
+      const candidateRows = candidateBatch.candidates.map(
+        (candidate, index): Prisma.OptimizationResultCreateManyInput => {
+          const result = candidate.proposal.result;
+          return {
+            optimizationJobId: optimizationJob.id,
+            candidateNumber: index + 1,
+            resultSnapshot: candidate as unknown as Prisma.InputJsonValue,
+            feasibilityStatus: this.feasibilityStatus(result.status),
+            objectiveBreakdown: {
+              rank: candidate.rank ?? index + 1,
+              searchStrategy: candidate.searchStrategy,
+              improvementSequence: candidate.improvementSequence ?? candidate.rank ?? index + 1,
+              solverObjective: candidate.solverObjective,
+              isBestFound: candidate.isBestFound,
+              totalCostVnd: result.total_cost_vnd,
+              totalDistanceKm: result.total_distance_km,
+              totalDurationMinutes: result.total_duration_minutes,
+              routeCount: result.routes.length,
+              unassignedOrderCount: result.unassigned_orders.length,
+            },
+            diagnostics: {
+              source: 'PARALLEL_MULTI_START',
+              messages: result.diagnostics,
+            },
+          };
+        },
+      );
       const stored = await this.prisma.$transaction(async (tx) => {
         const finalized = await tx.optimizationJob.updateMany({
           where: {
@@ -140,6 +225,7 @@ export class OptimizationProcessor extends WorkerHost {
           },
           data: {
             status,
+            parameters: progressParameters({ stage: 'COMPLETED' }),
             result: storedResult as unknown as Prisma.InputJsonValue,
             completedAt: new Date(),
             leaseUntil: null,
@@ -148,37 +234,27 @@ export class OptimizationProcessor extends WorkerHost {
           },
         });
         if (finalized.count !== 1) return false;
-        await tx.optimizationResult.upsert({
-          where: {
-            optimizationJobId_candidateNumber: {
-              optimizationJobId: optimizationJob.id,
-              candidateNumber: 1,
-            },
-          },
-          create: {
-            optimizationJobId: optimizationJob.id,
-            candidateNumber: 1,
-            resultSnapshot: storedResult.proposal.result as unknown as Prisma.InputJsonValue,
-            feasibilityStatus: this.feasibilityStatus(solverStatus),
-            objectiveBreakdown: {
-              totalCostVnd: storedResult.proposal.result.total_cost_vnd,
-              totalDistanceKm: storedResult.proposal.result.total_distance_km,
-              totalDurationMinutes: storedResult.proposal.result.total_duration_minutes,
-            },
-          },
-          update: {
-            resultSnapshot: storedResult.proposal.result as unknown as Prisma.InputJsonValue,
-            feasibilityStatus: this.feasibilityStatus(solverStatus),
-            objectiveBreakdown: {
-              totalCostVnd: storedResult.proposal.result.total_cost_vnd,
-              totalDistanceKm: storedResult.proposal.result.total_distance_km,
-              totalDurationMinutes: storedResult.proposal.result.total_duration_minutes,
-            },
-          },
+        await tx.optimizationResult.deleteMany({
+          where: { optimizationJobId: optimizationJob.id },
         });
+        if (candidateRows.length > 0) {
+          await tx.optimizationResult.createMany({ data: candidateRows });
+        }
         return true;
-      });
+      }, { timeout: 30_000 });
       if (!stored) return;
+      this.logger.log(
+        JSON.stringify({
+          event: 'optimization_job_finished',
+          jobId: optimizationJob.id,
+          status,
+          queueLagSeconds: Math.round(
+            ((optimizationJob.startedAt ?? new Date()).getTime() -
+              optimizationJob.createdAt.getTime()) / 1000,
+          ),
+          attempt: optimizationJob.attemptCount + 1,
+        }),
+      );
       this.emitStatus(optimizationJob.branchId, optimizationJob.id, status);
     } catch (error) {
       const finalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);

@@ -4,7 +4,11 @@ import argparse
 import json
 import math
 import multiprocessing
+import os
+import platform
 import time
+
+import ortools
 
 from app.models import (
     CargoItem,
@@ -108,6 +112,10 @@ def run_one(order_count: int, max_time_seconds: int, queue) -> None:
             "vehicles": len(request.vehicles),
             "elapsed_seconds": round(time.perf_counter() - started, 3),
             "solver_status": response.status,
+            "time_budget_seconds": max_time_seconds,
+            "routes": len(response.routes),
+            "total_distance_km": response.total_distance_km,
+            "total_cost_vnd": response.total_cost_vnd,
             "served_orders": len(
                 {
                     stop.order_id
@@ -119,6 +127,16 @@ def run_one(order_count: int, max_time_seconds: int, queue) -> None:
             "unassigned_orders": len(response.unassigned_orders),
         }
     )
+
+
+def describe_environment() -> dict:
+    return {
+        "ortools_version": ortools.__version__,
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "cpu_count": os.cpu_count(),
+        "seed": "none: dataset is deterministic, solver uses OR-Tools defaults",
+    }
 
 
 def main() -> None:
@@ -154,7 +172,13 @@ def main() -> None:
             )
         else:
             results.append(queue.get())
-    print(json.dumps(results, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {"environment": describe_environment(), "results": results},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

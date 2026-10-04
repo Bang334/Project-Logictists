@@ -128,6 +128,22 @@ export type FleetOptimizationResult = {
   diagnostics: string[];
 };
 
+export type FleetOptimizationCandidateResult = {
+  rank: number;
+  search_strategy: string;
+  solver_objective: number;
+  is_best_found: boolean;
+  result: FleetOptimizationResult;
+};
+
+export type FleetOptimizationBatchResult = {
+  job_id: string;
+  solver_run_count: number;
+  fully_served_candidate_count: number;
+  candidates: FleetOptimizationCandidateResult[];
+  diagnostics?: string[];
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -332,6 +348,90 @@ export function assertFleetOptimizationResult(
       ) {
         throw new Error(`Optimizer benchmark ${field} không hợp lệ`);
       }
+    }
+  }
+}
+
+export function assertFleetOptimizationBatchResult(
+  value: unknown,
+): asserts value is FleetOptimizationBatchResult {
+  if (
+    !isRecord(value) ||
+    !Number.isInteger(value.solver_run_count) ||
+    Number(value.solver_run_count) < 1
+  ) {
+    throw new Error('Optimizer batch phải có solver_run_count hợp lệ (>= 1)');
+  }
+  if (
+    !Number.isInteger(value.fully_served_candidate_count) ||
+    Number(value.fully_served_candidate_count) < 0
+  ) {
+    throw new Error('Optimizer batch phải có fully_served_candidate_count hợp lệ (>= 0)');
+  }
+  if (typeof value.job_id !== 'string' || !Array.isArray(value.candidates)) {
+    throw new Error('Optimizer batch thiếu job_id/candidates hợp lệ');
+  }
+  if (value.candidates.length < 1 || value.candidates.length > 10) {
+    throw new Error('Optimizer batch phải có từ 1 đến 10 nghiệm');
+  }
+
+  let bestCount = 0;
+  const ranks = new Set<number>();
+
+  for (let index = 0; index < value.candidates.length; index += 1) {
+    const candidate = value.candidates[index];
+    if (
+      !isRecord(candidate) ||
+      !Number.isInteger(candidate.rank) ||
+      Number(candidate.rank) < 1 ||
+      typeof candidate.search_strategy !== 'string' ||
+      !candidate.search_strategy.trim() ||
+      !Number.isInteger(candidate.solver_objective) ||
+      Number(candidate.solver_objective) < 0 ||
+      typeof candidate.is_best_found !== 'boolean'
+    ) {
+      throw new Error('Metadata phương án tối ưu của optimizer không hợp lệ');
+    }
+    const rank = Number(candidate.rank);
+    if (ranks.has(rank)) {
+      throw new Error('Optimizer trả trùng thứ hạng phương án');
+    }
+    ranks.add(rank);
+    if (rank !== index + 1) {
+      throw new Error('Thứ hạng phương án (rank) phải liên tục bắt đầu từ 1');
+    }
+    if (candidate.is_best_found) bestCount += 1;
+    assertFleetOptimizationResult(candidate.result);
+    if (candidate.result.job_id !== value.job_id) {
+      throw new Error('Optimizer batch chứa kết quả của job khác');
+    }
+  }
+
+  if (bestCount !== 1 || value.candidates[0].is_best_found !== true) {
+    throw new Error('Optimizer batch phải đặt đúng một nghiệm tốt nhất ở vị trí đầu (rank 1)');
+  }
+
+  // Nếu có từ 2 phương án trở lên thì tất cả các phương án phải giao đủ 100% đơn
+  if (value.candidates.length >= 2) {
+    for (const candidate of value.candidates) {
+      if (
+        candidate.result.status !== 'SUCCESS' ||
+        candidate.result.unassigned_orders.length > 0
+      ) {
+        throw new Error(
+          `Phương án rank #${candidate.rank} không giao đủ 100% đơn (${candidate.result.unassigned_orders.length} đơn chưa xếp); không được xuất hiện trong danh sách so sánh`,
+        );
+      }
+    }
+  }
+
+  // Các phương án phải được xếp theo tổng chi phí vận hành tăng dần (hoặc bằng nhau)
+  for (let index = 1; index < value.candidates.length; index += 1) {
+    if (
+      value.candidates[index].result.total_cost_vnd <
+      value.candidates[index - 1].result.total_cost_vnd
+    ) {
+      throw new Error('Danh sách phương án chưa được sắp xếp theo tổng chi phí tăng dần');
     }
   }
 }

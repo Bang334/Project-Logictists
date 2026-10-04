@@ -3,10 +3,12 @@ import {
   Controller,
   Get,
   Param,
+  ParseIntPipe,
   Patch,
   Post,
   Query,
   Req,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
@@ -20,6 +22,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { PublishTripDto } from './dto/publish-trip.dto';
 import { UpdateTripPlanDto } from './dto/update-trip-plan.dto';
+import { ApplyOptimizationCandidateDto } from './dto/apply-optimization-candidate.dto';
 
 @Controller('trips')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
@@ -93,8 +96,32 @@ export class TripsController {
   applyAutomaticOptimizationJob(
     @Req() req: { user: { id: string; branchId?: string; role: Role } },
     @Param('jobId') jobId: string,
+    @Body() body: ApplyOptimizationCandidateDto,
   ) {
-    return this.optimizationJobs.apply(req.user, jobId);
+    return this.optimizationJobs.apply(req.user, jobId, body.candidateNumber);
+  }
+
+  @Get('automatic-optimization/jobs/:jobId/candidates/:candidateNumber')
+  @Roles(Role.ADMIN, Role.DISPATCHER)
+  getAutomaticOptimizationCandidate(
+    @Req() req: { user: { id: string; branchId?: string; role: Role } },
+    @Param('jobId') jobId: string,
+    @Param('candidateNumber', ParseIntPipe) candidateNumber: number,
+  ) {
+    return this.optimizationJobs.getCandidate(req.user, jobId, candidateNumber);
+  }
+
+  @Get('automatic-optimization/jobs/:jobId/export')
+  @Roles(Role.ADMIN, Role.DISPATCHER)
+  async exportAutomaticOptimizationCandidates(
+    @Req() req: { user: { id: string; branchId?: string; role: Role } },
+    @Param('jobId') jobId: string,
+  ) {
+    const exported = await this.optimizationJobs.exportCandidates(req.user, jobId);
+    return new StreamableFile(exported.buffer, {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      disposition: `attachment; filename="${exported.filename}"`,
+    });
   }
 
   @Get(':id/load-profile')

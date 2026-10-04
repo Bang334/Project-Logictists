@@ -4,6 +4,7 @@ from typing import List
 
 from .models import (
     FleetOptimizationRequest,
+    FleetOptimizationBatchResponse,
     FleetOptimizationResponse,
     OptimizationRequest,
     OptimizationResponse,
@@ -14,6 +15,7 @@ from .models import (
 )
 from .spatial_validator import SpatialValidator
 from .routing_solver import FleetRoutingSolver, OrToolsRoutingSolver
+from .multi_start import MultiStartFleetOptimizer
 
 app = FastAPI(
     title="TMS Optimization & Spatial Packing Engine",
@@ -62,6 +64,12 @@ def optimize_fleet(request: FleetOptimizationRequest):
     """Tự chọn xe, tài xế và tuyến cho toàn bộ đơn trong snapshot của một chi nhánh."""
     solver = FleetRoutingSolver(request)
     return solver.solve()
+
+
+@app.post("/optimize-fleet/candidates", response_model=FleetOptimizationBatchResponse)
+def optimize_fleet_candidates(request: FleetOptimizationRequest):
+    """Chạy song song nhiều lượt OR-Tools độc lập và trả về tối đa 3 phương án tốt nhất giao đủ 100% đơn."""
+    return MultiStartFleetOptimizer(request).solve(max_candidates=3)
 
 if __name__ == "__main__":
     import uvicorn

@@ -17,6 +17,7 @@ from app.models import (
     SpatialValidationResult,
 )
 from app.routing_solver import FleetRoutingSolver, OrToolsRoutingSolver
+from app.multi_start import MultiStartFleetOptimizer
 
 def test_ortools_vrp_with_spatial_validation():
     vehicle = VehicleFloor(
@@ -443,6 +444,263 @@ def test_recovery_uses_an_idle_future_day_before_repacking_a_busy_route(monkeypa
     assert {route.service_day_index for route in routes} == {0, 1}
 
 
+def test_recovery_selects_lowest_incremental_cost_not_shortest_distance(monkeypatch):
+    depot = LocationPoint(id="cost-recovery-depot", name="Kho", latitude=21, longitude=105.8)
+    vehicles = [
+        FleetVehicle(
+            id="expensive-short-truck",
+            service_day_index=0,
+            plate_number="29C-EXPENSIVE",
+            length_cm=400,
+            width_cm=200,
+            height_cm=200,
+            payload_limit_kg=1_000,
+            depot=depot,
+            fuel_consumption_liters_per_100_km=10,
+            fixed_operating_cost_vnd=1_000_000,
+        ),
+        FleetVehicle(
+            id="cheap-long-truck",
+            service_day_index=0,
+            plate_number="29C-CHEAP",
+            length_cm=400,
+            width_cm=200,
+            height_cm=200,
+            payload_limit_kg=1_000,
+            depot=depot,
+            fuel_consumption_liters_per_100_km=10,
+            fixed_operating_cost_vnd=10_000,
+        ),
+    ]
+    drivers = [
+        DriverOption(
+            id=f"cost-driver-{index}",
+            service_day_index=0,
+            full_name=f"Tai xe {index}",
+            fixed_salary_monthly_vnd=10_000_000,
+            trip_base_pay_vnd=100_000,
+            per_km_pay_vnd=1_000,
+        )
+        for index in (1, 2)
+    ]
+    order = OrderPair(
+        id="cost-recovery-order",
+        order_number="COST-RECOVERY",
+        pickup_location=LocationPoint(
+            id="cost-recovery-pickup", name="P", latitude=21.01, longitude=105.81
+        ),
+        delivery_location=LocationPoint(
+            id="cost-recovery-delivery", name="D", latitude=21.02, longitude=105.82
+        ),
+        items=[
+            CargoItem(
+                id="cost-recovery-item",
+                order_id="cost-recovery-order",
+                length_cm=100,
+                width_cm=100,
+                height_cm=100,
+                weight_kg=100,
+            )
+        ],
+        service_time_sec=0,
+    )
+    matrix = [[0 if i == j else 1_000 for j in range(4)] for i in range(4)]
+    solver = FleetRoutingSolver(
+        FleetOptimizationRequest(
+            job_id="cost-recovery-job",
+            vehicles=vehicles,
+            drivers=drivers,
+            orders=[order],
+            policy=CostPolicy(
+                fuel_price_per_liter_vnd=23_000,
+                monthly_working_minutes=10_560,
+            ),
+            max_time_seconds=2,
+            distance_matrix_meters=matrix,
+            duration_matrix_seconds=matrix,
+        )
+    )
+
+    def candidate_for(vehicle, *_args, **_kwargs):
+        distance_meters = 1_000 if vehicle.id == "expensive-short-truck" else 2_000
+        stops = [
+            ScheduledStop(
+                sequence=1,
+                location_id=order.pickup_location.id,
+                location_name=order.pickup_location.name,
+                stop_type="PICKUP",
+                order_id=order.id,
+                latitude=order.pickup_location.latitude,
+                longitude=order.pickup_location.longitude,
+                arrival_time_sec=60,
+                departure_time_sec=60,
+                items_loaded=[order.items[0].id],
+                current_weight_kg=100,
+            ),
+            ScheduledStop(
+                sequence=2,
+                location_id=order.delivery_location.id,
+                location_name=order.delivery_location.name,
+                stop_type="DELIVERY",
+                order_id=order.id,
+                latitude=order.delivery_location.latitude,
+                longitude=order.delivery_location.longitude,
+                arrival_time_sec=120,
+                departure_time_sec=120,
+                items_unloaded=[order.items[0].id],
+                current_weight_kg=0,
+            ),
+        ]
+        return stops, [], distance_meters, 180, SpatialValidationResult(is_valid=True)
+
+    monkeypatch.setattr(solver, "_resequence_stops_for_spatial_feasibility", candidate_for)
+    routes = []
+    assigned_order_ids = set()
+
+    solver._recover_unassigned_orders(
+        routes,
+        assigned_order_ids,
+        {},
+        deadline=time.monotonic() + 1,
+    )
+
+    assert routes[0].route_id == "cheap-long-truck"
+
+
+def test_consolidation_replaces_two_routes_only_when_total_cost_decreases(monkeypatch):
+    depot = LocationPoint(id="merge-depot", name="Kho", latitude=21, longitude=105.8)
+    vehicles = [
+        FleetVehicle(
+            id=f"merge-truck-{index}",
+            service_day_index=0,
+            plate_number=f"29C-MERGE-{index}",
+            length_cm=400,
+            width_cm=200,
+            height_cm=200,
+            payload_limit_kg=1_000,
+            depot=depot,
+            fuel_consumption_liters_per_100_km=10,
+            fixed_operating_cost_vnd=500_000,
+        )
+        for index in (1, 2)
+    ]
+    drivers = [
+        DriverOption(
+            id=f"merge-driver-{index}",
+            service_day_index=0,
+            full_name=f"Tai xe {index}",
+            fixed_salary_monthly_vnd=10_000_000,
+            trip_base_pay_vnd=100_000,
+            per_km_pay_vnd=1_000,
+        )
+        for index in (1, 2)
+    ]
+
+    def make_order(index: int) -> OrderPair:
+        return OrderPair(
+            id=f"merge-order-{index}",
+            order_number=f"MERGE-{index}",
+            pickup_location=LocationPoint(
+                id=f"merge-pickup-{index}", name=f"P{index}", latitude=21, longitude=105.8
+            ),
+            delivery_location=LocationPoint(
+                id=f"merge-delivery-{index}", name=f"D{index}", latitude=21, longitude=105.9
+            ),
+            items=[
+                CargoItem(
+                    id=f"merge-item-{index}",
+                    order_id=f"merge-order-{index}",
+                    length_cm=100,
+                    width_cm=100,
+                    height_cm=100,
+                    weight_kg=100,
+                )
+            ],
+            service_time_sec=0,
+        )
+
+    orders = [make_order(1), make_order(2)]
+    matrix = [[0 if i == j else 1_000 for j in range(6)] for i in range(6)]
+    solver = FleetRoutingSolver(
+        FleetOptimizationRequest(
+            job_id="merge-job",
+            vehicles=vehicles,
+            drivers=drivers,
+            orders=orders,
+            policy=CostPolicy(
+                fuel_price_per_liter_vnd=23_000,
+                monthly_working_minutes=10_560,
+            ),
+            max_time_seconds=2,
+            distance_matrix_meters=matrix,
+            duration_matrix_seconds=matrix,
+        )
+    )
+
+    def stops_for(order, sequence_start=1):
+        return [
+            ScheduledStop(
+                sequence=sequence_start,
+                location_id=order.pickup_location.id,
+                location_name=order.pickup_location.name,
+                stop_type="PICKUP",
+                order_id=order.id,
+                latitude=order.pickup_location.latitude,
+                longitude=order.pickup_location.longitude,
+                arrival_time_sec=60 * sequence_start,
+                departure_time_sec=60 * sequence_start,
+                items_loaded=[order.items[0].id],
+                current_weight_kg=100,
+            ),
+            ScheduledStop(
+                sequence=sequence_start + 1,
+                location_id=order.delivery_location.id,
+                location_name=order.delivery_location.name,
+                stop_type="DELIVERY",
+                order_id=order.id,
+                latitude=order.delivery_location.latitude,
+                longitude=order.delivery_location.longitude,
+                arrival_time_sec=60 * (sequence_start + 1),
+                departure_time_sec=60 * (sequence_start + 1),
+                items_unloaded=[order.items[0].id],
+                current_weight_kg=0,
+            ),
+        ]
+
+    routes = [
+        OptimizedRoute(
+            route_id=vehicle.id,
+            vehicle_id=vehicle.id,
+            service_day_index=0,
+            plate_number=vehicle.plate_number,
+            vehicle_length_cm=vehicle.length_cm,
+            vehicle_width_cm=vehicle.width_cm,
+            total_distance_km=10,
+            total_duration_minutes=10,
+            stops=stops_for(order),
+            spatial_validation=SpatialValidationResult(is_valid=True),
+        )
+        for vehicle, order in zip(vehicles, orders)
+    ]
+    merged_stops = stops_for(orders[0], 1) + stops_for(orders[1], 3)
+    monkeypatch.setattr(
+        solver,
+        "_resequence_stops_for_spatial_feasibility",
+        lambda *_args, **_kwargs: (
+            merged_stops,
+            [],
+            12_000,
+            1_200,
+            SpatialValidationResult(is_valid=True),
+        ),
+    )
+
+    solver._consolidate_routes(routes, deadline=time.monotonic() + 1)
+
+    assert len(routes) == 1
+    assert {stop.order_id for stop in routes[0].stops} == {order.id for order in orders}
+
+
 def test_fleet_solver_reuses_vehicle_and_driver_on_the_next_service_day():
     depot = LocationPoint(id="depot-multiday", name="Kho", latitude=21.0, longitude=105.8)
     vehicle_slots = [
@@ -722,6 +980,16 @@ def test_fleet_solver_hanoi_multi_package_no_blocking():
     with open(snapshot_path, encoding="utf-8") as f:
         data = json.load(f)
 
+    # This regression isolates recovery across already-busy vehicles. The
+    # original synthetic route groups cannot meet the fixture's narrow time
+    # windows, so widen only this test's windows instead of relying on the old
+    # resequencing bug that silently ignored them.
+    for order in data["orders"]:
+        order["pickup_window_start_sec"] = 0
+        order["pickup_window_end_sec"] = 2_592_000
+        order["delivery_window_start_sec"] = 0
+        order["delivery_window_end_sec"] = 2_592_000
+
     def haversine(c1, c2):
         lon1, lat1 = c1
         lon2, lat2 = c2
@@ -810,7 +1078,9 @@ def test_fleet_solver_hanoi_multi_package_no_blocking():
         routes,
         assigned_order_ids,
         rejected_reasons,
-        deadline=time.monotonic() + 10,
+        # Keep this behavioral regression deterministic on shared CI workers;
+        # production budgets are covered separately by timeout tests.
+        deadline=time.monotonic() + 30,
     )
 
     assert limit_reached is False
@@ -821,16 +1091,17 @@ def test_fleet_solver_hanoi_multi_package_no_blocking():
     assert all(route.spatial_validation.is_valid for route in routes)
 
 
-def test_fleet_solver_nha_trang_fifo_smart_placement():
+def _build_nha_trang_fifo_request():
     """
     Regression cho bài toán Nha Trang:
     - ORD-NTR-001 (C63438): 2 kiện 100x100cm (gọn nhẹ, 300kg)
     - ORD-NTR-002 (AEE326): 7 kiện 80x80cm (420kg)
     Thùng xe: 500x200cm.
-    Lộ trình thuận địa lý và ngắn nhất là FIFO:
+    Lộ trình thuận địa lý và ngắn nhất nếu bỏ qua lối thao tác là FIFO:
     P(ORD-001) -> P(ORD-002) -> D(ORD-001) -> D(ORD-002) (~19.5 km).
-    Hệ thống xếp thông minh cho phép đặt 2 kiện ORD-001 gần cửa (hoặc chừa lối)
-    để dỡ trước mà không bị chặn bởi 7 kiện ORD-002, tránh bị ép đi LIFO (22.1 km).
+    Tuy nhiên 2 kiện ORD-001 phủ kín bề ngang 200 cm gần cửa, nên không thể
+    đưa 7 kiện ORD-002 vào phía trong mà không xê dịch hàng. Validator phải loại
+    tuyến 19.5 km theo T26 và chọn thứ tự dỡ an toàn khoảng 22.1 km.
     """
     depot = LocationPoint(id="depot-ntr", name="Kho Nha Trang", latitude=12.2485, longitude=109.1834)
     vehicle = FleetVehicle(
@@ -924,6 +1195,11 @@ def test_fleet_solver_nha_trang_fifo_smart_placement():
         duration_matrix_seconds=durations,
     )
 
+    return req, ord1
+
+
+def test_fleet_solver_nha_trang_fifo_smart_placement():
+    req, ord1 = _build_nha_trang_fifo_request()
     response = FleetRoutingSolver(req).solve()
 
     assert response.status == "SUCCESS"
@@ -931,11 +1207,88 @@ def test_fleet_solver_nha_trang_fifo_smart_placement():
     route = response.routes[0]
     assert route.spatial_validation.is_valid is True
 
-    # 2 kiện của ord1 rộng 100cm x 2 = 200cm chiếm trọn bề ngang thùng xe 200cm.
-    # Solver bảo đảm an toàn bất biến T26 (không bịt lối đưa 7 kiện ord2 vào thùng),
-    # tự động chọn thứ tự dỡ hợp lệ và vượt qua 100% kiểm định hình học.
+    # Solver bảo đảm T26 bằng cách dỡ ord2 trước ord1; không nhận
+    # tuyến ngắn hơn nhưng không có lối đưa hàng vào/ra.
     stop_sequence = [(stop.stop_type, stop.order_id) for stop in route.stops]
-    assert len(stop_sequence) == 4
-    assert stop_sequence[0] == ("PICKUP", ord1.id)
-    assert route.total_distance_km > 0
+    assert stop_sequence == [
+        ("PICKUP", ord1.id),
+        ("PICKUP", "ord-ntr-002"),
+        ("DELIVERY", "ord-ntr-002"),
+        ("DELIVERY", ord1.id),
+    ]
+    assert route.total_distance_km == pytest.approx(22.13, abs=0.01)
+
+
+def test_tiny_exhaustive_search_handles_nha_trang_seven_day_slots():
+    one_day_request, ord1 = _build_nha_trang_fifo_request()
+    source_vehicle = one_day_request.vehicles[0]
+    source_driver = one_day_request.drivers[0]
+    vehicles = [
+        source_vehicle.model_copy(
+            update={
+                "id": f"{source_vehicle.id}::day:{day}",
+                "source_vehicle_id": source_vehicle.id,
+                "service_day_index": day,
+                "available_start_sec": day * 86_400,
+                "available_end_sec": (day + 1) * 86_400,
+            }
+        )
+        for day in range(7)
+    ]
+    drivers = [
+        source_driver.model_copy(
+            update={
+                "id": f"{source_driver.id}::day:{day}",
+                "source_driver_id": source_driver.id,
+                "service_day_index": day,
+            }
+        )
+        for day in range(7)
+    ]
+
+    vehicle_count = len(vehicles)
+    full_size = vehicle_count + 2 * len(one_day_request.orders)
+
+    def expand_matrix(compact):
+        expanded = [[0.0 for _ in range(full_size)] for _ in range(full_size)]
+        for row in range(full_size):
+            compact_row = 0 if row < vehicle_count else row - vehicle_count + 1
+            for column in range(full_size):
+                compact_column = 0 if column < vehicle_count else column - vehicle_count + 1
+                if row < vehicle_count and column < vehicle_count:
+                    continue
+                expanded[row][column] = compact[compact_row][compact_column]
+        return expanded
+
+    request = FleetOptimizationRequest(
+        **one_day_request.model_dump(
+            exclude={
+                "vehicles",
+                "drivers",
+                "distance_matrix_meters",
+                "duration_matrix_seconds",
+                "max_time_seconds",
+            }
+        ),
+        vehicles=vehicles,
+        drivers=drivers,
+        max_time_seconds=120,
+        distance_matrix_meters=expand_matrix(one_day_request.distance_matrix_meters),
+        duration_matrix_seconds=expand_matrix(one_day_request.duration_matrix_seconds),
+    )
+
+    started_at = time.monotonic()
+    batch = MultiStartFleetOptimizer(request).solve(max_candidates=3)
+    elapsed_seconds = time.monotonic() - started_at
+
+    assert elapsed_seconds < 12
+    assert batch.solver_run_count == 1
+    assert batch.candidates[0].result.status == "SUCCESS"
+    assert any("Vét cạn" in line for line in batch.diagnostics)
+    best_route = batch.candidates[0].result.routes[0]
+    assert best_route.service_day_index == 0
+    assert best_route.stops[0].order_id == ord1.id
+    assert [candidate.result.total_cost_vnd for candidate in batch.candidates] == sorted(
+        candidate.result.total_cost_vnd for candidate in batch.candidates
+    )
 

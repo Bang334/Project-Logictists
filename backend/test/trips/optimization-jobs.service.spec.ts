@@ -1,6 +1,8 @@
 import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import { createHash } from 'crypto';
+import * as ExcelJS from 'exceljs';
+import { Readable } from 'stream';
 import { OptimizationJobsService } from '../../src/trips/optimization-jobs.service';
 
 const now = new Date('2026-10-03T00:00:00.000Z');
@@ -12,6 +14,9 @@ function job(overrides: Record<string, unknown> = {}) {
     status: 'PENDING',
     schemaVersion: '2',
     requestSnapshot: {},
+    parameters: {
+      progress: { stage: 'QUEUED', details: {}, updatedAt: now.toISOString() },
+    },
     result: null,
     errorCode: null,
     errorMessage: null,
@@ -38,6 +43,10 @@ describe('OptimizationJobsService', () => {
       update: jest.fn(),
       updateMany: jest.fn(),
     },
+    optimizationResult: {
+      findUnique: jest.fn(),
+      findMany: jest.fn(),
+    },
     $transaction: jest.fn(),
   };
   const trips = { applyAutomaticOptimization: jest.fn() };
@@ -45,6 +54,8 @@ describe('OptimizationJobsService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    prisma.optimizationResult.findUnique.mockResolvedValue(null);
+    prisma.optimizationResult.findMany.mockResolvedValue([]);
     service = new OptimizationJobsService(
       prisma as never,
       queue as never,
@@ -85,6 +96,7 @@ describe('OptimizationJobsService', () => {
     );
     expect(queue.add).not.toHaveBeenCalled();
     expect(result).toMatchObject({ id: 'job-1', status: 'PENDING' });
+    expect(result.progress).toMatchObject({ stage: 'QUEUED' });
   });
 
   it('returns the existing job for the same idempotency key and payload', async () => {
@@ -156,6 +168,7 @@ describe('OptimizationJobsService', () => {
       expect.anything(),
       expect.anything(),
       'job-1',
+      1,
     );
     expect(prisma.optimizationJob.updateMany).not.toHaveBeenCalled();
   });
@@ -178,10 +191,103 @@ describe('OptimizationJobsService', () => {
       expect.anything(),
       expect.anything(),
       'job-1',
+      1,
     );
     expect(prisma.optimizationJob.update).not.toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'APPLIED' }) }),
     );
     expect(result).toMatchObject({ jobId: 'job-1', status: 'APPLIED' });
+  });
+
+  it('applies the explicitly selected candidate instead of silently using rank 1', async () => {
+    prisma.optimizationJob.findUnique.mockResolvedValue(
+      job({
+        status: 'SUCCEEDED',
+        result: { proposal: { result: { marker: 'rank-1' } }, signature: 'rank-1' },
+      }),
+    );
+    prisma.optimizationResult.findUnique.mockResolvedValue({
+      resultSnapshot: {
+        proposal: { result: { marker: 'rank-3' } },
+        signature: 'rank-3',
+      },
+    });
+    trips.applyAutomaticOptimization.mockResolvedValue({ trips: [{ id: 'trip-3' }] });
+
+    await service.apply(
+      { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+      'job-1',
+      3,
+    );
+
+    expect(prisma.optimizationResult.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          optimizationJobId_candidateNumber: {
+            optimizationJobId: 'job-1',
+            candidateNumber: 3,
+          },
+        },
+      }),
+    );
+    expect(trips.applyAutomaticOptimization).toHaveBeenCalledWith(
+      expect.objectContaining({
+        proposal: expect.objectContaining({ result: { marker: 'rank-3' } }),
+        signature: 'rank-3',
+      }),
+      expect.anything(),
+      'job-1',
+      3,
+    );
+  });
+
+  it('exports ranked candidates and route details as an Excel workbook', async () => {
+    prisma.optimizationJob.findUnique.mockResolvedValue(job({ status: 'SUCCEEDED' }));
+    prisma.optimizationResult.findMany.mockResolvedValue([
+      {
+        candidateNumber: 1,
+        feasibilityStatus: 'FEASIBLE',
+        objectiveBreakdown: {
+          totalCostVnd: 7_796_170,
+          totalDistanceKm: 895.34,
+          totalDurationMinutes: 2094.9,
+          routeCount: 7,
+          unassignedOrderCount: 0,
+        },
+        resultSnapshot: {
+          proposal: {
+            result: {
+              routes: [
+                {
+                  service_day_index: 0,
+                  plate_number: '29C-001.23',
+                  driver_name: 'Tài xế A',
+                  total_distance_km: 120.5,
+                  total_duration_minutes: 240,
+                  cost: { total_cost_vnd: 1_000_000 },
+                  stops: [
+                    { stop_type: 'PICKUP', order_id: 'ORD-001' },
+                    { stop_type: 'DELIVERY', order_id: 'ORD-001' },
+                  ],
+                },
+              ],
+            },
+          },
+          signature: 'signed',
+        },
+      },
+    ]);
+
+    const exported = await service.exportCandidates(
+      { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+      'job-1',
+    );
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.read(Readable.from(exported.buffer));
+
+    expect(exported.filename).toMatch(/\.xlsx$/);
+    expect(workbook.getWorksheet('Chuỗi nghiệm cải thiện')?.getCell('D2').value).toBe(7_796_170);
+    expect(workbook.getWorksheet('Chi tiết tuyến')?.getCell('D2').value).toBe('29C-001.23');
+    expect(workbook.getWorksheet('Chi tiết tuyến')?.getCell('I2').value).toContain('ORD-001');
   });
 });

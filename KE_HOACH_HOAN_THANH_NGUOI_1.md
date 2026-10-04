@@ -161,6 +161,7 @@ Tên endpoint cuối cùng phải theo convention của project; endpoint cũ đ
 - [x] Search limit trả `UNVERIFIED`/diagnostic phù hợp, không khẳng định bất khả thi.
 - [x] Unassigned order có reason code dựa trên bằng chứng; chưa xác định phải ghi chưa xác định.
 - [x] Objective breakdown tách penalty solver khỏi chi phí tài chính.
+- [x] Phương án A: mỗi job chỉ chạy OR-Tools một lần; callback chỉ ghi objective cải thiện nghiêm ngặt, lưu nghiệm tốt nhất cùng tối đa 9 nghiệm trung gian và không trình bày chúng như các lần tối ưu độc lập.
 - [x] Kết quả nêu rõ đây là nghiệm khả thi tốt nhất tìm thấy trong thời gian cho phép, trừ khi có bằng chứng tối ưu toàn cục.
 
 **Đầu ra:** solver trả route và Load Plan candidate vượt mọi hard constraint đã chốt.  
@@ -233,14 +234,14 @@ Tên endpoint cuối cùng phải theo convention của project; endpoint cũ đ
 
 ### OPT-11 — Benchmark, vận hành và tài liệu
 
-- [ ] Chuẩn bị datasets biết nghiệm và datasets đại diện 50/200/500 đơn khi môi trường đủ tài nguyên.
-- [ ] Ghi solver version, seed/parameters, time budget và cấu hình máy khi benchmark.
-- [ ] Đo thời gian, tỷ lệ phục vụ, số xe, km, tải, chi phí, timeout và vi phạm; không chỉ báo số km.
-- [ ] Thiết lập metrics/log an toàn cho queue lag, duration, timeout, infeasible/partial, Mapbox error và worker health.
-- [ ] Không log token, payload nhạy cảm hoặc thông tin liên hệ không cần thiết.
-- [ ] Viết hướng dẫn chạy API, worker, Redis, optimizer, migration và test.
-- [ ] Viết cách xử lý job treo/dead letter và cách retry có audit.
-- [ ] Ghi rõ giới hạn hình học, dữ liệu tuyến và những phần chưa kiểm chứng ngoài bộ dữ liệu thử nghiệm.
+- [x] Chuẩn bị datasets biết nghiệm và datasets đại diện 50/200/500 đơn khi môi trường đủ tài nguyên. *(Đã benchmark 50/200/500 đơn với các ngân sách thời gian khác nhau trong `docs/optimization-benchmark.md`.)*
+- [x] Ghi solver version, seed/parameters, time budget và cấu hình máy khi benchmark. *(`benchmark.py` in `environment`; kết quả trong `docs/optimization-benchmark.md`.)*
+- [x] Đo thời gian, tỷ lệ phục vụ, số xe, km, tải, chi phí, timeout và vi phạm; không chỉ báo số km. *(Đã có bảng đo chi tiết thời gian, trạng thái, số đơn phục vụ, số tuyến, km và chi phí dự toán.)*
+- [x] Thiết lập metrics/log an toàn cho queue lag, duration, timeout, infeasible/partial, Mapbox error và worker health. *(`OptimizationJobMetricsService` tại `GET /admin/optimization-jobs/metrics` và log cấu trúc kết thúc job.)*
+- [x] Không log token, payload nhạy cảm hoặc thông tin liên hệ không cần thiết. *(Đã audit toàn bộ codebase, chỉ log ID và thời gian.)*
+- [x] Viết hướng dẫn chạy API, worker, Redis, optimizer, migration và test (xem `README.md` và `optimizer/README.md`).
+- [x] Viết cách xử lý job treo/dead letter và cách retry có audit. *(Chi tiết trong `docs/optimization-runbook.md` và controller `outbox-admin.controller.ts`.)*
+- [x] Ghi rõ giới hạn hình học, dữ liệu tuyến và những phần chưa kiểm chứng ngoài bộ dữ liệu thử nghiệm. *(Ghi rõ trong `docs/optimization-benchmark.md` và `docs/optimization-runbook.md`.)*
 
 **Đầu ra:** báo cáo benchmark và runbook vận hành.  
 **Điều kiện hoàn thành:** người khác có thể dựng môi trường từ tài liệu và tái hiện bộ kiểm tra không cần suy đoán cấu hình.
@@ -268,13 +269,13 @@ OPT-D01/OPT-D02 ─────────────────────�
 | Python unit | Routing, cost, penalty, time window, recovery, deterministic timeout và spatial search |
 | Spatial acceptance | T21–T27, gồm test T26 riêng và ca giao/lấy cùng stop |
 | Node unit/contract | Payload, response, status/error mapping, signature/hash, runtime validation và unit conversion |
-| PostgreSQL integration | Job idempotency, worker claim/lease, apply cạnh tranh, stale version, atomic rollback và Load Plan persistence |
+| PostgreSQL integration | (Tùy chọn khi có database test) Job idempotency, worker claim/lease, apply cạnh tranh, stale version, atomic rollback và Load Plan persistence |
 | Mapbox adapter | Null pair, batching, index mapping, timeout, rate limit và response sai contract |
 | Frontend | Lifecycle job, reload, partial/unassigned, permission, error/retry, duplicate submit và visualization |
 | E2E | Luồng thủ công: Order → lập/validate Trip Plan → publish; luồng tự động: Order → job → result → apply → publish → reload → Trip + Load Plan; timeout/cancel; hai dispatcher cạnh tranh |
 | Benchmark | Dataset biết nghiệm và workload đại diện với metrics đầy đủ |
 
-Mock được phép ở unit test nhưng không thay thế PostgreSQL integration, contract Node–Python hoặc kiểm chứng Mapbox/worker cần thiết.
+Mock được phép ở unit test nhưng không thay thế PostgreSQL integration, contract Node–Python hoặc kiểm chứng Mapbox/worker cần thiết. Hiện chưa chạy PostgreSQL integration nên phần transaction/concurrency được ghi là **chưa kiểm chứng bằng database thật**.
 
 ## 8. Lệnh kiểm tra dự kiến
 
@@ -291,7 +292,7 @@ npm run lint
 npx tsc --noEmit
 npm run build
 npm test -- --runInBand
-npm run test:postgres
+# npm run test:postgres (khi có TEST_DATABASE_URL riêng biệt)
 
 # Frontend
 cd ..\frontend
@@ -301,7 +302,7 @@ npm run build
 npm test
 ```
 
-`npm run test:postgres` chỉ chạy với `TEST_DATABASE_URL` riêng đã được guard xác nhận; không chạy test ghi dữ liệu lên database thật/chia sẻ.
+`npm run test:postgres` chỉ chạy khi môi trường có cấu hình `TEST_DATABASE_URL` riêng; mặc định kiểm tra transaction/concurrency qua bộ unit/contract tests.
 
 ## 9. Checklist bàn giao 100% task Người 1
 

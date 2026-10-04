@@ -69,7 +69,7 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
 
   const feasibilityTag = (metric: BenchmarkMetricUI, recommended = false) => metric.is_feasible ? (
     <Tag color={recommended ? 'success' : 'processing'} icon={<CheckCircleOutlined />}>
-      {recommended ? 'Chi phí thấp nhất hợp lệ' : 'Nghiệm hợp lệ'}
+      {recommended ? 'Tốt nhất trong lần chạy này' : 'Nghiệm hợp lệ'}
     </Tag>
   ) : (
     <Tooltip title={metric.violations.join('\n')}>
@@ -230,7 +230,7 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
               {feasibilityTag(or_tools, bestMethod?.key === 'or_tools')}
             </div>
             <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12, minHeight: 32 }}>
-              Tối ưu đa điểm, khung giờ và kiểm định hình học xếp sàn xe 2D
+              Nghiệm khả thi tốt nhất tìm thấy trong thời gian cho phép; không khẳng định tối ưu toàn cục
             </Paragraph>
 
             <Statistic

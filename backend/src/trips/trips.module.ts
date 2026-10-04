@@ -7,6 +7,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { OptimizationJobsService, OPTIMIZATION_QUEUE } from './optimization-jobs.service';
 import { OptimizationProcessor } from './optimization.processor';
 import { OptimizationRecoveryService } from './optimization-recovery.service';
+import { OptimizationJobMetricsService } from './optimization-job-metrics.service';
+import { OptimizationJobMetricsController } from './optimization-job-metrics.controller';
 
 function redisConnection(urlValue: string | undefined) {
   const url = new URL(urlValue || 'redis://127.0.0.1:6379');
@@ -40,8 +42,9 @@ function redisConnection(urlValue: string | undefined) {
     OptimizationJobsService,
     OptimizationProcessor,
     OptimizationRecoveryService,
+    OptimizationJobMetricsService,
   ],
-  controllers: [TripsController],
+  controllers: [TripsController, OptimizationJobMetricsController],
   exports: [TripsService, OptimizationJobsService],
 })
 export class TripsModule {}

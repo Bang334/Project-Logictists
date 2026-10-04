@@ -423,6 +423,11 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
       targetX = Math.max(0, Math.min(bedLength - targetItem.length_cm, targetX));
       targetY = Math.max(0, Math.min(bedWidth - targetItem.width_cm, targetY));
 
+      // Tránh kích hoạt re-render không cần thiết nếu tọa độ sau khi snap/clamp không thay đổi
+      if (targetItem.x === targetX && targetItem.y === targetY) {
+        return;
+      }
+
       const updated = baseItems.map((i) =>
         i.item_id === draggingState.itemId ? { ...i, x: targetX, y: targetY } : i
       );
@@ -695,28 +700,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
         />
       )}
 
-      {/* CẢNH BÁO VA CHẠM CHỒNG LẤN KHI MÔ PHỎNG THỦ CÔNG */}
-      {collisionInfo.pairs.length > 0 && (
-        <Alert
-          type="warning"
-          showIcon
-          icon={<WarningOutlined style={{ color: '#ef4444' }} />}
-          message="Cảnh báo va chạm chồng lấn (Vi phạm Bất biến T21–T27: Không được xếp chồng hàng):"
-          description={
-            <div style={{ fontSize: 12, marginTop: 4 }}>
-              {collisionInfo.pairs.map((pair, idx) => (
-                <div key={idx} style={{ marginBottom: 2 }}>
-                  • Kiện <strong style={{ color: '#b91c1c' }}>{getItemShortLabel(pair.item1)}</strong> đang bị chồng lấn với kiện <strong style={{ color: '#b91c1c' }}>{getItemShortLabel(pair.item2)}</strong>
-                </div>
-              ))}
-              <div style={{ marginTop: 4, color: '#475569' }}>
-                💡 Hãy kéo thả tách các kiện hàng ra hoặc dùng bảng điều khiển bên dưới để di chuyển/xoay kiện về vị trí hợp lệ.
-              </div>
-            </div>
-          }
-          style={{ marginBottom: 12, border: '1px solid #fca5a5', backgroundColor: '#fef2f2' }}
-        />
-      )}
+      {/* (Cảnh báo va chạm chồng lấn đã được chuyển xuống dưới khung vẽ SVG để tránh layout-shift giật chuột khi kéo thả) */}
 
       {/* HƯỚNG DẪN KHI BẬT CHẾ ĐỘ DI CHUYỂN THỦ CÔNG */}
       {isManualMode && (
@@ -1327,40 +1311,54 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             {/* ============================================================ */}
             {/* CÁC KIỆN HÀNG ĐẶT TRÊN MẶT SÀN (CARGO ITEMS) */}
             {/* ============================================================ */}
-            {currentPlacedItems.map((item) => {
-              const rx = item.x * scaleX;
-              const ry = item.y * scaleY;
-              const rw = item.length_cm * scaleX;
-              const rh = item.width_cm * scaleY;
-              const colorInfo = getItemColor(item);
-              const isHovered = hoveredItemId === item.item_id;
-              const isSelected = selectedItemId === item.item_id;
-              const isClear = isPathToDoorClear(item);
-              const isColliding = collisionInfo.collidingIds.has(item.item_id);
-              const isDragging = draggingState?.itemId === item.item_id;
-              const label = getItemShortLabel(item);
+            {(() => {
+              // Sắp xếp thứ tự render SVG: kiện đang kéo luôn render sau cùng để nổi trên mặt tất cả các kiện khác
+              const sortedRenderItems = draggingState?.itemId
+                ? [
+                    ...currentPlacedItems.filter((i) => i.item_id !== draggingState.itemId),
+                    ...currentPlacedItems.filter((i) => i.item_id === draggingState.itemId),
+                  ]
+                : currentPlacedItems;
 
-              // Xử lý làm mờ nếu đang lọc theo đơn hàng khác
-              const orderKey = item.order_id || item.item_id.split('#')[0] || 'DEFAULT';
-              const isDimmed = selectedOrderFilter !== null && orderKey !== selectedOrderFilter;
+              return sortedRenderItems.map((item) => {
+                const rx = item.x * scaleX;
+                const ry = item.y * scaleY;
+                const rw = item.length_cm * scaleX;
+                const rh = item.width_cm * scaleY;
+                const colorInfo = getItemColor(item);
+                const isHovered = hoveredItemId === item.item_id;
+                const isSelected = selectedItemId === item.item_id;
+                const isClear = isPathToDoorClear(item);
+                const isColliding = collisionInfo.collidingIds.has(item.item_id);
+                const isDragging = draggingState?.itemId === item.item_id;
+                const label = getItemShortLabel(item);
 
-              return (
-                <g
-                  key={item.item_id}
-                  style={{
-                    cursor: isManualMode ? (isDragging ? 'grabbing' : 'grab') : 'pointer',
-                    transition: isDragging ? 'none' : 'opacity 0.2s ease',
-                  }}
-                  opacity={isDimmed ? 0.25 : 1}
-                  onMouseEnter={() => setHoveredItemId(item.item_id)}
-                  onMouseLeave={() => setHoveredItemId(null)}
-                  onMouseDown={(e) => handleMouseDownItem(e, item)}
-                  onClick={() => {
-                    if (!draggingState) {
-                      setSelectedItemId(isSelected ? null : item.item_id);
-                    }
-                  }}
-                >
+                // Xử lý làm mờ nếu đang lọc theo đơn hàng khác
+                const orderKey = item.order_id || item.item_id.split('#')[0] || 'DEFAULT';
+                const isDimmed = selectedOrderFilter !== null && orderKey !== selectedOrderFilter;
+
+                return (
+                  <g
+                    key={item.item_id}
+                    style={{
+                      cursor: isManualMode ? (isDragging ? 'grabbing' : 'grab') : 'pointer',
+                      transition: isDragging ? 'none' : 'opacity 0.2s ease',
+                      pointerEvents: isDragging ? 'none' : 'auto',
+                    }}
+                    opacity={isDimmed ? 0.25 : 1}
+                    onMouseEnter={() => {
+                      if (!draggingState) setHoveredItemId(item.item_id);
+                    }}
+                    onMouseLeave={() => {
+                      if (!draggingState) setHoveredItemId(null);
+                    }}
+                    onMouseDown={(e) => handleMouseDownItem(e, item)}
+                    onClick={() => {
+                      if (!draggingState) {
+                        setSelectedItemId(isSelected ? null : item.item_id);
+                      }
+                    }}
+                  >
                   {/* Tooltip gốc SVG hiển thị kích thước và khối lượng khi rê chuột */}
                   <title>{`Kiện: ${label} (Đơn ${item.order_id ? item.order_id.slice(-6).toUpperCase() : 'N/A'})\nKích thước: ${item.length_cm} × ${item.width_cm} × ${item.height_cm || 40} cm\nKhối lượng: ${item.weight_kg.toFixed(1)} kg\nTọa độ: x=${item.x}cm, y=${item.y}cm${isColliding ? '\n⚠️ Đang bị chồng lấn!' : ''}`}</title>
                   {/* Khối kiện hàng */}
@@ -1474,7 +1472,8 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                   )}
                 </g>
               );
-            })}
+            });
+          })()}
 
             {/* Thông báo khi xe ở bước khởi hành rỗng (chưa tới Điểm 1) */}
             {clampedStep === 0 && (
@@ -1595,6 +1594,32 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           </span>
         </div>
       </div>
+
+      {/* ============================================================ */}
+      {/* CẢNH BÁO VA CHẠM CHỒNG LẤN KHI MÔ PHỎNG THỦ CÔNG             */}
+      {/* (Đặt bên dưới SVG để tuyệt đối không làm dịch chuyển khung SVG) */}
+      {/* ============================================================ */}
+      {collisionInfo.pairs.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          icon={<WarningOutlined style={{ color: '#ef4444' }} />}
+          message="Cảnh báo va chạm chồng lấn (Vi phạm Bất biến T21–T27: Không được xếp chồng hàng):"
+          description={
+            <div style={{ fontSize: 12, marginTop: 4 }}>
+              {collisionInfo.pairs.map((pair, idx) => (
+                <div key={idx} style={{ marginBottom: 2 }}>
+                  • Kiện <strong style={{ color: '#b91c1c' }}>{getItemShortLabel(pair.item1)}</strong> đang bị chồng lấn với kiện <strong style={{ color: '#b91c1c' }}>{getItemShortLabel(pair.item2)}</strong>
+                </div>
+              ))}
+              <div style={{ marginTop: 4, color: '#475569' }}>
+                💡 Hãy kéo thả tách các kiện hàng ra hoặc dùng bảng điều khiển bên dưới để di chuyển/xoay kiện về vị trí hợp lệ.
+              </div>
+            </div>
+          }
+          style={{ marginTop: 10, border: '1px solid #fca5a5', backgroundColor: '#fef2f2' }}
+        />
+      )}
 
       {/* ============================================================ */}
       {/* 2.5. BẢNG ĐIỀU KHIỂN NHANH KIỆN HÀNG ĐANG CHỌN (QUICK PANEL) */}

@@ -18,6 +18,7 @@ describePostgres('Inventory reservation concurrency (PostgreSQL)', () => {
 
   beforeAll(async () => {
     process.env.DATABASE_URL = testDatabaseUrl;
+    process.env.RETAIL_RESERVATION_TTL_MINUTES = process.env.RETAIL_RESERVATION_TTL_MINUTES || '30';
     prisma = new PrismaService();
     await prisma.$connect();
     service = new InventoryService(

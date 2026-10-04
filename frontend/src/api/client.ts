@@ -7,6 +7,7 @@ import {
   LoadProfileResult,
   Location,
   OptimizationResultUI,
+  OptimizationCandidateDetailUI,
   Order,
   RunAutomaticOptimizationPayloadUI,
   Trip,
@@ -134,9 +135,19 @@ export const tripsApi = {
     apiClient.post<AutomaticOptimizationResponseUI>(
       `/trips/automatic-optimization/jobs/${jobId}/cancel`,
     ),
-  applyAutomaticOptimization: (jobId: string) =>
+  getAutomaticOptimizationCandidate: (jobId: string, candidateNumber: number) =>
+    apiClient.get<OptimizationCandidateDetailUI>(
+      `/trips/automatic-optimization/jobs/${jobId}/candidates/${candidateNumber}`,
+    ),
+  exportAutomaticOptimizationCandidates: (jobId: string) =>
+    apiClient.get<Blob>(
+      `/trips/automatic-optimization/jobs/${jobId}/export`,
+      { responseType: 'blob' },
+    ),
+  applyAutomaticOptimization: (jobId: string, candidateNumber: number) =>
     apiClient.post<ApplyOptimizationResponseUI>(
       `/trips/automatic-optimization/jobs/${jobId}/apply`,
+      { candidateNumber },
     ),
 };
 

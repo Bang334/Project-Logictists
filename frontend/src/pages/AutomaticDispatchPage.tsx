@@ -58,12 +58,14 @@ import { EditDriverModal } from '../components/EditDriverModal';
 import { EditVehicleModal } from '../components/EditVehicleModal';
 import { OrderDetailDrawer } from '../components/OrderDetailDrawer';
 import { ExpandableText } from '../components/ExpandableText';
+import { OptimizationJobProgressCard } from '../components/OptimizationJobProgressCard';
 import {
   AutomaticDispatchScheduleModeUI,
   AutomaticOptimizationResponseUI,
   Branch,
   Driver,
   OptimizedRouteUI,
+  FleetOptimizationResultUI,
   Order,
   RunAutomaticOptimizationPayloadUI,
   Vehicle,
@@ -256,6 +258,10 @@ const AutomaticDispatchPage: React.FC = () => {
   const [availableDrivers, setAvailableDrivers] = useState<Driver[]>([]);
   const [loadingCounts, setLoadingCounts] = useState(true);
   const [optimization, setOptimization] = useState<AutomaticOptimizationResponseUI | null>(null);
+  const [selectedCandidateNumber, setSelectedCandidateNumber] = useState(1);
+  const [selectedCandidateResult, setSelectedCandidateResult] = useState<FleetOptimizationResultUI | null>(null);
+  const [loadingCandidate, setLoadingCandidate] = useState(false);
+  const [exportingCandidates, setExportingCandidates] = useState(false);
   const [starting, setStarting] = useState(false);
   const [applying, setApplying] = useState(false);
   const [appliedTripCount, setAppliedTripCount] = useState<number | null>(null);
@@ -433,6 +439,13 @@ const AutomaticDispatchPage: React.FC = () => {
   const activeOptimizationBranchId = optimization?.branchId;
 
   useEffect(() => {
+    setSelectedCandidateNumber(1);
+    setSelectedCandidateResult(null);
+    setSelectedVehicleForMap('ALL');
+    setActiveStepIndex(0);
+  }, [activeOptimizationJobId]);
+
+  useEffect(() => {
     if (!activeOptimizationJobId || !activeOptimizationStatus) return;
     // BẢO VỆ: Nếu optimization không thuộc selectedBranchId đang chọn, dừng polling ngay lập tức
     if (activeOptimizationBranchId !== selectedBranchId) {
@@ -564,7 +577,7 @@ const AutomaticDispatchPage: React.FC = () => {
         savedAt: new Date().toISOString(),
       });
 
-      message.success('Đã tạo phương án điều phối để bạn kiểm tra');
+      message.success('Đã tạo job tối ưu; hệ thống đang xử lý dữ liệu');
     } catch (error: any) {
       message.error(error.response?.data?.message || 'Không thể bắt đầu tối ưu tự động');
     } finally {
@@ -583,7 +596,10 @@ const AutomaticDispatchPage: React.FC = () => {
     }
     try {
       setApplying(true);
-      const response = await tripsApi.applyAutomaticOptimization(optimization.id);
+      const response = await tripsApi.applyAutomaticOptimization(
+        optimization.id,
+        selectedCandidateNumber,
+      );
       const tripCount = response.data.trips.length;
       setAppliedTripCount(tripCount);
 
@@ -638,6 +654,8 @@ const AutomaticDispatchPage: React.FC = () => {
 
     // 2. DỌN SẠCH TOÀN BỘ REACT STATE
     setOptimization(null);
+    setSelectedCandidateNumber(1);
+    setSelectedCandidateResult(null);
     setAppliedTripCount(null);
     setSelectedVehicleForMap('ALL');
     setEnableSim(false);
@@ -662,6 +680,8 @@ const AutomaticDispatchPage: React.FC = () => {
 
     // Reset sạch sẽ state của chi nhánh cũ ngay lập tức để không bị treo phương án cũ
     setOptimization(null);
+    setSelectedCandidateNumber(1);
+    setSelectedCandidateResult(null);
     setAppliedTripCount(null);
     setIsRestoredFromStorage(false);
     setSelectedVehicleForMap('ALL');
@@ -680,7 +700,49 @@ const AutomaticDispatchPage: React.FC = () => {
   const isOptimizationForCurrentBranch = Boolean(
     optimization && selectedBranchId && optimization.branchId === selectedBranchId,
   );
-  const result = isOptimizationForCurrentBranch ? optimization?.result : null;
+  const result = isOptimizationForCurrentBranch
+    ? selectedCandidateResult ?? optimization?.result
+    : null;
+
+  const selectCandidate = async (candidateNumber: number) => {
+    if (!optimization || candidateNumber === selectedCandidateNumber) return;
+    try {
+      setLoadingCandidate(true);
+      const response = await tripsApi.getAutomaticOptimizationCandidate(
+        optimization.id,
+        candidateNumber,
+      );
+      setSelectedCandidateNumber(candidateNumber);
+      setSelectedCandidateResult(response.data.result);
+      setSelectedVehicleForMap('ALL');
+      setActiveStepIndex(0);
+      setEnableSim(false);
+    } catch (error: any) {
+      message.error(error.response?.data?.message || 'Không tải được phương án đã chọn');
+    } finally {
+      setLoadingCandidate(false);
+    }
+  };
+
+  const exportCandidates = async () => {
+    if (!optimization) return;
+    try {
+      setExportingCandidates(true);
+      const response = await tripsApi.exportAutomaticOptimizationCandidates(optimization.id);
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `phuong-an-toi-uu-${optimization.id}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error: any) {
+      message.error(error.response?.data?.message || 'Không thể xuất file Excel');
+    } finally {
+      setExportingCandidates(false);
+    }
+  };
   const formatRouteStart = (route: OptimizedRouteUI) =>
     dayjs(optimization?.planningEpochIso)
       .add(route.start_time_sec, 'second')
@@ -2348,7 +2410,8 @@ const AutomaticDispatchPage: React.FC = () => {
             disabled={
               !isOptimizationForCurrentBranch ||
               !optimization ||
-              optimization.result?.routes.length === 0 ||
+              !result ||
+              result.routes.length === 0 ||
               !['SUCCEEDED', 'PARTIAL'].includes(optimization.status) ||
               appliedTripCount !== null ||
               starting
@@ -2356,7 +2419,7 @@ const AutomaticDispatchPage: React.FC = () => {
             onClick={applyOptimization}
           >
             {appliedTripCount === null
-              ? 'Áp dụng phân công'
+              ? `Áp dụng phương án #${selectedCandidateNumber}`
               : `Đã áp dụng ${appliedTripCount} chuyến`}
           </Button>
           {appliedTripCount !== null && (
@@ -2431,22 +2494,7 @@ const AutomaticDispatchPage: React.FC = () => {
       )}
 
       {isOptimizationForCurrentBranch && optimization && !result && (
-        <Alert
-          type={
-            ['FAILED', 'TIMEOUT', 'CANCELLED'].includes(optimization.status)
-              ? 'error'
-              : 'info'
-          }
-          showIcon
-          message={`Job tối ưu: ${optimization.status}`}
-          description={
-            optimization.error?.message ||
-            (starting
-              ? 'Job đang chạy ngầm. Bạn có thể tải lại trang mà không mất kết quả.'
-              : undefined)
-          }
-          style={{ marginBottom: 16 }}
-        />
+        <OptimizationJobProgressCard job={optimization} />
       )}
 
       {isOptimizationForCurrentBranch && result && ['INFEASIBLE', 'TIMEOUT'].includes(optimization?.status ?? '') && (
@@ -2672,6 +2720,120 @@ const AutomaticDispatchPage: React.FC = () => {
       {result ? (
         <>
           {result.benchmarks && <BenchmarkCostComparisonCard benchmarks={result.benchmarks} />}
+          {optimization && optimization.candidates.length > 0 && (
+            <Card
+              title="Top phương án tối ưu giao đủ 100% đơn"
+              extra={
+                <Button
+                  icon={<ExportOutlined />}
+                  loading={exportingCandidates}
+                  onClick={exportCandidates}
+                >
+                  Xuất Excel
+                </Button>
+              }
+              style={{ marginBottom: 16 }}
+            >
+              {optimization.candidates.some((c) => c.unassignedOrderCount > 0) ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="Không có phương án nào giao đủ 100% đơn"
+                  description="Hiển thị phương án khả thi có tỷ lệ phục vụ cao nhất. Vui lòng kiểm tra tab Đơn chưa xếp hoặc bổ sung thêm xe/tài xế khả dụng."
+                  style={{ marginBottom: 12 }}
+                />
+              ) : (
+                <Alert
+                  type="success"
+                  showIcon
+                  message={`Đã ghi lại ${optimization.candidates.length} phương án tối ưu giao đủ 100% đơn`}
+                  description="Các phương án được trích xuất từ các lượt chạy OR-Tools độc lập song song (khác chiến lược). #1 là phương án có chi phí vận hành thấp nhất."
+                  style={{ marginBottom: 12 }}
+                />
+              )}
+              <Table
+                size="small"
+                rowKey="candidateNumber"
+                loading={loadingCandidate}
+                pagination={false}
+                dataSource={optimization.candidates}
+                rowClassName={(candidate) =>
+                  candidate.candidateNumber === selectedCandidateNumber
+                    ? 'ant-table-row-selected'
+                    : ''
+                }
+                onRow={(candidate) => ({
+                  onClick: () => void selectCandidate(candidate.candidateNumber),
+                  style: { cursor: 'pointer' },
+                })}
+                columns={[
+                  {
+                    title: 'Hạng',
+                    dataIndex: 'candidateNumber',
+                    width: 100,
+                    render: (value: number) =>
+                      value === 1 ? <Tag color="green">#1 tốt nhất</Tag> : `#${value}`,
+                  },
+                  {
+                    title: 'Chiến lược tìm kiếm',
+                    render: (_, candidate) => (
+                      <Text style={{ fontSize: 13 }}>
+                        {candidate.searchStrategy || `Lần #${candidate.improvementSequence}`}
+                      </Text>
+                    ),
+                  },
+                  {
+                    title: 'Tổng chi phí',
+                    dataIndex: 'totalCostVnd',
+                    render: (value: number) => <Text strong>{currency.format(value)}</Text>,
+                  },
+                  {
+                    title: 'Chênh với #1',
+                    render: (_, candidate) => {
+                      if (candidate.unassignedOrderCount > 0) {
+                        return <Text type="secondary">—</Text>;
+                      }
+                      const best = optimization.candidates[0]?.totalCostVnd ?? candidate.totalCostVnd;
+                      const diff = candidate.totalCostVnd - best;
+                      return diff === 0 ? '0 đ' : `+${currency.format(diff)}`;
+                    },
+                  },
+                  {
+                    title: 'Quãng đường',
+                    dataIndex: 'totalDistanceKm',
+                    render: (value: number) => `${value.toFixed(2)} km`,
+                  },
+                  {
+                    title: 'Thời gian',
+                    dataIndex: 'totalDurationMinutes',
+                    render: (value: number) => `${value.toFixed(1)} phút`,
+                  },
+                  { title: 'Lượt chuyến', dataIndex: 'routeCount' },
+                  {
+                    title: 'Đơn chưa xếp',
+                    dataIndex: 'unassignedOrderCount',
+                    render: (value: number) =>
+                      value === 0 ? (
+                        <Tag color="success">0 (Đủ 100%)</Tag>
+                      ) : (
+                        <Tag color="error">{value} đơn</Tag>
+                      ),
+                  },
+                  {
+                    title: 'Xem',
+                    render: (_, candidate) => (
+                      <Button
+                        size="small"
+                        type={candidate.candidateNumber === selectedCandidateNumber ? 'primary' : 'default'}
+                      >
+                        {candidate.candidateNumber === selectedCandidateNumber ? 'Đang chọn' : 'So sánh'}
+                      </Button>
+                    ),
+                  },
+                ]}
+              />
+            </Card>
+          )}
           <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
             <Col xs={24} xl={mapLayoutMode === 'FULL' ? 24 : 12}>
               <Card

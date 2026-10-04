@@ -1,4 +1,7 @@
-import { assertFleetOptimizationResult } from '../../src/trips/optimizer-contract';
+import {
+  assertFleetOptimizationBatchResult,
+  assertFleetOptimizationResult,
+} from '../../src/trips/optimizer-contract';
 
 const validResult = () => ({
   job_id: 'job-1',
@@ -32,7 +35,7 @@ const validResult = () => ({
       },
     },
   ],
-  unassigned_orders: [],
+  unassigned_orders: [] as any[],
   total_distance_km: 10,
   total_duration_minutes: 20,
   total_cost_vnd: 300,
@@ -86,6 +89,113 @@ describe('assertFleetOptimizationResult', () => {
 
     expect(() => assertFleetOptimizationResult(result)).toThrow(
       'is_feasible',
+    );
+  });
+});
+
+describe('assertFleetOptimizationBatchResult', () => {
+  it('accepts a valid ranked batch of fully-served candidates', () => {
+    const res1 = validResult();
+    res1.total_cost_vnd = 1_000_000;
+    const res2 = validResult();
+    res2.total_cost_vnd = 1_200_000;
+
+    const batch = {
+      job_id: 'job-1',
+      solver_run_count: 6,
+      fully_served_candidate_count: 2,
+      candidates: [
+        {
+          rank: 1,
+          search_strategy: 'Chèn rẻ nhất song song + GLS',
+          solver_objective: 80,
+          is_best_found: true,
+          result: res1,
+        },
+        {
+          rank: 2,
+          search_strategy: 'Chèn rẻ nhất cục bộ + GLS',
+          solver_objective: 90,
+          is_best_found: false,
+          result: res2,
+        },
+      ],
+    };
+
+    expect(() => assertFleetOptimizationBatchResult(batch)).not.toThrow();
+  });
+
+  it('rejects a batch where a secondary candidate has unassigned orders', () => {
+    const res1 = validResult();
+    res1.total_cost_vnd = 1_000_000;
+    const res2 = validResult();
+    res2.total_cost_vnd = 1_200_000;
+    res2.unassigned_orders = [
+      {
+        order_id: 'o-bad',
+        order_number: 'ORD-BAD',
+        reason_code: 'NO_FIT',
+        reason_message: 'Không vừa',
+      },
+    ];
+
+    const batch = {
+      job_id: 'job-1',
+      solver_run_count: 6,
+      fully_served_candidate_count: 1,
+      candidates: [
+        {
+          rank: 1,
+          search_strategy: 'Strategy 1',
+          solver_objective: 80,
+          is_best_found: true,
+          result: res1,
+        },
+        {
+          rank: 2,
+          search_strategy: 'Strategy 2',
+          solver_objective: 90,
+          is_best_found: false,
+          result: res2,
+        },
+      ],
+    };
+
+    expect(() => assertFleetOptimizationBatchResult(batch)).toThrow(
+      'không giao đủ 100% đơn',
+    );
+  });
+
+  it('rejects candidates not sorted by total cost ascending', () => {
+    const res1 = validResult();
+    res1.total_cost_vnd = 2_000_000;
+    const res2 = validResult();
+    res2.total_cost_vnd = 1_000_000;
+
+    const batch = {
+      job_id: 'job-1',
+      solver_run_count: 6,
+      fully_served_candidate_count: 2,
+      candidates: [
+        {
+          rank: 1,
+          search_strategy: 'Strategy 1',
+          solver_objective: 80,
+          is_best_found: true,
+          result: res1,
+        },
+        {
+          rank: 2,
+          search_strategy: 'Strategy 2',
+          solver_objective: 90,
+          is_best_found: false,
+          result: res2,
+        },
+      ],
+    };
+
+    expect(() => assertFleetOptimizationBatchResult(batch)).toThrow(
+      'chưa được sắp xếp theo tổng chi phí tăng dần',
     );
   });
 });

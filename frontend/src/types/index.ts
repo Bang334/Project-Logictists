@@ -393,6 +393,28 @@ export type OptimizationJobStatusUI =
   | 'APPLYING'
   | 'APPLIED';
 
+export type OptimizationProgressStageUI =
+  | 'QUEUED'
+  | 'LOADING_INPUT'
+  | 'BUILDING_MATRIX'
+  | 'SEARCHING_SOLUTIONS'
+  | 'BUILDING_ROUTE_GEOMETRY'
+  | 'SAVING_RESULTS'
+  | 'COMPLETED';
+
+export interface OptimizationJobProgressUI {
+  stage: OptimizationProgressStageUI;
+  updatedAt: string | null;
+  details: {
+    orderCount?: number;
+    packageCount?: number;
+    physicalVehicleCount?: number;
+    driverCount?: number;
+    serviceSlotCount?: number;
+    candidateCount?: number;
+  };
+}
+
 export interface AutomaticOptimizationResponseUI {
   id: string;
   branchId: string;
@@ -400,13 +422,36 @@ export interface AutomaticOptimizationResponseUI {
   schemaVersion: string;
   planningEpochIso: string | null;
   scheduleMode: AutomaticDispatchScheduleModeUI | null;
+  progress: OptimizationJobProgressUI | null;
   result: FleetOptimizationResultUI | null;
+  candidates: OptimizationCandidateSummaryUI[];
   error: { code: string; message: string | null } | null;
   attemptCount: number;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface OptimizationCandidateSummaryUI {
+  candidateNumber: number;
+  rank?: number;
+  searchStrategy?: string;
+  improvementSequence: number;
+  solverObjective: number;
+  isBestFound: boolean;
+  feasibilityStatus: string;
+  totalCostVnd: number;
+  totalDistanceKm: number;
+  totalDurationMinutes: number;
+  routeCount: number;
+  unassignedOrderCount: number;
+}
+
+export interface OptimizationCandidateDetailUI {
+  candidateNumber: number;
+  result: FleetOptimizationResultUI;
+  summary: OptimizationCandidateSummaryUI;
 }
 
 export interface ApplyOptimizationResponseUI {

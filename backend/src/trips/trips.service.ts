@@ -30,7 +30,7 @@ import {
 import { OptimizeTripDto } from "./dto/optimize-trip.dto";
 import { expandOrderItemsToCargoUnits } from "./optimizer-payload";
 import {
-  assertFleetOptimizationResult,
+  assertFleetOptimizationBatchResult,
   OptimizedRouteResult,
 } from "./optimizer-contract";
 import { resolveBranchScope } from "../auth/branch-scope";
@@ -59,6 +59,7 @@ import {
   resolveVehiclePlanningStart,
   VEHICLE_HOME_DEPOT_SELECT,
 } from './vehicle-planning-start';
+import { OptimizationProgressReporter } from './optimization-progress';
 
 const ACTIVE_TRIP_STATUSES = [
   TripStatus.PLANNED,
@@ -116,6 +117,21 @@ type PlannedAutomaticTrip = {
     plannedArrivalTime: Date;
     plannedDepartureTime: Date;
   }>;
+};
+
+export type StoredOptimizationCandidate = {
+  proposal: OptimizationProposal;
+  signature: string;
+  rank: number;
+  searchStrategy: string;
+  improvementSequence?: number;
+  solverObjective: number;
+  isBestFound: boolean;
+};
+
+export type StoredOptimizationCandidateBatch = {
+  best: StoredOptimizationCandidate;
+  candidates: StoredOptimizationCandidate[];
 };
 
 @Injectable()
@@ -1385,6 +1401,7 @@ export class TripsService {
     user: { id: string; branchId?: string; role: Role },
     dto?: RunAutomaticOptimizationDto | string,
     persistedJobId?: string,
+    reportProgress?: OptimizationProgressReporter,
   ) {
     const requestedBranchId = typeof dto === "string" ? dto : dto?.branchId;
     const scheduleMode =
@@ -1556,13 +1573,27 @@ export class TripsService {
         late_delivery_penalty_value: Number(branch.lateDeliveryPenaltyValue),
       },
       planning_epoch_iso: planningEpoch.toISOString(),
-      max_time_seconds: Math.min(
-        30,
-        Math.max(12, Math.round(orders.length * 0.8)),
-      ),
+      // Optimizer là nguồn duy nhất chọn ngân sách thực theo độ phức tạp.
+      // Backend chỉ truyền trần cứng hai phút để snapshot/provenance không
+      // nhân đôi công thức chính sách giữa Node và Python.
+      max_time_seconds: 120,
     };
     const vehicleCount = snapshot.vehicles.length;
     const orderCount = snapshot.orders.length;
+    const progressDetails = {
+      orderCount,
+      packageCount: snapshot.orders.reduce(
+        (total, order) => total + order.items.length,
+        0,
+      ),
+      physicalVehicleCount: candidateVehicles.length,
+      driverCount: drivers.length,
+      serviceSlotCount: vehicleCount,
+    };
+    await reportProgress?.({
+      stage: 'BUILDING_MATRIX',
+      details: progressDetails,
+    });
     const firstDepot = snapshot.vehicles[0]?.depot;
     const allSameDepot =
       firstDepot &&
@@ -1706,17 +1737,22 @@ export class TripsService {
       });
     }
 
-    let result;
+    await reportProgress?.({
+      stage: 'SEARCHING_SOLUTIONS',
+      details: progressDetails,
+    });
+
+    let rankedResults;
     try {
       const response = await axios.post(
-        `${this.optimizerUrl}/optimize-fleet`,
+        `${this.optimizerUrl}/optimize-fleet/candidates`,
         payload,
         {
-          timeout: Math.max(120000, (snapshot.max_time_seconds + 60) * 1000),
+          timeout: Math.max(120000, (snapshot.max_time_seconds + 90) * 1000),
         },
       );
-      assertFleetOptimizationResult(response.data);
-      result = response.data;
+      assertFleetOptimizationBatchResult(response.data);
+      rankedResults = response.data.candidates;
     } catch (error: any) {
       const detail = error.response?.data?.detail;
       const detailMsg = Array.isArray(detail)
@@ -1728,68 +1764,123 @@ export class TripsService {
         detailMsg ||
           error.response?.data?.message ||
           error.message ||
-          "Không thể nhận kết quả từ Optimization Engine",
+          'Không thể nhận chuỗi nghiệm từ Optimization Engine',
       );
     }
 
-    await Promise.all(
-      result.routes.map(async (route) => {
-        const vehicle = snapshot.vehicles.find(
-          (item) => item.id === route.route_id,
-        );
-        if (!vehicle)
-          throw new Error(`Optimizer trả route_id lạ: ${route.route_id}`);
-        const routeCoordinates: [number, number][] = [
-          [vehicle.depot.longitude, vehicle.depot.latitude],
-          ...route.stops.map(
-            (stop) => [stop.longitude, stop.latitude] as [number, number],
-          ),
-          [vehicle.depot.longitude, vehicle.depot.latitude],
-        ];
-        const routeDetails =
-          await this.mapboxService.getRoute(routeCoordinates);
-        route.depot = vehicle.depot;
-        route.route_geometry = routeDetails.geometry;
-      }),
-    );
-
-    const proposal: OptimizationProposal = {
-      branchId,
-      planningEpochIso: planningEpoch.toISOString(),
-      scheduleMode,
-      expiresAt: new Date(
-        Date.now() + OPTIMIZATION_PROPOSAL_TTL_MS,
-      ).toISOString(),
-      resources: {
-        orders: orders.map((order) => ({
-          id: order.id,
-          version: order.version,
-        })),
-        vehicles: candidateVehicles.map((vehicle) => ({
-          id: vehicle.id,
-          updatedAt: vehicle.updatedAt.toISOString(),
-        })),
-        drivers: drivers.map((driver) => ({
-          id: driver.id,
-          updatedAt: driver.updatedAt.toISOString(),
-        })),
+    await reportProgress?.({
+      stage: 'BUILDING_ROUTE_GEOMETRY',
+      details: {
+        ...progressDetails,
+        candidateCount: rankedResults.length,
       },
-      result: JSON.parse(JSON.stringify(result)),
-    };
+    });
 
-    return {
-      proposal,
-      signature: signOptimizationProposal(
+    const expiresAt = new Date(
+      Date.now() + OPTIMIZATION_PROPOSAL_TTL_MS,
+    ).toISOString();
+    const feasibleResults = rankedResults.filter((candidate) =>
+      ['SUCCESS', 'PARTIAL'].includes(candidate.result.status),
+    );
+    if (feasibleResults.length === 0) {
+      const fallback = rankedResults[0];
+      if (fallback) {
+        const proposal: OptimizationProposal = {
+          branchId,
+          planningEpochIso: planningEpoch.toISOString(),
+          scheduleMode,
+          expiresAt,
+          resources: {
+            orders: orders.map((order) => ({ id: order.id, version: order.version })),
+            vehicles: candidateVehicles.map((vehicle) => ({
+              id: vehicle.id,
+              updatedAt: vehicle.updatedAt.toISOString(),
+            })),
+            drivers: drivers.map((driver) => ({
+              id: driver.id,
+              updatedAt: driver.updatedAt.toISOString(),
+            })),
+          },
+          result: JSON.parse(JSON.stringify(fallback.result)),
+        };
+        const best: StoredOptimizationCandidate = {
+          proposal,
+          signature: signOptimizationProposal(
+            proposal,
+            this.optimizationProposalSecret,
+          ),
+          rank: fallback.rank ?? 1,
+          searchStrategy: fallback.search_strategy ?? 'Khởi tạo',
+          solverObjective: fallback.solver_objective,
+          isBestFound: true,
+        };
+        return { best, candidates: [] } satisfies StoredOptimizationCandidateBatch;
+      }
+      throw new ServiceUnavailableException(
+        'Optimization Engine không trả về nghiệm nào từ lần chạy solver',
+      );
+    }
+    const candidates: StoredOptimizationCandidate[] = [];
+    for (const candidate of feasibleResults) {
+      const { result } = candidate;
+      await Promise.all(
+        result.routes.map(async (route) => {
+          const vehicle = snapshot.vehicles.find(
+            (item) => item.id === route.route_id,
+          );
+          if (!vehicle)
+            throw new Error(`Optimizer trả route_id lạ: ${route.route_id}`);
+          const routeCoordinates: [number, number][] = [
+            [vehicle.depot.longitude, vehicle.depot.latitude],
+            ...route.stops.map(
+              (stop) => [stop.longitude, stop.latitude] as [number, number],
+            ),
+            [vehicle.depot.longitude, vehicle.depot.latitude],
+          ];
+          const routeDetails = await this.mapboxService.getRoute(routeCoordinates);
+          route.depot = vehicle.depot;
+          route.route_geometry = routeDetails.geometry;
+        }),
+      );
+      const proposal: OptimizationProposal = {
+        branchId,
+        planningEpochIso: planningEpoch.toISOString(),
+        scheduleMode,
+        expiresAt,
+        resources: {
+          orders: orders.map((order) => ({ id: order.id, version: order.version })),
+          vehicles: candidateVehicles.map((vehicle) => ({
+            id: vehicle.id,
+            updatedAt: vehicle.updatedAt.toISOString(),
+          })),
+          drivers: drivers.map((driver) => ({
+            id: driver.id,
+            updatedAt: driver.updatedAt.toISOString(),
+          })),
+        },
+        result: JSON.parse(JSON.stringify(result)),
+      };
+      candidates.push({
         proposal,
-        this.optimizationProposalSecret,
-      ),
-    };
+        signature: signOptimizationProposal(
+          proposal,
+          this.optimizationProposalSecret,
+        ),
+        rank: candidate.rank,
+        searchStrategy: candidate.search_strategy,
+        solverObjective: candidate.solver_objective,
+        isBestFound: candidate.is_best_found,
+      });
+    }
+
+    return { best: candidates[0], candidates } satisfies StoredOptimizationCandidateBatch;
   }
 
   async applyAutomaticOptimization(
     dto: ApplyAutomaticOptimizationDto,
     user: { id: string; branchId?: string; role: Role },
     sourceJobId?: string,
+    sourceCandidateNumber?: number,
   ) {
     try {
       assertOptimizationProposal(dto.proposal);
@@ -1931,6 +2022,7 @@ export class TripsService {
               tripNumbers[index],
               branchId,
               sourceJobId,
+              sourceCandidateNumber,
             ),
           );
         }
@@ -2479,6 +2571,7 @@ export class TripsService {
     tripNumber: string,
     branchId: string,
     sourceJobId?: string,
+    sourceCandidateNumber?: number,
   ) {
     const trip = await tx.trip.create({
       data: {
@@ -2493,7 +2586,7 @@ export class TripsService {
         routeGeometry: plannedTrip.routeGeometry,
         planningSnapshot: plannedTrip.planningSnapshot,
         notes: sourceJobId
-          ? `Sinh từ optimization job ${sourceJobId}`
+          ? `Sinh từ optimization job ${sourceJobId}, phương án #${sourceCandidateNumber ?? 1}`
           : 'Sinh từ kết quả tối ưu tự động',
       },
     });
@@ -2599,6 +2692,7 @@ export class TripsService {
           tripId: trip.id,
           branchId,
           optimizationJobId: sourceJobId ?? null,
+          optimizationCandidateNumber: sourceCandidateNumber ?? null,
         },
       },
       tx,
