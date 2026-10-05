@@ -677,3 +677,10 @@ Mỗi lần cập nhật sẽ:
 4. Giữ các điểm chưa trả lời ở trạng thái đề xuất/cần chốt.
 
 Việc duyệt/chỉnh tài liệu chưa đồng nghĩa cho phép triển khai. Điểm bắt đầu triển khai vẫn là câu **“OK, bắt đầu triển khai”**.
+
+
+## Bổ sung Package và khung giờ — 03/10/2026
+
+Trong phiên triển khai, người dùng đã xác nhận số đo **mỗi kiện**, nhập nhanh rồi sửa riêng; khung giờ **bắt đầu phục vụ**, bắt buộc khi xác nhận, UTC/Asia/Ho_Chi_Minh, cho phép qua ngày/chồng nhau; lưu **DRAFT → CONFIRMED**, chỉ sửa hàng/điểm/giờ khi chưa có phân công hay lịch sử tham chiếu. MVP một lấy–một giao theo thiết kế hiện hành. Đơn cũ không tự chia khối lượng hoặc tạo kiện suy đoán.
+
+Chi tiết triển khai, giới hạn migration, hợp đồng với Người 1 và bằng chứng kiểm thử: [ORDERS_PACKAGES.md](ORDERS_PACKAGES.md). Đây chỉ là phần POL02 liên quan nhiệm vụ này; không chốt thêm chia đơn, mở kiện, giao thiếu, hủy sau lấy. POL03 về hình học/hướng xoay/khoảng hở/thiết bị vẫn còn mở; không thêm quyền xoay hoặc xếp chồng.

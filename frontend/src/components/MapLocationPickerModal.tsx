@@ -23,6 +23,7 @@ interface MapLocationPickerModalProps {
     longitude?: number;
   };
   title?: string;
+  manualAddress?: boolean;
 }
 
 export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
@@ -31,19 +32,24 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
   onSelectLocation,
   initialLocation,
   title = 'Chọn Vị Trí Trên Bản Đồ',
+  manualAddress = false,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markerRef = useRef<mapboxgl.Marker | null>(null);
 
   const [coords, setCoords] = useState<{ lat: number; lng: number }>({
-    lat: initialLocation?.latitude && initialLocation.latitude !== 0 ? initialLocation.latitude : 21.0285,
-    lng: initialLocation?.longitude && initialLocation.longitude !== 0 ? initialLocation.longitude : 105.8542,
+    lat: initialLocation?.latitude ?? 21.0285,
+    lng: initialLocation?.longitude ?? 105.8542,
   });
   const [address, setAddress] = useState<string>(initialLocation?.address || '');
   const [isGeocoding, setIsGeocoding] = useState<boolean>(false);
   const [searchOptions, setSearchOptions] = useState<any[]>([]);
   const [searchValue, setSearchValue] = useState<string>('');
+
+  const [mapError, setMapError] = useState('');
+  const [selected, setSelected] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
 
   // Hàm reverse geocode khi marker đổi tọa độ
   const reverseGeocodeCoords = async (lng: number, lat: number) => {
@@ -63,12 +69,13 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
   // Cập nhật vị trí Marker
   const setMarkerPosition = (lng: number, lat: number, shouldGeocode: boolean = true) => {
     setCoords({ lat, lng });
+    setSelected(true);
 
     if (markerRef.current) {
       markerRef.current.setLngLat([lng, lat]);
     }
 
-    if (shouldGeocode) {
+    if (shouldGeocode && !manualAddress) {
       void reverseGeocodeCoords(lng, lat);
     }
   };
@@ -78,11 +85,14 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
     if (!open) return;
 
     const token = import.meta.env.VITE_MAPBOX_TOKEN;
-    if (!token) return;
+    setMapError(''); setMapReady(false);
+    setSelected(Number.isFinite(initialLocation?.latitude) && Number.isFinite(initialLocation?.longitude));
+    setAddress(initialLocation?.address || '');
+    if (!token) { setMapError('Chưa cấu hình Mapbox. Đóng bản đồ và nhập tọa độ đã xác minh trên form.'); return; }
     mapboxgl.accessToken = token;
 
-    const startLng = initialLocation?.longitude && initialLocation.longitude !== 0 ? initialLocation.longitude : 105.8542;
-    const startLat = initialLocation?.latitude && initialLocation.latitude !== 0 ? initialLocation.latitude : 21.0285;
+    const startLng = initialLocation?.longitude ?? 105.8542;
+    const startLat = initialLocation?.latitude ?? 21.0285;
 
     setCoords({ lat: startLat, lng: startLng });
     setAddress(initialLocation?.address || '');
@@ -102,6 +112,9 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
         center: [startLng, startLat],
         zoom: initialLocation?.latitude ? 14 : 11,
       });
+
+      map.on('load', () => setMapReady(true));
+      map.on('error', () => setMapError('Không tải được Mapbox. Kiểm tra kết nối hoặc quyền của key rồi mở lại bản đồ.'));
 
       // Tạo marker có thể kéo thả
       const el = document.createElement('div');
@@ -136,7 +149,7 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
       markerRef.current = marker;
 
       // Nếu có sẵn tọa độ ban đầu nhưng chưa có địa chỉ, giải mã thử
-      if (initialLocation?.latitude && !initialLocation.address) {
+      if (!manualAddress && initialLocation?.latitude && !initialLocation.address) {
         void reverseGeocodeCoords(startLng, startLat);
       }
     }, 200);
@@ -149,7 +162,7 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
         markerRef.current = null;
       }
     };
-  }, [open, initialLocation]);
+  }, [open, initialLocation, manualAddress]);
 
   // Tìm kiếm địa chỉ qua Geocoding để nhảy nhanh đến vị trí
   const handleSearch = async (query: string) => {
@@ -208,7 +221,7 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
           type="primary"
           icon={<CheckOutlined />}
           onClick={handleConfirm}
-          disabled={!coords.lat || !coords.lng}
+          disabled={!selected || !mapReady || !!mapError || isGeocoding || (manualAddress && !address.trim())}
         >
           Xác nhận vị trí này
         </Button>,
@@ -221,14 +234,14 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
           icon={<InfoCircleOutlined />}
           message={
             <span>
-              <strong>Cách chọn:</strong> Click chuột vào vị trí bất kỳ trên bản đồ hoặc kéo thả ghim màu đỏ đến vị trí kho/điểm nhận hàng chính xác. Địa chỉ sẽ được tự động giải mã.
+              <strong>Cách chọn:</strong> Click chuột vào vị trí bất kỳ trên bản đồ hoặc kéo thả ghim màu đỏ đến vị trí kho/điểm nhận hàng chính xác. {manualAddress ? 'Nhập địa chỉ do khách cung cấp bên dưới.' : 'Địa chỉ sẽ được tự động giải mã.'}
             </span>
           }
           style={{ marginBottom: 10 }}
         />
 
         {/* Ô Tìm kiếm bay nhanh tới địa điểm */}
-        <AutoComplete
+        {!manualAddress && <AutoComplete
           value={searchValue}
           options={searchOptions}
           onSearch={handleSearch}
@@ -240,7 +253,9 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
             placeholder="Tìm nhanh địa danh, số nhà, khu công nghiệp... (ví dụ: KCN Sài Đồng, Cầu Giấy...)"
             allowClear
           />
-        </AutoComplete>
+        </AutoComplete>}
+        {manualAddress && <><label htmlFor="order-map-address">Địa chỉ điểm đã chọn</label><Input id="order-map-address" value={address} onChange={e => setAddress(e.target.value)} /></>}
+        {mapError && <Alert type="error" showIcon message={mapError} />}
       </div>
 
       {/* Container Bản đồ Mapbox */}
@@ -270,7 +285,7 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
         <Row gutter={[16, 8]} align="middle">
           <Col xs={24} md={16}>
             <Text type="secondary" style={{ fontSize: 12, display: 'block' }}>
-              📍 Địa chỉ được giải mã tự động:
+              {manualAddress ? 'Địa chỉ đã nhập:' : '📍 Địa chỉ được giải mã tự động:'}
             </Text>
             <div style={{ marginTop: 2, minHeight: 22 }}>
               {isGeocoding ? (

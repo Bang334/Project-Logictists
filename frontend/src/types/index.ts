@@ -71,6 +71,12 @@ export interface Driver {
   perKmPay?: string;
 }
 
+export interface OrderPackage {
+  id: string; orderId: string; orderItemId: string; packageCode: string;
+  lengthMm: number; widthMm: number; heightMm: number; weightG: string;
+  pickupStopId: string | null; deliveryStopId: string | null; status: string; version: number;
+}
+
 export interface OrderItem {
   id: string;
   sku?: string;
@@ -78,10 +84,11 @@ export interface OrderItem {
   packageType: string;
   quantity: number;
   weightKg: number;
-  lengthCm: number;
-  widthCm: number;
-  heightCm: number;
+  lengthCm: number | null;
+  widthCm: number | null;
+  heightCm: number | null;
   volumeM3: number;
+  packages: OrderPackage[];
 }
 
 export interface OrderStop {
@@ -94,8 +101,9 @@ export interface OrderStop {
   longitude: number;
   contactName: string;
   contactPhone: string;
-  windowStart?: string;
-  windowEnd?: string;
+  windowBasis?: string | null;
+  windowStart?: string | null;
+  windowEnd?: string | null;
   serviceDurationMinutes: number;
 }
 
@@ -120,6 +128,10 @@ export interface Order {
   totalVolumeM3: number;
   totalPackages: number;
   version: number;
+  packageDataStatus: "COMPLETE" | "LEGACY_REVIEW";
+  totalWeightG: string | null;
+  totalVolumeMm3: string | null;
+  operationalTimezone: string;
   notes?: string;
   stops: OrderStop[];
   items: OrderItem[];

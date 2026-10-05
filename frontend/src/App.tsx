@@ -16,10 +16,10 @@ const { Content } = Layout;
 
 const MainLayout: React.FC = () => {
   const { user, token, loading, error, retry, logout, scopeVersion, can } = useAuth();
-  const [currentTab, setTab] = useState(() => window.location.pathname === '/accounts' ? 'accounts' : 'dashboard');
-  const setCurrentTab = (tab: string) => { setTab(tab); window.history.pushState(null, '', tab === 'accounts' ? '/accounts' : '/'); };
+  const [currentTab, setTab] = useState(() => window.location.pathname === '/accounts' ? 'accounts' : window.location.pathname === '/orders' ? 'orders' : 'dashboard');
+  const setCurrentTab = (tab: string) => { setTab(tab); window.history.pushState(null, '', tab === 'accounts' ? '/accounts' : tab === 'orders' ? '/orders' : '/'); };
   useEffect(() => {
-    const pop = () => setTab(window.location.pathname === '/accounts' ? 'accounts' : 'dashboard');
+    const pop = () => setTab(window.location.pathname === '/accounts' ? 'accounts' : window.location.pathname === '/orders' ? 'orders' : 'dashboard');
     window.addEventListener('popstate', pop);
     return () => window.removeEventListener('popstate', pop);
   }, []);

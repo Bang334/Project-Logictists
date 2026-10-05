@@ -30,7 +30,7 @@ from .route_costing import (
 # OR-Tools routing costs are integers. Micro-VND preserves small marginal
 # costs such as the fuel surcharge of carrying one kilogram for one metre.
 OBJECTIVE_COST_SCALE = 1_000_000
-WEIGHT_SCALE = 100
+WEIGHT_SCALE = 1000
 
 
 class FleetRoutingSolver:
@@ -66,7 +66,7 @@ class FleetRoutingSolver:
                         "lon": order.pickup_location.longitude,
                         "type": "PICKUP",
                         "order": order,
-                        "service_time_sec": order.service_time_sec,
+                        "service_time_sec": order.service_seconds("PICKUP"),
                     },
                     {
                         "id": order.delivery_location.id,
@@ -75,7 +75,7 @@ class FleetRoutingSolver:
                         "lon": order.delivery_location.longitude,
                         "type": "DELIVERY",
                         "order": order,
-                        "service_time_sec": order.service_time_sec,
+                        "service_time_sec": order.service_seconds("DELIVERY"),
                     },
                 ]
             )
@@ -347,10 +347,10 @@ class FleetRoutingSolver:
                             latitude=node["lat"],
                             longitude=node["lon"],
                             arrival_time_sec=arrival,
-                            departure_time_sec=arrival + order.service_time_sec,
+                            departure_time_sec=arrival + order.service_seconds(node["type"]),
                             items_loaded=[item.id for item in items_to_load],
                             items_unloaded=items_to_unload,
-                            current_weight_kg=round(max(0.0, current_weight), 2),
+                            current_weight_kg=round(max(0.0, current_weight), 3),
                         )
                     )
                     sequence += 1
@@ -467,14 +467,14 @@ class FleetRoutingSolver:
                         continue
 
                     t_start_pickup = max(t_arr_pickup, order.pickup_window_start_sec)
-                    t_depart_pickup = t_start_pickup + order.service_time_sec
+                    t_depart_pickup = t_start_pickup + order.service_seconds("PICKUP")
 
                     t_arr_delivery = t_depart_pickup + t2
                     if t_arr_delivery > order.delivery_window_end_sec:
                         continue
 
                     t_start_delivery = max(t_arr_delivery, order.delivery_window_start_sec)
-                    t_depart_delivery = t_start_delivery + order.service_time_sec
+                    t_depart_delivery = t_start_delivery + order.service_seconds("DELIVERY")
                     t_end_depot = t_depart_delivery + t3
                     total_duration_sec = t_end_depot - t_depart_depot
 
@@ -857,7 +857,7 @@ class FleetRoutingSolver:
             if current_area > max_vehicle_area:
                 return None
 
-            departure = arrival + order.service_time_sec
+            departure = arrival + order.service_seconds(action.stop_type)
             scheduled.append(
                 ScheduledStop(
                     sequence=action.sequence,
@@ -871,7 +871,7 @@ class FleetRoutingSolver:
                     departure_time_sec=round(departure),
                     items_loaded=[item.id for item in action.items_to_load],
                     items_unloaded=action.items_to_unload,
-                    current_weight_kg=round(max(0.0, current_weight), 2),
+                    current_weight_kg=round(max(0.0, current_weight), 3),
                 )
             )
             current_time = departure

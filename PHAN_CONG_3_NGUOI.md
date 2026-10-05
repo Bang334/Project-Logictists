@@ -45,3 +45,10 @@ Một phần việc chỉ hoàn thành khi:
 - Test, typecheck và build phù hợp đã chạy đạt; giới hạn chưa kiểm chứng được ghi rõ.
 
 Không commit, push, deploy hoặc thay đổi dữ liệu thật ngoài quyền đã được cấp.
+
+
+## Bổ sung Package và khung giờ — 03/10/2026
+
+Trong phiên triển khai, người dùng đã xác nhận số đo **mỗi kiện**, nhập nhanh rồi sửa riêng; khung giờ **bắt đầu phục vụ**, bắt buộc khi xác nhận, UTC/Asia/Ho_Chi_Minh, cho phép qua ngày/chồng nhau; lưu **DRAFT → CONFIRMED**, chỉ sửa hàng/điểm/giờ khi chưa có phân công hay lịch sử tham chiếu. MVP một lấy–một giao theo thiết kế hiện hành. Đơn cũ không tự chia khối lượng hoặc tạo kiện suy đoán.
+
+Chi tiết triển khai, giới hạn migration, hợp đồng với Người 1 và bằng chứng kiểm thử: [ORDERS_PACKAGES.md](ORDERS_PACKAGES.md). Đây chỉ là phần POL02 liên quan nhiệm vụ này; không chốt thêm chia đơn, mở kiện, giao thiếu, hủy sau lấy. POL03 về hình học/hướng xoay/khoảng hở/thiết bị vẫn còn mở; không thêm quyền xoay hoặc xếp chồng.

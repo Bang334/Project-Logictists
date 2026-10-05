@@ -113,7 +113,7 @@ class BaselineCostCalculator:
                     f"LOAD_STATE:{order.order_number} dỡ kiện chưa có trên xe"
                 )
 
-            departure = arrival + order.service_time_sec
+            departure = arrival + order.service_seconds(action.stop_type)
             scheduled.append(
                 ScheduledStop(
                     sequence=len(scheduled) + 1,
@@ -127,7 +127,7 @@ class BaselineCostCalculator:
                     departure_time_sec=round(departure),
                     items_loaded=[item.id for item in action.items_to_load],
                     items_unloaded=action.items_to_unload,
-                    current_weight_kg=round(max(0.0, current_weight), 2),
+                    current_weight_kg=round(max(0.0, current_weight), 3),
                 )
             )
             current_time = departure

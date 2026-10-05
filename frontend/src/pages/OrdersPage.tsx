@@ -1,1358 +1,202 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { Alert, App, Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tag, Typography } from 'antd';
+import type { FormInstance } from 'antd';
+import axios from 'axios';
+import dayjs, { Dayjs } from 'dayjs';
+import utc from 'dayjs/plugin/utc';
+import timezone from 'dayjs/plugin/timezone';
+import { apiErrorMessage, branchesApi, customersApi, ordersApi } from '../api/client';
 import { useAuth } from '../context/AuthContext';
-import React, { useEffect, useMemo, useState } from 'react';
-import {
-  Table,
-  Button,
-  Tag,
-  Space,
-  Modal,
-  Form,
-  Input,
-  Select,
-  InputNumber,
-  Typography,
-  Card,
-  AutoComplete,
-  Divider,
-  Alert,
-  Col,
-  Row,
-  Tooltip,
-  App as AntdApp,
-} from 'antd';
-import {
-  EnvironmentOutlined,
-  MinusCircleOutlined,
-  PlusOutlined,
-  ShoppingOutlined,
-  EyeOutlined,
-  EditOutlined,
-  CompassOutlined,
-  AimOutlined,
-  SearchOutlined,
-  ApartmentOutlined,
-  ReloadOutlined,
-  FilterOutlined,
-} from '@ant-design/icons';
-import { branchesApi, customersApi, mapboxApi, ordersApi } from '../api/client';
-import { Branch, Order } from '../types';
+import type { Branch, Order } from '../types';
+import type { OrderInput, OrderLineInput, PackageInput, StopInput } from '../types/orders';
 import { MapLocationPickerModal } from '../components/MapLocationPickerModal';
 import { OrderDetailDrawer } from '../components/OrderDetailDrawer';
-
-const { Title, Text } = Typography;
-
-type MapPickerTarget = 'create-pickup' | 'create-delivery' | 'edit-pickup' | 'edit-delivery' | null;
-
-interface Coordinate {
-  lat: number;
-  lng: number;
+dayjs.extend(utc); dayjs.extend(timezone);
+const TZ = 'Asia/Ho_Chi_Minh';
+interface FormStop extends Omit<StopInput, 'windowStart' | 'windowEnd'> { windowStart?: Dayjs | null; windowEnd?: Dayjs | null }
+interface FormValues extends Omit<OrderInput, 'stops'> { stops: FormStop[] }
+const blankPackage = () => ({ lengthMm: undefined, widthMm: undefined, heightMm: undefined, weightG: undefined });
+const required = [{ required: true, message: 'Vui lòng nhập trường này' }];
+const dateValue = (value?: string | null) => value ? dayjs(dayjs(value).tz(TZ).format('YYYY-MM-DDTHH:mm:ss')) : null;
+const isoValue = (value?: Dayjs | null) => value ? dayjs.tz(value.format('YYYY-MM-DDTHH:mm:ss'), TZ).toISOString() : null;
+function showFieldErrors(error: unknown, form: FormInstance<FormValues>) {
+  if (!axios.isAxiosError(error)) return;
+  const entries: unknown = error.response?.data?.fieldErrors;
+  if (!Array.isArray(entries)) return;
+  const fields = entries.flatMap((entry: unknown) => {
+    if (!entry || typeof entry !== 'object' || !('field' in entry) || !('message' in entry) || typeof entry.field !== 'string' || typeof entry.message !== 'string') return [];
+    if (!/^(branchId|customerId|notes|items|stops)(\.[a-zA-Z0-9]+)*$/.test(entry.field)) return [];
+    // API paths are runtime strings; Ant Design encodes known form paths as a tuple union.
+    type FieldName = Parameters<FormInstance<FormValues>['setFields']>[0][number]['name'];
+    const name = entry.field.split('.').map(p => /^\d+$/.test(p) ? Number(p) : p) as FieldName;
+    return [{ name, errors: [entry.message] }];
+  });
+  form.setFields(fields);
+  if (fields[0]?.name) form.scrollToField(fields[0].name, { block: 'center' });
 }
-
-const OrdersPage: React.FC = () => {
-  const { message } = AntdApp.useApp();
-  const { can, branchId, setBranchId } = useAuth();
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [customers, setCustomers] = useState<Array<{ id: string; code: string; name: string }>>([]);
-  const [branches, setBranches] = useState<Branch[]>([]);
-
-  // State bộ lọc
-  const [searchText, setSearchText] = useState('');
-  const filterBranchId = branchId;
-  const setFilterBranchId = setBranchId;
-  const [filterCustomerId, setFilterCustomerId] = useState<string | undefined>(undefined);
-  const [filterStatus, setFilterStatus] = useState<string | undefined>(undefined);
-
-  // Form tạo mới đơn hàng
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [createForm] = Form.useForm();
-  const [createPickupOptions, setCreatePickupOptions] = useState<any[]>([]);
-  const [createDeliveryOptions, setCreateDeliveryOptions] = useState<any[]>([]);
-  const [createPickupCoord, setCreatePickupCoord] = useState<Coordinate | null>(null);
-  const [createDeliveryCoord, setCreateDeliveryCoord] = useState<Coordinate | null>(null);
-
-  // Drawer xem chi tiết đơn hàng
-  const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
-  const [selectedOrderForDetail, setSelectedOrderForDetail] = useState<Order | null>(null);
-
-  // Modal chỉnh sửa đơn hàng
-  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const [selectedOrderForEdit, setSelectedOrderForEdit] = useState<Order | null>(null);
-  const [editForm] = Form.useForm();
-  const [editPickupOptions, setEditPickupOptions] = useState<any[]>([]);
-  const [editDeliveryOptions, setEditDeliveryOptions] = useState<any[]>([]);
-  const [editPickupCoord, setEditPickupCoord] = useState<Coordinate | null>(null);
-  const [editDeliveryCoord, setEditDeliveryCoord] = useState<Coordinate | null>(null);
-
-  // Modal chọn vị trí trên bản đồ
-  const [isMapPickerOpen, setIsMapPickerOpen] = useState(false);
-  const [mapPickerTarget, setMapPickerTarget] = useState<MapPickerTarget>(null);
-  const [mapPickerInitialLocation, setMapPickerInitialLocation] = useState<{
-    address?: string;
-    latitude?: number;
-    longitude?: number;
-  } | undefined>(undefined);
-  const [mapPickerTitle, setMapPickerTitle] = useState('Chọn Vị Trí Trên Bản Đồ');
-
-  const fetchOrders = async (status?: string, customerId?: string, branchId?: string) => {
-    try {
-      setLoading(true);
-      const res = await ordersApi.getAll({
-        status: status || undefined,
-        customerId: customerId || undefined,
-        branchId: branchId || undefined,
-      });
-      setOrders(res.data);
-    } catch (error) {
-      message.error('Không thể tải danh sách đơn hàng');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Tải danh sách đơn hàng theo filter server
-  useEffect(() => {
-    void fetchOrders(filterStatus, filterCustomerId, filterBranchId);
-  }, [filterStatus, filterCustomerId, filterBranchId]);
-
-  // Tải dữ liệu master data (Khách hàng, Chi nhánh)
-  useEffect(() => {
-    void customersApi.getAll().then((response) => setCustomers(response.data)).catch(() => message.error('Không tải được khách hàng trong phạm vi hiện tại'));
-    void branchesApi.getAll().then((response) => setBranches(response.data)).catch(() => message.error('Không tải được chi nhánh'));
-  }, []);
-
-  // Lọc tức thời phía client theo từ khóa tìm kiếm
-  const filteredOrders = useMemo(() => {
-    if (!searchText.trim()) return orders;
-    const q = searchText.toLowerCase().trim();
-    return orders.filter((o) => {
-      const matchOrderNum = o.orderNumber?.toLowerCase().includes(q);
-      const matchCustomer =
-        o.customer?.name?.toLowerCase().includes(q) ||
-        o.customer?.code?.toLowerCase().includes(q) ||
-        o.customer?.phone?.includes(q);
-      const matchBranch =
-        o.branch?.name?.toLowerCase().includes(q) ||
-        o.branch?.code?.toLowerCase().includes(q);
-      const matchStops = o.stops?.some(
-        (s) =>
-          s.address?.toLowerCase().includes(q) ||
-          s.contactName?.toLowerCase().includes(q) ||
-          s.contactPhone?.includes(q),
-      );
-      const matchItems = o.items?.some((i) => i.description?.toLowerCase().includes(q));
-      return matchOrderNum || matchCustomer || matchBranch || matchStops || matchItems;
-    });
-  }, [orders, searchText]);
-
-  // Đặt lại toàn bộ bộ lọc
-  const handleResetFilters = () => {
-    setSearchText('');
-    setFilterBranchId(undefined);
-    setFilterCustomerId(undefined);
-    setFilterStatus(undefined);
-  };
-
-  // Gợi ý địa chỉ từ Mapbox cho form tạo hoặc sửa
-  const handleSearchAddress = async (
-    query: string,
-    mode: 'create' | 'edit',
-    type: 'pickup' | 'delivery',
-  ) => {
-    if (!query || query.length < 3) return;
-    const results = await mapboxApi.geocode(query);
-    const options = results.map((r: any) => ({
-      value: r.address,
-      label: r.address,
-      lat: r.latitude,
-      lng: r.longitude,
-    }));
-
-    if (mode === 'create') {
-      if (type === 'pickup') setCreatePickupOptions(options);
-      else setCreateDeliveryOptions(options);
-    } else {
-      if (type === 'pickup') setEditPickupOptions(options);
-      else setEditDeliveryOptions(options);
-    }
-  };
-
-  // Mở Map Location Picker Modal
-  const handleOpenMapPicker = (target: MapPickerTarget) => {
-    setMapPickerTarget(target);
-
-    if (target === 'create-pickup') {
-      setMapPickerTitle('Chọn Điểm Lấy Hàng (PICKUP) — Tạo Đơn Mới');
-      setMapPickerInitialLocation({
-        address: createForm.getFieldValue('pickupAddress'),
-        latitude: createPickupCoord?.lat,
-        longitude: createPickupCoord?.lng,
-      });
-    } else if (target === 'create-delivery') {
-      setMapPickerTitle('Chọn Điểm Giao Hàng (DELIVERY) — Tạo Đơn Mới');
-      setMapPickerInitialLocation({
-        address: createForm.getFieldValue('deliveryAddress'),
-        latitude: createDeliveryCoord?.lat,
-        longitude: createDeliveryCoord?.lng,
-      });
-    } else if (target === 'edit-pickup') {
-      setMapPickerTitle('Chỉnh Sửa Điểm Lấy Hàng (PICKUP)');
-      setMapPickerInitialLocation({
-        address: editForm.getFieldValue('pickupAddress'),
-        latitude: editPickupCoord?.lat,
-        longitude: editPickupCoord?.lng,
-      });
-    } else if (target === 'edit-delivery') {
-      setMapPickerTitle('Chỉnh Sửa Điểm Giao Hàng (DELIVERY)');
-      setMapPickerInitialLocation({
-        address: editForm.getFieldValue('deliveryAddress'),
-        latitude: editDeliveryCoord?.lat,
-        longitude: editDeliveryCoord?.lng,
-      });
-    }
-
-    setIsMapPickerOpen(true);
-  };
-
-  // Nhận kết quả từ Map Location Picker Modal
-  const handleSelectLocation = (result: { address: string; latitude: number; longitude: number }) => {
-    const { address, latitude, longitude } = result;
-
-    if (mapPickerTarget === 'create-pickup') {
-      createForm.setFieldsValue({ pickupAddress: address });
-      setCreatePickupCoord({ lat: latitude, lng: longitude });
-    } else if (mapPickerTarget === 'create-delivery') {
-      createForm.setFieldsValue({ deliveryAddress: address });
-      setCreateDeliveryCoord({ lat: latitude, lng: longitude });
-    } else if (mapPickerTarget === 'edit-pickup') {
-      editForm.setFieldsValue({ pickupAddress: address });
-      setEditPickupCoord({ lat: latitude, lng: longitude });
-    } else if (mapPickerTarget === 'edit-delivery') {
-      editForm.setFieldsValue({ deliveryAddress: address });
-      setEditDeliveryCoord({ lat: latitude, lng: longitude });
-    }
-
-    setIsMapPickerOpen(false);
-    setMapPickerTarget(null);
-  };
-
-  // Mở modal sửa đơn hàng và nạp sẵn dữ liệu cũ
-  const handleOpenEditModal = (order: Order) => {
-    setSelectedOrderForEdit(order);
-
-    const pickup = order.stops.find((s) => s.type === 'PICKUP');
-    const delivery = order.stops.find((s) => s.type === 'DELIVERY');
-
-    setEditPickupCoord(pickup ? { lat: pickup.latitude, lng: pickup.longitude } : null);
-    setEditDeliveryCoord(delivery ? { lat: delivery.latitude, lng: delivery.longitude } : null);
-
-    editForm.setFieldsValue({
-      customerId: order.customer.id,
-      branchId: order.branchId || order.branch?.id,
-      notes: order.notes,
-      pickupAddress: pickup?.address || '',
-      pickupContactName: pickup?.contactName || '',
-      pickupContactPhone: pickup?.contactPhone || '',
-      deliveryAddress: delivery?.address || '',
-      deliveryContactName: delivery?.contactName || '',
-      deliveryContactPhone: delivery?.contactPhone || '',
-      items: order.items.map((item) => ({
-        description: item.description,
-        packageType: item.packageType || 'CARTON',
-        quantity: item.quantity,
-        weightKg: item.weightKg,
-        lengthCm: item.lengthCm,
-        widthCm: item.widthCm,
-        heightCm: item.heightCm,
-      })),
-    });
-
-    setIsEditModalOpen(true);
-  };
-
-  // Submit tạo mới đơn hàng
-  const handleCreateOrder = async (values: any) => {
-    try {
-      setLoading(true);
-
-      const pickupOption = createPickupOptions.find((o) => o.value === values.pickupAddress);
-      const deliveryOption = createDeliveryOptions.find((o) => o.value === values.deliveryAddress);
-
-      const pLat = createPickupCoord?.lat || pickupOption?.lat || 0;
-      const pLng = createPickupCoord?.lng || pickupOption?.lng || 0;
-      const dLat = createDeliveryCoord?.lat || deliveryOption?.lat || 0;
-      const dLng = createDeliveryCoord?.lng || deliveryOption?.lng || 0;
-
-      const payload = {
-        customerId: values.customerId,
-        branchId: values.branchId,
-        notes: values.notes,
-        items: values.items.map((item: any) => ({
-          ...item,
-          volumeM3: (item.lengthCm * item.widthCm * item.heightCm * item.quantity) / 1_000_000,
-        })),
-        stops: [
-          {
-            type: 'PICKUP',
-            sequence: 1,
-            address: values.pickupAddress,
-            latitude: pLat,
-            longitude: pLng,
-            contactName: values.pickupContactName,
-            contactPhone: values.pickupContactPhone,
-            serviceDurationMinutes: 20,
-          },
-          {
-            type: 'DELIVERY',
-            sequence: 2,
-            address: values.deliveryAddress,
-            latitude: dLat,
-            longitude: dLng,
-            contactName: values.deliveryContactName,
-            contactPhone: values.deliveryContactPhone,
-            serviceDurationMinutes: 20,
-          },
-        ],
-      };
-
-      await ordersApi.create(payload);
-      message.success('Đã tạo đơn hàng mới vào cơ sở dữ liệu PostgreSQL!');
-      setIsCreateModalOpen(false);
-      createForm.resetFields();
-      setCreatePickupCoord(null);
-      setCreateDeliveryCoord(null);
-      fetchOrders(filterStatus, filterCustomerId, filterBranchId);
-    } catch (error: any) {
-      message.error(error.response?.data?.message || 'Lỗi khi tạo đơn hàng');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Submit cập nhật đơn hàng
-  const handleUpdateOrder = async (values: any) => {
-    if (!selectedOrderForEdit) return;
-
-    try {
-      setLoading(true);
-
-      const pickupOption = editPickupOptions.find((o) => o.value === values.pickupAddress);
-      const deliveryOption = editDeliveryOptions.find((o) => o.value === values.deliveryAddress);
-
-      const pLat = editPickupCoord?.lat || pickupOption?.lat || 0;
-      const pLng = editPickupCoord?.lng || pickupOption?.lng || 0;
-      const dLat = editDeliveryCoord?.lat || deliveryOption?.lat || 0;
-      const dLng = editDeliveryCoord?.lng || deliveryOption?.lng || 0;
-
-      const payload = {
-        customerId: values.customerId,
-        notes: values.notes,
-        items: values.items.map((item: any) => ({
-          ...item,
-          volumeM3: (item.lengthCm * item.widthCm * item.heightCm * item.quantity) / 1_000_000,
-        })),
-        stops: [
-          {
-            type: 'PICKUP',
-            sequence: 1,
-            address: values.pickupAddress,
-            latitude: pLat,
-            longitude: pLng,
-            contactName: values.pickupContactName,
-            contactPhone: values.pickupContactPhone,
-            serviceDurationMinutes: 20,
-          },
-          {
-            type: 'DELIVERY',
-            sequence: 2,
-            address: values.deliveryAddress,
-            latitude: dLat,
-            longitude: dLng,
-            contactName: values.deliveryContactName,
-            contactPhone: values.deliveryContactPhone,
-            serviceDurationMinutes: 20,
-          },
-        ],
-      };
-
-      await ordersApi.update(selectedOrderForEdit.id, payload);
-      message.success(`Đã cập nhật đơn hàng ${selectedOrderForEdit.orderNumber} thành công!`);
-      setIsEditModalOpen(false);
-      setSelectedOrderForEdit(null);
-      fetchOrders(filterStatus, filterCustomerId, filterBranchId);
-    } catch (error: any) {
-      message.error(error.response?.data?.message || 'Lỗi khi cập nhật đơn hàng');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const columns = [
-    {
-      title: 'Mã Vận Đơn',
-      dataIndex: 'orderNumber',
-      key: 'orderNumber',
-      width: 150,
-      render: (text: string, r: Order) => (
-        <div style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
-          <Button
-            type="link"
-            style={{
-              padding: 0,
-              fontWeight: 700,
-              color: '#0284c7',
-              height: 'auto',
-              whiteSpace: 'normal',
-              textAlign: 'left',
-              wordBreak: 'break-word',
-              overflowWrap: 'anywhere',
-              lineHeight: 1.35,
-            }}
-            onClick={() => {
-              setSelectedOrderForDetail(r);
-              setDetailDrawerOpen(true);
-            }}
-          >
-            {text}
-          </Button>
-        </div>
-      ),
-    },
-    {
-      title: 'Khách Hàng',
-      key: 'customer',
-      width: 200,
-      render: (_: any, r: Order) => (
-        <div>
-          <strong style={{ color: '#0f172a' }}>{r.customer.name}</strong>
-          <div style={{ color: '#64748b', fontSize: '12px' }}>{r.customer.code}</div>
-        </div>
-      ),
-    },
-    {
-      title: 'Chi Nhánh',
-      key: 'branch',
-      width: 160,
-      render: (_: any, r: Order) =>
-        r.branch ? (
-          <div>
-            <Tag color="geekblue" icon={<ApartmentOutlined />}>
-              {r.branch.code}
-            </Tag>
-            <div style={{ fontSize: '11px', color: '#64748b', marginTop: 2 }}>
-              {r.branch.name}
-            </div>
-          </div>
-        ) : (
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            Chưa gán
-          </Text>
-        ),
-    },
-    {
-      title: 'Điểm Lấy Hàng (PICKUP)',
-      key: 'pickup',
-      width: 220,
-      render: (_: any, r: Order) => {
-        const pickup = r.stops.find((s) => s.type === 'PICKUP');
-        return (
-          <div style={{ maxWidth: 210 }}>
-            <Tag color="green" icon={<EnvironmentOutlined />}>
-              Lấy hàng
-            </Tag>
-            <Tooltip title={pickup?.address}>
-              <div
-                style={{
-                  fontSize: '12px',
-                  marginTop: '4px',
-                  color: '#334155',
-                  display: '-webkit-box',
-                  WebkitLineClamp: 2,
-                  WebkitBoxOrient: 'vertical',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  lineHeight: 1.4,
-                  cursor: 'pointer',
-                }}
-              >
-                {pickup?.address || 'Chưa có địa chỉ'}
-              </div>
-            </Tooltip>
-          </div>
-        );
-      },
-    },
-    {
-      title: 'Điểm Giao Hàng (DELIVERY)',
-      key: 'delivery',
-      width: 220,
-      render: (_: any, r: Order) => {
-        const delivery = r.stops.find((s) => s.type === 'DELIVERY');
-        return (
-          <div style={{ maxWidth: 210 }}>
-            <Tag color="orange" icon={<EnvironmentOutlined />}>
-              Giao hàng
-            </Tag>
-            <Tooltip title={delivery?.address}>
-              <div
-                style={{
-                  fontSize: '12px',
-                  marginTop: '4px',
-                  color: '#334155',
-                  display: '-webkit-box',
-                  WebkitLineClamp: 2,
-                  WebkitBoxOrient: 'vertical',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  lineHeight: 1.4,
-                  cursor: 'pointer',
-                }}
-              >
-                {delivery?.address || 'Chưa có địa chỉ'}
-              </div>
-            </Tooltip>
-          </div>
-        );
-      },
-    },
-    {
-      title: 'Khối Lượng / Thể Tích',
-      key: 'load',
-      width: 140,
-      render: (_: any, r: Order) => (
-        <div>
-          <strong>{r.totalWeightKg} kg</strong>
-          <div style={{ color: '#64748b', fontSize: '12px' }}>
-            {r.totalVolumeM3} m³ ({r.totalPackages} kiện)
-          </div>
-        </div>
-      ),
-    },
-    {
-      title: 'Trạng Thái',
-      dataIndex: 'status',
-      key: 'status',
-      width: 120,
-      render: (status: string) => {
-        const colors: Record<string, string> = {
-          DRAFT: 'default',
-          CONFIRMED: 'blue',
-          ASSIGNED: 'gold',
-          IN_TRANSIT: 'purple',
-          COMPLETED: 'green',
-          CANCELLED: 'red',
-        };
-        return <Tag color={colors[status] || 'default'}>{status}</Tag>;
-      },
-    },
-    {
-      title: 'Thao Tác',
-      key: 'actions',
-      width: 160,
-      fixed: 'right' as const,
-      render: (_: any, record: Order) => {
-        const isEditable = record.status === 'CONFIRMED' || record.status === 'DRAFT';
-        return (
-          <Space size={6}>
-            <Tooltip title="Xem chi tiết đơn hàng & kiện vật lý">
-              <Button
-                size="small"
-                icon={<EyeOutlined />}
-                onClick={() => {
-                  setSelectedOrderForDetail(record);
-                  setDetailDrawerOpen(true);
-                }}
-              >
-                Chi tiết
-              </Button>
-            </Tooltip>
-            <Tooltip
-              title={
-                isEditable
-                  ? 'Chỉnh sửa thông tin đơn hàng & vị trí bản đồ'
-                  : 'Không thể sửa đơn đã xếp chuyến hoặc đang vận chuyển'
-              }
-            >
-              <Button
-                size="small"
-                type="primary"
-                ghost
-                icon={<EditOutlined />}
-                disabled={!isEditable || !can('orders.write')}
-                onClick={() => handleOpenEditModal(record)}
-              >
-                Sửa
-              </Button>
-            </Tooltip>
-          </Space>
-        );
-      },
-    },
-  ];
-
-  return (
-    <div style={{ padding: '24px' }}>
-      {/* Header trang */}
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: '20px',
-        }}
-      >
-        <div>
-          <Title level={4} style={{ margin: 0 }}>
-            Quản Lý Đơn Hàng Vận Tải
-          </Title>
-          <Text type="secondary">
-            Tiếp nhận, tra cứu lọc đơn, xem chi tiết, chỉnh sửa địa chỉ trực quan qua Mapbox và chuẩn bị điều phối
-          </Text>
-        </div>
-        <Button
-          type="primary"
-          disabled={!can('orders.write')} icon={<PlusOutlined />}
-          onClick={() => {
-            setCreatePickupCoord(null);
-            setCreateDeliveryCoord(null);
-            if (branches.length > 0) {
-              createForm.setFieldsValue({ branchId: branches[0].id });
-            }
-            setIsCreateModalOpen(true);
-          }}
-        >
-          Tạo Đơn Hàng Mới
-        </Button>
-      </div>
-
-      {/* Thanh Bộ Lọc & Tìm Kiếm Đơn Hàng */}
-      <Card
-        size="small"
-        style={{
-          marginBottom: 16,
-          background: '#ffffff',
-          borderRadius: 8,
-          border: '1px solid #e2e8f0',
-          boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04)',
-        }}
-      >
-        <Row gutter={[12, 12]} align="middle">
-          {/* Ô Tìm kiếm từ khóa */}
-          <Col xs={24} md={7}>
-            <Input
-              prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
-              placeholder="Tìm theo mã đơn, khách hàng, địa chỉ, hàng hóa..."
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-              allowClear
-            />
-          </Col>
-
-          {/* Lọc theo Chi nhánh */}
-          <Col xs={12} sm={8} md={5}>
-            <Select
-              placeholder="Tất cả chi nhánh"
-              value={filterBranchId}
-              onChange={(val) => setFilterBranchId(val)}
-              allowClear
-              style={{ width: '100%' }}
-              options={branches.map((b) => ({
-                value: b.id,
-                label: `${b.name} (${b.code})`,
-              }))}
-            />
-          </Col>
-
-          {/* Lọc theo Khách hàng */}
-          <Col xs={12} sm={8} md={5}>
-            <Select
-              placeholder="Tất cả khách hàng"
-              value={filterCustomerId}
-              onChange={(val) => setFilterCustomerId(val)}
-              allowClear
-              showSearch
-              optionFilterProp="label"
-              style={{ width: '100%' }}
-              options={customers.map((c) => ({
-                value: c.id,
-                label: `${c.name} (${c.code})`,
-              }))}
-            />
-          </Col>
-
-          {/* Lọc theo Trạng thái */}
-          <Col xs={12} sm={8} md={4}>
-            <Select
-              placeholder="Tất cả trạng thái"
-              value={filterStatus}
-              onChange={(val) => setFilterStatus(val)}
-              allowClear
-              style={{ width: '100%' }}
-              options={[
-                { value: 'CONFIRMED', label: 'CONFIRMED (Chờ điều phối)' },
-                { value: 'ASSIGNED', label: 'ASSIGNED (Đã xếp xe)' },
-                { value: 'IN_TRANSIT', label: 'IN_TRANSIT (Đang chạy)' },
-                { value: 'COMPLETED', label: 'COMPLETED (Hoàn tất)' },
-                { value: 'DRAFT', label: 'DRAFT (Bản nháp)' },
-                { value: 'CANCELLED', label: 'CANCELLED (Đã hủy)' },
-              ]}
-            />
-          </Col>
-
-          {/* Nút Đặt lại */}
-          <Col xs={12} md={3} style={{ textAlign: 'right' }}>
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={handleResetFilters}
-              disabled={!searchText && !filterBranchId && !filterCustomerId && !filterStatus}
-            >
-              Đặt lại
-            </Button>
-          </Col>
+const PackageFields: React.FC<{ index: number; form: FormInstance<FormValues> }> = ({ index, form }) => {
+  const [count, setCount] = useState(1);
+  return <Form.List name={[index, 'packages']} rules={[{ validator: async (_, value: unknown[]) => { if (!value?.length || value.length > 500) throw new Error('Mỗi dòng cần từ 1 đến 500 kiện'); } }]}>
+    {(fields, { add, remove }, { errors }) => <>
+      {fields.map((field, j) => <Card size="small" key={field.key} style={{ marginBottom: 8 }} title={`Kiện ${j + 1}`} extra={<Button danger size="small" onClick={() => remove(field.name)}>Xóa kiện {j + 1}</Button>}>
+        <Form.Item name={[field.name, 'id']} hidden><Input /></Form.Item>
+        <Row gutter={12}>
+          {(['lengthMm', 'widthMm', 'heightMm'] as const).map((key, k) => <Col xs={24} sm={6} key={key}>
+            <Form.Item name={[field.name, key]} label={['Dài mỗi kiện (mm)', 'Rộng mỗi kiện (mm)', 'Cao mỗi kiện (mm)'][k]} rules={required}>
+              <InputNumber min={1} max={2147483647} precision={0} style={{ width: '100%' }} />
+            </Form.Item>
+          </Col>)}
+          <Col xs={24} sm={6}><Form.Item name={[field.name, 'weightG']} label="Khối lượng mỗi kiện (g)" rules={[...required, { pattern: /^[1-9][0-9]*$/, message: 'Nhập số gram nguyên dương' }]}><InputNumber<string> stringMode min="1" max="9223372036854775807" precision={0} style={{ width: '100%' }} /></Form.Item></Col>
         </Row>
-
-        {/* Thông tin số lượng & các Tag đang lọc */}
-        <div
-          style={{
-            marginTop: 10,
-            paddingTop: 8,
-            borderTop: '1px solid #f1f5f9',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            gap: 6,
-          }}
-        >
-          <Space size={6} wrap>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              <FilterOutlined style={{ marginRight: 4 }} />
-              Hiển thị:{' '}
-              <strong style={{ color: '#0284c7' }}>{filteredOrders.length}</strong> / {orders.length} đơn hàng
-            </Text>
-            {filterBranchId && (
-              <Tag closable onClose={() => setFilterBranchId(undefined)} color="geekblue">
-                Chi nhánh: {branches.find((b) => b.id === filterBranchId)?.name}
-              </Tag>
-            )}
-            {filterCustomerId && (
-              <Tag closable onClose={() => setFilterCustomerId(undefined)} color="blue">
-                Khách hàng: {customers.find((c) => c.id === filterCustomerId)?.name}
-              </Tag>
-            )}
-            {filterStatus && (
-              <Tag closable onClose={() => setFilterStatus(undefined)} color="orange">
-                Trạng thái: {filterStatus}
-              </Tag>
-            )}
-            {searchText && (
-              <Tag closable onClose={() => setSearchText('')} color="cyan">
-                Từ khóa: "{searchText}"
-              </Tag>
-            )}
-          </Space>
-        </div>
-      </Card>
-
-      {/* Bảng Dữ Liệu Đơn Hàng */}
-      <Card variant="borderless" className="card-elevation">
-        <Table
-          dataSource={filteredOrders}
-          columns={columns}
-          rowKey="id"
-          loading={loading}
-          pagination={{ pageSize: 8, showTotal: (total) => `Tổng cộng: ${total} đơn hàng` }}
-          scroll={{ x: 1100 }}
-        />
-      </Card>
-
-      {/* Drawer Xem Chi Tiết Đơn Hàng */}
-      <OrderDetailDrawer
-        open={detailDrawerOpen}
-        order={selectedOrderForDetail}
-        onClose={() => {
-          setDetailDrawerOpen(false);
-          setSelectedOrderForDetail(null);
-        }}
-        onEdit={(order) => handleOpenEditModal(order)}
-      />
-
-      {/* Modal Chọn Vị Trí Trên Bản Đồ (Mapbox) */}
-      <MapLocationPickerModal
-        open={isMapPickerOpen}
-        title={mapPickerTitle}
-        initialLocation={mapPickerInitialLocation}
-        onCancel={() => {
-          setIsMapPickerOpen(false);
-          setMapPickerTarget(null);
-        }}
-        onSelectLocation={handleSelectLocation}
-      />
-
-      {/* Modal Tạo Đơn Hàng Mới */}
-      <Modal
-        title={
-          <Space>
-            <ShoppingOutlined style={{ color: '#1677ff' }} />
-            <span>Tiếp Nhận Đơn Hàng Mới (Mapbox Geocoding)</span>
-          </Space>
-        }
-        open={isCreateModalOpen}
-        onCancel={() => setIsCreateModalOpen(false)}
-        footer={null}
-        width={760}
-      >
-        <Form
-          form={createForm}
-          layout="vertical"
-          onFinish={handleCreateOrder}
-          style={{ marginTop: '16px' }}
-        >
-          <Row gutter={12}>
-            <Col xs={24} md={14}>
-              <Form.Item
-                label="Khách Hàng Doanh Nghiệp"
-                name="customerId"
-                rules={[{ required: true, message: 'Chọn khách hàng' }]}
-              >
-                <Select placeholder="Chọn khách hàng">
-                  {customers.map((customer) => (
-                    <Select.Option key={customer.id} value={customer.id}>
-                      {customer.code} — {customer.name}
-                    </Select.Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={10}>
-              <Form.Item
-                label="Chi Nhánh Tiếp Nhận"
-                name="branchId"
-                rules={[{ required: true, message: 'Chọn chi nhánh' }]}
-              >
-                <Select placeholder="Chọn chi nhánh">
-                  {branches.map((b) => (
-                    <Select.Option key={b.id} value={b.id}>
-                      {b.code} — {b.name}
-                    </Select.Option>
-                  ))}
-                </Select>
-              </Form.Item>
-            </Col>
-          </Row>
-
-          <Divider orientation="left" style={{ fontSize: '13px' }}>
-            1. Điểm Lấy Hàng (PICKUP)
-          </Divider>
-          <Form.Item label="Địa chỉ lấy hàng" required>
-            <Space.Compact style={{ width: '100%' }}>
-              <Form.Item
-                name="pickupAddress"
-                noStyle
-                rules={[{ required: true, message: 'Nhập hoặc chọn địa chỉ lấy hàng' }]}
-              >
-                <AutoComplete
-                  options={createPickupOptions}
-                  onSearch={(val) => handleSearchAddress(val, 'create', 'pickup')}
-                  onSelect={(_val, opt: any) => {
-                    if (opt.lat && opt.lng) {
-                      setCreatePickupCoord({ lat: opt.lat, lng: opt.lng });
-                    }
-                  }}
-                  placeholder="Nhập tên đường, KCN, quận huyện (ví dụ: KCN Tiên Sơn Bắc Ninh)"
-                  style={{ width: 'calc(100% - 160px)' }}
-                />
-              </Form.Item>
-              <Button
-                type="primary"
-                ghost
-                icon={<CompassOutlined />}
-                onClick={() => handleOpenMapPicker('create-pickup')}
-                style={{ width: '160px' }}
-              >
-                Chọn trên bản đồ
-              </Button>
-            </Space.Compact>
-            {createPickupCoord && (
-              <div style={{ marginTop: 4 }}>
-                <Tag color="cyan" icon={<AimOutlined />}>
-                  Tọa độ đã chọn: {createPickupCoord.lat.toFixed(5)}, {createPickupCoord.lng.toFixed(5)}
-                </Tag>
-              </div>
-            )}
-          </Form.Item>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-            <Form.Item
-              label="Người phụ trách lấy hàng"
-              name="pickupContactName"
-              initialValue="Thủ kho xuất"
-            >
-              <Input placeholder="Tên người liên hệ" />
-            </Form.Item>
-            <Form.Item
-              label="SĐT lấy hàng"
-              name="pickupContactPhone"
-              initialValue="0912345678"
-            >
-              <Input placeholder="Số điện thoại" />
-            </Form.Item>
-          </div>
-
-          <Divider orientation="left" style={{ fontSize: '13px' }}>
-            2. Điểm Giao Hàng (DELIVERY)
-          </Divider>
-          <Form.Item label="Địa chỉ giao hàng" required>
-            <Space.Compact style={{ width: '100%' }}>
-              <Form.Item
-                name="deliveryAddress"
-                noStyle
-                rules={[{ required: true, message: 'Nhập hoặc chọn địa chỉ giao hàng' }]}
-              >
-                <AutoComplete
-                  options={createDeliveryOptions}
-                  onSearch={(val) => handleSearchAddress(val, 'create', 'delivery')}
-                  onSelect={(_val, opt: any) => {
-                    if (opt.lat && opt.lng) {
-                      setCreateDeliveryCoord({ lat: opt.lat, lng: opt.lng });
-                    }
-                  }}
-                  placeholder="Nhập địa chỉ nhận hàng (ví dụ: Cầu Giấy Hà Nội)"
-                  style={{ width: 'calc(100% - 160px)' }}
-                />
-              </Form.Item>
-              <Button
-                type="primary"
-                ghost
-                icon={<CompassOutlined />}
-                onClick={() => handleOpenMapPicker('create-delivery')}
-                style={{ width: '160px' }}
-              >
-                Chọn trên bản đồ
-              </Button>
-            </Space.Compact>
-            {createDeliveryCoord && (
-              <div style={{ marginTop: 4 }}>
-                <Tag color="cyan" icon={<AimOutlined />}>
-                  Tọa độ đã chọn: {createDeliveryCoord.lat.toFixed(5)}, {createDeliveryCoord.lng.toFixed(5)}
-                </Tag>
-              </div>
-            )}
-          </Form.Item>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-            <Form.Item
-              label="Người nhận hàng"
-              name="deliveryContactName"
-              initialValue="Đại diện nhận hàng"
-            >
-              <Input placeholder="Tên người nhận" />
-            </Form.Item>
-            <Form.Item
-              label="SĐT nhận hàng"
-              name="deliveryContactPhone"
-              initialValue="0987654321"
-            >
-              <Input placeholder="Số điện thoại" />
-            </Form.Item>
-          </div>
-
-          <Divider orientation="left" style={{ fontSize: '13px' }}>
-            3. Các loại hàng và kiện vật lý
-          </Divider>
-          <Alert
-            type="info"
-            showIcon
-            message="Mỗi dòng là một loại hàng; số lượng là số kiện cùng kích thước. Khối lượng nhập là tổng của cả dòng."
-            style={{ marginBottom: 12 }}
-          />
-          <Form.List name="items" initialValue={[{ quantity: 1, packageType: 'CARTON' }]}>
-            {(fields, { add, remove }) => (
-              <Space direction="vertical" style={{ width: '100%' }}>
-                {fields.map((field, index) => (
-                  <Card
-                    key={field.key}
-                    size="small"
-                    title={`Loại hàng ${index + 1}`}
-                    extra={
-                      fields.length > 1 ? (
-                        <Button
-                          danger
-                          type="text"
-                          icon={<MinusCircleOutlined />}
-                          onClick={() => remove(field.name)}
-                        >
-                          Xóa
-                        </Button>
-                      ) : null
-                    }
-                  >
-                    <Row gutter={12}>
-                      <Col xs={24} md={12}>
-                        <Form.Item
-                          {...field}
-                          label="Mô tả"
-                          name={[field.name, 'description']}
-                          rules={[{ required: true, message: 'Nhập mô tả' }]}
-                        >
-                          <Input placeholder="Ví dụ: Thùng sữa 48 hộp" />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={12} md={6}>
-                        <Form.Item
-                          {...field}
-                          label="Loại kiện"
-                          name={[field.name, 'packageType']}
-                          rules={[{ required: true }]}
-                        >
-                          <Select
-                            options={['CARTON', 'PALLET', 'CRATE', 'BAG'].map((value) => ({
-                              value,
-                              label: value,
-                            }))}
-                          />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={12} md={6}>
-                        <Form.Item
-                          {...field}
-                          label="Số kiện"
-                          name={[field.name, 'quantity']}
-                          rules={[{ required: true }]}
-                        >
-                          <InputNumber min={1} max={500} style={{ width: '100%' }} />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={12} md={6}>
-                        <Form.Item
-                          {...field}
-                          label="Tổng kg của dòng"
-                          name={[field.name, 'weightKg']}
-                          rules={[{ required: true }]}
-                        >
-                          <InputNumber min={0.1} precision={1} style={{ width: '100%' }} />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={8} md={6}>
-                        <Form.Item
-                          {...field}
-                          label="Dài/kiện (cm)"
-                          name={[field.name, 'lengthCm']}
-                          rules={[{ required: true }]}
-                        >
-                          <InputNumber min={1} style={{ width: '100%' }} />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={8} md={6}>
-                        <Form.Item
-                          {...field}
-                          label="Rộng/kiện (cm)"
-                          name={[field.name, 'widthCm']}
-                          rules={[{ required: true }]}
-                        >
-                          <InputNumber min={1} style={{ width: '100%' }} />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={8} md={6}>
-                        <Form.Item
-                          {...field}
-                          label="Cao/kiện (cm)"
-                          name={[field.name, 'heightCm']}
-                          rules={[{ required: true }]}
-                        >
-                          <InputNumber min={1} style={{ width: '100%' }} />
-                        </Form.Item>
-                      </Col>
-                    </Row>
-                  </Card>
-                ))}
-                <Button
-                  type="dashed"
-                  disabled={!can('orders.write')} icon={<PlusOutlined />}
-                  onClick={() => add({ quantity: 1, packageType: 'CARTON' })}
-                  block
-                >
-                  Thêm loại hàng khác
-                </Button>
-              </Space>
-            )}
-          </Form.List>
-
-          <Form.Item label="Ghi chú đơn hàng" name="notes" style={{ marginTop: 16 }}>
-            <Input.TextArea rows={2} placeholder="Yêu cầu bảo quản, lưu ý khi dỡ hàng..." />
-          </Form.Item>
-
-          <Button type="primary" htmlType="submit" size="large" block loading={loading}>
-            Lưu Đơn Hàng Vào Hệ Thống
-          </Button>
-        </Form>
-      </Modal>
-
-      {/* Modal Chỉnh Sửa Đơn Hàng */}
-      <Modal
-        title={
-          <Space>
-            <EditOutlined style={{ color: '#1677ff' }} />
-            <span>
-              Chỉnh Sửa Đơn Hàng:{' '}
-              <strong style={{ color: '#0284c7' }}>{selectedOrderForEdit?.orderNumber}</strong>
-            </span>
-          </Space>
-        }
-        open={isEditModalOpen}
-        onCancel={() => {
-          setIsEditModalOpen(false);
-          setSelectedOrderForEdit(null);
-        }}
-        footer={null}
-        width={760}
-      >
-        <Form
-          form={editForm}
-          layout="vertical"
-          onFinish={handleUpdateOrder}
-          style={{ marginTop: '16px' }}
-        >
-          <Form.Item
-            label="Khách Hàng Doanh Nghiệp"
-            name="customerId"
-            rules={[{ required: true, message: 'Chọn khách hàng' }]}
-          >
-            <Select placeholder="Chọn khách hàng">
-              {customers.map((customer) => (
-                <Select.Option key={customer.id} value={customer.id}>
-                  {customer.code} — {customer.name}
-                </Select.Option>
-              ))}
-            </Select>
-          </Form.Item>
-
-          <Divider orientation="left" style={{ fontSize: '13px' }}>
-            1. Điểm Lấy Hàng (PICKUP)
-          </Divider>
-          <Form.Item label="Địa chỉ lấy hàng" required>
-            <Space.Compact style={{ width: '100%' }}>
-              <Form.Item
-                name="pickupAddress"
-                noStyle
-                rules={[{ required: true, message: 'Nhập hoặc chọn địa chỉ lấy hàng' }]}
-              >
-                <AutoComplete
-                  options={editPickupOptions}
-                  onSearch={(val) => handleSearchAddress(val, 'edit', 'pickup')}
-                  onSelect={(_val, opt: any) => {
-                    if (opt.lat && opt.lng) {
-                      setEditPickupCoord({ lat: opt.lat, lng: opt.lng });
-                    }
-                  }}
-                  placeholder="Nhập tên đường, KCN, quận huyện..."
-                  style={{ width: 'calc(100% - 160px)' }}
-                />
-              </Form.Item>
-              <Button
-                type="primary"
-                ghost
-                icon={<CompassOutlined />}
-                onClick={() => handleOpenMapPicker('edit-pickup')}
-                style={{ width: '160px' }}
-              >
-                Chọn trên bản đồ
-              </Button>
-            </Space.Compact>
-            {editPickupCoord && (
-              <div style={{ marginTop: 4 }}>
-                <Tag color="cyan" icon={<AimOutlined />}>
-                  Tọa độ đã chọn: {editPickupCoord.lat.toFixed(5)}, {editPickupCoord.lng.toFixed(5)}
-                </Tag>
-              </div>
-            )}
-          </Form.Item>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-            <Form.Item label="Người phụ trách lấy hàng" name="pickupContactName">
-              <Input placeholder="Tên người liên hệ" />
-            </Form.Item>
-            <Form.Item label="SĐT lấy hàng" name="pickupContactPhone">
-              <Input placeholder="Số điện thoại" />
-            </Form.Item>
-          </div>
-
-          <Divider orientation="left" style={{ fontSize: '13px' }}>
-            2. Điểm Giao Hàng (DELIVERY)
-          </Divider>
-          <Form.Item label="Địa chỉ giao hàng" required>
-            <Space.Compact style={{ width: '100%' }}>
-              <Form.Item
-                name="deliveryAddress"
-                noStyle
-                rules={[{ required: true, message: 'Nhập hoặc chọn địa chỉ giao hàng' }]}
-              >
-                <AutoComplete
-                  options={editDeliveryOptions}
-                  onSearch={(val) => handleSearchAddress(val, 'edit', 'delivery')}
-                  onSelect={(_val, opt: any) => {
-                    if (opt.lat && opt.lng) {
-                      setEditDeliveryCoord({ lat: opt.lat, lng: opt.lng });
-                    }
-                  }}
-                  placeholder="Nhập địa chỉ nhận hàng..."
-                  style={{ width: 'calc(100% - 160px)' }}
-                />
-              </Form.Item>
-              <Button
-                type="primary"
-                ghost
-                icon={<CompassOutlined />}
-                onClick={() => handleOpenMapPicker('edit-delivery')}
-                style={{ width: '160px' }}
-              >
-                Chọn trên bản đồ
-              </Button>
-            </Space.Compact>
-            {editDeliveryCoord && (
-              <div style={{ marginTop: 4 }}>
-                <Tag color="cyan" icon={<AimOutlined />}>
-                  Tọa độ đã chọn: {editDeliveryCoord.lat.toFixed(5)}, {editDeliveryCoord.lng.toFixed(5)}
-                </Tag>
-              </div>
-            )}
-          </Form.Item>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-            <Form.Item label="Người nhận hàng" name="deliveryContactName">
-              <Input placeholder="Tên người nhận" />
-            </Form.Item>
-            <Form.Item label="SĐT nhận hàng" name="deliveryContactPhone">
-              <Input placeholder="Số điện thoại" />
-            </Form.Item>
-          </div>
-
-          <Divider orientation="left" style={{ fontSize: '13px' }}>
-            3. Các loại hàng và kiện vật lý
-          </Divider>
-          <Form.List name="items">
-            {(fields, { add, remove }) => (
-              <Space direction="vertical" style={{ width: '100%' }}>
-                {fields.map((field, index) => (
-                  <Card
-                    key={field.key}
-                    size="small"
-                    title={`Loại hàng ${index + 1}`}
-                    extra={
-                      fields.length > 1 ? (
-                        <Button
-                          danger
-                          type="text"
-                          icon={<MinusCircleOutlined />}
-                          onClick={() => remove(field.name)}
-                        >
-                          Xóa
-                        </Button>
-                      ) : null
-                    }
-                  >
-                    <Row gutter={12}>
-                      <Col xs={24} md={12}>
-                        <Form.Item
-                          {...field}
-                          label="Mô tả"
-                          name={[field.name, 'description']}
-                          rules={[{ required: true, message: 'Nhập mô tả' }]}
-                        >
-                          <Input placeholder="Mô tả hàng hóa" />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={12} md={6}>
-                        <Form.Item
-                          {...field}
-                          label="Loại kiện"
-                          name={[field.name, 'packageType']}
-                          rules={[{ required: true }]}
-                        >
-                          <Select
-                            options={['CARTON', 'PALLET', 'CRATE', 'BAG'].map((value) => ({
-                              value,
-                              label: value,
-                            }))}
-                          />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={12} md={6}>
-                        <Form.Item
-                          {...field}
-                          label="Số kiện"
-                          name={[field.name, 'quantity']}
-                          rules={[{ required: true }]}
-                        >
-                          <InputNumber min={1} max={500} style={{ width: '100%' }} />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={12} md={6}>
-                        <Form.Item
-                          {...field}
-                          label="Tổng kg của dòng"
-                          name={[field.name, 'weightKg']}
-                          rules={[{ required: true }]}
-                        >
-                          <InputNumber min={0.1} precision={1} style={{ width: '100%' }} />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={8} md={6}>
-                        <Form.Item
-                          {...field}
-                          label="Dài/kiện (cm)"
-                          name={[field.name, 'lengthCm']}
-                          rules={[{ required: true }]}
-                        >
-                          <InputNumber min={1} style={{ width: '100%' }} />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={8} md={6}>
-                        <Form.Item
-                          {...field}
-                          label="Rộng/kiện (cm)"
-                          name={[field.name, 'widthCm']}
-                          rules={[{ required: true }]}
-                        >
-                          <InputNumber min={1} style={{ width: '100%' }} />
-                        </Form.Item>
-                      </Col>
-                      <Col xs={8} md={6}>
-                        <Form.Item
-                          {...field}
-                          label="Cao/kiện (cm)"
-                          name={[field.name, 'heightCm']}
-                          rules={[{ required: true }]}
-                        >
-                          <InputNumber min={1} style={{ width: '100%' }} />
-                        </Form.Item>
-                      </Col>
-                    </Row>
-                  </Card>
-                ))}
-                <Button
-                  type="dashed"
-                  disabled={!can('orders.write')} icon={<PlusOutlined />}
-                  onClick={() => add({ quantity: 1, packageType: 'CARTON' })}
-                  block
-                >
-                  Thêm loại hàng khác
-                </Button>
-              </Space>
-            )}
-          </Form.List>
-
-          <Form.Item label="Ghi chú đơn hàng" name="notes" style={{ marginTop: 16 }}>
-            <Input.TextArea rows={2} placeholder="Yêu cầu bảo quản, lưu ý khi dỡ hàng..." />
-          </Form.Item>
-
-          <Button type="primary" htmlType="submit" size="large" block loading={loading}>
-            Lưu Thay Đổi Đơn Hàng
-          </Button>
-        </Form>
-      </Modal>
-    </div>
-  );
+        {form.getFieldValue(['items', index, 'packages', field.name, 'id']) && <Typography.Text type="secondary">ID: {String(form.getFieldValue(['items', index, 'packages', field.name, 'id']))}</Typography.Text>}
+      </Card>)}
+      <Form.ErrorList errors={errors} />
+      <Space wrap>
+        <Button onClick={() => add(blankPackage())}>Thêm kiện</Button>
+        <InputNumber aria-label={`Số kiện nhập nhanh dòng ${index + 1}`} min={1} max={500} precision={0} value={count} onChange={n => setCount(n ?? 1)} />
+        <Button onClick={() => {
+          const packages: PackageInput[] = form.getFieldValue(['items', index, 'packages']) ?? [];
+          const first = packages[0];
+          if (!first || !first.lengthMm || !first.widthMm || !first.heightMm || !first.weightG || packages.length + count > 500) {
+            form.setFields([{ name: ['items', index, 'packages'], errors: ['Nhập đủ số đo kiện đầu; tổng số kiện không vượt 500'] }]); return;
+          }
+          for (let n = 0; n < count; n++) add({ lengthMm: first.lengthMm, widthMm: first.widthMm, heightMm: first.heightMm, weightG: first.weightG });
+        }}>Thêm N kiện theo số đo kiện đầu</Button>
+      </Space>
+    </>}
+  </Form.List>;
 };
-
+const OrdersPage: React.FC = () => {
+  const { message } = App.useApp();
+  const { can, branchId, setBranchId } = useAuth();
+  const [rows, setRows] = useState<Order[]>([]), [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1), [pageSize, setPageSize] = useState(25);
+  const [search, setSearch] = useState(''), [status, setStatus] = useState<string>();
+  const [loading, setLoading] = useState(false), [saving, setSaving] = useState(false);
+  const [error, setError] = useState(''), [saveError, setSaveError] = useState('');
+  const [branches, setBranches] = useState<Branch[]>([]), [customers, setCustomers] = useState<Array<{ id: string; code: string; name: string }>>([]);
+  const [open, setOpen] = useState(false), [editing, setEditing] = useState<Order | null>(null), [detail, setDetail] = useState<Order | null>(null);
+  const [mapStop, setMapStop] = useState<number | null>(null);
+  const [form] = Form.useForm<FormValues>();
+  const formBranch = Form.useWatch('branchId', form);
+  const [customersLoading, setCustomersLoading] = useState(false);
+  const busy = useRef(false), request = useRef(0);
+  const command = useRef<{ payload: string; key: string }>();
+  const confirmCommand = useRef<{ id: string; version: number; key: string }>();
+  const fetchRows = async () => {
+    const seq = ++request.current; setLoading(true); setError('');
+    try {
+      const data = await ordersApi.list({ branchId, page, pageSize, status, search: search || undefined });
+      if (seq === request.current) { setRows(data.items); setTotal(data.total); }
+    } catch (e) { if (seq === request.current && !axios.isCancel(e)) { setRows([]); setError(apiErrorMessage(e)); } }
+    finally { if (seq === request.current) setLoading(false); }
+  };
+  useEffect(() => { void fetchRows(); return () => { request.current++; }; }, [branchId, page, pageSize, status, search]);
+  useEffect(() => {
+    let live = true;
+    void branchesApi.getAll().then(b => { if (live) setBranches(b.data); }).catch(e => { if (live && !axios.isCancel(e)) setError(apiErrorMessage(e)); });
+    return () => { live = false; };
+  }, [branchId]);
+  useEffect(() => {
+    if (!open || !formBranch) { setCustomers([]); return; }
+    let live = true; setCustomersLoading(true); setCustomers([]);
+    void customersApi.getAll(formBranch).then(c => { if (live) setCustomers(c.data); })
+      .catch(e => { if (live && !axios.isCancel(e)) setSaveError(apiErrorMessage(e)); })
+      .finally(() => { if (live) setCustomersLoading(false); });
+    return () => { live = false; };
+  }, [open, formBranch]);
+  const beginCreate = () => {
+    setEditing(null); setSaveError(''); command.current = undefined; form.resetFields();
+    form.setFieldsValue({ branchId: branchId ?? (branches.length === 1 ? branches[0].id : undefined), stops: [{ type: 'PICKUP', serviceDurationMinutes: 20 }, { type: 'DELIVERY', serviceDurationMinutes: 20 }], items: [{ description: '', packageType: 'CARTON', packages: [blankPackage()] }] });
+    setOpen(true);
+  };
+  const beginEdit = async (order: Order) => {
+    try {
+      const current = await ordersApi.getOne(order.id); setEditing(current); setDetail(null); setSaveError(''); command.current = undefined; form.resetFields();
+      form.setFieldsValue({ branchId: current.branchId, customerId: current.customerId, notes: current.notes,
+        stops: current.stops.map(s => ({ ...s, windowStart: dateValue(s.windowStart), windowEnd: dateValue(s.windowEnd) })),
+        items: current.items.map(i => ({ id: i.id, description: i.description, packageType: i.packageType, sku: i.sku, packages: i.packages.length ? i.packages.map(p => ({ id: p.id, lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: p.weightG })) : [blankPackage()] })),
+      }); setOpen(true);
+    } catch (e) { message.error(apiErrorMessage(e)); }
+  };
+  const save = async (values: FormValues) => {
+    if (busy.current) return;
+    busy.current = true; setSaving(true); setSaveError('');
+    const input: OrderInput = {
+      branchId: values.branchId, customerId: values.customerId, notes: values.notes,
+      stops: values.stops.map(s => ({ id: s.id, type: s.type, address: s.address, latitude: s.latitude, longitude: s.longitude, contactName: s.contactName, contactPhone: s.contactPhone, serviceDurationMinutes: s.serviceDurationMinutes, windowStart: isoValue(s.windowStart), windowEnd: isoValue(s.windowEnd) })),
+      items: values.items.map(i => ({ id: i.id, sku: i.sku, description: i.description, packageType: i.packageType, packages: i.packages.map(p => ({ id: p.id, lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: String(p.weightG) })) })),
+    };
+    const payload = JSON.stringify({ id: editing?.id, version: editing?.version, ...input });
+    if (!command.current || command.current.payload !== payload) command.current = { payload, key: crypto.randomUUID() };
+    try {
+      const saved = editing ? await ordersApi.update(editing.id, { ...input, version: editing.version }, command.current.key) : await ordersApi.create(input, command.current.key);
+      setOpen(false); setDetail(saved); command.current = undefined; message.success('Đã lưu đơn trên server'); void fetchRows();
+    } catch (e) { setSaveError(apiErrorMessage(e)); showFieldErrors(e, form); }
+    finally { busy.current = false; setSaving(false); }
+  };
+  const confirm = async (order: Order) => {
+    if (busy.current) return;
+    busy.current = true; setSaving(true); setError('');
+    if (confirmCommand.current?.id !== order.id || confirmCommand.current.version !== order.version) confirmCommand.current = { id: order.id, version: order.version, key: crypto.randomUUID() };
+    try {
+      const saved = await ordersApi.confirm(order.id, order.version, confirmCommand.current.key);
+      setDetail(saved); confirmCommand.current = undefined; message.success('Đã xác nhận đơn để điều phối'); void fetchRows();
+    } catch (e) { setError(apiErrorMessage(e)); message.error(apiErrorMessage(e)); }
+    finally { busy.current = false; setSaving(false); }
+  };
+  const canEdit = (o: Order) => can('orders.write') && ['DRAFT', 'CONFIRMED'].includes(o.status);
+  if (!can('orders.read')) return <Alert type="warning" showIcon message="Bạn không có quyền xem đơn hàng" />;
+  return <Space direction="vertical" size="middle" style={{ width: '100%', padding: 16, boxSizing: 'border-box' }}>
+    <Typography.Title level={2}>Quản lý đơn hàng</Typography.Title>
+    <Typography.Text>Quản lý từng kiện và khung giờ bắt đầu phục vụ • Asia/Ho_Chi_Minh (UTC+7)</Typography.Text>
+    <Space wrap>
+      <Button type="primary" disabled={!can('orders.write')} onClick={beginCreate}>Tạo đơn nháp</Button>
+      <Button onClick={() => void fetchRows()} loading={loading}>Tải lại</Button>
+      <Input.Search placeholder="Tìm mã đơn hoặc khách" aria-label="Tìm đơn" allowClear onSearch={v => { setSearch(v); setPage(1); }} style={{ width: 240 }} />
+      <Select aria-label="Lọc chi nhánh" placeholder="Chi nhánh" allowClear value={branchId} onChange={id => { setBranchId(id); setPage(1); }} style={{ minWidth: 180 }} options={branches.map(b => ({ value: b.id, label: b.name }))} />
+      <Select aria-label="Lọc trạng thái" placeholder="Trạng thái" allowClear value={status} onChange={v => { setStatus(v); setPage(1); }} style={{ width: 160 }} options={['DRAFT','CONFIRMED','ASSIGNED','IN_TRANSIT','COMPLETED','CANCELLED'].map(value => ({ value, label: value }))} />
+    </Space>
+    {error && <Alert type="error" showIcon message={error} action={<Button onClick={() => void fetchRows()}>Thử lại</Button>} />}
+    <Table<Order> rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }} locale={{ emptyText: 'Chưa có đơn phù hợp' }} pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: (p, size) => { setPage(p); setPageSize(size); } }} columns={[
+      { title: 'Mã đơn', dataIndex: 'orderNumber', width: 240, render: (v: string) => <Typography.Text style={{ overflowWrap: 'anywhere' }}>{v}</Typography.Text> },
+      { title: 'Khách / Chi nhánh', render: (_, o) => <>{o.customer.name}<br />{o.branch?.name}</> },
+      { title: 'Trạng thái', render: (_, o) => <><Tag>{o.status}</Tag>{o.packageDataStatus === 'LEGACY_REVIEW' && <Tag color="orange">Cần đối soát kiện</Tag>}</> },
+      { title: 'Tổng đã lưu', render: (_, o) => <>{o.totalPackages} kiện<br />{o.totalWeightKg} kg · {o.totalVolumeM3} m³</> },
+      { title: 'Thao tác', render: (_, o) => <Space wrap><Button onClick={() => void ordersApi.getOne(o.id).then(setDetail).catch(e => message.error(apiErrorMessage(e)))}>Chi tiết</Button><Button disabled={!canEdit(o)} onClick={() => void beginEdit(o)}>Sửa</Button>{o.status === 'DRAFT' && <Button disabled={!can('orders.write') || o.packageDataStatus !== 'COMPLETE'} loading={saving} onClick={() => void confirm(o)}>Xác nhận</Button>}</Space> },
+    ]} />
+    <Modal title={editing ? `Sửa đơn ${editing.orderNumber}` : 'Tạo đơn nháp'} open={open} width={1100} style={{ top: 24, maxWidth: 'calc(100vw - 24px)' }} styles={{ body: { maxHeight: 'calc(100dvh - 140px)', overflowY: 'auto' } }} onCancel={() => { if (!saving) setOpen(false); }} maskClosable={false} footer={null}>
+      {saveError && <Alert type="error" showIcon message={saveError} style={{ marginBottom: 16 }} />}
+      {editing?.packageDataStatus === 'LEGACY_REVIEW' && <Alert type="warning" showIcon message="Đơn cũ cần đối soát: nhập số đo thực tế từng kiện; không tự chia tổng khối lượng" description={editing.items.map(i => `${i.description}: ${i.quantity} kiện, số cũ ${i.weightKg} kg, ${i.lengthCm} × ${i.widthCm} × ${i.heightCm} cm`).join('; ')} />}
+      <Form<FormValues> form={form} layout="vertical" onFinish={values => void save(values)} disabled={saving} scrollToFirstError>
+        <Row gutter={16}><Col xs={24} sm={12}><Form.Item name="branchId" label="Chi nhánh quản lý" rules={required}><Select disabled={!!editing} onChange={() => form.setFieldValue('customerId', undefined)} options={branches.map(b => ({ value: b.id, label: b.name }))} /></Form.Item></Col>
+          <Col xs={24} sm={12}><Form.Item name="customerId" label="Khách hàng" rules={required}><Select loading={customersLoading} disabled={!formBranch || customersLoading} showSearch optionFilterProp="label" options={customers.map(c => ({ value: c.id, label: `${c.code} — ${c.name}` }))} /></Form.Item></Col></Row>
+        <Form.List name="stops">{fields => fields.map((field, i) => <Card key={field.key} title={i === 0 ? 'Điểm lấy hàng' : 'Điểm giao hàng'} style={{ marginBottom: 16 }}>
+          <Form.Item name={[field.name, 'id']} hidden><Input /></Form.Item><Form.Item name={[field.name, 'type']} hidden><Input /></Form.Item>
+          <Form.Item name={[field.name, 'address']} label="Địa chỉ" rules={required}><Input /></Form.Item>
+          <Button onClick={() => setMapStop(field.name)}>Chọn {i === 0 ? 'điểm lấy' : 'điểm giao'} trên Mapbox</Button>
+          <Row gutter={16}><Col xs={12}><Form.Item name={[field.name, 'latitude']} label="Vĩ độ" rules={required}><InputNumber min={-90} max={90} style={{ width: '100%' }} /></Form.Item></Col><Col xs={12}><Form.Item name={[field.name, 'longitude']} label="Kinh độ" rules={required}><InputNumber min={-180} max={180} style={{ width: '100%' }} /></Form.Item></Col></Row>
+          <Row gutter={16}><Col xs={24} sm={12}><Form.Item name={[field.name, 'contactName']} label="Người liên hệ" rules={required}><Input /></Form.Item></Col><Col xs={24} sm={12}><Form.Item name={[field.name, 'contactPhone']} label="Điện thoại" rules={required}><Input /></Form.Item></Col></Row>
+          <Row gutter={16}><Col xs={24} sm={12}><Form.Item name={[field.name, 'windowStart']} label="Bắt đầu khung giờ (UTC+7)" rules={[{ validator: async (_, value: Dayjs | null) => { const end: Dayjs | undefined = form.getFieldValue(['stops', i, 'windowEnd']); if ((!value && end) || (!value && editing?.status === 'CONFIRMED')) throw new Error('Cần nhập đủ khung giờ'); } }]}><DatePicker showTime format="DD/MM/YYYY HH:mm" style={{ width: '100%' }} /></Form.Item></Col>
+            <Col xs={24} sm={12}><Form.Item name={[field.name, 'windowEnd']} label="Kết thúc khung giờ (UTC+7)" dependencies={[['stops', i, 'windowStart']]} rules={[{ validator: async (_, value: Dayjs | null) => { const start: Dayjs | undefined = form.getFieldValue(['stops', i, 'windowStart']); if (start && (!value || value.isBefore(start))) throw new Error('Kết thúc phải bằng hoặc sau bắt đầu'); } }]}><DatePicker showTime format="DD/MM/YYYY HH:mm" style={{ width: '100%' }} /></Form.Item></Col></Row>
+          <Typography.Paragraph type="secondary">Khung giờ áp dụng cho lúc bắt đầu phục vụ. Bắt buộc nhập đủ trước khi xác nhận; có thể qua ngày.</Typography.Paragraph>
+          <Form.Item name={[field.name, 'serviceDurationMinutes']} label="Thời gian phục vụ (phút)" rules={required}><InputNumber min={0} precision={0} /></Form.Item>
+        </Card>)}</Form.List>
+        <Form.List name="items" rules={[{ validator: async (_, value: OrderLineInput[]) => { if (!value?.length) throw new Error('Cần ít nhất một dòng hàng'); } }]}>{(fields, { add, remove }, { errors }) => <>
+          {fields.map((field, i) => <Card title={`Dòng hàng ${i + 1}`} key={field.key} style={{ marginBottom: 16 }} extra={<Button danger onClick={() => remove(field.name)}>Xóa dòng {i + 1}</Button>}>
+            <Form.Item name={[field.name, 'id']} hidden><Input /></Form.Item>
+            <Row gutter={16}><Col xs={24} sm={16}><Form.Item name={[field.name, 'description']} label="Mô tả hàng" rules={required}><Input maxLength={500} /></Form.Item></Col><Col xs={24} sm={8}><Form.Item name={[field.name, 'packageType']} label="Kiểu đóng gói" rules={required}><Select options={['CARTON','PALLET','CRATE','BAG'].map(value => ({ value, label: value }))} /></Form.Item></Col></Row>
+            <Form.Item name={[field.name, 'sku']} label="SKU (tùy chọn)"><Input /></Form.Item>
+            <PackageFields index={field.name} form={form} />
+          </Card>)}
+          <Form.ErrorList errors={errors} /><Button onClick={() => add({ description: '', packageType: 'CARTON', packages: [blankPackage()] })}>Thêm dòng hàng</Button>
+        </>}</Form.List>
+        <Form.Item name="notes" label="Ghi chú" style={{ marginTop: 16 }}><Input.TextArea maxLength={5000} /></Form.Item>
+        <Space wrap><Button type="primary" htmlType="submit" loading={saving}>{editing ? 'Lưu thay đổi' : 'Lưu nháp'}</Button><Button disabled={saving} onClick={() => setOpen(false)}>Đóng</Button></Space>
+      </Form>
+    </Modal>
+    <MapLocationPickerModal manualAddress open={mapStop !== null} onCancel={() => setMapStop(null)} initialLocation={mapStop !== null ? form.getFieldValue(['stops', mapStop]) : undefined} onSelectLocation={location => { if (mapStop !== null) for (const key of ['address', 'latitude', 'longitude'] as const) form.setFieldValue(['stops', mapStop, key], location[key]); setMapStop(null); }} />
+    <OrderDetailDrawer open={!!detail} order={detail} onClose={() => setDetail(null)} onEdit={detail && canEdit(detail) ? o => void beginEdit(o) : undefined} />
+  </Space>;
+};
 export default OrdersPage;

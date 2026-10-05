@@ -6,8 +6,8 @@ import { PrismaService } from '../prisma/prisma.service';
 export class CustomersService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(user: Principal) {
-    const scope = branchFilter(user, 'customers.read');
+  async findAll(user: Principal, branchId?: string) {
+    const scope = branchFilter(user, 'customers.read', branchId);
     return this.prisma.customer.findMany({
       where: Object.keys(scope).length ? { orders: { some: { branchId: scope } } } : {},
       include: {

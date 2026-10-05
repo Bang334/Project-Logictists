@@ -1,15 +1,18 @@
-﻿import { Body, Controller, Get, Param, Patch, Post, Query, Req, ParseEnumPipe, ParseUUIDPipe } from '@nestjs/common';
+﻿import { Body, Controller, Get, Param, Patch, Post, Query, Req, Headers, ParseEnumPipe, ParseUUIDPipe, DefaultValuePipe, ParseIntPipe, BadRequestException } from '@nestjs/common';
 import { OrderStatus } from '@prisma/client';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
-import { UpdateOrderDto } from './dto/update-order.dto';
+import { UpdateOrderDto, ConfirmOrderDto } from './dto/update-order.dto';
 import { AuthRequest, RequirePermission } from '../auth/access';
 @Controller('orders')
 export class OrdersController {
   constructor(private readonly service: OrdersService) {}
   @RequirePermission('orders.read')
   @Get()
-  findAll(@Req() req: AuthRequest, @Query('status', new ParseEnumPipe(OrderStatus, { optional: true })) status?: OrderStatus, @Query('customerId') customerId?: string, @Query('branchId') branchId?: string) { return this.service.findAll(req.user, status, customerId, branchId); }
+  findAll(@Req() req: AuthRequest, @Query('status', new ParseEnumPipe(OrderStatus, { optional: true })) status?: OrderStatus, @Query('customerId') customerId?: string, @Query('branchId') branchId?: string, @Query('page', new DefaultValuePipe(1), ParseIntPipe) page = 1, @Query('pageSize', new DefaultValuePipe(25), ParseIntPipe) pageSize = 25, @Query('search') search?: string) {
+    if (page < 1 || pageSize < 1 || pageSize > 100) throw new BadRequestException('Phân trang không hợp lệ');
+    return this.service.findAll(req.user, status, customerId, branchId, page, pageSize, search);
+  }
   @RequirePermission('orders.read')
   @Get('available-for-dispatch')
   available(@Req() req: AuthRequest, @Query('branchId') branchId?: string) { return this.service.getAvailableForDispatch(req.user, branchId); }
@@ -18,8 +21,11 @@ export class OrdersController {
   findOne(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.service.findOne(id, req.user); }
   @RequirePermission('orders.write')
   @Post()
-  create(@Req() req: AuthRequest, @Body() dto: CreateOrderDto) { return this.service.create(dto, req.user); }
+  create(@Req() req: AuthRequest, @Body() dto: CreateOrderDto, @Headers('idempotency-key') key?: string) { return this.service.create(dto, req.user, key); }
+  @RequirePermission('orders.write')
+  @Post(':id/confirm')
+  confirm(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ConfirmOrderDto, @Headers('idempotency-key') key?: string) { return this.service.confirm(id, dto, req.user, key); }
   @RequirePermission('orders.write')
   @Patch(':id')
-  update(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateOrderDto) { return this.service.update(id, dto, req.user); }
+  update(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateOrderDto, @Headers('idempotency-key') key?: string) { return this.service.update(id, dto, req.user, key); }
 }

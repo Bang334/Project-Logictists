@@ -1,5 +1,5 @@
 import { useAuth } from '../context/AuthContext';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Row,
   Col,
@@ -30,7 +30,7 @@ import {
   PlayCircleOutlined,
   PauseCircleOutlined,
 } from '@ant-design/icons';
-import { vehiclesApi, driversApi, ordersApi, tripsApi } from '../api/client';
+import { apiErrorMessage, vehiclesApi, driversApi, ordersApi, tripsApi } from '../api/client';
 import {
   Vehicle,
   Driver,
@@ -62,6 +62,9 @@ const DispatchPage: React.FC = () => {
   // Selected Trip & Active Analysis State
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
   const [loadProfile, setLoadProfile] = useState<LoadProfileResult | null>(null);
+  const [loadProfileError, setLoadProfileError] = useState('');
+  const [profileLoading, setProfileLoading] = useState(false);
+  const profileRequest = useRef(0);
   const [optimizing, setOptimizing] = useState(false);
   const [optimizationResult, setOptimizationResult] = useState<OptimizationResultUI | null>(null);
   const [orderedStopIds, setOrderedStopIds] = useState<string[]>([]);
@@ -105,12 +108,14 @@ const DispatchPage: React.FC = () => {
   }, []);
 
   const fetchLoadProfile = async (tripId: string) => {
+    const request = ++profileRequest.current;
+    setLoadProfile(null); setLoadProfileError(''); setProfileLoading(true);
     try {
       const res = await tripsApi.getLoadProfile(tripId);
-      setLoadProfile(res.data);
+      if (request === profileRequest.current) setLoadProfile(res.data);
     } catch (err) {
-      console.error('Lỗi khi lấy load profile:', err);
-    }
+      if (request === profileRequest.current) setLoadProfileError(apiErrorMessage(err));
+    } finally { if (request === profileRequest.current) setProfileLoading(false); }
   };
 
   const handleSelectTrip = (trip: Trip) => {
@@ -783,6 +788,8 @@ const DispatchPage: React.FC = () => {
           )}
 
           {/* BIỂU ĐỒ PHÂN TÍCH TẢI TRỌNG TỪNG CHẶNG (BR04 INVARIANT VERIFICATION) */}
+          {profileLoading && <Spin tip="Đang tải dữ liệu tải trọng" />}
+          {loadProfileError && <Alert type="warning" showIcon message={loadProfileError} action={<Button onClick={() => activeTrip && void fetchLoadProfile(activeTrip.id)}>Thử lại</Button>} />}
           {loadProfile && (
             <Card
               title={

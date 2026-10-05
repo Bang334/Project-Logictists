@@ -545,7 +545,7 @@ class SpatialValidator:
                     placed_items=sorted(
                         loaded_items.values(), key=lambda item: item.item_id
                     ),
-                    current_weight_kg=round(current_weight, 1),
+                    current_weight_kg=round(current_weight, 3),
                     current_occupied_area_cm2=round(occupied_area, 1),
                     floor_area_cm2=self.total_floor_area,
                     weight_utilization_percent=round(

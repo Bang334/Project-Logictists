@@ -652,3 +652,10 @@ Trình tự an toàn: kiểm kê read-only → bản sao/khả năng phục hồ
 Thiết kế logic v0.2 là đầu vào chung cho cả ba người. Mục 3 là danh mục bảng/cột chính; mục 4 là các FK và cardinality; mục 6 là ràng buộc; mục 8 giữ policy chưa được quyết định. Thay đổi một quan hệ phải cập nhật đồng thời các mục đó và hợp đồng producer/consumer liên quan.
 
 Bàn giao tài liệu không đồng nghĩa backend đã sẵn sàng chạy. Trước nghiệm thu module: schema/migration khớp cấu trúc đích, policy liên quan đủ rõ, test PostgreSQL/concurrency và API phù hợp đạt, consumer được cập nhật, phần chưa kiểm chứng được ghi cụ thể. Không tuyên bố bảo đảm mọi nghiệp vụ chỉ từ ERD.
+
+
+## Bổ sung Package và khung giờ — 03/10/2026
+
+Trong phiên triển khai, người dùng đã xác nhận số đo **mỗi kiện**, nhập nhanh rồi sửa riêng; khung giờ **bắt đầu phục vụ**, bắt buộc khi xác nhận, UTC/Asia/Ho_Chi_Minh, cho phép qua ngày/chồng nhau; lưu **DRAFT → CONFIRMED**, chỉ sửa hàng/điểm/giờ khi chưa có phân công hay lịch sử tham chiếu. MVP một lấy–một giao theo thiết kế hiện hành. Đơn cũ không tự chia khối lượng hoặc tạo kiện suy đoán.
+
+Chi tiết triển khai, giới hạn migration, hợp đồng với Người 1 và bằng chứng kiểm thử: [ORDERS_PACKAGES.md](ORDERS_PACKAGES.md). Đây chỉ là phần POL02 liên quan nhiệm vụ này; không chốt thêm chia đơn, mở kiện, giao thiếu, hủy sau lấy. POL03 về hình học/hướng xoay/khoảng hở/thiết bị vẫn còn mở; không thêm quyền xoay hoặc xếp chồng.

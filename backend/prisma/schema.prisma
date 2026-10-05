@@ -290,6 +290,7 @@ model Order {
   totalWeightKg Float           @default(0)
   totalVolumeM3 Float           @default(0)
   totalPackages Int             @default(0)
+  packageDataStatus String      @default("LEGACY_REVIEW")
   version       Int             @default(1)
   notes         String?
   stops         OrderStop[]
@@ -317,6 +318,7 @@ model OrderStop {
   longitude              Float
   contactName            String
   contactPhone           String
+  windowBasis            String?
   windowStart            DateTime?  @db.Timestamptz(3)
   windowEnd              DateTime?  @db.Timestamptz(3)
   serviceDurationMinutes Int        @default(15)
@@ -337,9 +339,9 @@ model OrderItem {
   packageType String       @default("CARTON") // CARTON, PALLET, CRATE, BAG
   quantity    Int
   weightKg    Float
-  lengthCm    Float
-  widthCm     Float
-  heightCm    Float
+  lengthCm    Float?
+  widthCm     Float?
+  heightCm    Float?
   volumeM3    Float
   allocations Allocation[]
   packages    Package[]
@@ -618,7 +620,7 @@ model Package {
   widthMm             Int
   heightMm            Int
   weightG             BigInt
-  allowedOrientations Json
+  allowedOrientations Json?
   measurementSource   String
   measuredAt          DateTime?        @db.Timestamptz(3)
   status              PackageStatus    @default(DRAFT)
@@ -629,6 +631,7 @@ model Package {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
+  @@unique([id, orderItemId])
   @@index([orderItemId, status])
   @@map("packages")
 }

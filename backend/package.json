@@ -28,7 +28,13 @@
     "test:auth:migration": "node scripts/test-auth-migration.cjs",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:cov": "jest --coverage"
+    "test:cov": "jest --coverage",
+    "orders:demo:prepare": "node scripts/prepare-orders-test.cjs",
+    "orders:demo:seed": "node scripts/with-orders-test-env.cjs node_modules/ts-node/dist/bin.js prisma/seed-auth.ts",
+    "start:orders-demo": "node scripts/with-orders-test-env.cjs dist/src/main.js",
+    "test:orders": "node scripts/with-orders-test-env.cjs --test tests/orders.integration.cjs",
+    "test:orders:auth": "node scripts/with-orders-test-env.cjs --test tests/auth.integration.cjs",
+    "test:orders:mapbox": "node scripts/check-orders-mapbox.cjs"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.0",

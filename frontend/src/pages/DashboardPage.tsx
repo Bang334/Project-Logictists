@@ -25,7 +25,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [pendingOrders, setPendingOrders] = useState(0);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [selectedBranchForEdit, setSelectedBranchForEdit] = useState<Branch | null>(null);
   const [isEditBranchModalOpen, setIsEditBranchModalOpen] = useState(false);
@@ -37,13 +37,13 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
         branchesApi.getAll(),
         vehiclesApi.getAll(),
         driversApi.getAll(),
-        ordersApi.getAll(),
+        ordersApi.list({ status: 'CONFIRMED', pageSize: 1 }),
         tripsApi.getAll(),
       ]);
       setBranches(bRes.data);
       setVehicles(vRes.data);
       setDrivers(dRes.data);
-      setOrders(oRes.data);
+      setPendingOrders(oRes.total);
       setTrips(tRes.data);
     } catch (error) {
       console.error('Lỗi khi tải dữ liệu dashboard:', error);
@@ -67,7 +67,6 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
 
   const availableVehicles = vehicles.filter((v) => v.status === 'AVAILABLE').length;
   const availableDrivers = drivers.filter((d) => d.status === 'AVAILABLE').length;
-  const pendingOrders = orders.filter((o) => o.status === 'CONFIRMED').length;
   const activeTrips = trips.filter((t) => t.status === 'DISPATCHED' || t.status === 'IN_PROGRESS').length;
 
   // Chuẩn bị markers cho bản đồ tổng quan

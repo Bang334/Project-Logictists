@@ -1,58 +1,23 @@
-type PhysicalOrderItem = {
-  id: string;
-  orderId: string;
-  description: string;
-  quantity: number;
-  weightKg: number;
-  lengthCm: number;
-  widthCm: number;
-  heightCm: number;
+import { PackageMeasurements, packageTotals } from '../orders/package-measurements';
+export type PhysicalPackageLine = {
+  id: string; orderId: string; description: string; quantity: number;
+  packages: Array<PackageMeasurements & { id: string; orderItemId: string }>;
 };
-
 export type OptimizerCargoUnit = {
-  id: string;
-  order_id: string;
-  order_item_id: string;
-  description: string;
-  length_cm: number;
-  width_cm: number;
-  height_cm: number;
-  weight_kg: number;
-  can_rotate: false;
+  id: string; order_id: string; order_item_id: string; description: string;
+  length_cm: number; width_cm: number; height_cm: number; weight_kg: number; can_rotate: false;
 };
-
-/**
- * OrderItem là một dòng loại hàng: quantity là số kiện vật lý, weightKg là
- * tổng khối lượng dòng. Optimizer cần từng kiện có định danh riêng để packing.
- * Xoay kiện được khóa ở false cho tới khi có policy hướng xoay được phê duyệt.
- */
-export function expandOrderItemsToCargoUnits(
-  items: PhysicalOrderItem[],
-): OptimizerCargoUnit[] {
-  return items.flatMap((item) => {
-    if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
-      throw new Error(`Số lượng kiện của dòng hàng ${item.id} không hợp lệ`);
-    }
-    if (
-      item.weightKg <= 0 ||
-      item.lengthCm <= 0 ||
-      item.widthCm <= 0 ||
-      item.heightCm <= 0
-    ) {
-      throw new Error(`Khối lượng/kích thước dòng hàng ${item.id} không hợp lệ`);
-    }
-    const unitWeight = item.weightKg / item.quantity;
-    const pad = String(item.quantity).length;
-    return Array.from({ length: item.quantity }, (_, index) => ({
-      id: `${item.id}#${String(index + 1).padStart(pad, '0')}`,
-      order_id: item.orderId,
-      order_item_id: item.id,
-      description: item.description,
-      length_cm: item.lengthCm,
-      width_cm: item.widthCm,
-      height_cm: item.heightCm,
-      weight_kg: unitWeight,
-      can_rotate: false as const,
-    }));
+/** Only persisted packages. Compatibility units are converted once at this boundary. */
+export function packagesToCargoUnits(items: PhysicalPackageLine[]): OptimizerCargoUnit[] {
+  const seen = new Set<string>();
+  return items.flatMap(item => {
+    if (!item.packages.length || item.quantity !== item.packages.length) throw new Error('Danh sách Package chưa được đối soát');
+    packageTotals(item.packages);
+    return item.packages.map(p => {
+      if (p.orderItemId !== item.id || seen.has(p.id)) throw new Error('ID kiện trùng hoặc sai dòng hàng');
+      if (p.weightG > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Khối lượng vượt độ chính xác contract optimizer');
+      seen.add(p.id);
+      return { id: p.id, order_id: item.orderId, order_item_id: item.id, description: item.description, length_cm: p.lengthMm / 10, width_cm: p.widthMm / 10, height_cm: p.heightMm / 10, weight_kg: Number(p.weightG) / 1000, can_rotate: false as const };
+    });
   });
 }

@@ -15,7 +15,7 @@ const { seedAuth } = require('../dist/prisma/seed-auth');
 
 test('Auth and branch isolation on PostgreSQL', { timeout: 90000 }, async t => {
   const target = new URL(process.env.DATABASE_URL);
-  assert.ok(['127.0.0.1', 'localhost'].includes(target.hostname) && target.pathname === '/tms_auth_test', 'Refusing non-test database');
+  assert.ok(['127.0.0.1', 'localhost'].includes(target.hostname) && ['/tms_auth_test', '/tms_orders_test_v2'].includes(target.pathname), 'Refusing non-test database');
   const app = await NestFactory.create(AppModule, { logger: false });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
   await app.listen(0, '127.0.0.1');
@@ -23,7 +23,7 @@ test('Auth and branch isolation on PostgreSQL', { timeout: 90000 }, async t => {
   const base = await app.getUrl();
   const clients = [];
   const request = async (path, token, method = 'GET', body, headers = {}) => {
-    const res = await fetch(base + path, { method, headers: { ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
+    const res = await fetch(base + path, { method, headers: { ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...(path.startsWith('/orders') && method !== 'GET' ? { 'Idempotency-Key': randomUUID() } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
     return { status: res.status, body: await res.json() };
   };
   const login = (username, password = process.env.AUTH_DEMO_PASSWORD) => request('/auth/login', null, 'POST', { username, password });
@@ -76,14 +76,15 @@ test('Auth and branch isolation on PostgreSQL', { timeout: 90000 }, async t => {
     });
     await t.test('company admin sees both branches and all demo resources', async () => {
       for (const endpoint of ['/branches', '/vehicles', '/drivers', '/orders', '/trips', '/customers']) {
-        const response = await request(endpoint, admin); assert.equal(response.status, 200); assert.ok(response.body.length >= 2, endpoint);
+        const response = await request(endpoint, admin); assert.equal(response.status, 200); assert.ok((endpoint === '/orders' ? response.body.total : response.body.length) >= 2, endpoint);
       }
       assert.equal((await request('/branches/' + b.id, admin, 'PATCH', { phone: '0000000000' })).status, 200);
     });
     await t.test('lists, filters and direct IDs isolate A from B', async () => {
       for (const [endpoint, ownId, foreignId] of [['branches', a.id, b.id], ['vehicles', va.id, vb.id], ['drivers', da.id, dbDriver.id], ['orders', oa.id, ob.id], ['trips', ta.id, tb.id], ['customers', oa.customerId, ob.customerId]]) {
-        const list = await request('/' + endpoint, tokenA); assert.equal(list.status, 200, endpoint);
-        assert.ok(list.body.some(r => r.id === ownId), endpoint); assert.ok(!list.body.some(r => r.id === foreignId), endpoint);
+        const list = await request('/' + endpoint + (endpoint === 'orders' ? '?pageSize=100' : ''), tokenA); assert.equal(list.status, 200, endpoint);
+        const records = endpoint === 'orders' ? list.body.items : list.body;
+        assert.ok(records.some(r => r.id === ownId), endpoint); assert.ok(!records.some(r => r.id === foreignId), endpoint);
         const detail = await request('/' + endpoint + '/' + foreignId, tokenA);
         assert.ok(detail.status === 404 || detail.body === null, endpoint);
       }
@@ -96,15 +97,16 @@ test('Auth and branch isolation on PostgreSQL', { timeout: 90000 }, async t => {
       assert.equal((await request('/users/' + ua.id, tokenA, 'PATCH', { role: 'ADMIN' })).status, 404);
     });
     await t.test('order writes persist and foreign IDs/customer payloads are refused', async () => {
-      assert.equal((await request('/orders/' + ob.id, tokenA, 'PATCH', { notes: 'tamper' })).status, 404);
-      assert.equal((await request('/orders/' + oa.id, tokenA, 'PATCH', { customerId: ob.customerId })).status, 403);
-      const dto = { branchId: a.id, customerId: oa.customerId, notes: '[TEST AUTH] persisted', items: [{ description: 'demo', quantity: 1, weightKg: 1, lengthCm: 10, widthCm: 10, heightCm: 10 }], stops: oa.stops.map(s => ({ type: s.type, sequence: s.sequence, address: s.address, latitude: s.latitude, longitude: s.longitude, contactName: s.contactName, contactPhone: s.contactPhone })) };
+      const dto = { branchId: a.id, customerId: oa.customerId, notes: '[TEST AUTH] persisted', items: [{ description: '[TEST AUTH] measured package', packageType: 'CARTON', packages: [{ weightG: '1000', lengthMm: 100, widthMm: 100, heightMm: 100 }] }], stops: oa.stops.map(s => ({ type: s.type, address: s.address, latitude: s.latitude, longitude: s.longitude, contactName: s.contactName, contactPhone: s.contactPhone, serviceDurationMinutes: 20 })) };
+      assert.equal((await request('/orders/' + ob.id, tokenA, 'PATCH', { ...dto, version: ob.version })).status, 404);
+      assert.equal((await request('/orders/' + oa.id, tokenA, 'PATCH', { ...dto, version: oa.version, customerId: ob.customerId })).status, 403);
       assert.equal((await request('/orders', tokenA, 'POST', { ...dto, branchId: b.id })).status, 403);
       assert.equal((await request('/orders', tokenA, 'POST', { ...dto, customerId: ob.customerId })).status, 403);
       const created = await request('/orders', tokenA, 'POST', dto); assert.equal(created.status, 201, JSON.stringify(created.body));
       assert.equal((await request('/orders/' + created.body.id, tokenA)).body.notes, dto.notes);
       assert.equal((await request('/orders/' + created.body.id, tokenB)).status, 404);
-      assert.equal((await request('/orders/' + created.body.id, tokenA, 'PATCH', { notes: '[TEST AUTH] updated' })).status, 200);
+      const update = { ...dto, version: created.body.version, notes: '[TEST AUTH] updated', stops: dto.stops.map(s => ({ ...s, id: created.body.stops.find(o => o.type === s.type).id })), items: dto.items.map((i, n) => ({ ...i, id: created.body.items[n].id, packages: i.packages.map((p, m) => ({ ...p, id: created.body.items[n].packages[m].id })) })) };
+      assert.equal((await request('/orders/' + created.body.id, tokenA, 'PATCH', update)).status, 200);
       assert.equal((await db.order.findUniqueOrThrow({ where: { id: created.body.id } })).notes, '[TEST AUTH] updated');
     });
     await t.test('mixed trip resources and foreign stop IDs rejected before providers', async () => {

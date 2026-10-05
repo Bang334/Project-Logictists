@@ -1,3 +1,4 @@
+import { assertDispatchableOrder } from '../orders/order-contract';
 import { Principal, tripFilter, requireBranch } from '../auth/access';
 import { ResourceAccess } from '../auth/resource-access.service';
 import {
@@ -26,7 +27,7 @@ import {
   Vehicle as VehicleRecord,
 } from '@prisma/client';
 import { OptimizeTripDto } from './dto/optimize-trip.dto';
-import { expandOrderItemsToCargoUnits } from './optimizer-payload';
+import { packagesToCargoUnits } from './optimizer-payload';
 import { assertFleetOptimizationResult } from './optimizer-contract';
 import { resolveBranchScope } from '../auth/branch-scope';
 import { ApplyAutomaticOptimizationDto } from './dto/apply-automatic-optimization.dto';
@@ -49,7 +50,7 @@ const LOCK_NAMESPACE_ORDER = 4103;
 const LOCK_NAMESPACE_TRIP_NUMBER = 4104;
 
 type OrderWithStopsAndItems = Prisma.OrderGetPayload<{
-  include: { stops: true; items: true };
+  include: { stops: true; items: { include: { packages: true } } };
 }>;
 
 type PlannedAutomaticTrip = {
@@ -125,7 +126,7 @@ export class TripsService {
             tasks: {
               include: {
                 allocation: {
-                  include: { orderItem: { include: { order: true } } },
+                  include: { package: true, orderItem: { include: { order: true } } },
                 },
               },
             },
@@ -145,7 +146,7 @@ export class TripsService {
       throw new NotFoundException(`Không tìm thấy chuyến đi [${id}]`);
     }
 
-    return trip;
+    return { ...trip, stops: trip.stops.map(stop => ({ ...stop, tasks: stop.tasks.map(task => ({ ...task, allocation: { ...task.allocation, package: task.allocation.package ? { ...task.allocation.package, weightG: task.allocation.package.weightG.toString() } : null } })) })) };
   }
 
   /**
@@ -221,7 +222,7 @@ export class TripsService {
       where: { id: { in: dto.orderIds } },
       include: {
         stops: { orderBy: { sequence: 'asc' } },
-        items: true,
+        items: { include: { packages: true } },
       },
     });
 
@@ -229,8 +230,13 @@ export class TripsService {
       throw new BadRequestException('Một số đơn hàng không tồn tại trong hệ thống');
     }
 
+    for (const order of orders) {
+      assertDispatchableOrder(order);
+      if (order.status !== 'CONFIRMED') throw new ConflictException('Chỉ điều phối đơn đã xác nhận');
+    }
+    if (dto.orderedStopIds && (new Set(dto.orderedStopIds).size !== orders.length * 2 || dto.orderedStopIds.length !== orders.length * 2)) throw new BadRequestException('Phải chọn đủ mỗi điểm lấy/giao đúng một lần');
     // 4. Sắp xếp thứ tự các điểm dừng (Ordered Stops)
-    const stopWithItemsList: StopWithItems[] = [];
+    const stopWithItemsList: Array<{ orderStop: OrderWithStopsAndItems['stops'][number]; order: OrderWithStopsAndItems }> = [];
 
     if (dto.orderedStopIds && dto.orderedStopIds.length > 0) {
       // Điều phối viên chủ động sắp xếp thứ tự các stop
@@ -245,8 +251,8 @@ export class TripsService {
       }
     } else {
       // Mặc định: gom tất cả các điểm PICKUP lên trước, sau đó là các điểm DELIVERY
-      const pickups: StopWithItems[] = [];
-      const deliveries: StopWithItems[] = [];
+      const pickups: typeof stopWithItemsList = [];
+      const deliveries: typeof stopWithItemsList = [];
 
       for (const order of orders) {
         for (const stop of order.stops) {
@@ -271,19 +277,36 @@ export class TripsService {
       ...stopWithItemsList.map((s) => [s.orderStop.longitude, s.orderStop.latitude] as [number, number]),
     ];
 
-    const routeResult = await this.mapboxService.getRoute(routeCoords);
-
-    // 7. Tạo mã chuyến đi tự động: TRIP-YYYYMMDD-XXXX
-    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const countToday = await this.prisma.trip.count({
-      where: { tripNumber: { startsWith: `TRIP-${dateStr}` } },
+    const [routeResult, roadMatrix] = await Promise.all([
+      this.mapboxService.getRoute(routeCoords), this.mapboxService.getRoadMatrix(routeCoords),
+    ]);
+    let departure = plannedStart.getTime();
+    const schedule = stopWithItemsList.map(({ orderStop }, i) => {
+      const travel = roadMatrix.durationsSeconds[i]?.[i + 1];
+      if (!Number.isFinite(travel) || travel < 0) throw new BadRequestException('Thiếu thời gian di chuyển hợp lệ');
+      if (!orderStop.windowStart || !orderStop.windowEnd || orderStop.windowBasis !== 'SERVICE_START') throw new BadRequestException('Đơn thiếu khung giờ đã xác nhận');
+      const arrival = departure + travel * 1000;
+      const serviceStart = Math.max(arrival, orderStop.windowStart.getTime());
+      if (serviceStart > orderStop.windowEnd.getTime()) throw new BadRequestException('Lịch chuyến không đáp ứng khung giờ bắt đầu phục vụ');
+      departure = serviceStart + orderStop.serviceDurationMinutes * 60000;
+      if (departure > plannedEnd.getTime()) throw new BadRequestException('Thời gian kết thúc chuyến không đủ để phục vụ các điểm');
+      return { plannedArrivalTime: new Date(arrival), plannedDepartureTime: new Date(departure) };
     });
-    const seq = String(countToday + 1).padStart(3, '0');
-    const tripNumber = `TRIP-${dateStr}-${seq}`;
+
+    const tripNumber = 'TRIP-' + randomUUID().toUpperCase();
 
     // 8. Thực thi Transaction lưu toàn bộ vào PostgreSQL
     const createdTrip = await this.prisma.$transaction(async (tx) => {
+      await this.acquireApplicationLocks(tx, [dto.vehicleId], [dto.driverId], dto.orderIds);
+      await tx.$queryRaw(Prisma.sql`SELECT id FROM orders WHERE id IN (${Prisma.join(dto.orderIds)}) ORDER BY id FOR UPDATE`);
       await this.access.tripInputs(user, branchId, dto, tx);
+      const currentOrders = await tx.order.findMany({ where: { id: { in: dto.orderIds } }, include: { stops: true, items: { include: { packages: true } } } });
+      for (const current of currentOrders) {
+        assertDispatchableOrder(current);
+        if (current.status !== 'CONFIRMED' || current.version !== orders.find(o => o.id === current.id)?.version) throw new ConflictException('Đơn đã thay đổi trong lúc lập chuyến; hãy tải lại');
+      }
+      await this.assertOrdersNotOnActiveTrip(tx, dto.orderIds);
+      await this.assertNoResourceOverlap(tx, { vehicleId: dto.vehicleId, driverId: dto.driverId, plannedStartTime: plannedStart, plannedEndTime: plannedEnd });
       const trip = await tx.trip.create({
         data: {
           tripNumber,
@@ -314,37 +337,19 @@ export class TripsService {
             longitude: item.orderStop.longitude,
             contactName: item.orderStop.contactName,
             contactPhone: item.orderStop.contactPhone,
+            ...schedule[i],
           },
         });
 
-        // Tạo Allocation và Tasks cho từng OrderItem của đơn
-        for (const orderItem of item.order.items) {
-          // Tìm allocation đã tạo cho orderItem này trong chuyến chưa
-          let allocation = await tx.allocation.findFirst({
-            where: { tripId: trip.id, orderItemId: orderItem.id },
-          });
-
-          if (!allocation) {
-            allocation = await tx.allocation.create({
-              data: {
-                tripId: trip.id,
-                orderItemId: orderItem.id,
-                allocatedQuantity: orderItem.quantity,
-              },
-            });
+        for (const line of item.order.items) {
+          for (const pkg of line.packages) {
+            let allocation = await tx.allocation.findFirst({ where: { tripId: trip.id, packageId: pkg.id } });
+            if (!allocation) allocation = await tx.allocation.create({ data: { tripId: trip.id, orderItemId: line.id, packageId: pkg.id, allocatedQuantity: 1, status: 'ACTIVE' } });
+            await tx.stopTask.create({ data: { tripStopId: tripStop.id, allocationId: allocation.id, orderStopId: item.orderStop.id, action: isPickup ? TaskAction.LOAD : TaskAction.UNLOAD, plannedQuantity: 1 } });
           }
-
-          // Tạo StopTask
-          await tx.stopTask.create({
-            data: {
-              tripStopId: tripStop.id,
-              allocationId: allocation.id,
-              action: isPickup ? TaskAction.LOAD : TaskAction.UNLOAD,
-              plannedQuantity: orderItem.quantity,
-            },
-          });
         }
       }
+      await tx.package.updateMany({ where: { orderItem: { orderId: { in: dto.orderIds } } }, data: { status: 'ALLOCATED', version: { increment: 1 } } });
 
       // Phân công tài xế
       await tx.driverAssignment.create({
@@ -360,7 +365,7 @@ export class TripsService {
       // Cập nhật trạng thái các đơn hàng sang ASSIGNED
       await tx.order.updateMany({
         where: { id: { in: dto.orderIds } },
-        data: { status: OrderStatus.ASSIGNED },
+        data: { status: OrderStatus.ASSIGNED, version: { increment: 1 } },
       });
 
       return trip;
@@ -395,46 +400,24 @@ export class TripsService {
    */
   async getLoadProfile(id: string, user: Principal) {
     const trip = await this.findOne(id, user);
-    const stopsWithItems: StopWithItems[] = [];
-
-    for (const stop of trip.stops) {
-      // Mock StopWithItems từ dữ liệu lưu trong DB để tính profile
-      const items = trip.allocations.map((a) => a.orderItem);
-      stopsWithItems.push({
-        orderStop: {
-          id: stop.id,
-          orderId: '',
-          type: stop.stopType,
-          sequence: stop.sequence,
-          address: stop.address,
-          latitude: stop.latitude,
-          longitude: stop.longitude,
-          contactName: stop.contactName || '',
-          contactPhone: stop.contactPhone || '',
-          windowStart: null,
-          windowEnd: null,
-          serviceDurationMinutes: 20,
-          createdAt: new Date(),
-        },
-        order: {
-          id: '',
-          orderNumber: '',
-          customerId: '',
-          branchId: '',
-          status: OrderStatus.ASSIGNED,
-          totalWeightKg: 0,
-          totalVolumeM3: 0,
-          totalPackages: 0,
-          version: 1,
-          notes: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          items: items as any,
-        },
-      });
-    }
-
-    return TripsValidator.calculateAndValidateLoad(trip.vehicle, stopsWithItems);
+    let weightG = 0n, volumeMm3 = 0n, maxWeightG = 0n, maxVolumeMm3 = 0n;
+    const loadProfile = trip.stops.map((stop, stopIndex) => {
+      let deltaG = 0n, deltaMm3 = 0n;
+      for (const task of stop.tasks) {
+        const pkg = task.allocation.package;
+        if (!pkg) throw new ConflictException({ code: 'LEGACY_LOAD_REVIEW_REQUIRED', message: 'Phân công cũ chưa có số đo từng kiện; cần đối soát để tính tải, không tự chia tổng dòng' });
+        const sign = task.action === 'LOAD' ? 1n : -1n;
+        deltaG += sign * BigInt(pkg.weightG);
+        deltaMm3 += sign * BigInt(pkg.lengthMm) * BigInt(pkg.widthMm) * BigInt(pkg.heightMm);
+      }
+      weightG += deltaG; volumeMm3 += deltaMm3;
+      if (weightG > maxWeightG) maxWeightG = weightG;
+      if (volumeMm3 > maxVolumeMm3) maxVolumeMm3 = volumeMm3;
+      const currentWeightKg = Number(weightG) / 1000, currentVolumeM3 = Number(volumeMm3) / 1e9;
+      return { stopIndex: stopIndex + 1, stopAddress: stop.address, stopType: stop.stopType, action: stop.stopType === 'PICKUP' ? 'LOAD' : 'UNLOAD', deltaWeightKg: Number(deltaG) / 1000, deltaVolumeM3: Number(deltaMm3) / 1e9, currentWeightKg, currentVolumeM3, weightUtilizationPercent: currentWeightKg / trip.vehicle.payloadCapacityKg * 100, volumeUtilizationPercent: currentVolumeM3 / trip.vehicle.volumeCapacityM3 * 100 };
+    });
+    const errors = maxWeightG > BigInt(Math.floor(trip.vehicle.payloadCapacityKg * 1000)) || maxVolumeMm3 > BigInt(Math.floor(trip.vehicle.volumeCapacityM3 * 1e9)) ? ['Tải vượt giới hạn xe'] : [];
+    return { isValid: !errors.length, errors, loadProfile, maxWeightKg: Number(maxWeightG) / 1000, maxVolumeM3: Number(maxVolumeMm3) / 1e9 };
   }
 
   /**
@@ -458,7 +441,7 @@ export class TripsService {
       where: { id: { in: body.orderIds } },
       include: {
         stops: { orderBy: { sequence: 'asc' } },
-        items: true,
+        items: { include: { packages: true } },
       },
     });
     if (orders.length !== body.orderIds.length) {
@@ -502,6 +485,7 @@ export class TripsService {
 
     try {
       const res = await axios.post(`${this.optimizerUrl}/optimize`, payload, { timeout: 10000 });
+      if (res.data?.package_contract_version !== '1') throw new Error('Optimizer chưa hỗ trợ hợp đồng Package v1');
       if (!res.data || typeof res.data.job_id !== 'string' || !Array.isArray(res.data.stops)) {
         throw new Error('Optimization Engine trả response sai contract');
       }
@@ -535,8 +519,8 @@ export class TripsService {
         orderBy: { fullName: 'asc' },
       }),
       this.prisma.order.findMany({
-        where: { branchId, status: OrderStatus.CONFIRMED },
-        include: { stops: { orderBy: { sequence: 'asc' } }, items: true },
+        where: { branchId, status: OrderStatus.CONFIRMED, packageDataStatus: 'COMPLETE', items: { none: { allocations: { some: {} } } } },
+        include: { stops: { orderBy: { sequence: 'asc' } }, items: { include: { packages: true } } },
         orderBy: { createdAt: 'asc' },
       }),
     ]);
@@ -662,6 +646,7 @@ export class TripsService {
       const response = await axios.post(`${this.optimizerUrl}/optimize-fleet`, payload, {
         timeout: Math.max(120000, (snapshot.max_time_seconds + 60) * 1000),
       });
+      if (response.data?.package_contract_version !== '1') throw new Error('Optimizer chưa hỗ trợ hợp đồng Package v1');
       assertFleetOptimizationResult(response.data);
       result = response.data;
     } catch (error) {
@@ -772,6 +757,7 @@ export class TripsService {
     const applied = await this.prisma.$transaction(
       async (tx) => {
         await this.acquireApplicationLocks(tx, vehicleIds, driverIds, orderIds);
+        await tx.$queryRaw(Prisma.sql`SELECT id FROM orders WHERE id IN (${Prisma.join(orderIds)}) ORDER BY id FOR UPDATE`);
         for (const route of proposal.result.routes) {
           await this.access.tripInputs(user, branchId, {
             vehicleId: route.vehicle_id,
@@ -784,7 +770,7 @@ export class TripsService {
         const [orders, vehicles, drivers] = await Promise.all([
           tx.order.findMany({
             where: { id: { in: orderIds }, branchId },
-            include: { stops: true, items: true },
+            include: { stops: true, items: { include: { packages: true } } },
           }),
           tx.vehicle.findMany({ where: { id: { in: vehicleIds }, homeBranchId: branchId } }),
           tx.driver.findMany({ where: { id: { in: driverIds }, homeBranchId: branchId } }),
@@ -875,6 +861,7 @@ export class TripsService {
       proposal.resources.orders.map((item) => [item.id, item.version]),
     );
     for (const order of orders) {
+      assertDispatchableOrder(order);
       if (order.status !== OrderStatus.CONFIRMED) {
         throw new ConflictException(
           `Đơn ${order.orderNumber} không còn ở trạng thái CONFIRMED`,
@@ -1013,6 +1000,12 @@ export class TripsService {
           );
         }
 
+        const expectedPackageIds = order.items.flatMap(i => i.packages.map(p => p.id)).sort();
+        const loaded = [...stop.items_loaded].sort(), unloaded = [...stop.items_unloaded].sort();
+        if (JSON.stringify(stop.stop_type === 'PICKUP' ? loaded : unloaded) !== JSON.stringify(expectedPackageIds) || (stop.stop_type === 'PICKUP' ? unloaded.length : loaded.length)) throw new BadRequestException('Kết quả tối ưu không khớp ID Package của điểm lấy/giao');
+        if (!orderStop.windowStart || !orderStop.windowEnd) throw new ConflictException('Khung giờ đơn đã thiếu');
+        const serviceStart = Math.max(planningEpoch.getTime() + stop.arrival_time_sec * 1000, orderStop.windowStart.getTime());
+        if (serviceStart > orderStop.windowEnd.getTime() || planningEpoch.getTime() + stop.departure_time_sec * 1000 < serviceStart + orderStop.serviceDurationMinutes * 60000) throw new BadRequestException('Kết quả tối ưu vi phạm khung giờ hoặc thời gian phục vụ');
         const counts = routeOrderCounts.get(order.id) ?? { pickup: 0, delivery: 0 };
         if (stop.stop_type === StopType.PICKUP) counts.pickup += 1;
         else counts.delivery += 1;
@@ -1120,7 +1113,7 @@ export class TripsService {
 
   private async assertNoResourceOverlap(
     tx: Prisma.TransactionClient,
-    plannedTrip: PlannedAutomaticTrip,
+    plannedTrip: Pick<PlannedAutomaticTrip, 'vehicleId' | 'driverId' | 'plannedStartTime' | 'plannedEndTime'>,
   ): Promise<void> {
     const vehicleOverlap = await tx.trip.findFirst({
       where: {
@@ -1192,21 +1185,17 @@ export class TripsService {
 
     const orders = await tx.order.findMany({
       where: { id: { in: plannedTrip.orderIds } },
-      include: { items: true },
+      include: { stops: true, items: { include: { packages: true } } },
     });
-    const allocationIdByItemId = new Map<string, string>();
+    const allocationIdByPackageId = new Map<string, string>();
     for (const order of orders) {
-      for (const item of order.items) {
-        const allocation = await tx.allocation.create({
-          data: {
-            tripId: trip.id,
-            orderItemId: item.id,
-            allocatedQuantity: item.quantity,
-          },
-        });
-        allocationIdByItemId.set(item.id, allocation.id);
+      assertDispatchableOrder(order);
+      for (const item of order.items) for (const pkg of item.packages) {
+        const allocation = await tx.allocation.create({ data: { tripId: trip.id, orderItemId: item.id, packageId: pkg.id, allocatedQuantity: 1, status: 'ACTIVE' } });
+        allocationIdByPackageId.set(pkg.id, allocation.id);
       }
     }
+    await tx.package.updateMany({ where: { orderItem: { orderId: { in: plannedTrip.orderIds } } }, data: { status: 'ALLOCATED', version: { increment: 1 } } });
 
     const orderById = new Map(orders.map((order) => [order.id, order]));
     for (const stop of plannedTrip.stops) {
@@ -1226,8 +1215,8 @@ export class TripsService {
       });
       const order = orderById.get(stop.orderId);
       if (!order) throw new Error(`Thiếu đơn [${stop.orderId}] khi lưu chuyến`);
-      for (const item of order.items) {
-        const allocationId = allocationIdByItemId.get(item.id);
+      for (const item of order.items) for (const pkg of item.packages) {
+        const allocationId = allocationIdByPackageId.get(pkg.id);
         if (!allocationId) throw new Error(`Thiếu allocation cho dòng hàng [${item.id}]`);
         await tx.stopTask.create({
           data: {
@@ -1238,7 +1227,7 @@ export class TripsService {
               stop.stopType === StopType.PICKUP
                 ? TaskAction.LOAD
                 : TaskAction.UNLOAD,
-            plannedQuantity: item.quantity,
+            plannedQuantity: 1,
           },
         });
       }
@@ -1290,44 +1279,27 @@ export class TripsService {
   }
 
   private buildOptimizerOrders(
-    orders: Array<{
-      id: string;
-      orderNumber: string;
-      stops: Array<{
-        id: string;
-        type: StopType;
-        address: string;
-        latitude: number;
-        longitude: number;
-        windowStart: Date | null;
-        windowEnd: Date | null;
-        serviceDurationMinutes: number;
-      }>;
-      items: Array<{
-        id: string;
-        orderId: string;
-        description: string;
-        quantity: number;
-        weightKg: number;
-        lengthCm: number;
-        widthCm: number;
-        heightCm: number;
-      }>;
-    }>,
+    orders: OrderWithStopsAndItems[],
     planningEpoch: Date,
   ) {
-    const secondsFromEpoch = (value: Date | null, fallback: number) =>
-      value ? Math.max(0, Math.round((value.getTime() - planningEpoch.getTime()) / 1000)) : fallback;
+    // Integer-second solver: tighten, never widen, a millisecond window.
+    const secondsFromEpoch = (value: Date, boundary: 'start' | 'end') => {
+      const seconds = (value.getTime() - planningEpoch.getTime()) / 1000;
+      return boundary === 'start' ? Math.ceil(seconds) : Math.floor(seconds);
+    };
 
     return orders.map((order) => {
+      assertDispatchableOrder(order);
+      if (order.status !== 'CONFIRMED') throw new ConflictException('Chỉ tối ưu đơn đã xác nhận');
       const pickup = order.stops.find((stop) => stop.type === StopType.PICKUP);
       const delivery = order.stops.find((stop) => stop.type === StopType.DELIVERY);
       if (!pickup || !delivery) {
         throw new BadRequestException(`Đơn ${order.orderNumber} thiếu pickup hoặc delivery`);
       }
+      if (!pickup.windowStart || !pickup.windowEnd || !delivery.windowStart || !delivery.windowEnd || pickup.windowBasis !== 'SERVICE_START' || delivery.windowBasis !== 'SERVICE_START') throw new BadRequestException('Thiếu khung giờ bắt đầu phục vụ đã xác nhận');
       let items;
       try {
-        items = expandOrderItemsToCargoUnits(order.items);
+        items = packagesToCargoUnits(order.items);
       } catch (error) {
         throw new BadRequestException(error.message);
       }
@@ -1347,14 +1319,14 @@ export class TripsService {
           longitude: delivery.longitude,
         },
         items,
-        pickup_window_start_sec: secondsFromEpoch(pickup.windowStart, 0),
-        pickup_window_end_sec: secondsFromEpoch(pickup.windowEnd, 7 * 86400),
-        delivery_window_start_sec: secondsFromEpoch(delivery.windowStart, 0),
-        delivery_window_end_sec: secondsFromEpoch(delivery.windowEnd, 7 * 86400),
-        service_time_sec: Math.max(
-          pickup.serviceDurationMinutes,
-          delivery.serviceDurationMinutes,
-        ) * 60,
+        pickup_window_start_sec: secondsFromEpoch(pickup.windowStart, 'start'),
+        pickup_window_end_sec: secondsFromEpoch(pickup.windowEnd, 'end'),
+        delivery_window_start_sec: secondsFromEpoch(delivery.windowStart, 'start'),
+        delivery_window_end_sec: secondsFromEpoch(delivery.windowEnd, 'end'),
+        pickup_service_time_sec: pickup.serviceDurationMinutes * 60,
+        delivery_service_time_sec: delivery.serviceDurationMinutes * 60,
+        time_window_basis: 'SERVICE_START',
+        package_contract_version: '1',
       };
     });
   }

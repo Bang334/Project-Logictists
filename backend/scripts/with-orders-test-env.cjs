@@ -1,0 +1,11 @@
+const fs = require('fs'), cp = require('child_process');
+const config = require('dotenv').parse(fs.readFileSync('.env'));
+if (!config.AUTH_TEST_DATABASE_URL) throw new Error('Missing local test configuration');
+const target = new URL(config.AUTH_TEST_DATABASE_URL);
+if (!['127.0.0.1', 'localhost'].includes(target.hostname) || target.pathname !== '/tms_auth_test') throw new Error('Refusing non-isolated PostgreSQL');
+target.pathname = '/tms_orders_test_v2';
+Object.assign(process.env, config, { DATABASE_URL: target.href, DIRECT_URL: target.href, PORT: '4012', WEB_ORIGIN: 'http://127.0.0.1:5174' });
+const args = process.argv.slice(2);
+if (!args.length) throw new Error('Expected JS executable');
+const result = cp.spawnSync(process.execPath, args, { stdio: 'inherit', env: process.env });
+process.exitCode = result.status ?? 1;

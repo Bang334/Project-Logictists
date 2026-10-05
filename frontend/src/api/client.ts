@@ -1,3 +1,4 @@
+import { OrderInput, OrderQuery, parseOrder, parseOrderPage } from '../types/orders';
 import axios, { CanceledError, InternalAxiosRequestConfig } from 'axios';
 import { AccountQuery, CreateAccount, parseAccount, parseAccountList } from '../types/accounts';
 import {
@@ -77,7 +78,7 @@ export const branchesApi = {
 };
 
 export const customersApi = {
-  getAll: () => client.get<Array<{ id: string; code: string; name: string }>>('/customers'),
+  getAll: (branchId?: string) => client.get<Array<{ id: string; code: string; name: string }>>('/customers', { params: { branchId } }),
 };
 
 export const vehiclesApi = {
@@ -101,16 +102,16 @@ export const driversApi = {
 };
 
 export const ordersApi = {
-  getAll: (params?: { status?: string; customerId?: string; branchId?: string } | string) => {
-    if (typeof params === 'string') {
-      return client.get<Order[]>('/orders', { params: { status: params } });
-    }
-    return client.get<Order[]>('/orders', { params });
+  list: async (params: OrderQuery = {}) => parseOrderPage((await client.get<unknown>('/orders', { params })).data),
+  getOne: async (id: string) => parseOrder((await client.get<unknown>(`/orders/${id}`)).data),
+  getAvailableForDispatch: async (branchId?: string) => {
+    const res = await client.get<unknown>('/orders/available-for-dispatch', { params: { branchId } });
+    if (!Array.isArray(res.data)) throw new Error('Danh sách điều phối không hợp lệ');
+    return { ...res, data: res.data.map(parseOrder) };
   },
-  getAvailableForDispatch: (branchId?: string) =>
-    client.get<Order[]>('/orders/available-for-dispatch', { params: { branchId } }),
-  create: (data: any) => client.post<Order>('/orders', data),
-  update: (id: string, data: any) => client.patch<Order>(`/orders/${id}`, data),
+  create: async (data: OrderInput, key: string) => parseOrder((await client.post<unknown>('/orders', data, { headers: { 'Idempotency-Key': key }, timeout: 25000 })).data),
+  update: async (id: string, data: OrderInput & { version: number }, key: string) => parseOrder((await client.patch<unknown>(`/orders/${id}`, data, { headers: { 'Idempotency-Key': key }, timeout: 25000 })).data),
+  confirm: async (id: string, version: number, key: string) => parseOrder((await client.post<unknown>(`/orders/${id}/confirm`, { version }, { headers: { 'Idempotency-Key': key }, timeout: 25000 })).data),
 };
 
 export const tripsApi = {

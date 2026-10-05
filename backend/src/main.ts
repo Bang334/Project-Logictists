@@ -1,3 +1,4 @@
+import { validationException } from './orders/validation-errors';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
@@ -17,6 +18,7 @@ async function bootstrap() {
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
+      exceptionFactory: validationException,
       transform: true,
       forbidNonWhitelisted: true,
     }),

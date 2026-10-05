@@ -1543,7 +1543,7 @@ const AutomaticDispatchPage: React.FC = () => {
                                 title: 'Kích thước (Dài × Rộng × Cao)',
                                 key: 'dim',
                                 width: 200,
-                                render: (_, it) => `${it.lengthCm} × ${it.widthCm} × ${it.heightCm} cm`,
+                                render: (_, it) => it.packages.map(p => `${p.packageCode}: ${p.lengthMm} × ${p.widthMm} × ${p.heightMm} mm`).join('; '),
                               },
                               {
                                 title: 'Thể tích / kiện',
