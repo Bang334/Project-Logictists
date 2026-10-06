@@ -41,7 +41,7 @@ describe('TripsService.publish', () => {
     ],
   };
   const tx = {
-    $queryRaw: jest.fn(),
+    $executeRaw: jest.fn(),
     trip: { findUnique: jest.fn(), findFirst: jest.fn(), updateMany: jest.fn() },
     driverAssignment: { findFirst: jest.fn() },
     order: { findMany: jest.fn() },

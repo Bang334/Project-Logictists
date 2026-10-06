@@ -116,14 +116,14 @@ def calculate_route_economic_metrics(
     cargo_distance_kg_m += onboard_weight_kg * return_distance_meters
 
     pickup_by_order = {
-        stop.order_id: stop
+        (stop.allocation_id or stop.order_id): stop
         for stop in stops
-        if stop.order_id and stop.stop_type == "PICKUP"
+        if (stop.allocation_id or stop.order_id) and stop.stop_type == "PICKUP"
     }
     delivery_by_order = {
-        stop.order_id: stop
+        (stop.allocation_id or stop.order_id): stop
         for stop in stops
-        if stop.order_id and stop.stop_type == "DELIVERY"
+        if (stop.allocation_id or stop.order_id) and stop.stop_type == "DELIVERY"
     }
     cargo_time_kg_seconds = 0.0
     for order_id, pickup in pickup_by_order.items():
@@ -178,10 +178,13 @@ def build_route_cost_breakdown(
     )
     late_delivery_penalty = sum(
         calculate_late_delivery_penalty(
-            order_by_id[stop.order_id], stop.arrival_time_sec, request.policy
+            order_by_id[stop.allocation_id or stop.order_id],
+            stop.arrival_time_sec,
+            request.policy,
         )
         for stop in stops
-        if stop.stop_type == "DELIVERY" and stop.order_id in order_by_id
+        if stop.stop_type == "DELIVERY"
+        and (stop.allocation_id or stop.order_id) in order_by_id
     )
     fuel_cost = base_fuel_cost + load_fuel_surcharge
     total_cost = (

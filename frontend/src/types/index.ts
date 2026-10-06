@@ -255,6 +255,8 @@ export interface OptimizedStopUI {
   location_id: string;
   location_name: string;
   order_id?: string;
+  allocation_id?: string;
+  order_stop_id?: string;
   stop_type: 'PICKUP' | 'DELIVERY';
   sequence: number;
   latitude: number;

@@ -4,6 +4,8 @@ export type OptimizerStop = {
   location_name: string;
   stop_type: 'PICKUP' | 'DELIVERY';
   order_id: string;
+  allocation_id: string;
+  order_stop_id: string;
   latitude: number;
   longitude: number;
   arrival_time_sec: number;
@@ -255,6 +257,8 @@ export function assertFleetOptimizationResult(
         typeof stop.location_name !== 'string' ||
         !['PICKUP', 'DELIVERY'].includes(String(stop.stop_type)) ||
         typeof stop.order_id !== 'string' ||
+        typeof stop.allocation_id !== 'string' ||
+        typeof stop.order_stop_id !== 'string' ||
         !isFiniteNumber(stop.latitude) ||
         !isFiniteNumber(stop.longitude) ||
         !isFiniteNumber(stop.arrival_time_sec) ||

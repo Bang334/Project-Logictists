@@ -30,6 +30,7 @@ Quy ước:
 8. Một xe được chở nhiều kiện/hàng cùng lúc, với điều kiện xếp và dỡ không bị vướng nhau. Không được xếp hàng chồng lên hàng khác.
 9. Sau khi dỡ, phần không gian vừa trống được tái sử dụng cho hàng lấy ở các điểm tiếp theo nếu bố trí và thao tác hợp lệ.
 10. Tối ưu chuyến phải tính đồng thời thứ tự lấy/giao, bố trí hàng không chồng, khả năng xếp/dỡ và tái sử dụng không gian theo từng bước. Không chỉ tối ưu route rồi bỏ qua khả năng thực hiện việc xếp/dỡ.
+11. Đơn có nhiều kiện được phép chia qua nhiều xe khi không xe nào chở trọn đơn. Mỗi kiện vật lý là bất khả phân; nếu một kiện không vừa bất kỳ xe phù hợp nào thì đơn không được phân công. Việc áp dụng phương án chia đơn là toàn bộ-hoặc-không: không phát hành khi còn thiếu kiện của đơn. Khi chia, ưu tiên số xe ít nhất có thể theo tải và diện tích sàn tổng hợp trước khi kiểm tra hình học; tải/chỗ còn dư trên các xe đã mở vẫn được dùng để ghép đơn khác nếu tải từng chặng, lịch và bố trí xếp/dỡ đều hợp lệ.
 
 ### 2.2. Giả định làm việc cần phản hồi
 
@@ -40,7 +41,7 @@ Quy ước:
 | A03 | Ưu tiên xe và tài xế do công ty quản lý | Thuê ngoài cần nghiệp vụ nhà vận tải, nhận thầu và đối soát riêng |
 | A04 | Một đơn có một điểm lấy và một điểm giao trong bản đầu | Nhiều điểm cần phân bổ hàng theo từng quan hệ lấy–giao |
 | A05 | Điều phối viên duyệt kế hoạch trước khi phát hành | Tự động phát hành cần chính sách quyền hạn, ngưỡng tin cậy và khôi phục |
-| A06 | Bản đầu không chủ động chia một kiện hoặc một đơn qua nhiều xe | Chia đơn cần quản lý phần hàng và chuỗi bàn giao trước khi triển khai |
+| A06 | **Đã chốt:** được chia đơn nhiều kiện qua nhiều xe; không chia một kiện vật lý; phải phân công đủ mọi kiện hoặc giữ nguyên đơn chưa phân công | Cần định danh Package, khóa phân công theo kiện và hiển thị rõ các xe cùng phục vụ một Order |
 | A07 | GPS điện thoại tài xế là nguồn đầu tiên | GPS thiết bị xe cần tích hợp nhà cung cấp và cơ chế chọn nguồn |
 | A08 | Giao diện tiếng Việt; múi giờ vận hành ban đầu Asia/Ho_Chi_Minh | Hoạt động đa quốc gia cần lịch, múi giờ và chính sách theo khu vực |
 | A09 | Hàng thông thường trước; hàng nguy hiểm/lạnh cần chốt riêng | Không được tuyên bố đủ điều kiện chở hàng đặc thù chỉ bằng một cờ dữ liệu |
@@ -150,11 +151,12 @@ Cổng khách hàng chưa thuộc bản đầu mặc định. Cần chốt ai đ
 - Đề xuất chưa bắt buộc tạo Shipment trong bản đầu: dùng phân bổ hàng từ đơn vào chuyến.
 - Nếu cần chứng từ vận chuyển/gom hàng độc lập, Shipment sẽ là nhóm phần hàng có vòng đời riêng; phải chốt trước khi thêm entity.
 - Một Trip có thể chở nhiều Order nếu tương thích hàng, tải và thời gian.
-- Đề xuất bản đầu phân công nguyên đơn, nhưng ghi nhận giao thiếu thực tế theo kiện/số lượng; phần chưa giao vẫn có trạng thái và nơi giữ hàng.
-- Chia đơn chủ động, chuyển tải giữa xe và nhiều chặng được triển khai sau khi có định danh phần hàng và bàn giao.
+- Đã chốt cho phép chủ động chia một Order có nhiều Package qua nhiều xe khi toàn bộ Order không vừa một xe. Mỗi phần đi thẳng từ pickup đến delivery trên xe đã nhận; thay đổi này không mặc định cho phép chuyển tải giữa xe hoặc chia nhiều chặng.
+- Việc chia Package phải dùng số xe ít nhất tìm được theo ràng buộc tổng hợp, ưu tiên lấp các xe đã dùng trước khi mở xe mới nhưng vẫn cho phép quay lui để tránh nghiệm tham lam sai. Phần tải và sàn còn trống không bị giữ riêng cho Order đã chia; optimizer có thể ghép Package của Order khác vào cùng xe sau khi kiểm tra đầy đủ tải từng chặng và bố trí động.
+- Phương án chỉ được áp dụng khi mọi Package của Order đều được phân công đúng một lần. Trạng thái Order chuyển sang đã phân công sau khi toàn bộ Trip, StopTask và Package liên quan được lưu thành công trong cùng transaction.
 - Không chia một kiện vật lý bằng cách giảm khối lượng trong dữ liệu để solver tìm được lời giải.
 
-**Cần chốt:** đơn có được chia; kiện có định danh riêng; giao thiếu có được khách chấp nhận; đơn vị quản lý tối thiểu là kiện, pallet hay số lượng hàng.
+**Cần chốt:** giao thiếu có được khách chấp nhận; quy trình chuyển tải giữa xe/nhiều chặng; đơn vị quản lý tối thiểu ngoài Package hiện tại có cần pallet hay số lượng hàng.
 
 ### 6.3. Chi nhánh và vị trí
 
