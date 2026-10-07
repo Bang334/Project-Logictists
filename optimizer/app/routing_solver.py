@@ -122,6 +122,42 @@ class FleetRoutingSolver:
             assign(vehicle_index, set())
         return set(driver_to_vehicle.values())
 
+    @staticmethod
+    def _source_order_id(order: OrderPair) -> str:
+        return order.source_order_id or order.id
+
+    @staticmethod
+    def _stop_allocation_id(stop: ScheduledStop) -> Optional[str]:
+        return stop.allocation_id or stop.order_id
+
+    @staticmethod
+    def _order_allows_vehicle(order: OrderPair, vehicle: FleetVehicle) -> bool:
+        if not order.allowed_source_vehicle_ids:
+            return True
+        return (vehicle.source_vehicle_id or vehicle.id) in set(
+            order.allowed_source_vehicle_ids
+        )
+
+    def _unassigned_all(
+        self, reason_code: str, reason_message: str
+    ) -> List[UnassignedOrder]:
+        rows: List[UnassignedOrder] = []
+        seen: Set[str] = set()
+        for order in self.request.orders:
+            source_id = self._source_order_id(order)
+            if source_id in seen:
+                continue
+            seen.add(source_id)
+            rows.append(
+                UnassignedOrder(
+                    order_id=source_id,
+                    order_number=order.source_order_number or order.order_number,
+                    reason_code=reason_code,
+                    reason_message=reason_message,
+                )
+            )
+        return rows
+
     def _build_nodes(self) -> List[dict]:
         nodes: List[dict] = []
         for vehicle in self.request.vehicles:
@@ -196,6 +232,11 @@ class FleetRoutingSolver:
                         routing_enumeration_completed = False
                         break
                     if vehicle_index not in self.driver_safe_vehicle_indices:
+                        continue
+                    if not all(
+                        self._order_allows_vehicle(order, vehicle)
+                        for order in order_subset
+                    ):
                         continue
                     if not all(
                         self._order_physically_fits_vehicle(order, vehicle)
@@ -466,17 +507,10 @@ class FleetRoutingSolver:
                 FleetOptimizationResponse(
                     job_id=self.request.job_id,
                     status="INFEASIBLE",
-                    unassigned_orders=[
-                        UnassignedOrder(
-                            order_id=order.id,
-                            order_number=order.order_number,
-                            reason_code="NO_COMPATIBLE_DRIVER",
-                            reason_message=(
-                                "Không có cặp xe–tài xế nào đáp ứng hạng bằng lái."
-                            ),
-                        )
-                        for order in self.request.orders
-                    ],
+                    unassigned_orders=self._unassigned_all(
+                        "NO_COMPATIBLE_DRIVER",
+                        "Không có cặp xe–tài xế nào đáp ứng hạng bằng lái.",
+                    ),
                     diagnostics=[
                         "Không chạy solver vì không có xe nào ghép được với tài xế đủ hạng bằng."
                     ],
@@ -785,6 +819,21 @@ class FleetRoutingSolver:
             pickup_index = manager.NodeToIndex(pickup_node)
             delivery_index = manager.NodeToIndex(delivery_node)
 
+            allowed_vehicle_indices = sorted(
+                index
+                for index in self.driver_safe_vehicle_indices
+                if self._order_allows_vehicle(order, self.request.vehicles[index])
+            )
+            if allowed_vehicle_indices:
+                # OR-Tools 9.15's Python binding cannot convert list to absl::Span.
+                # Keep -1 (unperformed) available; disallow only incompatible vehicles.
+                for vehicle_index in range(len(self.request.vehicles)):
+                    if vehicle_index not in allowed_vehicle_indices:
+                        routing.solver().Add(routing.VehicleVar(pickup_index) != vehicle_index)
+                        routing.solver().Add(routing.VehicleVar(delivery_index) != vehicle_index)
+            elif order.allowed_source_vehicle_ids:
+                routing.solver().Add(routing.ActiveVar(pickup_index) == 0)
+                routing.solver().Add(routing.ActiveVar(delivery_index) == 0)
             # Scalar domain constraints also work with the 9.15 Python binding.
             for vehicle_index in range(vehicle_count):
                 if vehicle_index not in self.driver_safe_vehicle_indices:
@@ -851,6 +900,18 @@ class FleetRoutingSolver:
                     delivery_index, 0, cargo_holding_cost_coefficient
                 )
 
+        split_groups: Dict[str, List[int]] = {}
+        for order_index, order in enumerate(self.request.orders):
+            if order.split_group_id:
+                split_groups.setdefault(order.split_group_id, []).append(order_index)
+        for order_indices in split_groups.values():
+            first_pickup = manager.NodeToIndex(vehicle_count + 2 * order_indices[0])
+            for order_index in order_indices[1:]:
+                pickup = manager.NodeToIndex(vehicle_count + 2 * order_index)
+                routing.solver().Add(
+                    routing.ActiveVar(first_pickup) == routing.ActiveVar(pickup)
+                )
+
         return manager, routing, time_dimension
 
     def _build_search_parameters(self):
@@ -897,7 +958,14 @@ class FleetRoutingSolver:
             location_id=action.stop_id,
             location_name=action.address,
             stop_type=action.stop_type,
-            order_id=order.id,
+            order_id=order.source_order_id or order.id,
+            allocation_id=order.id,
+            order_stop_id=(
+                order.pickup_location.source_location_id
+                if action.stop_type == "PICKUP"
+                else order.delivery_location.source_location_id
+            )
+            or action.stop_id,
             latitude=action.latitude,
             longitude=action.longitude,
             arrival_time_sec=round(arrival_sec),
@@ -1055,7 +1123,11 @@ class FleetRoutingSolver:
                             "SPATIAL_ROUTE_CONFLICT",
                             "Đơn xung đột bố trí với tuyến ban đầu; sẽ thử tái phân công sang tuyến khác.",
                         )
-                        route_order_ids = {s.order_id for s in scheduled_stops if s.order_id}
+                        route_order_ids = {
+                            self._stop_allocation_id(stop)
+                            for stop in scheduled_stops
+                            if self._stop_allocation_id(stop)
+                        }
                     else:
                         for order_id in route_order_ids:
                             rejected_reasons[order_id] = self._spatial_rejection(spatial)
@@ -1093,6 +1165,12 @@ class FleetRoutingSolver:
             deadline=validation_deadline,
         )
 
+        self._drop_incomplete_split_groups(
+            routes,
+            assigned_order_ids,
+            rejected_reasons,
+        )
+
         if routes and len(assigned_order_ids) == len(self.request.orders):
             self._consolidate_routes(
                 routes,
@@ -1102,9 +1180,14 @@ class FleetRoutingSolver:
         self._assign_drivers_and_costs(routes)
 
         unassigned: List[UnassignedOrder] = []
+        reported_source_orders: Set[str] = set()
         for order in self.request.orders:
             if order.id in assigned_order_ids:
                 continue
+            source_order_id = self._source_order_id(order)
+            if source_order_id in reported_source_orders:
+                continue
+            reported_source_orders.add(source_order_id)
             rejected_reason = rejected_reasons.get(order.id)
             if recovery_limit_reached and (
                 rejected_reason is None
@@ -1118,8 +1201,8 @@ class FleetRoutingSolver:
                 code, message = self._classify_unassigned_order(order)
             unassigned.append(
                 UnassignedOrder(
-                    order_id=order.id,
-                    order_number=order.order_number,
+                    order_id=source_order_id,
+                    order_number=order.source_order_number or order.order_number,
                     reason_code=code,
                     reason_message=message,
                 )
@@ -1178,6 +1261,84 @@ class FleetRoutingSolver:
             + (extra_diagnostics or [])
             + ([benchmark_diagnostic] if benchmark_diagnostic else []),
         )
+
+    def _drop_incomplete_split_groups(
+        self,
+        routes: List[OptimizedRoute],
+        assigned_order_ids: Set[str],
+        rejected_reasons: Dict[str, Tuple[str, str]],
+    ) -> None:
+        groups: Dict[str, Set[str]] = {}
+        for order in self.request.orders:
+            if order.split_group_id:
+                groups.setdefault(order.split_group_id, set()).add(order.id)
+
+        incomplete_ids: Set[str] = set()
+        for allocation_ids in groups.values():
+            assigned = allocation_ids.intersection(assigned_order_ids)
+            if assigned and assigned != allocation_ids:
+                incomplete_ids.update(allocation_ids)
+        if not incomplete_ids:
+            return
+
+        rebuilt_routes: List[OptimizedRoute] = []
+        vehicle_index_by_id = {
+            vehicle.id: index for index, vehicle in enumerate(self.request.vehicles)
+        }
+        node_id_to_idx = {
+            node["id"]: index for index, node in enumerate(self.nodes)
+        }
+        for route in routes:
+            route_id = route.route_id or route.vehicle_id
+            vehicle_index = vehicle_index_by_id.get(route_id)
+            if vehicle_index is None:
+                continue
+            vehicle = self.request.vehicles[vehicle_index]
+            sequence = []
+            remaining_ids: Set[str] = set()
+            for stop in route.stops:
+                allocation_id = self._stop_allocation_id(stop)
+                if not allocation_id or allocation_id in incomplete_ids:
+                    continue
+                order = self.order_by_id.get(allocation_id)
+                if order is None:
+                    continue
+                remaining_ids.add(allocation_id)
+                sequence.append((allocation_id, stop.stop_type, order))
+            if not sequence:
+                continue
+
+            actions = self._actions_from_precedence_sequence(sequence)
+            evaluated = self._evaluate_resequence_candidate(
+                vehicle, vehicle_index, actions, node_id_to_idx
+            )
+            spatial = SpatialValidator(vehicle).validate_plan(actions)
+            if evaluated is None or not spatial.is_valid:
+                assigned_order_ids.difference_update(remaining_ids)
+                for allocation_id in remaining_ids:
+                    rejected_reasons[allocation_id] = (
+                        "SPLIT_GROUP_ROLLBACK_FAILED",
+                        "Không thể giữ tuyến hợp lệ sau khi thu hồi một đơn chia xe chưa đủ phần.",
+                    )
+                continue
+            scheduled, distance_meters, _, route_end_seconds = evaluated
+            rebuilt_routes.append(
+                self._build_candidate_route(
+                    vehicle,
+                    scheduled,
+                    distance_meters,
+                    route_end_seconds,
+                    spatial,
+                )
+            )
+
+        routes[:] = rebuilt_routes
+        assigned_order_ids.difference_update(incomplete_ids)
+        for allocation_id in incomplete_ids:
+            rejected_reasons[allocation_id] = (
+                "SPLIT_ORDER_NOT_FULLY_ASSIGNED",
+                "Không thể phân bổ đầy đủ mọi kiện của đơn sang các xe khác nhau; không áp dụng phân công một phần.",
+            )
 
     @staticmethod
     def _spatial_rejection(
@@ -1239,6 +1400,8 @@ class FleetRoutingSolver:
             for vehicle_index, vehicle in candidate_vehicle_slots:
                 if vehicle_index not in self.driver_safe_vehicle_indices:
                     continue
+                if not self._order_allows_vehicle(order, vehicle):
+                    continue
                 if time.monotonic() >= deadline:
                     limit_reached = True
                     break
@@ -1260,10 +1423,10 @@ class FleetRoutingSolver:
                 if route_index is not None:
                     for stop in routes[route_index].stops:
                         if (
-                            stop.order_id
-                            and stop.order_id not in existing_order_ids
+                            self._stop_allocation_id(stop)
+                            and self._stop_allocation_id(stop) not in existing_order_ids
                         ):
-                            existing_order_ids.append(stop.order_id)
+                            existing_order_ids.append(self._stop_allocation_id(stop))
 
                 candidate_orders = [
                     self.order_by_id[order_id]
@@ -1403,7 +1566,9 @@ class FleetRoutingSolver:
             for route in routes:
                 order_ids = list(
                     dict.fromkeys(
-                        stop.order_id for stop in route.stops if stop.order_id
+                        self._stop_allocation_id(stop)
+                        for stop in route.stops
+                        if self._stop_allocation_id(stop)
                     )
                 )
                 route_orders.append(
@@ -1488,6 +1653,7 @@ class FleetRoutingSolver:
                         break
                     if not all(
                         self._order_physically_fits_vehicle(order, vehicle)
+                        and self._order_allows_vehicle(order, vehicle)
                         for order in combined_orders
                     ):
                         continue
@@ -1583,6 +1749,7 @@ class FleetRoutingSolver:
             vehicle
             for index, vehicle in enumerate(self.request.vehicles)
             if index in self.driver_safe_vehicle_indices
+            if self._order_allows_vehicle(order, vehicle)
             if sum(item.weight_kg for item in order.items)
             <= vehicle.payload_limit_kg
         ]
@@ -1899,7 +2066,14 @@ class FleetRoutingSolver:
                     location_id=action.stop_id,
                     location_name=action.address,
                     stop_type=action.stop_type,
-                    order_id=order.id,
+                    order_id=order.source_order_id or order.id,
+                    allocation_id=order.id,
+                    order_stop_id=(
+                        order.pickup_location.source_location_id
+                        if action.stop_type == "PICKUP"
+                        else order.delivery_location.source_location_id
+                    )
+                    or action.stop_id,
                     latitude=action.latitude,
                     longitude=action.longitude,
                     arrival_time_sec=round(arrival),

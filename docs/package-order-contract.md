@@ -37,3 +37,14 @@ OrderStop có `type=PICKUP|DELIVERY`, `windowStart`, `windowEnd` ISO8601 có tim
 Kiện ví dụ sang Python thành 40.1 × 30.2 × 20.3 cm, 10.001 kg, cùng ID. N kiện tạo N CargoItem; tổng 4 kiện 10.001 + 20.002 + 30.003 + 40.004 = 100.010 kg. Snapshot xếp hàng giữ độ chính xác gram, tránh sai số số thực làm thay đổi chữ ký khi lưu JSONB.
 
 Người 1 tiếp tục sở hữu solver và validator hình học. Các sửa sau merge chỉ bảo đảm mapping kiện, service window, khóa/apply và tương thích contract; không tuyên bố toàn bộ validator xếp/dỡ đã nghiệm thu.
+
+## Bổ sung merge chia đơn ngày 07/10/2026
+
+- Giữ chính sách chia đơn trong `KE_HOACH_TMS.md`: chia tập Package, không chia một kiện, áp dụng đủ mọi kiện hoặc rollback toàn bộ. Chỉ dùng các Package B2B đã đối soát; không suy diễn kiện từ quantity hoặc PackageItem bán lẻ.
+- Mỗi phần gửi solver có ID dạng `<Order.id>::split:<n>`, `source_order_id` giữ Order gốc; mỗi điểm ảo giữ `source_location_id` bằng OrderStop thật. Khung giờ, timezone và thời lượng lấy/giao được giữ nguyên trên từng phần.
+- Kết quả stop có `order_id` là Order thật, `order_stop_id` là OrderStop thật, `allocation_id` là ID phần hàng trong solver. **`allocation_id` này không phải khóa của bảng Allocation.** `location_id` có thể là ID điểm ảo của phần hàng. ID trong `items_loaded`, `items_unloaded` và placement vẫn là UUID Package thật, không thêm tiền tố `package:` hay hậu tố theo quantity.
+- Backend kiểm tra tập kiện toàn Order, tập lấy/giao mỗi phần, trùng kiện giữa các tuyến, thời gian và version. Trong cùng transaction: mỗi Trip nhận đúng Allocation/StopTask của tập kiện riêng; LoadPlanStep liên kết tất cả task của điểm phục vụ tương ứng; chỉ sau khi mọi chuyến đã lưu thành công mới chuyển trạng thái các kiện và Order.
+- Không có thay đổi schema/migration trong đợt merge chia đơn này. Vẫn cần hoàn tất nâng cấp database theo `MERGE_RECOVERY.md` nếu database chung chưa theo schema hợp nhất.
+- Đã kiểm chứng HTTP → queue → FastAPI/OR-Tools → PostgreSQL với đơn nhiều khối lượng kiện khác nhau, cả nguyên đơn và chia hai xe; test PostgreSQL riêng kiểm tra tranh chấp apply và rollback khi snapshot của chuyến thứ hai không khớp kiện.
+
+- Khi sửa kế hoạch một chuyến đã chia, backend chỉ đưa tập kiện của chuyến đó vào kiểm tra tải và LoadPlan; không thay đổi quantity của dòng hàng gốc. Placement tham chiếu kiện của chuyến khác bị từ chối và rollback. Đã kiểm tra sửa kế hoạch rồi phát hành cả hai chuyến trên PostgreSQL riêng.

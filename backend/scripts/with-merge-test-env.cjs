@@ -3,8 +3,10 @@ const config = require('dotenv').parse(fs.readFileSync('.env'));
 const target = new URL(config.AUTH_TEST_DATABASE_URL);
 if (!['localhost', '127.0.0.1'].includes(target.hostname) || target.pathname !== '/tms_auth_test') throw new Error('Refusing non-isolated PostgreSQL');
 target.pathname = '/tms_merge_test_20261005';
+const redisTestUrl = process.env.MERGE_TEST_REDIS_URL || 'redis://127.0.0.1:56389';
+if (!['localhost', '127.0.0.1'].includes(new URL(redisTestUrl).hostname)) throw new Error('Local test Redis required');
 const env = { ...process.env, ...config, DATABASE_URL: target.href, DIRECT_URL: target.href, TEST_DATABASE_URL: target.href,
-  REDIS_URL: 'redis://127.0.0.1:56389', PORT: '4012', WEB_ORIGIN: 'http://127.0.0.1:5174', CORS_ORIGIN: 'http://127.0.0.1:5174',
+  REDIS_URL: redisTestUrl, PORT: '4012', WEB_ORIGIN: 'http://127.0.0.1:5174', CORS_ORIGIN: 'http://127.0.0.1:5174',
   OPTIMIZER_URL: 'http://127.0.0.1:18012', OUTBOX_POLL_INTERVAL_MS: '250', OUTBOX_WORKER_ENABLED: 'true' };
 delete env.OUTBOX_NOTIFICATION_WEBHOOK_URL;
 delete env.OUTBOX_NOTIFICATION_WEBHOOK_SECRET;

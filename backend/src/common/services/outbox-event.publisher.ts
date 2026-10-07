@@ -36,7 +36,7 @@ export class OutboxEventPublisher {
   ) {}
 
   async publish(event: PublishableOutboxEvent): Promise<void> {
-    if (['TRIP_CREATED', 'TRIP_PUBLISHED', 'TRIP_PLAN_UPDATED'].includes(event.eventType)) {
+    if (['TRIP_CREATED', 'TRIP_PUBLISHED', 'TRIP_PLAN_UPDATED', 'OPTIMIZATION_TRIP_APPLIED'].includes(event.eventType)) {
       await this.eventsGateway.emitTripUpdate({ id: event.aggregateId });
       return;
     }

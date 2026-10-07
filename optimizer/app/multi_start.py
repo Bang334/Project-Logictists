@@ -61,7 +61,10 @@ def _plan_signature(plan: FleetOptimizationResponse) -> Tuple:
         sorted(
             (
                 route.route_id or route.vehicle_id,
-                tuple((stop.stop_type, stop.order_id) for stop in route.stops),
+                tuple(
+                    (stop.stop_type, stop.allocation_id or stop.order_id)
+                    for stop in route.stops
+                ),
             )
             for route in plan.routes
         )
@@ -86,8 +89,9 @@ def is_fully_served(
     served_order_ids: Set[str] = set()
     for route in plan.routes:
         for stop in route.stops:
-            if stop.order_id:
-                served_order_ids.add(stop.order_id)
+            allocation_id = stop.allocation_id or stop.order_id
+            if allocation_id:
+                served_order_ids.add(allocation_id)
 
     if served_order_ids != all_order_ids:
         return False

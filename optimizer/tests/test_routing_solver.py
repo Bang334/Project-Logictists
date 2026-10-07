@@ -176,6 +176,240 @@ def test_fleet_solver_assigns_two_vehicles_drivers_and_costs():
     assert all(route.cost and route.cost.total_cost_vnd > 0 for route in response.routes)
 
 
+def test_fleet_solver_assigns_every_split_part_to_its_physical_vehicle():
+    depot = LocationPoint(id="split-depot", name="Kho", latitude=12.0, longitude=109.0)
+    vehicles = [
+        FleetVehicle(
+            id=f"truck-{index}::day:0",
+            source_vehicle_id=f"truck-{index}",
+            plate_number=f"79C-00{index}",
+            length_cm=200,
+            width_cm=100,
+            height_cm=120,
+            payload_limit_kg=700,
+            depot=depot,
+            fuel_consumption_liters_per_100_km=10,
+            fixed_operating_cost_vnd=50_000,
+        )
+        for index in (1, 2)
+    ]
+    drivers = [
+        DriverOption(
+            id=f"driver-{index}",
+            full_name=f"Tài xế {index}",
+            fixed_salary_monthly_vnd=10_000_000,
+            trip_base_pay_vnd=100_000,
+            per_km_pay_vnd=1_000,
+        )
+        for index in (1, 2)
+    ]
+
+    parts = []
+    for index in (1, 2):
+        parts.append(
+            OrderPair(
+                id=f"order-large::split:{index}",
+                source_order_id="order-large",
+                source_order_number="DH-LARGE",
+                split_group_id="order-large",
+                allowed_source_vehicle_ids=[f"truck-{index}"],
+                order_number=f"DH-LARGE ({index}/2)",
+                pickup_location=LocationPoint(
+                    id=f"pickup-large::split:{index}",
+                    source_location_id="pickup-large",
+                    name="Kho",
+                    latitude=12.01,
+                    longitude=109.01,
+                ),
+                delivery_location=LocationPoint(
+                    id=f"delivery-large::split:{index}",
+                    source_location_id="delivery-large",
+                    name="Khách",
+                    latitude=12.02,
+                    longitude=109.02,
+                ),
+                items=[
+                    CargoItem(
+                        id=f"package-{index}",
+                        order_id="order-large",
+                        length_cm=150,
+                        width_cm=80,
+                        height_cm=80,
+                        weight_kg=600,
+                        can_rotate=False,
+                    )
+                ],
+                service_time_sec=30,
+            )
+        )
+
+    size = 6
+    matrix = [[0 if row == col else 1000 for col in range(size)] for row in range(size)]
+    durations = [[0 if row == col else 60 for col in range(size)] for row in range(size)]
+    response = FleetRoutingSolver(
+        FleetOptimizationRequest(
+            job_id="split-job",
+            vehicles=vehicles,
+            drivers=drivers,
+            orders=parts,
+            policy=CostPolicy(
+                fuel_price_per_liter_vnd=23_000,
+                monthly_working_minutes=10_560,
+            ),
+            max_time_seconds=3,
+            distance_matrix_meters=matrix,
+            duration_matrix_seconds=durations,
+        )
+    ).solve()
+
+    assert response.status == "SUCCESS"
+    assert response.unassigned_orders == []
+    assert {route.vehicle_id for route in response.routes} == {"truck-1", "truck-2"}
+    assert {
+        stop.order_id for route in response.routes for stop in route.stops
+    } == {"order-large"}
+    assert {
+        stop.allocation_id for route in response.routes for stop in route.stops
+    } == {"order-large::split:1", "order-large::split:2"}
+    assert {
+        stop.order_stop_id for route in response.routes for stop in route.stops
+    } == {"pickup-large", "delivery-large"}
+
+
+def test_fleet_solver_uses_split_vehicle_spare_payload_for_another_order():
+    depot = LocationPoint(id="shared-depot", name="Kho", latitude=12.0, longitude=109.0)
+    vehicles = [
+        FleetVehicle(
+            id=f"truck-{index}::day:0",
+            source_vehicle_id=f"truck-{index}",
+            plate_number=f"79C-10{index}",
+            length_cm=400,
+            width_cm=100,
+            height_cm=120,
+            payload_limit_kg=1900,
+            depot=depot,
+            fuel_consumption_liters_per_100_km=10,
+            fixed_operating_cost_vnd=50_000,
+        )
+        for index in (1, 2)
+    ]
+    drivers = [
+        DriverOption(
+            id=f"driver-{index}",
+            full_name=f"Tài xế {index}",
+            fixed_salary_monthly_vnd=10_000_000,
+            trip_base_pay_vnd=100_000,
+            per_km_pay_vnd=1_000,
+        )
+        for index in (1, 2)
+    ]
+
+    split_parts = [
+        OrderPair(
+            id=f"order-large::split:{index}",
+            source_order_id="order-large",
+            source_order_number="DH-LARGE",
+            split_group_id="order-large",
+            allowed_source_vehicle_ids=[f"truck-{index}"],
+            order_number=f"DH-LARGE ({index}/2)",
+            pickup_location=LocationPoint(
+                id=f"pickup-large::split:{index}",
+                source_location_id="pickup-large",
+                name="Kho hàng lớn",
+                latitude=12.01,
+                longitude=109.01,
+            ),
+            delivery_location=LocationPoint(
+                id=f"delivery-large::split:{index}",
+                source_location_id="delivery-large",
+                name="Khách hàng lớn",
+                latitude=12.02,
+                longitude=109.02,
+            ),
+            items=[
+                CargoItem(
+                    id=f"large-package-{index}",
+                    order_id="order-large",
+                    length_cm=150,
+                    width_cm=100,
+                    height_cm=80,
+                    weight_kg=1000,
+                    can_rotate=False,
+                )
+            ],
+            pickup_window_start_sec=0,
+            pickup_window_end_sec=240,
+            delivery_window_start_sec=300,
+            delivery_window_end_sec=1200,
+            service_time_sec=30,
+        )
+        for index in (1, 2)
+    ]
+    extra_order = OrderPair(
+        id="order-extra",
+        order_number="DH-EXTRA",
+        pickup_location=LocationPoint(
+            id="pickup-extra",
+            name="Kho hàng khác",
+            latitude=12.011,
+            longitude=109.011,
+        ),
+        delivery_location=LocationPoint(
+            id="delivery-extra",
+            name="Khách hàng khác",
+            latitude=12.019,
+            longitude=109.019,
+        ),
+        items=[
+            CargoItem(
+                id="extra-package",
+                order_id="order-extra",
+                length_cm=100,
+                width_cm=100,
+                height_cm=80,
+                weight_kg=900,
+                can_rotate=False,
+            )
+        ],
+        pickup_window_start_sec=0,
+        pickup_window_end_sec=240,
+        delivery_window_start_sec=300,
+        delivery_window_end_sec=1200,
+        service_time_sec=30,
+    )
+
+    orders = [*split_parts, extra_order]
+    size = len(vehicles) + 2 * len(orders)
+    matrix = [[0 if row == col else 1000 for col in range(size)] for row in range(size)]
+    durations = [[0 if row == col else 60 for col in range(size)] for row in range(size)]
+    response = FleetRoutingSolver(
+        FleetOptimizationRequest(
+            job_id="shared-spare-payload-job",
+            vehicles=vehicles,
+            drivers=drivers,
+            orders=orders,
+            policy=CostPolicy(
+                fuel_price_per_liter_vnd=23_000,
+                monthly_working_minutes=10_560,
+            ),
+            max_time_seconds=3,
+            distance_matrix_meters=matrix,
+            duration_matrix_seconds=durations,
+        )
+    ).solve()
+
+    assert response.status == "SUCCESS"
+    assert response.unassigned_orders == []
+    assert len(response.routes) == 2
+    assert {route.vehicle_id for route in response.routes} == {"truck-1", "truck-2"}
+    shared_route = next(
+        route
+        for route in response.routes
+        if {stop.order_id for stop in route.stops} == {"order-large", "order-extra"}
+    )
+    assert max(stop.current_weight_kg for stop in shared_route.stops) == 1900
+
+
 def test_fleet_solver_rounds_fractional_resequenced_route_end_time(monkeypatch):
     depot = LocationPoint(id="fractional-depot", name="Kho", latitude=21, longitude=105.8)
     vehicle = FleetVehicle(

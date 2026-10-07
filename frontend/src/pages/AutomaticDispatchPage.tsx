@@ -691,6 +691,23 @@ const AutomaticDispatchPage: React.FC = () => {
   const result = isOptimizationForCurrentBranch
     ? selectedCandidateResult ?? optimization?.result
     : null;
+  const splitOrderRouteCounts = useMemo(() => {
+    const routeKeysByOrder = new Map<string, Set<string>>();
+    for (const route of result?.routes ?? []) {
+      const routeKey = getRouteKey(route);
+      for (const stop of route.stops) {
+        if (!stop.order_id) continue;
+        const routeKeys = routeKeysByOrder.get(stop.order_id) ?? new Set<string>();
+        routeKeys.add(routeKey);
+        routeKeysByOrder.set(stop.order_id, routeKeys);
+      }
+    }
+    return new Map(
+      [...routeKeysByOrder.entries()]
+        .filter(([, routeKeys]) => routeKeys.size > 1)
+        .map(([orderId, routeKeys]) => [orderId, routeKeys.size]),
+    );
+  }, [result]);
 
   const selectCandidate = async (candidateNumber: number) => {
     if (!optimization || candidateNumber === selectedCandidateNumber) return;
@@ -1651,10 +1668,18 @@ const AutomaticDispatchPage: React.FC = () => {
                   width: 105,
                   render: (val: string, stop, idx) => {
                     const matchedItem = schedule.items.find((it) => it.stopIndex === idx);
+                    const splitAcross = val ? splitOrderRouteCounts.get(val) : undefined;
                     return (
-                      <Tag color="geekblue" style={{ margin: 0, fontSize: 11 }}>
-                        {matchedItem?.orderNumber || (val ? val.slice(-6).toUpperCase() : `Đơn #${idx + 1}`)}
-                      </Tag>
+                      <Space size={4} wrap>
+                        <Tag color="geekblue" style={{ margin: 0, fontSize: 11 }}>
+                          {matchedItem?.orderNumber || (val ? val.slice(-6).toUpperCase() : `Đơn #${idx + 1}`)}
+                        </Tag>
+                        {splitAcross && (
+                          <Tag color="purple" style={{ margin: 0, fontSize: 10 }}>
+                            Chia {splitAcross} xe
+                          </Tag>
+                        )}
+                      </Space>
                     );
                   },
                 },

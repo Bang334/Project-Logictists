@@ -212,12 +212,14 @@ test('Order Packages: real PostgreSQL + HTTP, fixture road times only', { timeou
         assert.equal(await db.trip.count({ where: { vehicleId: vehicle.id } }), 0);
       } finally { release(); map.getRoute = original; await pending; }
     });
-    await t.test('HTTP Nest → real FastAPI/OR-Tools → apply persists exact Package IDs and service windows', { timeout: 100000 }, async () => {
+    for (const split of [false, true]) await t.test(`Real HTTP/PostgreSQL/OR-Tools ${split ? 'split across two vehicles' : 'whole order'} preserves Package IDs and windows`, { timeout: 100000 }, async () => {
       const { signOptimizationProposal } = require('../dist/src/trips/optimization-proposal');
       const branch = await db.branch.create({ data: { code: 'TEST-OPT-' + randomUUID(), name: '[TEST]', address: '[TEST]', latitude: 21, longitude: 105, workStartTime: '00:00', workEndTime: '23:59' } });
         const optDepot = await db.location.create({ data: { code: 'TEST-OPT-DEPOT-' + randomUUID(), name: '[TEST]', type: 'CENTRAL_WAREHOUSE', managingBranchId: branch.id, address: '[TEST]', latitude: 21, longitude: 105 } });
-        await db.vehicle.create({ data: { plateNumber: 'TEST-OPT-' + randomUUID(), model: 'test', vehicleType: 'test', homeBranchId: branch.id, homeDepotLocationId: optDepot.id, payloadCapacityKg: 1000, volumeCapacityM3: 10, lengthCm: 400, widthCm: 200, heightCm: 200 } });
+        for (let i = 0; i < (split ? 2 : 1); i++) {
+        await db.vehicle.create({ data: { plateNumber: 'TEST-OPT-' + randomUUID(), model: 'test', vehicleType: 'test', homeBranchId: branch.id, homeDepotLocationId: optDepot.id, payloadCapacityKg: split ? 65 : 1000, volumeCapacityM3: 10, lengthCm: 400, widthCm: 200, heightCm: 200 } });
         await db.driver.create({ data: { citizenId: randomUUID(), fullName: '[TEST]', phone: '000', licenseNumber: randomUUID(), licenseClass: 'C', licenseExpiry: new Date('2035-01-01'), homeBranchId: branch.id } });
+        }
         const draft = await make({ ...payload(), branchId: branch.id }, admin);
         const confirmed = await command('/orders/' + draft.id + '/confirm', admin, 'POST', { version: draft.version }); assert.equal(confirmed.status, 201);
         const optimized = await req('/trips/automatic-optimization', admin, 'POST', { branchId: branch.id, idempotencyKey: randomUUID() });
@@ -236,11 +238,11 @@ test('Order Packages: real PostgreSQL + HTTP, fixture road times only', { timeou
         assert.deepEqual(JSON.parse(rawRows[0].value).proposal, capturedBatch.candidates[0].proposal, 'Database numeric text must preserve signed proposal');
         assert.deepEqual(proposal, capturedBatch.candidates[0].proposal, 'JSONB must preserve signed proposal');
         assert.equal(signOptimizationProposal(proposal, process.env.OPTIMIZATION_PROPOSAL_SECRET || process.env.JWT_SECRET), stored.resultSnapshot.signature, 'Stored proposal signature must survive PostgreSQL JSONB');
-        assert.equal(proposal.result.routes.length, 1); assert.equal(proposal.result.unassigned_orders.length, 0);
-        const route = proposal.result.routes[0], ids = draft.items.flatMap(i => i.packages.map(p => p.id)).sort();
-        assert.deepEqual([...route.stops[0].items_loaded].sort(), ids);
-        assert.deepEqual([...route.stops[1].items_unloaded].sort(), ids);
-        assert.equal(route.stops[0].current_weight_kg, 100.01);
+        assert.equal(proposal.result.routes.length, split ? 2 : 1); assert.equal(proposal.result.unassigned_orders.length, 0);
+        const routes = proposal.result.routes, route = routes[0], ids = draft.items.flatMap(i => i.packages.map(p => p.id)).sort();
+        assert.deepEqual(routes.flatMap(r => r.stops[0].items_loaded).sort(), ids);
+        assert.deepEqual(routes.flatMap(r => r.stops[1].items_unloaded).sort(), ids);
+        assert.ok(Math.abs(routes.reduce((sum, r) => sum + r.stops[0].current_weight_kg, 0) - 100.01) < 1e-9);
         assert.equal(route.stops[0].departure_time_sec - route.stops[0].arrival_time_sec, 600);
         assert.equal(route.stops[1].departure_time_sec - route.stops[1].arrival_time_sec, 1200);
         const wrong = structuredClone(proposal); wrong.result.routes[0].stops[0].items_loaded[0] = randomUUID();
@@ -249,10 +251,24 @@ test('Order Packages: real PostgreSQL + HTTP, fixture road times only', { timeou
         await assert.rejects(trips.applyAutomaticOptimization({ proposal: wrong, signature }, workerPrincipal), /Package/);
         const applied = await req('/trips/automatic-optimization/jobs/' + jobId + '/apply', admin, 'POST', { candidateNumber: 1 });
         assert.equal(applied.status, 201, JSON.stringify(applied.body));
-        const allocations = await db.allocation.findMany({ where: { tripId: applied.body.trips[0].id }, include: { tasks: true } });
+        const allocations = await db.allocation.findMany({ where: { tripId: { in: applied.body.trips.map(t => t.id) } }, include: { tasks: true } });
         assert.deepEqual(allocations.map(a => a.packageId).sort(), ids);
         assert.ok(allocations.every(a => a.allocatedQuantity === 1 && a.tasks.length === 2 && a.tasks.every(t => t.orderStopId)));
         assert.equal((await req('/trips/automatic-optimization/jobs/' + jobId + '/apply', admin, 'POST', { candidateNumber: 1 })).status, 409);
+        if (split) {
+          for (const created of applied.body.trips) {
+            const before = (await req('/trips/' + created.id, admin)).body;
+            const ownIds = allocations.filter(a => a.tripId === created.id).map(a => a.packageId).sort();
+            const changed = await req('/trips/' + created.id + '/plan', admin, 'PATCH', { expectedVersion: before.version, vehicleId: before.vehicleId, driverId: before.assignments[0].driverId, plannedStartTime: before.plannedStartTime, plannedEndTime: new Date(Date.parse(before.plannedEndTime) + 3600000).toISOString(), ...endpoints, orderedStopIds: draft.stops.map(s => s.id) });
+            assert.equal(changed.status, 200, JSON.stringify(changed.body));
+            const plan = await db.loadPlan.findFirstOrThrow({ where: { tripId: created.id }, orderBy: { revision: 'desc' }, include: { steps: { include: { placements: true, tasks: true } } } });
+            assert.deepEqual([...new Set(plan.steps.flatMap(s => s.placements.map(p => p.packageId)))].sort(), ownIds);
+            assert.deepEqual([...new Set(plan.steps.flatMap(s => s.tasks.map(t => t.packageId)))].sort(), ownIds);
+            const published = await req('/trips/' + created.id + '/publish', admin, 'PATCH', { expectedVersion: changed.body.version });
+            assert.equal(published.status, 200, JSON.stringify(published.body));
+          }
+          assert.equal((await req('/orders/' + draft.id, admin)).body.totalPackages, 4);
+        }
     });
   } finally { await app.close(); }
 });

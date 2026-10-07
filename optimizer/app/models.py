@@ -9,6 +9,7 @@ class StrictContractModel(BaseModel):
 
 class LocationPoint(StrictContractModel):
     id: str
+    source_location_id: Optional[str] = None
     name: str
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
@@ -188,6 +189,10 @@ class OrderPair(StrictContractModel):
     ordered_at_sec: int = 0
     order_value_vnd: int = Field(default=0, ge=0)
     id: str
+    source_order_id: Optional[str] = None
+    source_order_number: Optional[str] = None
+    split_group_id: Optional[str] = None
+    allowed_source_vehicle_ids: List[str] = Field(default_factory=list)
     order_number: str
     pickup_location: LocationPoint
     delivery_location: LocationPoint
@@ -261,6 +266,8 @@ class ScheduledStop(StrictContractModel):
     location_name: str
     stop_type: Literal["PICKUP", "DELIVERY"]
     order_id: Optional[str] = None
+    allocation_id: Optional[str] = None
+    order_stop_id: Optional[str] = None
     latitude: float
     longitude: float
     arrival_time_sec: int

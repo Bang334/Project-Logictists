@@ -18,6 +18,18 @@ Policy và ngân sách thực được ghi trong `diagnostics` của batch. Vớ
 
 ---
 
+### Chia đơn nhiều kiện qua nhiều xe
+
+- Backend chỉ tách một Order khi Order có nhiều Package và toàn bộ hàng không vừa một xe; Package luôn bất khả phân.
+- Bộ chia thử từ cận dưới số xe và chỉ tăng số xe khi không thể xếp hết, đồng thời ưu tiên lấp xe đã mở. Đây là tìm kiếm có quay lui, không phải chia đều hoặc mở một xe cho mỗi kiện.
+- Mỗi phần được khóa vào một xe vật lý khác nhau trước khi gửi solver. Solver vẫn phải kiểm tra tải, lịch, pickup trước delivery và bố trí/đường xếp dỡ cho từng xe.
+- Phần tải và diện tích sàn còn dư trên xe đã nhận một phần của Order không bị giữ riêng. Solver được ghép thêm Order khác vào xe đó nếu tải từng chặng, time window và validator bố trí/xếp dỡ đều đạt; ví dụ kiện 1.000 kg trên xe 1.900 kg có thể dùng tối đa 900 kg tải dư cho hàng khác, không đồng nghĩa chắc chắn xếp vừa về hình học.
+- Các phần của cùng Order là nhóm toàn bộ-hoặc-không. Nếu solver hoặc spatial validator không xếp được một phần, không phần nào của Order được áp dụng.
+- Khi dispatcher áp dụng phương án, backend khóa Order/xe/tài xế, chuyển đúng các Package từ `READY` sang `ALLOCATED`, tạo `StopTask` theo Package và chỉ sau đó chuyển Order sang `ASSIGNED` trong cùng transaction.
+- Một Package không vừa bất kỳ xe phù hợp nào được giữ trong danh sách chưa phân công; hệ thống không giảm khối lượng/kích thước hoặc cắt Package để tạo nghiệm.
+
+---
+
 ## 2. Vòng đời Job & Cơ chế Khóa Lease
 
 ```text
