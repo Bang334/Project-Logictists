@@ -10,13 +10,17 @@ const { TripsService } = require('../dist/src/trips/trips.service');
 const { validationException } = require('../dist/src/orders/validation-errors');
 const { seedAuth } = require('../dist/prisma/seed-auth');
 
-test('Order Packages: real PostgreSQL + HTTP, fixture road times only', { timeout: 120000 }, async t => {
+test('Order Packages: real PostgreSQL + HTTP, fixture road times only', { timeout: 240000 }, async t => {
   const target = new URL(process.env.DATABASE_URL);
-  assert.ok(['localhost','127.0.0.1'].includes(target.hostname) && target.pathname === '/tms_orders_test_v2', 'Refusing non-test DB');
+  assert.ok(['localhost','127.0.0.1'].includes(target.hostname) && target.pathname === '/tms_merge_test_20261005', 'Refusing non-test DB');
   const app = await NestFactory.create(AppModule, { logger: false });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true, exceptionFactory: validationException }));
+  app.useGlobalInterceptors(new (require('../dist/src/common/interceptors/bigint-serialization.interceptor').BigIntSerializationInterceptor)());
   await app.listen(0, '127.0.0.1');
   const db = app.get(PrismaService), trips = app.get(TripsService), map = app.get(MapboxService), base = await app.getUrl();
+  let capturedBatch;
+  const execute = trips.executeAutomaticOptimization.bind(trips);
+  trips.executeAutomaticOptimization = async (...args) => { const batch = await execute(...args); capturedBatch = JSON.parse(JSON.stringify(batch)); return batch; };
   // Only external road responses are fixtures. All writes, auth, locks and constraints use PostgreSQL.
   map.getRoute = async () => ({ distanceKm: 2, durationMinutes: 2, geometry: null, waypoints: [] });
   map.getRoadMatrix = async coords => ({ durationsSeconds: coords.map((_, i) => coords.map((_, j) => i === j ? 0 : 60)), distancesMeters: coords.map((_, i) => coords.map((_, j) => i === j ? 0 : 1000)) });
@@ -25,7 +29,8 @@ test('Order Packages: real PostgreSQL + HTTP, fixture road times only', { timeou
     return { status: r.status, body: await r.json() };
   };
   const command = (path, token, method, body, key = randomUUID()) => req(path, token, method, body, key);
-  let order, token, admin, a, b, customer;
+  let order, token, admin, a, b, customer, depot;
+  const endpoints = { startLocation: { address: '[TEST] start', latitude: 21.03, longitude: 105.85 }, endLocation: { address: '[TEST] end', latitude: 21.04, longitude: 105.85 } };
   const pkg = (weightG = '10001') => ({ lengthMm: 400, widthMm: 300, heightMm: 200, weightG });
   const payload = () => ({ branchId: a.id, customerId: customer.id, notes: '[TEST] ' + randomUUID(), stops: [
     { type: 'PICKUP', address: '[TEST] pickup', latitude: 21.03, longitude: 105.85, contactName: 'Test', contactPhone: '000', windowStart: '2031-01-01T23:00:00+07:00', windowEnd: '2031-01-02T02:00:00+07:00', serviceDurationMinutes: 10 },
@@ -41,6 +46,9 @@ test('Order Packages: real PostgreSQL + HTTP, fixture road times only', { timeou
     await db.authLoginLimit.deleteMany();
     a = await db.branch.findUniqueOrThrow({ where: { code: 'DEMO-AUTH-A' } });
     b = await db.branch.findUniqueOrThrow({ where: { code: 'DEMO-AUTH-B' } });
+    depot = await db.location.create({ data: { code: 'TEST-DEPOT-' + randomUUID(), name: '[TEST] depot', type: 'CENTRAL_WAREHOUSE', managingBranchId: a.id, address: '[TEST]', latitude: 21.03, longitude: 105.85 } });
+    const fixtureVehicle = await db.vehicle.findUniqueOrThrow({ where: { plateNumber: 'DEMO-AUTH-A' } });
+    await db.trip.upsert({ where: { id: 'legacy-trip' }, update: {}, create: { id: 'legacy-trip', tripNumber: 'MERGE-LEGACY-FK-TEST', vehicleId: fixtureVehicle.id, managingBranchId: a.id, plannedStartTime: new Date('2020-01-01'), plannedEndTime: new Date('2020-01-02'), status: 'COMPLETED' } });
     customer = await db.customer.findUniqueOrThrow({ where: { code: 'DEMO-AUTH-CUSTOMER-A' } });
     token = (await req('/auth/login', null, 'POST', { username: 'demo_auth_a', password: process.env.AUTH_DEMO_PASSWORD })).body.accessToken;
     admin = (await req('/auth/login', null, 'POST', { username: 'demo_auth_admin', password: process.env.AUTH_DEMO_PASSWORD })).body.accessToken;
@@ -114,7 +122,7 @@ test('Order Packages: real PostgreSQL + HTTP, fixture road times only', { timeou
       const r = await command('/orders/' + order.id + '/confirm', token, 'POST', { version: order.version }); assert.equal(r.status, 201, JSON.stringify(r.body)); order = r.body;
       assert.equal(order.status, 'CONFIRMED');
       const raw = await db.order.findUniqueOrThrow({ where: { id: order.id }, include: { stops: true, items: { include: { packages: true } } } });
-      const epoch = trips.getPlanningEpoch([raw]), [contract] = trips.buildOptimizerOrders([raw], epoch);
+      const epoch = new Date('2031-01-01T00:00:00+07:00'), [contract] = trips.buildOptimizerOrders([raw], epoch);
       assert.deepEqual(contract.items.map(p => p.id).sort(), order.items.flatMap(i => i.packages.map(p => p.id)).sort());
       assert.equal(contract.pickup_location.id, order.stops[0].id);
       assert.equal(contract.pickup_service_time_sec, 600); assert.equal(contract.delivery_service_time_sec, 1200);
@@ -123,25 +131,30 @@ test('Order Packages: real PostgreSQL + HTTP, fixture road times only', { timeou
       const available = await req('/orders/available-for-dispatch', token); assert.equal(available.status, 200); assert.ok(available.body.some(o => o.id === order.id)); assert.ok(available.body.every(o => o.packageDataStatus === 'COMPLETE'));
     });
     await t.test('manual dispatch persists one allocation/task pair per Package, protects edits and correct stop loads', async () => {
-      const vehicle = await db.vehicle.create({ data: { plateNumber: 'TEST-' + randomUUID(), model: 'test', vehicleType: 'test', homeBranchId: a.id, payloadCapacityKg: 1000, volumeCapacityM3: 10, lengthCm: 400, widthCm: 200, heightCm: 200 } });
+      const vehicle = await db.vehicle.create({ data: { plateNumber: 'TEST-' + randomUUID(), model: 'test', vehicleType: 'test', homeBranchId: a.id, homeDepotLocationId: depot.id, payloadCapacityKg: 1000, volumeCapacityM3: 10, lengthCm: 400, widthCm: 200, heightCm: 200 } });
       const driver = await db.driver.create({ data: { citizenId: randomUUID(), fullName: '[TEST]', phone: '000', licenseNumber: randomUUID(), licenseClass: 'C', licenseExpiry: new Date('2035-01-01'), homeBranchId: a.id } });
-      const tripInput = { branchId: a.id, vehicleId: vehicle.id, driverId: driver.id, orderIds: [order.id], plannedStartTime: '2031-01-01T15:00:00Z', plannedEndTime: '2031-01-01T22:00:00Z' };
-      const results = await Promise.all([req('/trips', token, 'POST', tripInput), req('/trips', token, 'POST', tripInput)]);
-      assert.deepEqual(results.map(r => r.status).sort(), [201,409]);
+      const tripInput = { ...endpoints, idempotencyKey: randomUUID(), branchId: a.id, vehicleId: vehicle.id, driverId: driver.id, orderIds: [order.id], plannedStartTime: '2031-01-01T15:00:00Z', plannedEndTime: '2031-01-01T22:00:00Z' };
+      const results = await Promise.all([req('/trips', token, 'POST', tripInput), req('/trips', token, 'POST', { ...tripInput, idempotencyKey: randomUUID() })]);
+      assert.deepEqual(results.map(r => r.status).sort(), [201,409], JSON.stringify(results));
       const trip = results.find(r => r.status === 201).body;
       const allocations = await db.allocation.findMany({ where: { tripId: trip.id }, include: { tasks: true } });
       assert.equal(allocations.length, 4); assert.ok(allocations.every(a => a.packageId && a.allocatedQuantity === 1 && a.tasks.length === 2 && a.tasks.every(t => t.orderStopId && t.plannedQuantity === 1)));
       const latest = (await req('/orders/' + order.id, token)).body;
       assert.equal((await command('/orders/' + order.id, token, 'PATCH', editable(latest))).status, 409);
       const profile = await req('/trips/' + trip.id + '/load-profile', token); assert.equal(profile.status, 200, JSON.stringify(profile.body));
+      const loadPlan = await db.loadPlan.findFirstOrThrow({ where: { tripId: trip.id }, include: { steps: { include: { tasks: true } } } });
+      assert.equal(loadPlan.steps.flatMap(s => s.tasks).length, 8, 'Both stop snapshots cover all four physical tasks');
+      const published = await req('/trips/' + trip.id + '/publish', token, 'PATCH', { expectedVersion: trip.version });
+      assert.equal(published.status, 200, JSON.stringify(published.body));
+      assert.equal((await req('/trips/' + trip.id, token)).body.status, 'DISPATCHED');
       assert.ok(Math.abs(profile.body.maxWeightKg - order.totalWeightKg) < 1e-9); assert.ok(Math.abs(profile.body.loadProfile.at(-1).currentWeightKg) < 1e-9);
       // A stale state alone cannot bypass historical relations.
       await db.order.update({ where: { id: order.id }, data: { status: 'CONFIRMED' } });
       assert.equal((await command('/orders/' + order.id, token, 'PATCH', editable(latest))).body.code, 'ORDER_REFERENCED');
     });
     await t.test('legacy migration preserved original totals/history and cannot enter optimizer', async () => {
-      const legacy = await db.order.findUniqueOrThrow({ where: { id: 'legacy-order' }, include: { stops: true, items: { include: { packages: true, allocations: true } } } });
-      assert.equal(legacy.items[0].weightKg, 37); assert.equal(legacy.items[0].quantity, 3); assert.equal(legacy.items[0].allocations[0].id, 'legacy-allocation'); assert.equal(legacy.items[0].packages.length, 0);
+      const legacy = await db.order.findUniqueOrThrow({ where: { id: 'merge-o' }, include: { stops: true, items: { include: { packages: true, allocations: true } } } });
+      assert.equal(legacy.items[0].weightKg, 37); assert.equal(legacy.items[0].quantity, 3); assert.equal((await db.package.findUniqueOrThrow({ where: { id: 'merge-p' } })).weightG, 37000n); assert.equal(legacy.items[0].packages.length, 0);
       assert.throws(() => trips.buildOptimizerOrders([legacy], new Date()), /đối soát/);
     });
     await t.test('PostgreSQL rejects invalid Package measurements and cross-line allocation even without API', async () => {
@@ -182,46 +195,47 @@ test('Order Packages: real PostgreSQL + HTTP, fixture road times only', { timeou
     await t.test('edit during route calculation prevents stale assignment at transaction boundary', async () => {
       const draft = await make();
       const confirmed = (await command('/orders/' + draft.id + '/confirm', token, 'POST', { version: draft.version })).body;
-      const vehicle = await db.vehicle.create({ data: { plateNumber: 'TEST-RACE-' + randomUUID(), model: 'test', vehicleType: 'test', homeBranchId: a.id, payloadCapacityKg: 1000, volumeCapacityM3: 10, lengthCm: 400, widthCm: 200, heightCm: 200 } });
+      const vehicle = await db.vehicle.create({ data: { plateNumber: 'TEST-RACE-' + randomUUID(), model: 'test', vehicleType: 'test', homeBranchId: a.id, homeDepotLocationId: depot.id, payloadCapacityKg: 1000, volumeCapacityM3: 10, lengthCm: 400, widthCm: 200, heightCm: 200 } });
       const driver = await db.driver.create({ data: { citizenId: randomUUID(), fullName: '[TEST]', phone: '000', licenseNumber: randomUUID(), licenseClass: 'C', licenseExpiry: new Date('2035-01-01'), homeBranchId: a.id } });
       const original = map.getRoute;
       let release, reached;
       const gate = new Promise(r => { release = r; }), entered = new Promise(r => { reached = r; });
       map.getRoute = async () => { reached(); await gate; return original(); };
-      const pending = req('/trips', token, 'POST', { branchId: a.id, vehicleId: vehicle.id, driverId: driver.id, orderIds: [draft.id], plannedStartTime: '2031-01-01T15:00:00Z', plannedEndTime: '2031-01-01T22:00:00Z' });
+      const pending = req('/trips', token, 'POST', { ...endpoints, idempotencyKey: randomUUID(), branchId: a.id, vehicleId: vehicle.id, driverId: driver.id, orderIds: [draft.id], plannedStartTime: '2031-01-01T15:00:00Z', plannedEndTime: '2031-01-01T22:00:00Z' });
       try {
         await entered;
         const edit = editable(confirmed); edit.items[0].packages[0].weightG = '11';
         assert.equal((await command('/orders/' + draft.id, token, 'PATCH', edit)).status, 200);
         release();
-        assert.equal((await pending).status, 409);
+        const response = await pending; assert.equal(response.status, 409, JSON.stringify(response.body));
         assert.equal(await db.allocation.count({ where: { orderItem: { orderId: draft.id } } }), 0);
         assert.equal(await db.trip.count({ where: { vehicleId: vehicle.id } }), 0);
       } finally { release(); map.getRoute = original; await pending; }
     });
-    await t.test('HTTP Nest → real FastAPI/OR-Tools → apply persists exact Package IDs and service windows', { timeout: 60000 }, async () => {
-      const { spawn } = require('child_process'), path = require('path');
+    await t.test('HTTP Nest → real FastAPI/OR-Tools → apply persists exact Package IDs and service windows', { timeout: 100000 }, async () => {
       const { signOptimizationProposal } = require('../dist/src/trips/optimization-proposal');
-      const python = path.resolve('../optimizer/.venv/Scripts/python.exe');
-      const engine = spawn(python, ['-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '18012'], { cwd: path.resolve('../optimizer'), windowsHide: true, stdio: 'ignore' });
-      let processError; engine.on('error', e => { processError = e; });
-      const previousUrl = process.env.OPTIMIZER_URL; process.env.OPTIMIZER_URL = 'http://127.0.0.1:18012';
-      try {
-        let ready = false;
-        for (let i = 0; i < 50 && !ready; i++) {
-          if (processError) throw processError;
-          if (engine.exitCode !== null) throw new Error('Test optimizer did not start');
-          try { ready = (await fetch(process.env.OPTIMIZER_URL + '/health')).ok; } catch { await new Promise(r => setTimeout(r, 200)); }
-        }
-        assert.ok(ready, 'Real optimizer must be available; no mock fallback');
-        const branch = await db.branch.create({ data: { code: 'TEST-OPT-' + randomUUID(), name: '[TEST]', address: '[TEST]', latitude: 21, longitude: 105 } });
-        await db.vehicle.create({ data: { plateNumber: 'TEST-OPT-' + randomUUID(), model: 'test', vehicleType: 'test', homeBranchId: branch.id, payloadCapacityKg: 1000, volumeCapacityM3: 10, lengthCm: 400, widthCm: 200, heightCm: 200 } });
+      const branch = await db.branch.create({ data: { code: 'TEST-OPT-' + randomUUID(), name: '[TEST]', address: '[TEST]', latitude: 21, longitude: 105, workStartTime: '00:00', workEndTime: '23:59' } });
+        const optDepot = await db.location.create({ data: { code: 'TEST-OPT-DEPOT-' + randomUUID(), name: '[TEST]', type: 'CENTRAL_WAREHOUSE', managingBranchId: branch.id, address: '[TEST]', latitude: 21, longitude: 105 } });
+        await db.vehicle.create({ data: { plateNumber: 'TEST-OPT-' + randomUUID(), model: 'test', vehicleType: 'test', homeBranchId: branch.id, homeDepotLocationId: optDepot.id, payloadCapacityKg: 1000, volumeCapacityM3: 10, lengthCm: 400, widthCm: 200, heightCm: 200 } });
         await db.driver.create({ data: { citizenId: randomUUID(), fullName: '[TEST]', phone: '000', licenseNumber: randomUUID(), licenseClass: 'C', licenseExpiry: new Date('2035-01-01'), homeBranchId: branch.id } });
         const draft = await make({ ...payload(), branchId: branch.id }, admin);
         const confirmed = await command('/orders/' + draft.id + '/confirm', admin, 'POST', { version: draft.version }); assert.equal(confirmed.status, 201);
-        const optimized = await req('/trips/automatic-optimization', admin, 'POST', { branchId: branch.id });
+        const optimized = await req('/trips/automatic-optimization', admin, 'POST', { branchId: branch.id, idempotencyKey: randomUUID() });
         assert.equal(optimized.status, 201, JSON.stringify(optimized.body));
-        const { proposal } = optimized.body;
+        const jobId = optimized.body.id;
+        let job;
+        for (let attempt = 0; attempt < 300; attempt++) {
+          job = (await req('/trips/automatic-optimization/jobs/' + jobId, admin)).body;
+          if (['SUCCEEDED', 'PARTIAL', 'FAILED', 'INFEASIBLE', 'TIMEOUT'].includes(job.status)) break;
+          await new Promise(resolve => setTimeout(resolve, 250));
+        }
+        assert.ok(['SUCCEEDED', 'PARTIAL'].includes(job.status), JSON.stringify(job));
+        const stored = await db.optimizationResult.findUniqueOrThrow({ where: { optimizationJobId_candidateNumber: { optimizationJobId: jobId, candidateNumber: 1 } } });
+        const { proposal } = stored.resultSnapshot;
+        const rawRows = await db.$queryRaw`SELECT "resultSnapshot"::text AS value FROM optimization_results WHERE id=${stored.id}`;
+        assert.deepEqual(JSON.parse(rawRows[0].value).proposal, capturedBatch.candidates[0].proposal, 'Database numeric text must preserve signed proposal');
+        assert.deepEqual(proposal, capturedBatch.candidates[0].proposal, 'JSONB must preserve signed proposal');
+        assert.equal(signOptimizationProposal(proposal, process.env.OPTIMIZATION_PROPOSAL_SECRET || process.env.JWT_SECRET), stored.resultSnapshot.signature, 'Stored proposal signature must survive PostgreSQL JSONB');
         assert.equal(proposal.result.routes.length, 1); assert.equal(proposal.result.unassigned_orders.length, 0);
         const route = proposal.result.routes[0], ids = draft.items.flatMap(i => i.packages.map(p => p.id)).sort();
         assert.deepEqual([...route.stops[0].items_loaded].sort(), ids);
@@ -231,17 +245,14 @@ test('Order Packages: real PostgreSQL + HTTP, fixture road times only', { timeou
         assert.equal(route.stops[1].departure_time_sec - route.stops[1].arrival_time_sec, 1200);
         const wrong = structuredClone(proposal); wrong.result.routes[0].stops[0].items_loaded[0] = randomUUID();
         const signature = signOptimizationProposal(wrong, process.env.OPTIMIZATION_PROPOSAL_SECRET || process.env.JWT_SECRET);
-        assert.equal((await req('/trips/automatic-optimization/apply', admin, 'POST', { proposal: wrong, signature })).status, 400);
-        const applied = await req('/trips/automatic-optimization/apply', admin, 'POST', optimized.body);
+        const workerPrincipal = await app.get(require('../dist/src/auth/auth.service').AuthService).principalForWorker((await db.user.findUniqueOrThrow({ where: { username: 'demo_auth_admin' } })).id);
+        await assert.rejects(trips.applyAutomaticOptimization({ proposal: wrong, signature }, workerPrincipal), /Package/);
+        const applied = await req('/trips/automatic-optimization/jobs/' + jobId + '/apply', admin, 'POST', { candidateNumber: 1 });
         assert.equal(applied.status, 201, JSON.stringify(applied.body));
         const allocations = await db.allocation.findMany({ where: { tripId: applied.body.trips[0].id }, include: { tasks: true } });
         assert.deepEqual(allocations.map(a => a.packageId).sort(), ids);
         assert.ok(allocations.every(a => a.allocatedQuantity === 1 && a.tasks.length === 2 && a.tasks.every(t => t.orderStopId)));
-        assert.equal((await req('/trips/automatic-optimization/apply', admin, 'POST', optimized.body)).status, 409);
-      } finally {
-        engine.kill();
-        if (previousUrl === undefined) delete process.env.OPTIMIZER_URL; else process.env.OPTIMIZER_URL = previousUrl;
-      }
+        assert.equal((await req('/trips/automatic-optimization/jobs/' + jobId + '/apply', admin, 'POST', { candidateNumber: 1 })).status, 409);
     });
   } finally { await app.close(); }
 });

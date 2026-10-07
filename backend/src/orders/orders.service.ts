@@ -20,7 +20,7 @@ export class OrdersService {
   constructor(private prisma: PrismaService, private access: ResourceAccess) {}
 
   async findAll(user: Principal, status?: OrderStatus, customerId?: string, branchId?: string, page = 1, pageSize = 25, search?: string) {
-    const where: Prisma.OrderWhereInput = {
+    const where: Prisma.OrderWhereInput = { orderType: 'B2B_TRANSPORT',
       ...(status ? { status } : {}), ...(customerId ? { customerId } : {}),
       branchId: branchFilter(user, 'orders.read', branchId),
       ...(search ? { OR: [{ orderNumber: { contains: search, mode: 'insensitive' } }, { customer: { name: { contains: search, mode: 'insensitive' } } }] } : {}),
@@ -32,13 +32,13 @@ export class OrdersService {
     return { items: rows.map(serializeOrder), total, page, pageSize };
   }
   async findOne(id: string, user: Principal) {
-    const order = await this.prisma.order.findFirst({ where: { id, branchId: branchFilter(user, 'orders.read') }, include: orderInclude });
+    const order = await this.prisma.order.findFirst({ where: { id, orderType: 'B2B_TRANSPORT', branchId: branchFilter(user, 'orders.read') }, include: orderInclude });
     if (!order) throw new NotFoundException('Đơn không tồn tại hoặc ngoài phạm vi');
     return serializeOrder(order);
   }
   async getAvailableForDispatch(user: Principal, branchId?: string) {
     const rows = await this.prisma.order.findMany({
-      where: { status: OrderStatus.CONFIRMED, packageDataStatus: 'COMPLETE', branchId: branchFilter(user, 'orders.read', branchId), items: { none: { allocations: { some: {} } } } },
+      where: { orderType: 'B2B_TRANSPORT', status: OrderStatus.CONFIRMED, packageDataStatus: 'COMPLETE', branchId: branchFilter(user, 'orders.read', branchId), items: { none: { allocations: { some: {} } } } },
       include: orderInclude, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: 501,
     });
     if (rows.length > 500) throw new BadRequestException({ code: 'DISPATCH_SELECTION_TOO_LARGE', message: 'Có hơn 500 đơn chờ; hãy thu hẹp chi nhánh trước khi lập kế hoạch' });
@@ -85,16 +85,19 @@ export class OrdersService {
   private async lockedOrder(tx: Prisma.TransactionClient, id: string, user: Principal, version: number) {
     // Same order row protects edits from manual and automatic assignment transactions.
     await tx.$queryRaw`SELECT id FROM orders WHERE id = ${id} FOR UPDATE`;
-    const order = await tx.order.findFirst({ where: { id, branchId: branchFilter(user, 'orders.write') }, include: orderInclude });
+    const order = await tx.order.findFirst({ where: { id, orderType: 'B2B_TRANSPORT', branchId: branchFilter(user, 'orders.write') }, include: orderInclude });
     if (!order) throw new NotFoundException('Đơn không tồn tại hoặc ngoài phạm vi');
     if (order.version !== version) throw new ConflictException({ code: 'ORDER_VERSION_CONFLICT', message: 'Đơn đã thay đổi. Tải lại để đối chiếu trước khi lưu' });
     if (!['DRAFT', 'CONFIRMED'].includes(order.status)) throw new ConflictException({ code: 'ORDER_LOCKED', message: 'Đơn đã tham gia vận chuyển; không được sửa dữ liệu hàng/điểm/giờ' });
-    const [allocation, task, delivery] = await Promise.all([
+    const unmapped = await tx.package.findFirst({ where: { orderId: id, orderItemId: null }, select: { id: true } });
+    if (unmapped) throw new ConflictException({ code: 'LEGACY_PACKAGE_MAPPING_REQUIRED', message: 'Đơn đã có kiện theo mô hình cũ; cần đối soát quan hệ dòng–kiện trước khi sửa, không tự tạo lại kiện' });
+    const [allocation, task, delivery, history] = await Promise.all([
       tx.allocation.findFirst({ where: { orderItem: { orderId: id } }, select: { id: true } }),
-      tx.stopTask.findFirst({ where: { orderStop: { orderId: id } }, select: { id: true } }),
+      tx.stopTask.findFirst({ where: { OR: [{ orderStop: { orderId: id } }, { orderId: id }] }, select: { id: true } }),
       tx.deliveryResult.findFirst({ where: { package: { orderItem: { orderId: id } } }, select: { id: true } }),
+      tx.package.findFirst({ where: { orderItem: { orderId: id }, OR: [{ events: { some: {} } }, { loadPlacements: { some: {} } }, { loadPlanSteps: { some: {} } }, { transferShipment: { isNot: null } }] }, select: { id: true } }),
     ]);
-    if (allocation || task || delivery || order.items.some(i => i.packages.some(p => !['DRAFT', 'READY'].includes(p.status)))) throw new ConflictException({ code: 'ORDER_REFERENCED', message: 'Đơn/kiện có phân công hoặc lịch sử giao nhận; không thể sửa hay xóa' });
+    if (allocation || task || delivery || history || order.items.some(i => i.packages.some(p => !['DRAFT', 'READY'].includes(p.status)))) throw new ConflictException({ code: 'ORDER_REFERENCED', message: 'Đơn/kiện có phân công hoặc lịch sử giao nhận; không thể sửa hay xóa' });
     return order;
   }
   async update(id: string, dto: UpdateOrderDto, user: Principal, key?: string) {

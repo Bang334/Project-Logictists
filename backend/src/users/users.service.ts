@@ -49,7 +49,7 @@ export class UsersService {
         const branches = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM branches WHERE id IN (${Prisma.join(dto.branchIds)}) AND active = true ORDER BY id FOR SHARE`;
         if (branches.length !== dto.branchIds.length) throw new BadRequestException({ code: 'BRANCH_UNAVAILABLE', field: 'branchIds', message: 'Một hoặc nhiều chi nhánh không tồn tại hoặc đã ngừng hoạt động' });
         return tx.user.create({
-          data: { username: dto.username, fullName: dto.fullName, password, roleScopes: { create: dto.branchIds.map(branchId => ({ roleId: roles[0].id, scopeType: 'BRANCH', branchId })) } },
+          data: { role: 'DISPATCHER', username: dto.username, fullName: dto.fullName, password, roleScopes: { create: dto.branchIds.map(branchId => ({ roleId: roles[0].id, scopeType: 'BRANCH', branchId })) } },
           select: userSelect,
         });
       });

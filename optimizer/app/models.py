@@ -1,16 +1,20 @@
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class LocationPoint(BaseModel):
+class StrictContractModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class LocationPoint(StrictContractModel):
     id: str
     name: str
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
 
 
-class VehicleFloor(BaseModel):
+class VehicleFloor(StrictContractModel):
     id: str
     plate_number: str
     length_cm: float = Field(gt=0, description="Chiều dài lọt lòng thùng xe (cm)")
@@ -22,6 +26,10 @@ class VehicleFloor(BaseModel):
 
 
 class FleetVehicle(VehicleFloor):
+    source_vehicle_id: Optional[str] = None
+    service_day_index: int = Field(default=0, ge=0)
+    available_start_sec: int = Field(default=0, ge=0)
+    available_end_sec: int = Field(default=30 * 86400, gt=0)
     depot: LocationPoint
     model: Optional[str] = None
     vehicle_type: Optional[str] = None
@@ -33,8 +41,16 @@ class FleetVehicle(VehicleFloor):
     )
     fixed_operating_cost_vnd: int = Field(ge=0)
 
+    @model_validator(mode="after")
+    def validate_availability(self):
+        if self.available_start_sec >= self.available_end_sec:
+            raise ValueError("vehicle availability window is invalid")
+        return self
 
-class DriverOption(BaseModel):
+
+class DriverOption(StrictContractModel):
+    source_driver_id: Optional[str] = None
+    service_day_index: int = Field(default=0, ge=0)
     id: str
     full_name: str
     license_class: str = "C"
@@ -74,14 +90,28 @@ def can_driver_drive_vehicle(
     return False
 
 
-class CostPolicy(BaseModel):
+class CostPolicy(StrictContractModel):
     fuel_price_per_liter_vnd: int = Field(gt=0)
     monthly_working_minutes: int = Field(gt=0)
     cargo_holding_cost_vnd_per_ton_hour: int = Field(default=0, ge=0)
     unassigned_order_penalty_vnd: int = Field(default=1_000_000_000, gt=0)
+    delivery_grace_days: int = Field(default=2, ge=0, le=365)
+    late_delivery_penalty_mode: Literal[
+        "NONE", "FIXED_PER_DAY", "PERCENT_ORDER_VALUE_PER_DAY"
+    ] = "NONE"
+    late_delivery_penalty_value: float = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_late_delivery_penalty(self):
+        if (
+            self.late_delivery_penalty_mode == "PERCENT_ORDER_VALUE_PER_DAY"
+            and self.late_delivery_penalty_value > 100
+        ):
+            raise ValueError("percentage late-delivery penalty cannot exceed 100% per day")
+        return self
 
 
-class CargoItem(BaseModel):
+class CargoItem(StrictContractModel):
     id: str
     order_id: str
     order_item_id: Optional[str] = None
@@ -93,7 +123,7 @@ class CargoItem(BaseModel):
     can_rotate: bool = True
 
 
-class PlacedItem(BaseModel):
+class PlacedItem(StrictContractModel):
     item_id: str
     order_id: str
     x: float
@@ -104,19 +134,19 @@ class PlacedItem(BaseModel):
     weight_kg: float
 
 
-class MovementPoint(BaseModel):
+class MovementPoint(StrictContractModel):
     x: float
     y: float
 
 
-class PackageAccessPath(BaseModel):
+class PackageAccessPath(StrictContractModel):
     item_id: str
     is_clear: bool
     points: List[MovementPoint] = Field(default_factory=list)
     blocker_item_ids: List[str] = Field(default_factory=list)
 
 
-class StopAction(BaseModel):
+class StopAction(StrictContractModel):
     stop_id: str
     sequence: int = Field(ge=1)
     stop_type: Literal["PICKUP", "DELIVERY"]
@@ -127,7 +157,7 @@ class StopAction(BaseModel):
     items_to_unload: List[str] = Field(default_factory=list)
 
 
-class FloorState(BaseModel):
+class FloorState(StrictContractModel):
     step_index: int
     stop_id: str
     stop_type: str
@@ -144,7 +174,7 @@ class FloorState(BaseModel):
     error_message: Optional[str] = None
 
 
-class SpatialValidationResult(BaseModel):
+class SpatialValidationResult(StrictContractModel):
     is_valid: bool
     violation_code: Optional[str] = None
     violation_scenario: Optional[str] = None
@@ -154,7 +184,9 @@ class SpatialValidationResult(BaseModel):
     step_states: List[FloorState] = Field(default_factory=list)
 
 
-class OrderPair(BaseModel):
+class OrderPair(StrictContractModel):
+    ordered_at_sec: int = 0
+    order_value_vnd: int = Field(default=0, ge=0)
     id: str
     order_number: str
     pickup_location: LocationPoint
@@ -187,7 +219,7 @@ class OrderPair(BaseModel):
         return self
 
 
-class OptimizationRequest(BaseModel):
+class OptimizationRequest(StrictContractModel):
     job_id: str
     vehicle: VehicleFloor
     depot: LocationPoint
@@ -197,7 +229,7 @@ class OptimizationRequest(BaseModel):
     duration_matrix_seconds: List[List[float]]
 
 
-class FleetOptimizationRequest(BaseModel):
+class FleetOptimizationRequest(StrictContractModel):
     job_id: str
     vehicles: List[FleetVehicle] = Field(min_length=1)
     drivers: List[DriverOption] = Field(min_length=1)
@@ -223,7 +255,7 @@ class FleetOptimizationRequest(BaseModel):
         return self
 
 
-class ScheduledStop(BaseModel):
+class ScheduledStop(StrictContractModel):
     sequence: int
     location_id: str
     location_name: str
@@ -238,11 +270,12 @@ class ScheduledStop(BaseModel):
     current_weight_kg: float = 0.0
 
 
-class RouteCostBreakdown(BaseModel):
+class RouteCostBreakdown(StrictContractModel):
     base_fuel_cost_vnd: int
     load_fuel_surcharge_vnd: int
     fuel_cost_vnd: int
     cargo_holding_cost_vnd: int
+    late_delivery_penalty_vnd: int = 0
     cargo_distance_ton_km: float
     cargo_time_ton_hours: float
     vehicle_fixed_cost_vnd: int
@@ -251,8 +284,12 @@ class RouteCostBreakdown(BaseModel):
     total_cost_vnd: int
 
 
-class OptimizedRoute(BaseModel):
+class OptimizedRoute(StrictContractModel):
+    route_id: Optional[str] = None
     vehicle_id: str
+    service_day_index: int = Field(default=0, ge=0)
+    start_time_sec: int = Field(default=0, ge=0)
+    end_time_sec: int = Field(default=0, ge=0)
     plate_number: str
     vehicle_length_cm: float
     vehicle_width_cm: float
@@ -267,14 +304,14 @@ class OptimizedRoute(BaseModel):
     route_geometry: Optional[Dict] = None
 
 
-class UnassignedOrder(BaseModel):
+class UnassignedOrder(StrictContractModel):
     order_id: str
     order_number: str
     reason_code: str
     reason_message: str
 
 
-class BenchmarkMetric(BaseModel):
+class BenchmarkMetric(StrictContractModel):
     method_name: str
     description: str
     total_cost_vnd: int
@@ -285,18 +322,19 @@ class BenchmarkMetric(BaseModel):
     vehicle_fixed_cost_vnd: int
     driver_cost_vnd: int
     cargo_holding_cost_vnd: int = 0
+    late_delivery_penalty_vnd: int = 0
     is_feasible: bool = True
     violations: List[str] = Field(default_factory=list)
 
 
-class BenchmarkComparisonResponse(BaseModel):
+class BenchmarkComparisonResponse(StrictContractModel):
     or_tools: BenchmarkMetric
     direct_dedicated: BenchmarkMetric
     savings_vs_direct_vnd: Optional[int] = None
     savings_vs_direct_percent: Optional[float] = None
 
 
-class FleetOptimizationResponse(BaseModel):
+class FleetOptimizationResponse(StrictContractModel):
     package_contract_version: Literal["1"] = "1"
     job_id: str
     status: Literal["SUCCESS", "PARTIAL", "INFEASIBLE", "TIMEOUT", "ERROR"]
@@ -309,7 +347,23 @@ class FleetOptimizationResponse(BaseModel):
     diagnostics: List[str] = Field(default_factory=list)
 
 
-class OptimizationResponse(BaseModel):
+class FleetOptimizationCandidate(StrictContractModel):
+    rank: int = Field(ge=1)
+    search_strategy: str
+    solver_objective: int = Field(ge=0)
+    is_best_found: bool = False
+    result: FleetOptimizationResponse
+
+
+class FleetOptimizationBatchResponse(StrictContractModel):
+    job_id: str
+    solver_run_count: int = Field(ge=1)
+    fully_served_candidate_count: int = Field(ge=0, default=0)
+    candidates: List[FleetOptimizationCandidate]
+    diagnostics: List[str] = Field(default_factory=list)
+
+
+class OptimizationResponse(StrictContractModel):
     package_contract_version: Literal["1"] = "1"
     job_id: str
     status: Literal["SUCCESS", "PARTIAL", "FAILED", "INFEASIBLE", "TIMEOUT"]

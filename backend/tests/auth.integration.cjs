@@ -15,7 +15,7 @@ const { seedAuth } = require('../dist/prisma/seed-auth');
 
 test('Auth and branch isolation on PostgreSQL', { timeout: 90000 }, async t => {
   const target = new URL(process.env.DATABASE_URL);
-  assert.ok(['127.0.0.1', 'localhost'].includes(target.hostname) && ['/tms_auth_test', '/tms_orders_test_v2'].includes(target.pathname), 'Refusing non-test database');
+  assert.ok(['127.0.0.1', 'localhost'].includes(target.hostname) && ['/tms_auth_test', '/tms_orders_test_v2', '/tms_merge_test_20261005'].includes(target.pathname), 'Refusing non-test database');
   const app = await NestFactory.create(AppModule, { logger: false });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
   await app.listen(0, '127.0.0.1');
@@ -67,7 +67,7 @@ test('Auth and branch isolation on PostgreSQL', { timeout: 90000 }, async t => {
     await t.test('profile comes from grants and omits internal credentials', async () => {
       const response = await request('/auth/profile', tokenA); assert.equal(response.status, 200);
       assert.equal(response.body.grants[0].branchId, a.id); assert.equal(response.body.branches.length, 1);
-      assert.ok(!('password' in response.body) && !('sessionId' in response.body) && !('role' in response.body));
+      assert.ok(!('password' in response.body) && !('sessionId' in response.body));
     });
     await t.test('missing, forged, expired and legacy JWT rejected', async () => {
       const jwt = new JwtService({ secret: process.env.JWT_SECRET });
@@ -82,7 +82,7 @@ test('Auth and branch isolation on PostgreSQL', { timeout: 90000 }, async t => {
     });
     await t.test('lists, filters and direct IDs isolate A from B', async () => {
       for (const [endpoint, ownId, foreignId] of [['branches', a.id, b.id], ['vehicles', va.id, vb.id], ['drivers', da.id, dbDriver.id], ['orders', oa.id, ob.id], ['trips', ta.id, tb.id], ['customers', oa.customerId, ob.customerId]]) {
-        const list = await request('/' + endpoint + (endpoint === 'orders' ? '?pageSize=100' : ''), tokenA); assert.equal(list.status, 200, endpoint);
+        const list = await request('/' + endpoint + (endpoint === 'orders' ? '?pageSize=100&search=DEMO-AUTH-ORDER-' : ''), tokenA); assert.equal(list.status, 200, endpoint);
         const records = endpoint === 'orders' ? list.body.items : list.body;
         assert.ok(records.some(r => r.id === ownId), endpoint); assert.ok(!records.some(r => r.id === foreignId), endpoint);
         const detail = await request('/' + endpoint + '/' + foreignId, tokenA);
@@ -110,14 +110,14 @@ test('Auth and branch isolation on PostgreSQL', { timeout: 90000 }, async t => {
       assert.equal((await db.order.findUniqueOrThrow({ where: { id: created.body.id } })).notes, '[TEST AUTH] updated');
     });
     await t.test('mixed trip resources and foreign stop IDs rejected before providers', async () => {
-      const dto = { branchId: a.id, vehicleId: va.id, driverId: da.id, orderIds: [oa.id], plannedStartTime: '2031-01-01T00:00:00Z', plannedEndTime: '2031-01-01T05:00:00Z' };
+      const dto = { idempotencyKey: randomUUID(), startLocation: { address: 'test', latitude: 21, longitude: 105 }, endLocation: { address: 'test', latitude: 21, longitude: 105 }, branchId: a.id, vehicleId: va.id, driverId: da.id, orderIds: [oa.id], plannedStartTime: '2031-01-01T00:00:00Z', plannedEndTime: '2031-01-01T05:00:00Z' };
       for (const patch of [{ vehicleId: vb.id }, { driverId: dbDriver.id }, { orderIds: [ob.id] }, { orderedStopIds: [randomUUID()] }]) assert.equal((await request('/trips', tokenA, 'POST', { ...dto, ...patch })).status, 403);
       assert.equal((await request('/trips/optimize', tokenA, 'POST', { branchId: a.id, vehicleId: va.id, orderIds: [ob.id] })).status, 403);
-      assert.equal((await request('/trips/automatic-optimization', tokenA, 'POST', { branchId: b.id })).status, 403);
-      assert.equal((await request('/trips/' + tb.id + '/publish', tokenA, 'PATCH')).status, 404);
+      assert.equal((await request('/trips/automatic-optimization', tokenA, 'POST', { branchId: b.id, idempotencyKey: randomUUID() })).status, 403);
+      assert.equal((await request('/trips/' + tb.id + '/publish', tokenA, 'PATCH', { expectedVersion: tb.version })).status, 403);
       assert.equal((await request('/trips', tokenA, 'POST', { ...dto, plannedEndTime: dto.plannedStartTime })).status, 400, 'authorized planning still runs the business validator');
       await db.trip.update({ where: { id: ta.id }, data: { status: 'DRAFT' } });
-      try { assert.equal((await request('/trips/' + ta.id + '/publish', tokenA, 'PATCH')).status, 200); }
+      try { assert.equal((await request('/trips/' + ta.id + '/publish', tokenA, 'PATCH', { expectedVersion: ta.version })).status, 409, 'A legacy trip without a planning snapshot and validated load plan cannot be published'); }
       finally { await db.trip.update({ where: { id: ta.id }, data: { status: ta.status } }); }
     });
     await t.test('shared customer counts and nested orders are scoped', async () => {
@@ -162,7 +162,7 @@ test('Auth and branch isolation on PostgreSQL', { timeout: 90000 }, async t => {
       try {
         assert.equal((await request('/auth/profile', tokenA)).body.branches.length, 2);
         assert.equal((await request('/orders/' + ob.id, tokenA)).status, 200);
-        const mixed = { branchId: a.id, vehicleId: vb.id, driverId: dbDriver.id, orderIds: [ob.id], plannedStartTime: '2031-01-01T00:00:00Z', plannedEndTime: '2031-01-01T05:00:00Z' };
+        const mixed = { idempotencyKey: randomUUID(), startLocation: { address: 'test', latitude: 21, longitude: 105 }, endLocation: { address: 'test', latitude: 21, longitude: 105 }, branchId: a.id, vehicleId: vb.id, driverId: dbDriver.id, orderIds: [ob.id], plannedStartTime: '2031-01-01T00:00:00Z', plannedEndTime: '2031-01-01T05:00:00Z' };
         assert.equal((await request('/trips', tokenA, 'POST', mixed)).status, 403, 'related resources must belong to the selected managing branch');
       }
       finally { await db.userRoleScope.delete({ where: { id: scope.id } }); }

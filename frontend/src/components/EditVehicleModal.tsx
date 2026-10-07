@@ -5,7 +5,6 @@ import {
   Input,
   InputNumber,
   Select,
-  Radio,
   Row,
   Col,
   Space,
@@ -19,9 +18,10 @@ import {
   DollarOutlined,
   InboxOutlined,
   TagOutlined,
+  HomeOutlined,
 } from '@ant-design/icons';
-import { vehiclesApi } from '../api/client';
-import { Vehicle, Branch } from '../types';
+import { vehiclesApi, locationsApi } from '../api/client';
+import { Vehicle, Branch, Location } from '../types';
 
 interface EditVehicleModalProps {
   open: boolean;
@@ -164,6 +164,21 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
   const { message } = AntdApp.useApp();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+  const [depots, setDepots] = useState<Location[]>([]);
+  const watchedBranchId = Form.useWatch('homeBranchId', form);
+
+  useEffect(() => {
+    if (open) {
+      locationsApi.getAll().then((res) => {
+        const warehouseList = (res.data || []).filter(
+          (loc) => loc.type === 'CENTRAL_WAREHOUSE',
+        );
+        setDepots(warehouseList);
+      }).catch((err) => {
+        console.error('Không thể tải danh sách kho trung tâm', err);
+      });
+    }
+  }, [open]);
 
   useEffect(() => {
     if (open && vehicle) {
@@ -172,6 +187,7 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
         model: vehicle.model,
         vehicleType: vehicle.vehicleType,
         homeBranchId: vehicle.homeBranchId,
+        homeDepotLocationId: vehicle.homeDepotLocationId || vehicle.homeDepotLocation?.id,
         status: vehicle.status,
         payloadCapacityKg: vehicle.payloadCapacityKg,
         lengthCm: vehicle.lengthCm,
@@ -203,6 +219,7 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
         model: values.model,
         vehicleType: values.vehicleType,
         homeBranchId: values.homeBranchId,
+        homeDepotLocationId: values.homeDepotLocationId,
         status: values.status,
         payloadCapacityKg: values.payloadCapacityKg,
         volumeCapacityM3: values.volumeCapacityM3,
@@ -325,12 +342,43 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
               }
               rules={[{ required: true, message: 'Vui lòng chọn chi nhánh trực thuộc' }]}
             >
-              <Select placeholder="Chọn chi nhánh quản lý xe">
+              <Select
+                placeholder="Chọn chi nhánh quản lý xe"
+                onChange={() => {
+                  form.setFieldValue('homeDepotLocationId', undefined);
+                }}
+              >
                 {branches.map((b) => (
                   <Select.Option key={b.id} value={b.id}>
                     {b.name} ({b.code})
                   </Select.Option>
                 ))}
+              </Select>
+            </Form.Item>
+          </Col>
+        </Row>
+
+        <Row gutter={[16, 0]}>
+          <Col span={24}>
+            <Form.Item
+              name="homeDepotLocationId"
+              label={
+                <Space size={4}>
+                  <HomeOutlined style={{ color: '#059669' }} />
+                  <span>Kho Đỗ Xuất Phát (Home Depot - Lập Lịch)</span>
+                </Space>
+              }
+              rules={[{ required: true, message: 'Vui lòng chọn kho đỗ xuất phát của xe' }]}
+              extra="Khi lập lịch và tối ưu, xe luôn được coi là xuất phát từ kho này. Tọa độ GPS chỉ dùng cho giám sát hành trình."
+            >
+              <Select placeholder="Chọn kho trung tâm trực thuộc làm điểm đỗ / xuất phát">
+                {depots
+                  .filter((d) => !watchedBranchId || d.managingBranchId === watchedBranchId)
+                  .map((d) => (
+                    <Select.Option key={d.id} value={d.id}>
+                      {d.name} ({d.code}) - {d.address}
+                    </Select.Option>
+                  ))}
               </Select>
             </Form.Item>
           </Col>

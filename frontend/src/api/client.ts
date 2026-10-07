@@ -7,17 +7,21 @@ import {
   AutomaticOptimizationResponseUI,
   Driver,
   LoadProfileResult,
+  Location,
   OptimizationResultUI,
-  Order,
+  OptimizationCandidateDetailUI,
+  RunAutomaticOptimizationPayloadUI,
   Trip,
   Vehicle,
 } from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
 
-const client = axios.create({
+export const apiClient = axios.create({
   baseURL: API_URL,
 });
+
+const client = apiClient;
 
 let currentToken: string | null = sessionStorage.getItem('tms_token');
 let currentBranch: string | undefined;
@@ -71,10 +75,10 @@ export const accountsApi = {
 };
 
 export const branchesApi = {
-  getAll: () => client.get<Branch[]>('/branches'),
-  getById: (id: string) => client.get<Branch>(`/branches/${id}`),
+  getAll: () => apiClient.get<Branch[]>('/branches'),
+  getById: (id: string) => apiClient.get<Branch>(`/branches/${id}`),
   update: (id: string, data: Partial<Branch>) =>
-    client.patch<Branch>(`/branches/${id}`, data),
+    apiClient.patch<Branch>(`/branches/${id}`, data),
 };
 
 export const customersApi = {
@@ -83,22 +87,22 @@ export const customersApi = {
 
 export const vehiclesApi = {
   getAll: (branchId?: string, status?: string) =>
-    client.get<Vehicle[]>('/vehicles', { params: { branchId, status } }),
+    apiClient.get<Vehicle[]>('/vehicles', { params: { branchId, status } }),
   getAvailable: (branchId?: string) =>
-    client.get<Vehicle[]>('/vehicles/available', { params: { branchId } }),
-  getById: (id: string) => client.get<Vehicle>(`/vehicles/${id}`),
+    apiClient.get<Vehicle[]>('/vehicles/available', { params: { branchId } }),
+  getById: (id: string) => apiClient.get<Vehicle>(`/vehicles/${id}`),
   update: (id: string, data: Partial<Vehicle>) =>
-    client.patch<Vehicle>(`/vehicles/${id}`, data),
+    apiClient.patch<Vehicle>(`/vehicles/${id}`, data),
 };
 
 export const driversApi = {
   getAll: (branchId?: string, status?: string) =>
-    client.get<Driver[]>('/drivers', { params: { branchId, status } }),
+    apiClient.get<Driver[]>('/drivers', { params: { branchId, status } }),
   getAvailable: (branchId?: string) =>
-    client.get<Driver[]>('/drivers/available', { params: { branchId } }),
-  getById: (id: string) => client.get<Driver>(`/drivers/${id}`),
+    apiClient.get<Driver[]>('/drivers/available', { params: { branchId } }),
+  getById: (id: string) => apiClient.get<Driver>(`/drivers/${id}`),
   update: (id: string, data: Partial<Driver>) =>
-    client.patch<Driver>(`/drivers/${id}`, data),
+    apiClient.patch<Driver>(`/drivers/${id}`, data),
 };
 
 export const ordersApi = {
@@ -116,31 +120,79 @@ export const ordersApi = {
 
 export const tripsApi = {
   getAll: (status?: string) =>
-    client.get<Trip[]>('/trips', { params: { status } }),
-  getOne: (id: string) => client.get<Trip>(`/trips/${id}`),
+    apiClient.get<Trip[]>('/trips', { params: { status } }),
+  getOne: (id: string) => apiClient.get<Trip>(`/trips/${id}`),
   create: (data: {
+    idempotencyKey: string;
     vehicleId: string;
     driverId: string;
     plannedStartTime: string;
     plannedEndTime: string;
+    startLocation: { address: string; latitude: number; longitude: number };
+    endLocation: { address: string; latitude: number; longitude: number };
     orderIds: string[];
     orderedStopIds?: string[];
     notes?: string;
-  }) => client.post<Trip>('/trips', data),
-  publish: (id: string) => client.patch<Trip>(`/trips/${id}/publish`),
+  }) => apiClient.post<Trip>('/trips', data),
+  updatePlan: (id: string, data: {
+    expectedVersion: number;
+    vehicleId: string;
+    driverId: string;
+    plannedStartTime: string;
+    plannedEndTime: string;
+    startLocation: { address: string; latitude: number; longitude: number };
+    endLocation: { address: string; latitude: number; longitude: number };
+    orderedStopIds: string[];
+    notes?: string;
+  }) => apiClient.patch<Trip>(`/trips/${id}/plan`, data),
+  publish: (id: string, expectedVersion: number) =>
+    apiClient.patch<Trip>(`/trips/${id}/publish`, { expectedVersion }),
   getLoadProfile: (id: string) =>
-    client.get<LoadProfileResult>(`/trips/${id}/load-profile`),
+    apiClient.get<LoadProfileResult>(`/trips/${id}/load-profile`),
   optimize: (data: { vehicleId: string; orderIds: string[] }) =>
-    client.post<OptimizationResultUI>('/trips/optimize', data),
-  runAutomaticOptimization: (branchId: string) =>
-    client.post<AutomaticOptimizationResponseUI>('/trips/automatic-optimization', {
-      branchId,
-    }),
-  applyAutomaticOptimization: (data: AutomaticOptimizationResponseUI) =>
-    client.post<ApplyOptimizationResponseUI>(
-      '/trips/automatic-optimization/apply',
+    apiClient.post<OptimizationResultUI>('/trips/optimize', data),
+  runAutomaticOptimization: (
+    param: string | RunAutomaticOptimizationPayloadUI,
+  ) => {
+    const data = typeof param === 'string'
+      ? { branchId: param, idempotencyKey: crypto.randomUUID() }
+      : param;
+    return apiClient.post<AutomaticOptimizationResponseUI>(
+      '/trips/automatic-optimization',
       data,
+    );
+  },
+  getAutomaticOptimizationJob: (jobId: string) =>
+    apiClient.get<AutomaticOptimizationResponseUI>(
+      `/trips/automatic-optimization/jobs/${jobId}`,
     ),
+  listAutomaticOptimizationJobs: (branchId: string) =>
+    apiClient.get<AutomaticOptimizationResponseUI[]>(
+      '/trips/automatic-optimization/jobs',
+      { params: { branchId } },
+    ),
+  cancelAutomaticOptimization: (jobId: string) =>
+    apiClient.post<AutomaticOptimizationResponseUI>(
+      `/trips/automatic-optimization/jobs/${jobId}/cancel`,
+    ),
+  getAutomaticOptimizationCandidate: (jobId: string, candidateNumber: number) =>
+    apiClient.get<OptimizationCandidateDetailUI>(
+      `/trips/automatic-optimization/jobs/${jobId}/candidates/${candidateNumber}`,
+    ),
+  exportAutomaticOptimizationCandidates: (jobId: string) =>
+    apiClient.get<Blob>(
+      `/trips/automatic-optimization/jobs/${jobId}/export`,
+      { responseType: 'blob' },
+    ),
+  applyAutomaticOptimization: (jobId: string, candidateNumber: number) =>
+    apiClient.post<ApplyOptimizationResponseUI>(
+      `/trips/automatic-optimization/jobs/${jobId}/apply`,
+      { candidateNumber },
+    ),
+};
+
+export const locationsApi = {
+  getAll: () => apiClient.get<Location[]>('/locations'),
 };
 
 export const mapboxApi = {
@@ -198,4 +250,3 @@ export const mapboxApi = {
     }
   },
 };
-

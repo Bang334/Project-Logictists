@@ -1,8 +1,7 @@
-import React, { useMemo } from 'react';
+import React from 'react';
 import {
   Card,
   Tag,
-  Typography,
   Space,
   Progress,
   Button,
@@ -11,17 +10,13 @@ import {
   Empty,
 } from 'antd';
 import {
-  ArrowUpOutlined,
-  ArrowDownOutlined,
   LeftOutlined,
   RightOutlined,
   SafetyCertificateOutlined,
-  AppstoreOutlined,
   CarOutlined,
 } from '@ant-design/icons';
 import { OptimizedRouteUI, PlacedItemUI } from '../types';
 
-const { Text } = Typography;
 const currency = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' });
 
 // Bảng màu phân biệt các kiện hàng theo đơn
@@ -94,7 +89,6 @@ export const LiveCargoStepTracker: React.FC<LiveCargoStepTrackerProps> = ({
   const rawStopType = (currentStop?.stop_type || currentStepState?.stop_type || 'PICKUP') as string;
   const isPickup = rawStopType === 'PICKUP';
   const isDelivery = rawStopType === 'DELIVERY';
-  const isDepot = rawStopType === 'DEPOT_START' || rawStopType === 'DEPOT_END' || (!isPickup && !isDelivery);
 
   const itemsLoadedCount = currentStop?.items_loaded?.length || 0;
   const itemsUnloadedCount = currentStop?.items_unloaded?.length || 0;

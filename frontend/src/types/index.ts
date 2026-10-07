@@ -1,4 +1,7 @@
 export interface User {
+  role?: 'ADMIN' | 'DISPATCHER' | 'STAFF' | 'CUSTOMER' | 'DRIVER';
+  phone?: string | null;
+  locationId?: string | null;
   id: string;
   username: string;
   fullName: string;
@@ -29,10 +32,27 @@ export interface Branch {
   fuelPricePerLiter?: string;
   monthlyWorkingMinutes?: number;
   cargoHoldingCostVndPerTonHour?: string;
+  deliveryGraceDays?: number;
+  lateDeliveryPenaltyMode?: 'NONE' | 'FIXED_PER_DAY' | 'PERCENT_ORDER_VALUE_PER_DAY';
+  lateDeliveryPenaltyValue?: string;
   _count?: {
     vehicles: number;
     drivers: number;
   };
+}
+
+export interface Location {
+  id: string;
+  code: string;
+  name: string;
+  type: 'STORE' | 'CENTRAL_WAREHOUSE' | 'PICKUP_POINT';
+  managingBranchId?: string | null;
+  address: string;
+  latitude: number;
+  longitude: number;
+  capabilities?: string[] | null;
+  totalHoldingSlots: number;
+  availableHoldingSlots: number;
 }
 
 export interface Vehicle {
@@ -51,8 +71,11 @@ export interface Vehicle {
   loadFuelSurchargePercentAtFullPayload?: string;
   fixedOperatingCostPerTrip?: string;
   status: 'AVAILABLE' | 'MAINTENANCE' | 'ON_TRIP' | 'DECOMMISSIONED';
+  homeDepotLocationId?: string;
+  homeDepotLocation?: Location;
   currentLatitude?: number;
   currentLongitude?: number;
+  lastLocationAt?: string;
 }
 
 export interface Driver {
@@ -133,6 +156,8 @@ export interface Order {
   totalVolumeMm3: string | null;
   operationalTimezone: string;
   notes?: string;
+  orderedAt: string;
+  totalAmount: string;
   stops: OrderStop[];
   items: OrderItem[];
   createdAt: string;
@@ -152,15 +177,19 @@ export interface TripStop {
   status: string;
   tasks: Array<{
     id: string;
+    orderId?: string;
+    orderStopId?: string;
     action: 'LOAD' | 'UNLOAD';
     plannedQuantity: number;
     actualQuantity?: number;
+    order?: Pick<Order, 'id' | 'orderNumber' | 'customer' | 'items'>;
   }>;
 }
 
 export interface Trip {
   id: string;
   tripNumber: string;
+  version: number;
   vehicleId: string;
   vehicle: Vehicle;
   status: 'DRAFT' | 'PLANNED' | 'DISPATCHED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
@@ -170,6 +199,10 @@ export interface Trip {
   totalDurationMinutes: number;
   routeGeometry?: string;
   notes?: string;
+  planningSnapshot?: {
+    startLocation?: { address: string; latitude: number; longitude: number };
+    endLocation?: { address: string; latitude: number; longitude: number };
+  };
   stops: TripStop[];
   assignments: Array<{
     id: string;
@@ -274,6 +307,7 @@ export interface RouteCostBreakdownUI {
   load_fuel_surcharge_vnd: number;
   fuel_cost_vnd: number;
   cargo_holding_cost_vnd: number;
+  late_delivery_penalty_vnd: number;
   cargo_distance_ton_km: number;
   cargo_time_ton_hours: number;
   vehicle_fixed_cost_vnd: number;
@@ -283,7 +317,11 @@ export interface RouteCostBreakdownUI {
 }
 
 export interface OptimizedRouteUI {
+  route_id: string;
   vehicle_id: string;
+  service_day_index: number;
+  start_time_sec: number;
+  end_time_sec: number;
   plate_number: string;
   vehicle_length_cm: number;
   vehicle_width_cm: number;
@@ -315,6 +353,7 @@ export interface BenchmarkMetricUI {
   vehicle_fixed_cost_vnd: number;
   driver_cost_vnd: number;
   cargo_holding_cost_vnd: number;
+  late_delivery_penalty_vnd: number;
   is_feasible: boolean;
   violations: string[];
 }
@@ -343,9 +382,19 @@ export interface FleetOptimizationResultUI {
   diagnostics: string[];
 }
 
+export type AutomaticDispatchScheduleModeUI = 'CURRENT_TIME' | 'NEXT_DAY';
+
+export interface RunAutomaticOptimizationPayloadUI {
+  idempotencyKey: string;
+  branchId: string;
+  scheduleMode?: AutomaticDispatchScheduleModeUI;
+  customStartTime?: string;
+}
+
 export interface OptimizationProposalUI {
   branchId: string;
   planningEpochIso: string;
+  scheduleMode?: AutomaticDispatchScheduleModeUI;
   expiresAt: string;
   resources: {
     orders: Array<{ id: string; version: number }>;
@@ -355,12 +404,84 @@ export interface OptimizationProposalUI {
   result: FleetOptimizationResultUI;
 }
 
+export type OptimizationJobStatusUI =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'RETRYING'
+  | 'CANCEL_REQUESTED'
+  | 'CANCELLED'
+  | 'SUCCEEDED'
+  | 'PARTIAL'
+  | 'INFEASIBLE'
+  | 'TIMEOUT'
+  | 'FAILED'
+  | 'APPLYING'
+  | 'APPLIED';
+
+export type OptimizationProgressStageUI =
+  | 'QUEUED'
+  | 'LOADING_INPUT'
+  | 'BUILDING_MATRIX'
+  | 'SEARCHING_SOLUTIONS'
+  | 'BUILDING_ROUTE_GEOMETRY'
+  | 'SAVING_RESULTS'
+  | 'COMPLETED';
+
+export interface OptimizationJobProgressUI {
+  stage: OptimizationProgressStageUI;
+  updatedAt: string | null;
+  details: {
+    orderCount?: number;
+    packageCount?: number;
+    physicalVehicleCount?: number;
+    driverCount?: number;
+    serviceSlotCount?: number;
+    candidateCount?: number;
+  };
+}
+
 export interface AutomaticOptimizationResponseUI {
-  proposal: OptimizationProposalUI;
-  signature: string;
+  id: string;
+  branchId: string;
+  status: OptimizationJobStatusUI;
+  schemaVersion: string;
+  planningEpochIso: string | null;
+  scheduleMode: AutomaticDispatchScheduleModeUI | null;
+  progress: OptimizationJobProgressUI | null;
+  result: FleetOptimizationResultUI | null;
+  candidates: OptimizationCandidateSummaryUI[];
+  error: { code: string; message: string | null } | null;
+  attemptCount: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface OptimizationCandidateSummaryUI {
+  candidateNumber: number;
+  rank?: number;
+  searchStrategy?: string;
+  improvementSequence: number;
+  solverObjective: number;
+  isBestFound: boolean;
+  feasibilityStatus: string;
+  totalCostVnd: number;
+  totalDistanceKm: number;
+  totalDurationMinutes: number;
+  routeCount: number;
+  unassignedOrderCount: number;
+}
+
+export interface OptimizationCandidateDetailUI {
+  candidateNumber: number;
+  result: FleetOptimizationResultUI;
+  summary: OptimizationCandidateSummaryUI;
 }
 
 export interface ApplyOptimizationResponseUI {
+  jobId: string;
+  status: 'APPLIED';
   appliedAt: string;
   trips: Array<{
     id: string;

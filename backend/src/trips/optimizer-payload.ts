@@ -1,7 +1,7 @@
 import { PackageMeasurements, packageTotals } from '../orders/package-measurements';
 export type PhysicalPackageLine = {
   id: string; orderId: string; description: string; quantity: number;
-  packages: Array<PackageMeasurements & { id: string; orderItemId: string }>;
+  packages: Array<PackageMeasurements & { id: string; orderItemId: string | null }>;
 };
 export type OptimizerCargoUnit = {
   id: string; order_id: string; order_item_id: string; description: string;

@@ -10,20 +10,15 @@ import {
   Divider,
   Space,
   Tooltip,
-  Collapse,
   Table,
   Alert,
 } from 'antd';
 import {
   ThunderboltOutlined,
-  DollarCircleOutlined,
   DashboardOutlined,
-  CarOutlined,
-  ArrowDownOutlined,
   InfoCircleOutlined,
   CheckCircleOutlined,
   FundOutlined,
-  ClockCircleOutlined,
   SafetyCertificateOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
@@ -74,7 +69,7 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
 
   const feasibilityTag = (metric: BenchmarkMetricUI, recommended = false) => metric.is_feasible ? (
     <Tag color={recommended ? 'success' : 'processing'} icon={<CheckCircleOutlined />}>
-      {recommended ? 'Chi phí thấp nhất hợp lệ' : 'Nghiệm hợp lệ'}
+      {recommended ? 'Tốt nhất trong lần chạy này' : 'Nghiệm hợp lệ'}
     </Tag>
   ) : (
     <Tooltip title={metric.violations.join('\n')}>
@@ -141,6 +136,12 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
       category: '📦 Chi phí lưu hàng trên xe',
       or_tools: or_tools.cargo_holding_cost_vnd,
       direct: direct_dedicated.cargo_holding_cost_vnd,
+    },
+    {
+      key: 'late-delivery',
+      category: '⏱️ Phạt giao trễ dự kiến',
+      or_tools: or_tools.late_delivery_penalty_vnd,
+      direct: direct_dedicated.late_delivery_penalty_vnd,
     },
     {
       key: 'total',
@@ -229,7 +230,7 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
               {feasibilityTag(or_tools, bestMethod?.key === 'or_tools')}
             </div>
             <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12, minHeight: 32 }}>
-              Tối ưu đa điểm, khung giờ và kiểm định hình học xếp sàn xe 2D
+              Nghiệm khả thi tốt nhất tìm thấy trong thời gian cho phép; không khẳng định tối ưu toàn cục
             </Paragraph>
 
             <Statistic
@@ -251,8 +252,8 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
                 <div style={{ fontWeight: 600, color: '#1e293b' }}>{or_tools.total_duration_minutes} p</div>
               </Col>
               <Col span={8}>
-                <Text type="secondary" style={{ fontSize: 11 }}>Số xe dùng</Text>
-                <div style={{ fontWeight: 600, color: '#1e293b' }}>{or_tools.vehicles_used} xe</div>
+                <Text type="secondary" style={{ fontSize: 11 }}>Lượt chuyến</Text>
+                <div style={{ fontWeight: 600, color: '#1e293b' }}>{or_tools.vehicles_used} lượt</div>
               </Col>
             </Row>
 

@@ -23,6 +23,10 @@ export class PermissionGuard implements CanActivate {
     if (context.getType() !== 'http' || this.reflector.getAllAndOverride<boolean>('public', [context.getHandler(), context.getClass()])) return true;
     const permission = this.reflector.getAllAndOverride<PermissionCode | 'authenticated'>('permission', [context.getHandler(), context.getClass()]);
     const request = context.switchToHttp().getRequest<AuthRequest>();
+    const roles = this.reflector.getAllAndOverride<string[]>('roles', [context.getHandler(), context.getClass()]);
+    if (!permission && roles?.length && request.user.role && roles.includes(request.user.role)) {
+      if (request.user.role !== 'ADMIN' || request.user.grants.some(g => g.role === 'ADMIN' && g.scopeType === 'COMPANY')) return true;
+    }
     if (!permission) { assertPermission({ ...request.user, grants: [] }, 'branches.read'); return false; }
     if (permission === 'authenticated') return true;
     const selected = request.headers['x-branch-id'];

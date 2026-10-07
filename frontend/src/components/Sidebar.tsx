@@ -1,15 +1,21 @@
-import { useAuth } from '../context/AuthContext';
-import { canManageAccounts } from '../types/accounts';
+import { canOpenTab } from '../utils/navigationAccess';
+
 import React from 'react';
 import { Layout, Menu } from 'antd';
 import {
-  DashboardOutlined,
-  ShoppingOutlined,
+  AppstoreOutlined,
+  BarChartOutlined,
   CarOutlined,
   CompassOutlined,
+  DashboardOutlined,
+  DatabaseOutlined,
+  InboxOutlined,
+  ShopOutlined,
+  ShoppingOutlined,
   ThunderboltOutlined,
   UserOutlined,
 } from '@ant-design/icons';
+import { useAuth } from '../context/AuthContext';
 
 const { Sider } = Layout;
 
@@ -21,6 +27,13 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
   const { can, user } = useAuth();
   const menuItems = [
+    { key: 'customer-shop', icon: <ShopOutlined />, label: 'Đặt hàng' },
+    { key: 'catalog', icon: <AppstoreOutlined />, label: 'Danh mục hàng' },
+    { key: 'inventory', icon: <DatabaseOutlined />, label: 'Tồn kho' },
+    { key: 'sales-orders', icon: <ShoppingOutlined />, label: 'Đơn bán lẻ' },
+    { key: 'order-processing', icon: <InboxOutlined />, label: 'Xử lý đơn bán lẻ' },
+    { key: 'pickup-ops', icon: <ShopOutlined />, label: 'Điểm nhận hàng' },
+    { key: 'retail-analytics', icon: <BarChartOutlined />, label: 'Báo cáo bán lẻ' },
     { key: 'accounts', icon: <UserOutlined aria-hidden="true" />, label: 'Quản lý tài khoản' },
     {
       key: 'dashboard',
@@ -49,6 +62,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
     },
   ];
 
+
   return (
     <Sider
       width={240}
@@ -65,7 +79,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
         selectedKeys={[currentTab]}
         onClick={({ key }) => onSelectTab(key)}
         style={{ borderRight: 0, paddingTop: '12px' }}
-        items={menuItems.filter(item => item.key === 'accounts' ? canManageAccounts(user) : can(({ dashboard: 'orders.read', orders: 'orders.read', fleet: 'vehicles.read', 'dispatch-manual': 'trips.plan', 'dispatch-auto': 'trips.plan' } as Record<string,string>)[item.key]))}
+        items={menuItems.filter(item => canOpenTab(user, item.key, can))}
       />
     </Sider>
   );

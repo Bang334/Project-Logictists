@@ -1,4 +1,5 @@
-﻿import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { disconnectRealtimeSocket } from '../api/realtime';
 import { User, parseUser } from '../types';
 import { authApi, resetRequests, setApiSession, apiErrorMessage } from '../api/client';
 
@@ -22,7 +23,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const branchRef = useRef<string>();
   const invalidate = () => { resetRequests(); setScopeVersion(v => v + 1); };
   const clear = () => {
-    operation.current++; invalidate(); sessionStorage.removeItem('tms_token');
+    operation.current++; invalidate(); disconnectRealtimeSocket(); sessionStorage.removeItem('tms_token');
     localStorage.removeItem('tms_token'); setApiSession(null);
     setToken(null); setUser(null); userRef.current = null; setBranch(undefined); branchRef.current = undefined; setLoading(false);
   };

@@ -12,7 +12,7 @@ const { seedAuth } = require('../dist/prisma/seed-auth');
 
 test('Account management on real PostgreSQL', { timeout: 120000 }, async t => {
   const target = new URL(process.env.DATABASE_URL);
-  assert.ok(['127.0.0.1', 'localhost'].includes(target.hostname) && target.pathname === '/tms_auth_test', 'Refusing non-test database');
+  assert.ok(['127.0.0.1', 'localhost'].includes(target.hostname) && ['/tms_auth_test', '/tms_merge_test_20261005'].includes(target.pathname), 'Refusing non-test database');
   const app = await NestFactory.create(AppModule, { logger: false });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }));
   await app.listen(0, '127.0.0.1');
@@ -131,8 +131,11 @@ test('Account management on real PostgreSQL', { timeout: 120000 }, async t => {
       for (const [account, branches] of [[one, [a.id]], [multi, [a.id, b.id]]]) {
         const signed = await login(account.username); assert.equal(signed.status, 200);
         assert.deepEqual(signed.body.user.branches.map(b => b.id).sort(), branches.sort());
-        const orders = await request('/orders', signed.body.accessToken); assert.equal(orders.status, 200); assert.ok(orders.body.length > 0); assert.ok(orders.body.every(o => branches.includes(o.branchId)));
+        const orders = await request('/orders', signed.body.accessToken); assert.equal(orders.status, 200); assert.ok(orders.body.items.length > 0); assert.ok(orders.body.items.every(o => branches.includes(o.branchId)));
         assert.equal((await request('/users', signed.body.accessToken)).status, 403);
+        const locations = await request('/locations', signed.body.accessToken);
+        assert.equal(locations.status, 200);
+        assert.ok(locations.body.every(location => branches.includes(location.managingBranchId)));
       }
     });
     await t.test('search, status, branch and pagination are applied by PostgreSQL', async () => {

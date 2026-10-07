@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException, SetMetadata } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 
 export const PERMISSIONS = [
   'branches.read', 'branches.manage', 'vehicles.read', 'vehicles.manage',
@@ -13,7 +13,7 @@ export const RequirePermission = (permission: PermissionCode | 'authenticated') 
 export const Public = () => SetMetadata('public', true);
 export interface AccessGrant {
   role: string;
-  scopeType: 'COMPANY' | 'BRANCH';
+  scopeType: 'COMPANY' | 'BRANCH' | 'LOCATION';
   branchId: string | null;
   permissions: string[];
 }
@@ -22,6 +22,11 @@ export interface Principal {
   username: string;
   fullName: string;
   sessionId: string;
+  role?: Role;
+  branchId?: string | null;
+  locationId?: string | null;
+  phone?: string | null;
+  email?: string | null;
   grants: AccessGrant[];
   selectedBranchId?: string;
 }
@@ -70,6 +75,6 @@ export function tripFilter(user: Principal, permission: PermissionCode = 'trips.
     vehicle: { homeBranchId: resources },
     assignments: { every: { driver: { homeBranchId: resources } } },
     allocations: { every: { orderItem: { order: { branchId: resources } } } },
-    stops: { every: { tasks: { every: { allocation: { orderItem: { order: { branchId: resources } } } } } } },
+    stops: { every: { tasks: { every: { OR: [{ allocation: { orderItem: { order: { branchId: resources } } } }, { allocationId: null, order: { branchId: resources } }] } } } },
   };
 }

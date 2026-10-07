@@ -1,3 +1,4 @@
+import * as dotenv from 'dotenv';
 import { PrismaClient, Branch, User } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PERMISSIONS, DISPATCHER_PERMISSIONS } from '../src/auth/access';
@@ -39,7 +40,7 @@ export async function seedAuth(prisma: PrismaClient) {
     ] as const) {
       const existing = await tx.user.findUnique({ where: { username } });
       if (existing && !existing.fullName.startsWith('[DEMO AUTH]')) throw new Error('Trùng tên tài khoản với dữ liệu ngoài demo');
-      const user = await tx.user.upsert({ where: { username }, update: {}, create: { username, password, fullName: '[DEMO AUTH] ' + username, active } });
+      const user = await tx.user.upsert({ where: { username }, update: {}, create: { username, password, role, branchId: branchIndex === null ? null : branches[branchIndex].id, fullName: '[DEMO AUTH] ' + username, active } });
       users.push(user);
       // Existing accounts are never silently reactivated or given revoked scopes on a rerun.
       if (!existing && (role === 'ADMIN' || branchIndex !== null)) {
@@ -49,17 +50,17 @@ export async function seedAuth(prisma: PrismaClient) {
     for (let i = 0; i < branches.length; i++) {
       const branch = branches[i];
       const label = i === 0 ? 'A' : 'B';
-      const customer = await tx.customer.upsert({ where: { code: 'DEMO-AUTH-CUSTOMER-' + label }, update: {}, create: { code: 'DEMO-AUTH-CUSTOMER-' + label, name: '[DEMO AUTH] Khách ' + label, address: 'Địa chỉ demo', contactPerson: 'Demo', phone: '0000000000' } });
+      const customer = await tx.customer.upsert({ where: { code: 'DEMO-AUTH-CUSTOMER-' + label }, update: {}, create: { code: 'DEMO-AUTH-CUSTOMER-' + label, name: '[DEMO AUTH] Khách ' + label, address: 'Địa chỉ demo', contactPerson: 'Demo', phone: '000000000' + i } });
       const vehicle = await tx.vehicle.upsert({ where: { plateNumber: 'DEMO-AUTH-' + label }, update: {}, create: { plateNumber: 'DEMO-AUTH-' + label, model: '[DEMO AUTH]', vehicleType: 'Demo', homeBranchId: branch.id, payloadCapacityKg: 1000, volumeCapacityM3: 10, lengthCm: 400, widthCm: 200, heightCm: 200 } });
       const driver = await tx.driver.upsert({ where: { citizenId: 'DEMO-AUTH-' + label }, update: {}, create: { citizenId: 'DEMO-AUTH-' + label, fullName: '[DEMO AUTH] Tài xế ' + label, phone: '0000000000', licenseNumber: 'DEMO-AUTH-' + label, licenseClass: 'C', licenseExpiry: new Date('2035-01-01'), homeBranchId: branch.id } });
-      const order = await tx.order.upsert({ where: { orderNumber: 'DEMO-AUTH-ORDER-' + label }, update: {}, create: { orderNumber: 'DEMO-AUTH-ORDER-' + label, customerId: customer.id, branchId: branch.id, totalWeightKg: 10, totalPackages: 1, totalVolumeM3: 0.008, notes: '[DEMO AUTH] Dữ liệu kiểm tra quyền', stops: { create: ['PICKUP', 'DELIVERY'].map((type: 'PICKUP' | 'DELIVERY', index) => ({ type, sequence: index + 1, address: '[DEMO AUTH] ' + type, latitude: branch.latitude + index * 0.01, longitude: branch.longitude, contactName: 'Demo', contactPhone: '0000000000' })) }, items: { create: { description: '[DEMO AUTH] Kiện mẫu', quantity: 1, weightKg: 10, lengthCm: 20, widthCm: 20, heightCm: 20, volumeM3: 0.008 } } } });
+      await tx.order.upsert({ where: { orderNumber: 'DEMO-AUTH-ORDER-' + label }, update: {}, create: { orderNumber: 'DEMO-AUTH-ORDER-' + label, customerId: customer.id, branchId: branch.id, totalWeightKg: 10, totalPackages: 1, totalVolumeM3: 0.008, notes: '[DEMO AUTH] Dữ liệu kiểm tra quyền', stops: { create: ['PICKUP', 'DELIVERY'].map((type: 'PICKUP' | 'DELIVERY', index) => ({ type, sequence: index + 1, address: '[DEMO AUTH] ' + type, latitude: branch.latitude + index * 0.01, longitude: branch.longitude, contactName: 'Demo', contactPhone: '0000000000' })) }, items: { create: { description: '[DEMO AUTH] Kiện mẫu', quantity: 1, weightKg: 10, lengthCm: 20, widthCm: 20, heightCm: 20, volumeM3: 0.008 } } } });
       await tx.trip.upsert({ where: { tripNumber: 'DEMO-AUTH-TRIP-' + label }, update: {}, create: { tripNumber: 'DEMO-AUTH-TRIP-' + label, managingBranchId: branch.id, vehicleId: vehicle.id, status: 'DRAFT', plannedStartTime: new Date('2030-01-01T01:00:00Z'), plannedEndTime: new Date('2030-01-01T05:00:00Z'), notes: '[DEMO AUTH] Chỉ kiểm tra quyền, không phải kế hoạch vận tải khả thi', assignments: { create: { driverId: driver.id, startTime: new Date('2030-01-01T01:00:00Z'), endTime: new Date('2030-01-01T05:00:00Z') } } } });
     }
     return { branches: branches.map(b => ({ id: b.id, code: b.code })), usernames: users.map(u => u.username) };
   }, { timeout: 30000 });
 }
 if (require.main === module) {
-  require('dotenv').config();
+  dotenv.config();
   const prisma = new PrismaClient();
   seedAuth(prisma).then(result => console.log(result)).catch(() => { console.error('Seed auth thất bại; kiểm tra cấu hình, migration và trùng mã demo'); process.exitCode = 1; }).finally(() => prisma.$disconnect());
 }

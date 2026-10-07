@@ -1,6 +1,5 @@
 import { Principal, branchFilter, assertPermission, tripFilter } from '../auth/access';
 import {
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';

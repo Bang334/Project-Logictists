@@ -318,6 +318,12 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
               {order.customer?.code && <Tag color="blue">{order.customer.code}</Tag>}
             </div>
             <div style={{ display: 'flex', gap: 16, marginTop: 4, flexWrap: 'wrap' }}>
+              <div style={{ fontSize: 12, color: '#475569' }}>
+                Ngày đặt: <strong>{new Intl.DateTimeFormat('vi-VN').format(new Date(order.orderedAt))}</strong>
+              </div>
+              <div style={{ fontSize: 12, color: '#475569' }}>
+                Giá trị đơn: <strong>{new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(Number(order.totalAmount))}</strong>
+              </div>
               {order.customer?.phone && (
                 <div style={{ fontSize: 12, color: '#64748b' }}>
                   <PhoneOutlined style={{ marginRight: 4 }} />

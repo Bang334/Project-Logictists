@@ -1,5 +1,6 @@
 import { Principal, branchFilter, assertPermission, hasPermission } from '../auth/access';
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { LateDeliveryPenaltyMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MapboxService } from '../mapbox/mapbox.service';
 import { UpdateBranchDto } from './dto/update-branch.dto';
@@ -49,6 +50,15 @@ export class BranchesService {
       throw new NotFoundException(`Không tìm thấy chi nhánh với ID ${id}`);
     }
 
+    const penaltyMode = dto.lateDeliveryPenaltyMode ?? branch.lateDeliveryPenaltyMode;
+    const penaltyValue = dto.lateDeliveryPenaltyValue ?? Number(branch.lateDeliveryPenaltyValue);
+    if (
+      penaltyMode === LateDeliveryPenaltyMode.PERCENT_ORDER_VALUE_PER_DAY &&
+      penaltyValue > 100
+    ) {
+      throw new BadRequestException('Mức phạt phần trăm không được vượt quá 100% giá trị đơn mỗi ngày');
+    }
+
     let latitude = dto.latitude;
     let longitude = dto.longitude;
 
@@ -72,6 +82,15 @@ export class BranchesService {
         ...(longitude !== undefined ? { longitude } : {}),
         ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
         ...(dto.timezone ? { timezone: dto.timezone } : {}),
+        ...(dto.deliveryGraceDays !== undefined
+          ? { deliveryGraceDays: dto.deliveryGraceDays }
+          : {}),
+        ...(dto.lateDeliveryPenaltyMode !== undefined
+          ? { lateDeliveryPenaltyMode: dto.lateDeliveryPenaltyMode }
+          : {}),
+        ...(dto.lateDeliveryPenaltyValue !== undefined
+          ? { lateDeliveryPenaltyValue: dto.lateDeliveryPenaltyValue }
+          : {}),
       },
       include: {
         _count: {

@@ -54,6 +54,10 @@ test('real create, Package detail, reload, edit stable IDs and confirm', async (
   await expect(form.getByLabel('Địa chỉ', { exact: true }).first()).toHaveValue('[PLAYWRIGHT] Điểm đã chọn trên Mapbox');
   const latitude = Number(await form.getByLabel('Vĩ độ', { exact: true }).first().inputValue());
   expect(latitude).not.toBe(21.03);
+  await saveReloadEditConfirm(page, latitude);
+});
+async function saveReloadEditConfirm(page: Page, latitude: number) {
+  const form = page.getByRole('dialog');
   const createdResponse = page.waitForResponse(r => r.url().endsWith('/orders') && r.request().method() === 'POST');
   await form.getByRole('button', { name: 'Lưu nháp', exact: true }).click();
   const response = await createdResponse; expect(response.status()).toBe(201);
@@ -82,7 +86,14 @@ test('real create, Package detail, reload, edit stable IDs and confirm', async (
   await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
   await row.getByRole('button', { name: 'Xác nhận', exact: true }).click();
   await expect(page.getByRole('dialog').getByText('CONFIRMED', { exact: true })).toBeVisible();
+}
+
+test('explicit coordinates save, reload, preserve Package IDs and confirm', async ({ page }) => {
+  await login(page);
+  await fillOrder(page, '[PLAYWRIGHT DIRECT] ' + randomUUID());
+  await saveReloadEditConfirm(page, 21.03);
 });
+
 test('network and field errors preserve form, retry reuses key, forbidden response visible', async ({ page }) => {
   await login(page);
   const description = '[PLAYWRIGHT ERROR] ' + randomUUID();

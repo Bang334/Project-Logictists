@@ -26,6 +26,10 @@ export class UpdateVehicleDto {
   homeBranchId?: string;
 
   @IsOptional()
+  @IsUUID()
+  homeDepotLocationId?: string;
+
+  @IsOptional()
   @IsNumber()
   @Min(0)
   payloadCapacityKg?: number;

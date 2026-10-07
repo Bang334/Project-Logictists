@@ -1,4 +1,5 @@
-﻿import { WebSocketGateway, WebSocketServer, SubscribeMessage, OnGatewayInit, ConnectedSocket, MessageBody } from '@nestjs/websockets';
+import { randomUUID } from 'crypto';
+import { WebSocketGateway, WebSocketServer, SubscribeMessage, OnGatewayInit, ConnectedSocket, MessageBody } from '@nestjs/websockets';
 import { OnModuleDestroy } from '@nestjs/common';
 import { isUUID } from 'class-validator';
 import { Server, Socket } from 'socket.io';
@@ -8,7 +9,7 @@ import { hasPermission, Principal } from '../auth/access';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
 
-@WebSocketGateway({ cors: { origin: true } })
+@WebSocketGateway()
 export class EventsGateway implements OnGatewayInit, OnModuleDestroy {
   @WebSocketServer() server: Server;
   private timer?: ReturnType<typeof setInterval>;
@@ -24,7 +25,15 @@ export class EventsGateway implements OnGatewayInit, OnModuleDestroy {
     this.timer.unref();
   }
   onModuleDestroy() { if (this.timer) clearInterval(this.timer); }
-  handleConnection(client: Socket) { void this.revalidate(client); }
+  async handleConnection(client: Socket) {
+    try {
+      const user = await this.identity(client);
+      this.identities.set(client, user.id);
+      await client.join(`user:${user.id}`);
+      if (user.locationId && this.canUseLocation(user, user.locationId)) await client.join(`location:${user.locationId}`);
+      await this.revalidate(client);
+    } catch { client.disconnect(true); }
+  }
   disconnectUser(userId: string) {
     for (const client of this.server.sockets.sockets.values()) {
       if (this.identities.get(client) === userId) client.disconnect(true);
@@ -93,6 +102,39 @@ export class EventsGateway implements OnGatewayInit, OnModuleDestroy {
           if (hasPermission(user, 'vehicles.read', vehicle.homeBranchId)) client.emit('location:updated', data);
         });
       } catch { client.disconnect(true); }
+    }
+  }
+
+  private canUseLocation(user: Principal, locationId: string) {
+    return (user.role === 'STAFF' && user.locationId === locationId) || user.grants.some(g => g.role === 'ADMIN' && g.scopeType === 'COMPANY');
+  }
+  @SubscribeMessage('join:location')
+  async handleJoinLocation(@ConnectedSocket() client: Socket, @MessageBody() locationId: unknown) {
+    try {
+      if (typeof locationId !== 'string' || !isUUID(locationId)) return { ok: false, code: 'INVALID_LOCATION' };
+      const user = await this.identity(client);
+      if (!this.canUseLocation(user, locationId)) return { ok: false, code: 'PERMISSION_DENIED' };
+      await client.join(`location:${locationId}`);
+      return { ok: true, locationId };
+    } catch { return { ok: false, code: 'PERMISSION_DENIED' }; }
+  }
+  async emitToLocations(locationIds: string[], event: string, payload: unknown) {
+    if (!this.server) throw new Error('Socket.IO server chưa sẵn sàng');
+    for (const client of this.server.sockets.sockets.values()) {
+      const matching = locationIds.filter(id => client.rooms.has(`location:${id}`));
+      if (!matching.length) continue;
+      try { await this.emitAuthorized(client, async user => {
+        if (matching.some(id => this.canUseLocation(user, id))) client.emit(event, payload);
+      }); } catch { client.disconnect(true); }
+    }
+  }
+  async emitOptimizationJobUpdate(branchId: string, payload: { jobId: string; status: string }) {
+    if (!this.server) return;
+    for (const client of this.server.sockets.sockets.values()) {
+      if (!client.rooms.has(`branch:${branchId}`)) continue;
+      try { await this.emitAuthorized(client, async user => {
+        if (hasPermission(user, 'trips.plan', branchId)) client.emit('optimization:job-updated', { eventId: randomUUID(), occurredAt: new Date().toISOString(), ...payload });
+      }); } catch { client.disconnect(true); }
     }
   }
 }

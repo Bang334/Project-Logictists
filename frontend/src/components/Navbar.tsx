@@ -1,12 +1,13 @@
 import React from 'react';
-import { Layout, Button, Space, Typography, Tag, Select } from 'antd';
-import { CarOutlined, EnvironmentOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
+import { Layout, Button, Space, Typography, Tag, Select, Grid } from 'antd';
+import { CarOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
 
 const { Header } = Layout;
 const { Text } = Typography;
 
 const Navbar: React.FC = () => {
+  const screens = Grid.useBreakpoint();
   const { user, logout, branchId, setBranchId } = useAuth();
 
   return (
@@ -44,7 +45,7 @@ const Navbar: React.FC = () => {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Tag color="geekblue" icon={<UserOutlined />}>
-            {[...new Set(user?.grants.map(g => g.role))].join(', ')}
+            {[...new Set(user?.grants.map(g => g.role))].join(', ') || user?.role}
           </Tag>
           <Text style={{ color: '#ffffff', fontWeight: 500 }}>
             {user?.fullName || user?.username}
@@ -52,12 +53,13 @@ const Navbar: React.FC = () => {
         </div>
 
         <Button
+          className="tms-logout-button"
           type="text"
           icon={<LogoutOutlined />}
           onClick={logout}
-          style={{ color: '#cbd5e1' }}
+          aria-label="Đăng xuất"
         >
-          Đăng xuất
+          {screens.lg ? 'Đăng xuất' : null}
         </Button>
       </Space>
     </Header>

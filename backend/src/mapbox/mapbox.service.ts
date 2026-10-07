@@ -1,4 +1,10 @@
-import { BadGatewayException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadGatewayException,
+  BadRequestException,
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import axios from 'axios';
 
 export interface GeocodeResult {
@@ -58,6 +64,7 @@ export class MapboxService {
    * Sử dụng Mapbox Directions API (profile: mapbox/driving)
    */
   async getRoute(coordinates: [number, number][]): Promise<DirectionsResult> {
+    this.assertCoordinates(coordinates);
     if (coordinates.length < 2) {
       return {
         distanceKm: 0,
@@ -97,6 +104,7 @@ export class MapboxService {
   }
 
   async getRoadMatrix(coordinates: [number, number][]): Promise<RoadMatrixResult> {
+    this.assertCoordinates(coordinates);
     if (!this.accessToken) {
       throw new ServiceUnavailableException('Thiếu MAPBOX_ACCESS_TOKEN cho Matrix API');
     }
@@ -121,6 +129,8 @@ export class MapboxService {
         }
         const distances = response.data.distances as Array<Array<number | null>>;
         const durations = response.data.durations as Array<Array<number | null>>;
+        this.assertMatrixShape(distances, coordinates.length, coordinates.length);
+        this.assertMatrixShape(durations, coordinates.length, coordinates.length);
         const unreachable: string[] = [];
         distances.forEach((row, from) =>
           row.forEach((value, to) => {
@@ -189,6 +199,8 @@ export class MapboxService {
           if (res.data?.code !== 'Ok') {
             throw new Error(res.data?.message || res.data?.code || 'Matrix chunk response invalid');
           }
+          this.assertMatrixShape(res.data.distances, sChunk.length, sChunk.length);
+          this.assertMatrixShape(res.data.durations, sChunk.length, sChunk.length);
           for (let r = 0; r < sChunk.length; r++) {
             for (let c = 0; c < sChunk.length; c++) {
               const dist = res.data.distances[r][c];
@@ -218,6 +230,8 @@ export class MapboxService {
           if (res.data?.code !== 'Ok') {
             throw new Error(res.data?.message || res.data?.code || 'Matrix chunk response invalid');
           }
+          this.assertMatrixShape(res.data.distances, sChunk.length, dChunk.length);
+          this.assertMatrixShape(res.data.durations, sChunk.length, dChunk.length);
           for (let r = 0; r < sChunk.length; r++) {
             for (let c = 0; c < dChunk.length; c++) {
               const dist = res.data.distances[r][c];
@@ -250,6 +264,47 @@ export class MapboxService {
       throw new BadGatewayException(
         `Mapbox Matrix không khả dụng: ${error.response?.data?.message || error.message}`,
       );
+    }
+  }
+
+  private assertCoordinates(coordinates: [number, number][]) {
+    for (const [index, coordinate] of coordinates.entries()) {
+      const [longitude, latitude] = coordinate;
+      if (
+        !Number.isFinite(longitude) ||
+        !Number.isFinite(latitude) ||
+        longitude < -180 ||
+        longitude > 180 ||
+        latitude < -90 ||
+        latitude > 90
+      ) {
+        throw new BadRequestException(`Tọa độ Mapbox tại index ${index} không hợp lệ`);
+      }
+    }
+  }
+
+  private assertMatrixShape(
+    matrix: unknown,
+    expectedRows: number,
+    expectedColumns: number,
+  ): asserts matrix is Array<Array<number | null>> {
+    if (
+      !Array.isArray(matrix) ||
+      matrix.length !== expectedRows ||
+      matrix.some(
+        (row) => !Array.isArray(row) || row.length !== expectedColumns,
+      )
+    ) {
+      throw new Error(
+        `Matrix response sai kích thước, cần ${expectedRows}x${expectedColumns}`,
+      );
+    }
+    for (const row of matrix) {
+      for (const value of row) {
+        if (value !== null && (!Number.isFinite(value) || value < 0)) {
+          throw new Error('Matrix response chứa khoảng cách/thời gian không hợp lệ');
+        }
+      }
     }
   }
 }

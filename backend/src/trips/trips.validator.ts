@@ -4,15 +4,15 @@ import { packageTotals } from '../orders/package-measurements';
 import { assertPackageManifest } from '../orders/order-contract';
 
 export interface StopWithItems {
-  orderStop: OrderStop;
-  order: Order & { items: (OrderItem & { packages?: Package[] })[] };
+  orderStop: Pick<OrderStop, 'id' | 'orderId' | 'type' | 'address'> & Partial<OrderStop>;
+  order: Pick<Order, 'id' | 'orderNumber' | 'totalWeightKg' | 'totalVolumeM3'> & Partial<Order> & { items: Array<Pick<OrderItem, 'quantity' | 'weightKg' | 'volumeM3'> & Partial<OrderItem> & { packages?: Package[] }> };
 }
 
 export interface LegLoadStatus {
   stopIndex: number;
   stopAddress: string;
   stopType: StopType;
-  action: 'LOAD' | 'UNLOAD';
+  action: "LOAD" | "UNLOAD";
   deltaWeightKg: number;
   deltaVolumeM3: number;
   currentWeightKg: number;
@@ -77,7 +77,7 @@ export class TripsValidator {
     const errors: string[] = [];
 
     orderedStops.forEach((stop, index) => {
-      const manifest = { ...stop.order, items: stop.order.items.map(item => ({ ...item, packages: item.packages ?? [] })) };
+      const manifest = { ...stop.order, packageDataStatus: stop.order.packageDataStatus ?? 'LEGACY_REVIEW', items: stop.order.items.map(item => ({ ...item, packages: item.packages ?? [] })) };
       const canonical = stop.order.packageDataStatus === 'COMPLETE';
       if (canonical) assertPackageManifest(manifest);
       // Legacy projections are only for historical display/validation. Never infer physical packages.
@@ -97,8 +97,10 @@ export class TripsValidator {
       if (currentWeight > maxWeight) maxWeight = currentWeight;
       if (currentVolume > maxVolume) maxVolume = currentVolume;
 
-      const weightUtilization = Math.round((currentWeight / vehicle.payloadCapacityKg) * 1000) / 10;
-      const volumeUtilization = Math.round((currentVolume / vehicle.volumeCapacityM3) * 1000) / 10;
+      const weightUtilization =
+        Math.round((currentWeight / vehicle.payloadCapacityKg) * 1000) / 10;
+      const volumeUtilization =
+        Math.round((currentVolume / vehicle.volumeCapacityM3) * 1000) / 10;
 
       // Kiểm tra vi phạm tải trọng
       if (currentWeightG > BigInt(Math.floor(vehicle.payloadCapacityKg * 1000))) {
@@ -118,7 +120,7 @@ export class TripsValidator {
         stopIndex: index + 1,
         stopAddress: stop.orderStop.address,
         stopType: stop.orderStop.type,
-        action: isPickup ? 'LOAD' : 'UNLOAD',
+        action: isPickup ? "LOAD" : "UNLOAD",
         deltaWeightKg: deltaWeight,
         deltaVolumeM3: deltaVolume,
         currentWeightKg: currentWeight,
@@ -129,7 +131,7 @@ export class TripsValidator {
     });
 
     if (errors.length > 0) {
-      throw new BadRequestException(errors.join(' | '));
+      throw new BadRequestException(errors.join(" | "));
     }
 
     return {

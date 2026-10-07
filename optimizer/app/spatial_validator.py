@@ -19,6 +19,18 @@ _GEOMETRY_TOLERANCE_CM = 0.01
 _DEFAULT_MAX_SEARCH_NODES = 20_000
 
 
+@dataclass(frozen=True)
+class _StepSnapshot:
+    """Lightweight floor layout after one stop.
+
+    Building a full FloorState includes an access-path search for every
+    package, so it is deferred until the search has produced its final answer.
+    """
+
+    stop_index: int
+    placed_items: Tuple[PlacedItem, ...]
+
+
 @dataclass
 class _SearchFailure:
     depth: Tuple[int, int]
@@ -27,7 +39,7 @@ class _SearchFailure:
     error_message: str
     max_weight_kg: float
     max_area_cm2: float
-    step_states: List[FloorState]
+    step_states: List[_StepSnapshot]
 
 
 @dataclass
@@ -38,9 +50,15 @@ class _SearchContext:
     best_failure: Optional[_SearchFailure] = None
     max_time_seconds: float = 6.0
     start_time: float = field(default_factory=time.monotonic)
+    # Packages with the same class are physically interchangeable for the rest
+    # of the plan (same order, footprint, height, weight and unload step).
+    item_class_by_id: Dict[str, Tuple[object, ...]] = field(default_factory=dict)
 
     def consume_node(self) -> bool:
-        if self.visited_nodes >= self.max_nodes or (time.monotonic() - self.start_time) >= self.max_time_seconds:
+        if self.visited_nodes >= self.max_nodes:
+            self.limit_reached = True
+            return False
+        if (self.visited_nodes & 63 == 0) and (time.monotonic() - self.start_time) >= self.max_time_seconds:
             self.limit_reached = True
             return False
         self.visited_nodes += 1
@@ -355,6 +373,7 @@ class SpatialValidator:
         context = _SearchContext(
             max_nodes=self.max_search_nodes,
             max_time_seconds=self.max_time_seconds,
+            item_class_by_id=self._build_item_classes(stops, unload_step_by_item),
         )
         failed_states: Set[Tuple[int, Tuple[Tuple[object, ...], ...]]] = set()
 
@@ -370,12 +389,12 @@ class SpatialValidator:
             failed_states=failed_states,
         )
         if solution is not None:
-            states, max_weight, max_area = solution
+            snapshots, max_weight, max_area = solution
             return SpatialValidationResult(
                 is_valid=True,
-                max_weight_kg=max_weight,
+                max_weight_kg=round(max_weight, 3),
                 max_area_cm2=max_area,
-                step_states=states,
+                step_states=self._build_floor_states(stops, snapshots),
             )
 
         if context.limit_reached:
@@ -389,7 +408,11 @@ class SpatialValidator:
                 ),
                 max_weight_kg=failure.max_weight_kg if failure else 0.0,
                 max_area_cm2=failure.max_area_cm2 if failure else 0.0,
-                step_states=failure.step_states if failure else [],
+                step_states=(
+                    self._build_floor_states(stops, failure.step_states)
+                    if failure
+                    else []
+                ),
             )
 
         failure = context.best_failure
@@ -406,8 +429,68 @@ class SpatialValidator:
             error_message=failure.error_message,
             max_weight_kg=failure.max_weight_kg,
             max_area_cm2=failure.max_area_cm2,
-            step_states=failure.step_states,
+            step_states=self._build_floor_states(stops, failure.step_states),
         )
+
+    def _build_floor_states(
+        self,
+        stops: List[StopAction],
+        snapshots: List[_StepSnapshot],
+    ) -> List[FloorState]:
+        floor_states: List[FloorState] = []
+        for snapshot in snapshots:
+            stop = stops[snapshot.stop_index]
+            placed_by_id = {item.item_id: item for item in snapshot.placed_items}
+            current_weight = sum(item.weight_kg for item in snapshot.placed_items)
+            occupied_area = sum(
+                item.length_cm * item.width_cm for item in snapshot.placed_items
+            )
+            floor_states.append(
+                FloorState(
+                    step_index=snapshot.stop_index + 1,
+                    stop_id=stop.stop_id,
+                    stop_type=stop.stop_type,
+                    action_description=(
+                        f"Stop {stop.sequence} ({stop.stop_type}) - {stop.address}"
+                    ),
+                    placed_items=sorted(
+                        snapshot.placed_items, key=lambda item: item.item_id
+                    ),
+                    current_weight_kg=round(current_weight, 3),
+                    current_occupied_area_cm2=round(occupied_area, 1),
+                    floor_area_cm2=self.total_floor_area,
+                    weight_utilization_percent=round(
+                        (current_weight / self.payload_limit) * 100, 1
+                    ),
+                    area_utilization_percent=round(
+                        (occupied_area / self.total_floor_area) * 100, 1
+                    ),
+                    is_valid=True,
+                    package_access_paths=self._build_package_access_paths(
+                        placed_by_id
+                    ),
+                )
+            )
+        return floor_states
+
+    def _build_item_classes(
+        self,
+        stops: List[StopAction],
+        unload_step_by_item: Dict[str, int],
+    ) -> Dict[str, Tuple[object, ...]]:
+        item_classes: Dict[str, Tuple[object, ...]] = {}
+        for stop in stops:
+            for item in stop.items_to_load:
+                item_classes[item.id] = (
+                    item.order_id,
+                    round(item.length_cm, 6),
+                    round(item.width_cm, 6),
+                    round(item.height_cm, 6),
+                    round(item.weight_kg, 6),
+                    item.can_rotate,
+                    unload_step_by_item.get(item.id, -1),
+                )
+        return item_classes
 
     def _build_unload_steps(self, stops: List[StopAction]) -> Dict[str, int]:
         unload_steps: Dict[str, int] = {}
@@ -424,18 +507,21 @@ class SpatialValidator:
         stop_index: int,
         current_items: Dict[str, PlacedItem],
         unload_step_by_item: Dict[str, int],
-        step_states: List[FloorState],
+        step_states: List[_StepSnapshot],
         max_weight: float,
         max_area: float,
         context: _SearchContext,
         failed_states: Set[Tuple[int, Tuple[Tuple[object, ...], ...]]],
-    ) -> Optional[Tuple[List[FloorState], float, float]]:
+    ) -> Optional[Tuple[List[_StepSnapshot], float, float]]:
         if not context.consume_node():
             return None
         if stop_index >= len(stops):
             return step_states, max_weight, max_area
 
-        state_key = (stop_index, self._layout_key(current_items.values()))
+        state_key = (
+            stop_index,
+            self._layout_key(current_items.values(), context.item_class_by_id),
+        )
         if state_key in failed_states:
             return None
 
@@ -503,6 +589,44 @@ class SpatialValidator:
         for item_id in unload_sequence:
             del after_unload[item_id]
 
+        # Kiểm tra sơ bộ: nếu tổng tải trọng hoặc tổng diện tích hàng sau khi bốc
+        # vượt quá giới hạn thùng xe thì không thể có nghiệm 2D hợp lệ (loại sớm không tốn node search).
+        post_load_weight = sum(
+            it.weight_kg for it in after_unload.values()
+        ) + sum(it.weight_kg for it in stop.items_to_load)
+        if post_load_weight > self.vehicle.payload_limit_kg + _GEOMETRY_TOLERANCE_CM:
+            self._record_failure(
+                context,
+                stop_index,
+                0,
+                "PAYLOAD_LIMIT_EXCEEDED",
+                "T23",
+                f"Vi phạm T23: Quá tải trọng xe ({post_load_weight:.1f}kg > {self.vehicle.payload_limit_kg:.1f}kg).",
+                step_states,
+                max_weight,
+                max_area,
+            )
+            failed_states.add(state_key)
+            return None
+
+        post_load_area = sum(
+            it.length_cm * it.width_cm for it in after_unload.values()
+        ) + sum(it.length_cm * it.width_cm for it in stop.items_to_load)
+        if post_load_area > self.total_floor_area + _GEOMETRY_TOLERANCE_CM:
+            self._record_failure(
+                context,
+                stop_index,
+                0,
+                "FLOOR_AREA_EXCEEDED",
+                "T22",
+                f"Vi phạm T22: CẤM XẾP CHỒNG. Tổng diện tích hàng ({post_load_area:.1f}cm2) vượt diện tích sàn xe ({self.total_floor_area:.1f}cm2).",
+                step_states,
+                max_weight,
+                max_area,
+            )
+            failed_states.add(state_key)
+            return None
+
         load_items = sorted(
             stop.items_to_load,
             key=lambda item: (
@@ -514,6 +638,7 @@ class SpatialValidator:
         )
 
         produced_layout = False
+        explored_layouts: Set[Tuple[Tuple[object, ...], ...]] = set()
         for loaded_items in self._search_load_placements(
             items=load_items,
             item_index=0,
@@ -528,6 +653,14 @@ class SpatialValidator:
             context=context,
         ):
             produced_layout = True
+            layout_key = self._layout_key(
+                loaded_items.values(), context.item_class_by_id
+            )
+            if layout_key in explored_layouts:
+                continue
+            explored_layouts.add(layout_key)
+            if len(explored_layouts) > 6:
+                break
             current_weight = sum(item.weight_kg for item in loaded_items.values())
             occupied_area = sum(
                 item.length_cm * item.width_cm for item in loaded_items.values()
@@ -535,29 +668,9 @@ class SpatialValidator:
             next_max_weight = max(max_weight, current_weight)
             next_max_area = max(max_area, occupied_area)
             next_states = step_states + [
-                FloorState(
-                    step_index=stop_index + 1,
-                    stop_id=stop.stop_id,
-                    stop_type=stop.stop_type,
-                    action_description=(
-                        f"Stop {stop.sequence} ({stop.stop_type}) - {stop.address}"
-                    ),
-                    placed_items=sorted(
-                        loaded_items.values(), key=lambda item: item.item_id
-                    ),
-                    current_weight_kg=round(current_weight, 3),
-                    current_occupied_area_cm2=round(occupied_area, 1),
-                    floor_area_cm2=self.total_floor_area,
-                    weight_utilization_percent=round(
-                        (current_weight / self.payload_limit) * 100, 1
-                    ),
-                    area_utilization_percent=round(
-                        (occupied_area / self.total_floor_area) * 100, 1
-                    ),
-                    is_valid=True,
-                    package_access_paths=self._build_package_access_paths(
-                        loaded_items
-                    ),
+                _StepSnapshot(
+                    stop_index=stop_index,
+                    placed_items=tuple(loaded_items.values()),
                 )
             ]
             solution = self._search_stops(
@@ -655,7 +768,7 @@ class SpatialValidator:
         stops_count: int,
         stop: StopAction,
         stop_index: int,
-        prior_step_states: List[FloorState],
+        prior_step_states: List[_StepSnapshot],
         prior_max_weight: float,
         prior_max_area: float,
         context: _SearchContext,
@@ -727,7 +840,28 @@ class SpatialValidator:
             )
             return
 
-        candidates = self._candidate_placements(item, list(current_items.values()))
+        unload_step = unload_step_by_item.get(item.id)
+        max_unload_step = (
+            max(unload_step_by_item.values(), default=None)
+            if unload_step_by_item
+            else None
+        )
+        early_items = [
+            it for it in items
+            if unload_step_by_item.get(it.id, 0) < (max_unload_step or 0)
+        ]
+        early_area = sum(it.length_cm * it.width_cm for it in early_items)
+        allow_door = (
+            len(early_items) <= 4
+            and early_area <= self.total_floor_area * 0.35
+        )
+        candidates = self._candidate_placements(
+            item,
+            list(current_items.values()),
+            unload_step=unload_step,
+            max_unload_step=max_unload_step,
+            allow_door_placement=allow_door,
+        )
         if not candidates:
             self._record_no_candidate_failure(
                 item,
@@ -775,9 +909,6 @@ class SpatialValidator:
         for candidate in candidates:
             if not context.consume_node():
                 return
-            # Các kiện được bốc cùng đợt, cùng đơn, cùng kích thước/khối lượng và
-            # cùng điểm dỡ là đối xứng. Chỉ giữ thứ tự vị trí chuẩn để không thử
-            # lại cùng một bố trí chỉ vì hoán đổi ID kiện.
             if (
                 minimum_symmetric_position is not None
                 and candidate < minimum_symmetric_position
@@ -791,13 +922,14 @@ class SpatialValidator:
                 continue
             ingress_candidate_found = True
 
-            next_items = dict(current_items)
-            next_items[item.id] = placed_item
-            if not self._layout_respects_unload_order(
-                next_items.values(), unload_step_by_item, stops_count
+            if not self._is_placement_unload_safe(
+                placed_item, current_items, unload_step_by_item, stops_count
             ):
                 continue
             unload_safe_candidate_found = True
+
+            next_items = dict(current_items)
+            next_items[item.id] = placed_item
 
             yield from self._search_load_placements(
                 items=items,
@@ -848,6 +980,9 @@ class SpatialValidator:
         self,
         item: CargoItem,
         current_placed: List[PlacedItem],
+        unload_step: Optional[int] = None,
+        max_unload_step: Optional[int] = None,
+        allow_door_placement: bool = False,
     ) -> List[Tuple[float, float, float, float]]:
         orientations = [(item.length_cm, item.width_cm)]
         if item.can_rotate and abs(item.length_cm - item.width_cm) > _GEOMETRY_TOLERANCE_CM:
@@ -858,6 +993,26 @@ class SpatialValidator:
         current_max_x = max(
             (placed.x + placed.length_cm for placed in current_placed), default=0.0
         )
+
+        # Delivery-aware door placement preference:
+        # A package only prioritizes the rear door if:
+        # 1. It unloads before later packages on the vehicle (unload_step < max_unload_step)
+        # 2. The order is compact (allow_door_placement is True: few items, small floor share)
+        # 3. Its width leaves a sufficient ingress corridor (<= 65% floor width) for later loading stops
+        prefer_door = False
+        if (
+            allow_door_placement
+            and unload_step is not None
+            and max_unload_step is not None
+            and unload_step < max_unload_step
+        ):
+            min_width = (
+                min(item.length_cm, item.width_cm)
+                if item.can_rotate
+                else item.width_cm
+            )
+            if min_width <= self.floor_width * 0.65:
+                prefer_door = True
 
         for orientation_index, (length, width) in enumerate(orientations):
             if (
@@ -886,24 +1041,21 @@ class SpatialValidator:
                     }
                 )
 
+            tol = _GEOMETRY_TOLERANCE_CM
             for raw_x in x_values:
                 x = self._normalize_coordinate(raw_x)
-                if x < 0 or x + length > self.floor_length + _GEOMETRY_TOLERANCE_CM:
+                if x < 0 or x + length > self.floor_length + tol:
                     continue
                 for raw_y in y_values:
                     y = self._normalize_coordinate(raw_y)
-                    if y < 0 or y + width > self.floor_width + _GEOMETRY_TOLERANCE_CM:
+                    if y < 0 or y + width > self.floor_width + tol:
                         continue
                     if any(
-                        self.is_overlap(
-                            x,
-                            y,
-                            length,
-                            width,
-                            other.x,
-                            other.y,
-                            other.length_cm,
-                            other.width_cm,
+                        not (
+                            x + length <= other.x + tol
+                            or other.x + other.length_cm <= x + tol
+                            or y + width <= other.y + tol
+                            or other.y + other.width_cm <= y + tol
                         )
                         for other in current_placed
                     ):
@@ -913,12 +1065,61 @@ class SpatialValidator:
                     if key in seen:
                         continue
                     seen.add(key)
-                    bounding_x = max(current_max_x, x + length)
-                    score = (bounding_x, x, y, float(orientation_index))
+                    if prefer_door:
+                        dist_to_door = self.floor_length - (x + length)
+                        score = (dist_to_door, y, float(orientation_index))
+                    else:
+                        bounding_x = max(current_max_x, x + length)
+                        score = (bounding_x, x, y, float(orientation_index))
                     candidates.append((score, candidate))
 
         candidates.sort(key=lambda entry: entry[0])
         return [candidate for _, candidate in candidates]
+
+    def _is_placement_unload_safe(
+        self,
+        placed_item: PlacedItem,
+        current_items: Dict[str, PlacedItem],
+        unload_step_by_item: Dict[str, int],
+        stops_count: int,
+    ) -> bool:
+        """Check whether placing placed_item preserves door reachability.
+
+        Only two checks are necessary:
+        1. placed_item itself must reach the door past items on board that unload AFTER it.
+        2. Any item already on board that must unload BEFORE placed_item must not be blocked by placed_item.
+        Items unloading at or after placed_item cannot be blocked because placed_item is already
+        unloaded when they unload (or unloads at the same stop).
+        """
+        default_unload_step = stops_count + 1
+        item_step = unload_step_by_item.get(placed_item.item_id, default_unload_step)
+
+        # 1. Check placed_item against items on board unloading after it
+        later_items = [
+            other
+            for other in current_items.values()
+            if unload_step_by_item.get(other.item_id, default_unload_step) > item_step
+        ]
+        if later_items:
+            path_clear, _ = self.is_path_to_door_clear(placed_item, later_items)
+            if not path_clear:
+                return False
+
+        # 2. Check any item on board that must unload BEFORE placed_item
+        for earlier_target in current_items.values():
+            target_step = unload_step_by_item.get(earlier_target.item_id, default_unload_step)
+            if target_step < item_step:
+                target_blockers = [
+                    other
+                    for other in current_items.values()
+                    if other.item_id != earlier_target.item_id
+                    and unload_step_by_item.get(other.item_id, default_unload_step) > target_step
+                ] + [placed_item]
+                path_clear, _ = self.is_path_to_door_clear(earlier_target, target_blockers)
+                if not path_clear:
+                    return False
+
+        return True
 
     def _layout_respects_unload_order(
         self,
@@ -937,9 +1138,10 @@ class SpatialValidator:
                 and unload_step_by_item.get(blocker.item_id, default_unload_step)
                 > target_step
             ]
-            path_clear, _ = self.is_path_to_door_clear(target, later_items)
-            if not path_clear:
-                return False
+            if later_items:
+                path_clear, _ = self.is_path_to_door_clear(target, later_items)
+                if not path_clear:
+                    return False
         return True
 
     def _build_package_access_paths(
@@ -998,7 +1200,7 @@ class SpatialValidator:
         current_items: Dict[str, PlacedItem],
         stop_index: int,
         item_index: int,
-        step_states: List[FloorState],
+        step_states: List[_StepSnapshot],
         max_weight: float,
         max_area: float,
         context: _SearchContext,
@@ -1048,7 +1250,7 @@ class SpatialValidator:
         violation_code: str,
         violation_scenario: Optional[str],
         error_message: str,
-        step_states: List[FloorState],
+        step_states: List[_StepSnapshot],
         max_weight: float,
         max_area: float,
     ) -> None:
@@ -1058,7 +1260,7 @@ class SpatialValidator:
                 violation_code=violation_code,
                 violation_scenario=violation_scenario,
                 error_message=error_message,
-                max_weight_kg=max_weight,
+                max_weight_kg=round(max_weight, 3),
                 max_area_cm2=max_area,
                 step_states=step_states,
             )
@@ -1082,12 +1284,14 @@ class SpatialValidator:
         )
 
     def _layout_key(
-        self, placed_items: Iterable[PlacedItem]
+        self,
+        placed_items: Iterable[PlacedItem],
+        item_class_by_id: Dict[str, Tuple[object, ...]],
     ) -> Tuple[Tuple[object, ...], ...]:
         return tuple(
             sorted(
                 (
-                    item.item_id,
+                    item_class_by_id.get(item.item_id, (item.item_id,)),
                     round(item.x, 6),
                     round(item.y, 6),
                     round(item.length_cm, 6),

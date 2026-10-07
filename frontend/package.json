@@ -10,7 +10,10 @@
     "typecheck": "tsc --noEmit",
     "test:auth": "playwright test",
     "test:orders": "playwright test --config playwright.orders.config.ts",
-    "dev:orders-demo": "node scripts/start-orders-demo.cjs"
+    "dev:orders-demo": "node scripts/start-orders-demo.cjs",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@ant-design/icons": "^5.4.0",
@@ -28,8 +31,18 @@
     "@types/mapbox-gl": "^3.4.0",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.3.1",
+    "@vitejs/plugin-react": "^6.1.1",
     "typescript": "^5.5.4",
-    "vite": "^5.4.3"
+    "vite": "^8.3.0",
+    "@eslint/js": "^10.0.1",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "eslint": "^10.0.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.7",
+    "globals": "^17.12.0",
+    "jsdom": "^25.0.1",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.1"
   }
 }

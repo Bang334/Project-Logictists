@@ -69,7 +69,7 @@ class BaselineCostCalculator:
         actions: List[StopAction],
     ) -> _EvaluatedRoute:
         current_node = vehicle_index
-        current_time = 0.0
+        current_time = float(vehicle.available_start_sec)
         current_weight = 0.0
         total_distance = 0.0
         scheduled: List[ScheduledStop] = []
@@ -85,18 +85,10 @@ class BaselineCostCalculator:
             order = self.nodes[node_index]["order"]
             travel_seconds = self.request.duration_matrix_seconds[current_node][node_index]
             total_distance += self.request.distance_matrix_meters[current_node][node_index]
-            arrival_without_wait = current_time + travel_seconds
-            if action.stop_type == "PICKUP":
-                window_start = order.pickup_window_start_sec
-                window_end = order.pickup_window_end_sec
-            else:
-                window_start = order.delivery_window_start_sec
-                window_end = order.delivery_window_end_sec
-            arrival = max(arrival_without_wait, window_start)
-            if arrival > window_end:
-                late_minutes = round((arrival - window_end) / 60, 1)
+            arrival = current_time + travel_seconds
+            if arrival > vehicle.available_end_sec:
                 violations.append(
-                    f"TIME_WINDOW:{order.order_number} {action.stop_type} trễ {late_minutes} phút"
+                    f"VEHICLE_AVAILABILITY:{vehicle.plate_number} vượt giờ khả dụng"
                 )
 
             current_weight += sum(item.weight_kg for item in action.items_to_load)
@@ -221,6 +213,7 @@ class BaselineCostCalculator:
             vehicle_fixed_cost_vnd=0,
             driver_cost_vnd=0,
             cargo_holding_cost_vnd=0,
+            late_delivery_penalty_vnd=0,
             is_feasible=False,
             violations=["INPUT:Không có đủ đơn, xe hoặc tài xế để đối chuẩn"],
         )
@@ -263,10 +256,13 @@ class BaselineCostCalculator:
             for _, _, cost in chosen
         )
         holding = sum(cost.cargo_holding_cost_vnd for _, _, cost in chosen)
+        late_penalty = sum(
+            cost.late_delivery_penalty_vnd for _, _, cost in chosen
+        )
         return BenchmarkMetric(
             method_name="Direct Dedicated (Đơn lẻ)",
             description="Mỗi đơn dùng một lượt chuyến độc lập đã kiểm tra tải, giờ và xếp/dỡ",
-            total_cost_vnd=fuel + fixed + driver_cost + holding,
+            total_cost_vnd=fuel + fixed + driver_cost + holding + late_penalty,
             total_distance_km=round(
                 sum(route.distance_meters for route, _, _ in chosen) / 1000, 2
             ),
@@ -278,6 +274,7 @@ class BaselineCostCalculator:
             vehicle_fixed_cost_vnd=fixed,
             driver_cost_vnd=driver_cost,
             cargo_holding_cost_vnd=holding,
+            late_delivery_penalty_vnd=late_penalty,
             is_feasible=not violations and len(chosen) == len(self.orders),
             violations=violations,
         )
@@ -314,6 +311,11 @@ class BaselineCostCalculator:
         ortools_holding = sum(
             route.cost.cargo_holding_cost_vnd for route in ortools_routes if route.cost
         )
+        ortools_late_penalty = sum(
+            route.cost.late_delivery_penalty_vnd
+            for route in ortools_routes
+            if route.cost
+        )
         ortools_metric = BenchmarkMetric(
             method_name="Google OR-Tools Metaheuristic",
             description="Nghiệm khả thi tốt nhất tìm thấy trong giới hạn thời gian",
@@ -325,6 +327,7 @@ class BaselineCostCalculator:
             vehicle_fixed_cost_vnd=ortools_fixed,
             driver_cost_vnd=ortools_driver,
             cargo_holding_cost_vnd=ortools_holding,
+            late_delivery_penalty_vnd=ortools_late_penalty,
             is_feasible=ortools_is_feasible,
             violations=ortools_violations or [],
         )

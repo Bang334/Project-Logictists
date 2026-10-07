@@ -1,4 +1,14 @@
-import { IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
+import { LateDeliveryPenaltyMode } from '@prisma/client';
+import {
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
 export class UpdateBranchDto {
   @IsOptional()
@@ -26,4 +36,19 @@ export class UpdateBranchDto {
   @IsOptional()
   @IsString()
   timezone?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(365)
+  deliveryGraceDays?: number;
+
+  @IsOptional()
+  @IsEnum(LateDeliveryPenaltyMode)
+  lateDeliveryPenaltyMode?: LateDeliveryPenaltyMode;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  lateDeliveryPenaltyValue?: number;
 }
