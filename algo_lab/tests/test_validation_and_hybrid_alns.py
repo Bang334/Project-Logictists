@@ -1,9 +1,12 @@
+import time
+from pathlib import Path
 from typing import List
 
 import pytest
 
-from algo_lab.algorithms.hybrid_alns import solve_hybrid_alns
+from algo_lab.algorithms.hybrid_alns import HybridALNSSolver, solve_hybrid_alns
 from algo_lab.algorithms.greedy_insertion import solve_greedy
+from algo_lab.common.data_loader import load_dataset
 from algo_lab.common.models import (
     CargoItem,
     CostPolicy,
@@ -216,3 +219,58 @@ def test_hybrid_alns_returns_independently_valid_solution(seed: int) -> None:
     assert solution.is_temporally_valid is True
     assert solution.is_spatial_valid is True
     assert solution.validation_notes == []
+
+
+def test_hybrid_alns_keeps_one_empty_vehicle_candidate_per_physical_depot() -> None:
+    dataset = Path(__file__).resolve().parents[1] / "datasets" / "scenario_7_multi_depot_overnight.json"
+    args = load_dataset(str(dataset))
+    solver = HybridALNSSolver(*args, time_limit_sec=0.1)
+
+    representatives = solver._representative_empty_vehicle_indices(
+        [[] for _vehicle in args[0]]
+    )
+    physical_depots = {
+        (
+            round(args[0][index].depot.latitude, 6),
+            round(args[0][index].depot.longitude, 6),
+        )
+        for index in representatives
+    }
+
+    assert len(representatives) == 3
+    assert len(physical_depots) == 3
+
+
+def test_hybrid_alns_structured_construction_keeps_multiple_complete_starts(
+    monkeypatch,
+) -> None:
+    args = _tiny_problem()
+    solver = HybridALNSSolver(*args, time_limit_sec=0.1)
+    calls = []
+
+    def complete_candidate(order_sequence, deadline):
+        calls.append(list(order_sequence))
+        return [[] for _vehicle in args[0]], []
+
+    monkeypatch.setattr(solver, "_sequential_construction", complete_candidate)
+
+    candidates = solver._construct_structured_solutions(time.perf_counter() + 1.0)
+
+    assert len(calls) >= 2
+    assert len(candidates) >= 2
+
+
+def test_hybrid_alns_keeps_reported_cost_separate_from_search_guidance() -> None:
+    args = _tiny_problem()
+    initial = solve_greedy(*args)
+    solver = HybridALNSSolver(*args, time_limit_sec=0.1, initial_solution=initial)
+    vehicle_index = {vehicle.id: index for index, vehicle in enumerate(args[0])}
+    routes = [[] for _vehicle in args[0]]
+    for route in initial.routes:
+        routes[vehicle_index[route.vehicle.id]] = route.stops
+
+    assert solver._economic_plan_cost(routes, []) == initial.real_economic_cost_vnd
+    assert solver._economic_plan_cost(routes, [args[2][0].id]) == (
+        initial.real_economic_cost_vnd + args[3].unassigned_order_penalty_vnd
+    )
+    assert solver._plan_cost(routes, []) > solver._economic_plan_cost(routes, [])

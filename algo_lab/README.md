@@ -27,7 +27,8 @@ algo_lab/
 │   ├── genetic_solver.py       # Giải thuật Di truyền (Genetic Algorithm)
 │   ├── hybrid_alns.py          # Hybrid ALNS packing-aware
 │   └── advanced_metaheuristics.py # VNS, Tabu, ILS, LAHC, SA, GRASP, Memetic
-└── run_parallel_benchmark.py   # Benchmark tuyển chọn 10 metaheuristic × 12 dataset × nhiều seed
+├── run_parallel_benchmark.py   # Benchmark tuyển chọn rộng 10 metaheuristic
+└── run_alns_selection_benchmark.py # Hybrid/Standard ALNS vs 4 đối thủ + manifest case yếu
 ```
 
 ---
@@ -47,7 +48,27 @@ python algo_lab/run_parallel_benchmark.py --budget 10 --seeds 0,1,2 --workers 3
 
 Greedy và OR-Tools không nằm trong bảng xếp hạng này. Greedy vẫn được tái sử dụng như heuristic dựng nghiệm ban đầu của một số thuật toán; đó không phải một ứng viên production độc lập. `run_benchmark.py`, `run_fast_comparison.py` và `run_full_system_comparison.py` là công cụ chẩn đoán cũ, không dùng để kết luận thuật toán thắng.
 
-### 4. Danh sách 10 metaheuristic được tuyển chọn
+### 4. Tối ưu tiếp Hybrid ALNS trên đúng các case còn yếu
+
+Sau khi đã chọn Hybrid ALNS, chạy benchmark tập trung với Standard ALNS, VNS,
+Simulated Annealing, GRASP và Memetic Search:
+
+```powershell
+python algo_lab/run_alns_selection_benchmark.py --budget 10 --seeds 0,1,2 --workers 3
+```
+
+Lượt đầu sinh `algo_lab/results/alns_weak_cases.json`. Sau mỗi thay đổi Hybrid,
+chỉ chạy lại chính xác các cặp dataset/seed trong manifest đó:
+
+```powershell
+python algo_lab/run_alns_selection_benchmark.py --budget 10 --workers 3 --weak-from algo_lab/results/alns_weak_cases.json
+```
+
+Kết quả tập trung nằm ở `alns_selection.md/json`; lượt kiểm tra lại nằm ở
+`alns_weak_recheck.md/json`. Mỗi case yếu có trường `focus` để phân biệt lỗi
+validator/repair, thừa hoặc chọn sai xe, và thứ tự/ghép tuyến chưa tốt.
+
+### 5. Danh sách 10 metaheuristic được tuyển chọn
 
 Các ứng viên:
 
