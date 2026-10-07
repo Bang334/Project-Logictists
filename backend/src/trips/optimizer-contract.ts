@@ -10,6 +10,9 @@ export type OptimizerStop = {
   longitude: number;
   arrival_time_sec: number;
   departure_time_sec: number;
+  travel_time_sec?: number;
+  waiting_time_sec?: number;
+  service_time_sec?: number;
   items_loaded: string[];
   items_unloaded: string[];
   current_weight_kg: number;
@@ -29,6 +32,8 @@ export type OptimizedRouteResult = {
   driver_license_class?: string;
   total_distance_km: number;
   total_duration_minutes: number;
+  return_travel_time_sec?: number;
+  return_waiting_time_sec?: number;
   depot?: {
     id: string;
     name: string;
@@ -64,6 +69,7 @@ export type OptimizedRouteResult = {
       weight_utilization_percent: number;
       area_utilization_percent: number;
       is_valid: boolean;
+      unload_sequence?: string[];
       package_access_paths: Array<{
         item_id: string;
         is_clear: boolean;
@@ -226,6 +232,9 @@ export function assertFleetOptimizationResult(
         typeof step.stop_type !== 'string' ||
         typeof step.action_description !== 'string' ||
         !Array.isArray(step.placed_items) ||
+        (step.unload_sequence !== undefined &&
+          (!Array.isArray(step.unload_sequence) ||
+            !step.unload_sequence.every((itemId) => typeof itemId === 'string'))) ||
         !Array.isArray(step.package_access_paths) ||
         step.is_valid !== true
       ) {
@@ -249,6 +258,7 @@ export function assertFleetOptimizationResult(
         }
       }
     }
+    let previousDepartureSec = Number(route.start_time_sec);
     for (const stop of route.stops) {
       if (
         !isRecord(stop) ||
@@ -268,6 +278,64 @@ export function assertFleetOptimizationResult(
         !isFiniteNumber(stop.current_weight_kg)
       ) {
         throw new Error('Optimizer trả điểm dừng không hợp lệ');
+      }
+      for (const field of ['arrival_time_sec', 'departure_time_sec']) {
+        if (!Number.isInteger(stop[field]) || Number(stop[field]) < 0) {
+          throw new Error(`Optimizer trả stop.${field} không hợp lệ`);
+        }
+      }
+      const breakdownFields = [
+        stop.travel_time_sec,
+        stop.waiting_time_sec,
+        stop.service_time_sec,
+      ];
+      const breakdownFieldCount = breakdownFields.filter(
+        (field) => field !== undefined,
+      ).length;
+      if (breakdownFieldCount !== 0 && breakdownFieldCount !== 3) {
+        throw new Error('Optimizer trả thiếu trường phân rã thời gian chặng');
+      }
+      if (breakdownFieldCount === 3) {
+        if (
+          !breakdownFields.every(
+            (field) => Number.isInteger(field) && Number(field) >= 0,
+          )
+        ) {
+          throw new Error('Optimizer trả phân rã thời gian chặng không hợp lệ');
+        }
+        if (
+          Number(stop.arrival_time_sec) - previousDepartureSec !==
+            Number(stop.travel_time_sec) + Number(stop.waiting_time_sec) ||
+          Number(stop.departure_time_sec) - Number(stop.arrival_time_sec) !==
+            Number(stop.service_time_sec)
+        ) {
+          throw new Error(
+            'Optimizer trả phân rã thời gian chặng không khớp mốc điểm dừng',
+          );
+        }
+      }
+      previousDepartureSec = Number(stop.departure_time_sec);
+    }
+    const returnBreakdownFields = [
+      route.return_travel_time_sec,
+      route.return_waiting_time_sec,
+    ];
+    const returnBreakdownFieldCount = returnBreakdownFields.filter(
+      (field) => field !== undefined,
+    ).length;
+    if (returnBreakdownFieldCount !== 0 && returnBreakdownFieldCount !== 2) {
+      throw new Error('Optimizer trả thiếu trường phân rã chặng về bến');
+    }
+    if (returnBreakdownFieldCount === 2) {
+      if (
+        !returnBreakdownFields.every(
+          (field) => Number.isInteger(field) && Number(field) >= 0,
+        ) ||
+        Number(route.end_time_sec) - previousDepartureSec !==
+          Number(route.return_travel_time_sec) +
+            Number(route.return_waiting_time_sec)
+      ) {
+        throw new Error('Optimizer trả phân rã chặng về bến không hợp lệ');
       }
     }
     if (!isRecord(route.cost)) {

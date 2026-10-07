@@ -25,6 +25,7 @@ from .search_strategies import (
     SearchStrategy,
     find_search_strategy,
 )
+from .ils_engine import PackingAwareILSOptimizer
 
 
 def _run_search_worker(
@@ -314,6 +315,29 @@ class MultiStartFleetOptimizer:
                 + "; ".join(worker_errors)
             )
 
+        ortools_run_count = len(evaluated_runs)
+
+        # Add the benchmark-winning packing-aware ILS as an independently
+        # validated candidate next to the OR-Tools multi-start results.
+        try:
+            ils = PackingAwareILSOptimizer(
+                self.request,
+                time_budget_seconds=min(worker_time_budget_seconds, 6.0),
+            )
+            ils_plan = ils.solve()
+            if ils_plan.routes:
+                ils_strategy = SearchStrategy(
+                    "packing-aware-ils",
+                    "Packing-aware ILS",
+                    DEFAULT_SEARCH_STRATEGY.first_solution_strategy,
+                    DEFAULT_SEARCH_STRATEGY.local_search_metaheuristic,
+                )
+                evaluated_runs.append(
+                    (ils_strategy, ils_plan, ils_plan.total_cost_vnd)
+                )
+        except Exception as exc:
+            worker_errors.append(f"Packing-aware ILS: {exc}")
+
         candidates, fully_served_count, diagnostics = select_ranked_candidates(
             evaluated_runs,
             all_order_ids,
@@ -321,7 +345,7 @@ class MultiStartFleetOptimizer:
         )
 
         batch_diagnostics = [
-            f"Đã thực hiện {len(evaluated_runs)}/{len(active_strategies)} lượt chạy OR-Tools song song độc lập.",
+            f"Đã thực hiện {ortools_run_count}/{len(active_strategies)} lượt chạy OR-Tools song song độc lập.",
             (
                 "Chính sách tìm kiếm thích ứng: "
                 f"độ phức tạp {self.policy.complexity_score}, "

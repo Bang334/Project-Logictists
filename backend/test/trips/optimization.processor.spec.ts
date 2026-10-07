@@ -69,6 +69,30 @@ describe('OptimizationProcessor', () => {
     );
   });
 
+  it('passes the persisted search budget to the optimization pipeline', async () => {
+    prisma.optimizationJob.findUnique
+      .mockResolvedValueOnce({
+        ...persistedJob(),
+        parameters: { branchId: 'branch-1', searchBudgetSeconds: 45 },
+      })
+      .mockResolvedValueOnce({ status: 'CANCEL_REQUESTED' });
+    prisma.optimizationJob.updateMany.mockResolvedValue({ count: 1 });
+    trips.executeAutomaticOptimization.mockResolvedValue({
+      best: { proposal: { result: { status: 'SUCCESS' } }, signature: 'signed' },
+      candidates: [],
+    });
+    prisma.optimizationJob.update.mockResolvedValue({});
+
+    await processor.process(queueJob() as never);
+
+    expect(trips.executeAutomaticOptimization).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ searchBudgetSeconds: 45 }),
+      'job-1',
+      expect.any(Function),
+    );
+  });
+
   it('discards a solver result that arrives after cancellation', async () => {
     prisma.optimizationJob.findUnique
       .mockResolvedValueOnce(persistedJob())

@@ -1107,6 +1107,30 @@ body {
   margin-bottom: 20px;
 }
 
+.automatic-search-budget {
+  display: flex;
+  min-width: 210px;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.automatic-search-budget-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.automatic-search-budget-label .anticon {
+  color: #64748b;
+}
+
+.automatic-search-budget-help {
+  display: block;
+  max-width: 360px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .automatic-map-toolbar {
   display: flex;
   align-items: flex-start;
@@ -1319,6 +1343,26 @@ body {
   .dispatch-page-header .ant-btn {
     min-height: 44px;
     width: 100%;
+  }
+
+  .automatic-search-budget,
+  .automatic-search-budget .ant-select {
+    width: 100%;
+  }
+
+  .automatic-search-budget .ant-select-selector,
+  .automatic-search-budget .ant-input-number,
+  .automatic-search-budget .ant-input-number-input {
+    min-height: 44px;
+  }
+
+  .automatic-search-budget .ant-select-selector {
+    display: flex;
+    align-items: center;
+  }
+
+  .automatic-search-budget .ant-input-number-group-wrapper {
+    width: 100% !important;
   }
 
   .automatic-map-toolbar,
@@ -1636,4 +1680,3 @@ body {
   border-color: #e2e8f0 !important;
   color: #475569 !important;
 }
-

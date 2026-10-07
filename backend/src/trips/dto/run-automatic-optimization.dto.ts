@@ -1,4 +1,12 @@
-import { IsEnum, IsISO8601, IsOptional, IsUUID } from 'class-validator';
+import {
+  IsEnum,
+  IsISO8601,
+  IsInt,
+  IsOptional,
+  IsUUID,
+  Max,
+  Min,
+} from 'class-validator';
 
 export enum AutomaticDispatchScheduleMode {
   CURRENT_TIME = 'CURRENT_TIME',
@@ -20,4 +28,10 @@ export class RunAutomaticOptimizationDto {
   @IsOptional()
   @IsISO8601()
   customStartTime?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(120)
+  searchBudgetSeconds?: number;
 }

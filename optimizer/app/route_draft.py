@@ -13,6 +13,8 @@ class RouteDraft:
     start_time_sec: int
     end_time_sec: float
     distance_meters: float
+    return_travel_time_sec: int
+    return_waiting_time_sec: int
     scheduled_stops: List[ScheduledStop]
     stop_actions: List[StopAction]
     order_ids: Set[str] = field(default_factory=set)

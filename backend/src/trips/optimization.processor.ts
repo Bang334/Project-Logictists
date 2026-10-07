@@ -142,6 +142,9 @@ export class OptimizationProcessor extends WorkerHost {
       ...(typeof request.customStartTime === 'string'
         ? { customStartTime: request.customStartTime }
         : {}),
+      ...(typeof request.searchBudgetSeconds === 'number'
+        ? { searchBudgetSeconds: request.searchBudgetSeconds }
+        : {}),
     };
 
     try {

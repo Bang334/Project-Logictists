@@ -104,6 +104,20 @@ def test_search_policy_respects_a_stricter_caller_cap():
     assert policy.strategy_count == 2
 
 
+def test_explicit_user_budget_is_used_instead_of_adaptive_shortening():
+    policy = calculate_search_policy(
+        order_count=2,
+        item_count=2,
+        physical_vehicle_count=1,
+        virtual_vehicle_count=7,
+        requested_max_time_seconds=120,
+        requested_search_time_seconds=90,
+    )
+
+    assert policy.time_budget_seconds == 90
+    assert policy.strategy_count == 6
+
+
 def test_progress_tracker_stops_only_after_full_solution_stagnates():
     tracker = SearchProgressTracker(stagnation_seconds=0.5)
 

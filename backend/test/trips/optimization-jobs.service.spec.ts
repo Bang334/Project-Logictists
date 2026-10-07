@@ -99,6 +99,35 @@ describe('OptimizationJobsService', () => {
     expect(result.progress).toMatchObject({ stage: 'QUEUED' });
   });
 
+  it('persists the user-selected search budget in the idempotent job request', async () => {
+    prisma.optimizationJob.findUnique.mockResolvedValue(null);
+    prisma.$transaction.mockImplementation(async (callback: (tx: typeof prisma) => unknown) => {
+      prisma.optimizationJob.create.mockResolvedValue(job({
+        requestSnapshot: {
+          branchId: 'branch-1',
+          scheduleMode: null,
+          customStartTime: null,
+          searchBudgetSeconds: 90,
+        },
+      }));
+      return callback(prisma);
+    });
+    outbox.enqueue.mockResolvedValue(undefined);
+
+    const result = await service.create(
+      { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+      { idempotencyKey: 'idem-budget', searchBudgetSeconds: 90 },
+    );
+
+    expect(prisma.optimizationJob.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        requestSnapshot: expect.objectContaining({ searchBudgetSeconds: 90 }),
+        parameters: expect.objectContaining({ searchBudgetSeconds: 90 }),
+      }),
+    });
+    expect(result).toMatchObject({ searchBudgetSeconds: 90 });
+  });
+
   it('returns the existing job for the same idempotency key and payload', async () => {
     const existing = job({
       idempotencyKey: 'idem-1',
@@ -107,6 +136,7 @@ describe('OptimizationJobsService', () => {
         branchId: 'branch-1',
         scheduleMode: null,
         customStartTime: null,
+        searchBudgetSeconds: null,
       },
     });
     const requestHash = createHash('sha256')

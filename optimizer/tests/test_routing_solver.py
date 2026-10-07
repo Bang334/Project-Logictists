@@ -174,6 +174,17 @@ def test_fleet_solver_assigns_two_vehicles_drivers_and_costs():
     assert len(response.routes) == 2
     assert {route.driver_id for route in response.routes} == {"driver-1", "driver-2"}
     assert all(route.cost and route.cost.total_cost_vnd > 0 for route in response.routes)
+    for route in response.routes:
+        previous_departure = route.start_time_sec
+        for stop in route.stops:
+            assert stop.arrival_time_sec - previous_departure == (
+                stop.travel_time_sec + stop.waiting_time_sec
+            )
+            assert stop.departure_time_sec - stop.arrival_time_sec == stop.service_time_sec
+            previous_departure = stop.departure_time_sec
+        assert route.end_time_sec - previous_departure == (
+            route.return_travel_time_sec + route.return_waiting_time_sec
+        )
 
 
 def test_fleet_solver_assigns_every_split_part_to_its_physical_vehicle():

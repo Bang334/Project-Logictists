@@ -37,7 +37,11 @@ class ValidatePlanRequest(StrictContractModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "optimizer", "engine": "Google OR-Tools + Dynamic 2D Spatial Validator"}
+    return {
+        "status": "ok",
+        "service": "optimizer",
+        "engine": "Google OR-Tools multi-start + Packing-aware ILS + Dynamic 2D Spatial Validator",
+    }
 
 @app.post("/validate-spatial", response_model=SpatialValidationResult)
 def validate_spatial(request: ValidatePlanRequest):

@@ -238,6 +238,7 @@ export interface FloorStepStateUI {
   weight_utilization_percent: number;
   area_utilization_percent: number;
   is_valid: boolean;
+  unload_sequence?: string[];
   package_access_paths?: PackageAccessPathUI[];
 }
 
@@ -263,6 +264,9 @@ export interface OptimizedStopUI {
   longitude: number;
   arrival_time_sec: number;
   departure_time_sec: number;
+  travel_time_sec?: number;
+  waiting_time_sec?: number;
+  service_time_sec?: number;
   items_loaded: string[];
   items_unloaded: string[];
   current_weight_kg: number;
@@ -307,6 +311,8 @@ export interface OptimizedRouteUI {
   driver_license_class?: string;
   total_distance_km: number;
   total_duration_minutes: number;
+  return_travel_time_sec?: number;
+  return_waiting_time_sec?: number;
   depot?: {
     id: string;
     name: string;
@@ -366,6 +372,7 @@ export interface RunAutomaticOptimizationPayloadUI {
   branchId: string;
   scheduleMode?: AutomaticDispatchScheduleModeUI;
   customStartTime?: string;
+  searchBudgetSeconds?: number;
 }
 
 export interface OptimizationProposalUI {
@@ -424,6 +431,7 @@ export interface AutomaticOptimizationResponseUI {
   schemaVersion: string;
   planningEpochIso: string | null;
   scheduleMode: AutomaticDispatchScheduleModeUI | null;
+  searchBudgetSeconds: number | null;
   progress: OptimizationJobProgressUI | null;
   result: FleetOptimizationResultUI | null;
   candidates: OptimizationCandidateSummaryUI[];

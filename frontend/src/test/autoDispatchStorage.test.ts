@@ -20,6 +20,7 @@ describe('autoDispatchStorage', () => {
     scheduleMode: 'CURRENT_TIME',
     customStartTimeStr: '2026-10-02T12:00:00.000Z',
     useCustomTime: true,
+    searchBudgetSeconds: 30,
     selectedVehicleForMap: 'ALL',
     savedAt: '2026-10-02T12:05:00.000Z',
   };
@@ -31,6 +32,7 @@ describe('autoDispatchStorage', () => {
     expect(retrieved?.branchId).toBe('branch-hn-01');
     expect(retrieved?.optimizationJobId).toBe('job-mock-123');
     expect(retrieved?.useCustomTime).toBe(true);
+    expect(retrieved?.searchBudgetSeconds).toBe(30);
     expect(getLastSelectedBranch()).toBe('branch-hn-01');
   });
 
