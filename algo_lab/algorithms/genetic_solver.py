@@ -25,7 +25,8 @@ from algo_lab.common.models import (
     OrderPair,
     ScheduledStop,
 )
-from algo_lab.common.packing_checker import FastPackingChecker
+from algo_lab.common.route_evaluator import schedule_and_evaluate_route
+from algo_lab.common.solution_validator import audit_solution
 
 
 class GeneticRoutingSolver:
@@ -41,7 +42,17 @@ class GeneticRoutingSolver:
         population_size: int = 20,
         generations: int = 30,
         time_limit_sec: float = 3.0,
+        random_seed: int = 0,
+        final_spatial_time_limit_sec: float = 1.5,
     ):
+        if time_limit_sec <= 0:
+            raise ValueError("time_limit_sec must be greater than zero")
+        if final_spatial_time_limit_sec <= 0:
+            raise ValueError("final_spatial_time_limit_sec must be greater than zero")
+        if population_size < 2:
+            raise ValueError("population_size must be at least two")
+        if generations <= 0:
+            raise ValueError("generations must be greater than zero")
         self.vehicles = vehicles
         self.drivers = drivers
         self.orders = orders
@@ -54,26 +65,49 @@ class GeneticRoutingSolver:
         self.population_size = population_size
         self.generations = generations
         self.time_limit_sec = time_limit_sec
-        self.checkers = [FastPackingChecker(v) for v in vehicles]
-        self._packing_cache: Dict[Tuple[str, Tuple[str, ...]], bool] = {}
+        self.random_seed = random_seed
+        self.final_spatial_time_limit_sec = final_spatial_time_limit_sec
+        self.rng = random.Random(random_seed)
 
-    def _validate_stops_cached(self, v_idx: int, cand: List[ScheduledStop]) -> bool:
-        v = self.vehicles[v_idx]
-        cache_key = (v.id, tuple(st.order_id for st in cand if st.order_id))
-        if cache_key in self._packing_cache:
-            return self._packing_cache[cache_key]
-        valid, _ = self.checkers[v_idx].validate_route_stops(cand, self.cargo_by_id)
-        self._packing_cache[cache_key] = valid
-        return valid
+    @staticmethod
+    def _candidate_positions(route_length: int) -> List[Tuple[int, int]]:
+        if route_length <= 10:
+            return [
+                (pickup, delivery)
+                for pickup in range(route_length + 1)
+                for delivery in range(pickup + 1, route_length + 2)
+            ]
+        anchors = sorted(
+            {
+                0,
+                route_length,
+                route_length // 4,
+                route_length // 2,
+                (3 * route_length) // 4,
+            }
+        )
+        positions = {
+            (pickup, min(delivery, route_length + 1))
+            for pickup in anchors
+            for delivery in anchors + [route_length + 1]
+            if delivery > pickup
+        }
+        positions.update(
+            (pickup, min(route_length + 1, pickup + 1)) for pickup in anchors
+        )
+        return sorted(positions)
 
     def _decode_chromosome(
-        self, chromosome: List[str]
+        self, chromosome: List[str], deadline: float
     ) -> Tuple[List[List[ScheduledStop]], List[str]]:
         """Greedily decodes order sequence into vehicle routes."""
         routes_stops: List[List[ScheduledStop]] = [[] for _ in self.vehicles]
         unassigned: List[str] = []
 
-        for order_id in chromosome:
+        for order_index, order_id in enumerate(chromosome):
+            if time.perf_counter() >= deadline:
+                unassigned.extend(chromosome[order_index:])
+                break
             order = self.order_by_id[order_id]
             best_v: Optional[int] = None
             best_stops: Optional[List[ScheduledStop]] = None
@@ -81,6 +115,8 @@ class GeneticRoutingSolver:
             checked_empty_types = set()
 
             for v_idx, v in enumerate(self.vehicles):
+                if time.perf_counter() >= deadline:
+                    break
                 curr = routes_stops[v_idx]
                 if len(curr) == 0:
                     v_type = (
@@ -93,18 +129,6 @@ class GeneticRoutingSolver:
                     if v_type in checked_empty_types:
                         continue
                     checked_empty_types.add(v_type)
-
-                base_dist = 0.0
-                depot = self.node_id_to_index.get(v.depot.id, 0)
-                if len(curr) > 0:
-                    prev_n = depot
-                    for st in curr:
-                        cur_n = self.node_id_to_index.get(st.location_id, 0)
-                        base_dist += self.distance_matrix[prev_n][cur_n]
-                        prev_n = cur_n
-                    base_dist += self.distance_matrix[prev_n][depot]
-
-                n = len(curr)
                 p_stop = ScheduledStop(
                     sequence=0,
                     stop_type="PICKUP",
@@ -124,54 +148,52 @@ class GeneticRoutingSolver:
                     items_unloaded=[it.id for it in order.items],
                 )
 
-                # Append insertion
-                cand = curr + [p_stop, d_stop]
+                if curr:
+                    base_evaluation = schedule_and_evaluate_route(
+                        v,
+                        self.drivers[v_idx],
+                        curr,
+                        self.order_by_id,
+                        self.cargo_by_id,
+                        self.policy,
+                        self.distance_matrix,
+                        self.duration_matrix,
+                        self.node_id_to_index,
+                    )
+                    if not base_evaluation.feasible or base_evaluation.cost is None:
+                        continue
+                    base_cost = base_evaluation.cost.total_cost_vnd
+                else:
+                    base_cost = 0
 
-                # Weight check
-                w = 0.0
-                cap_ok = True
-                for st in cand:
-                    if st.stop_type == "PICKUP":
-                        w += self.order_by_id[st.order_id].total_weight_kg
-                    else:
-                        w -= self.order_by_id[st.order_id].total_weight_kg
-                    st.current_weight_kg = w
-                    if w > v.payload_limit_kg + 0.01:
-                        cap_ok = False
+                for pickup_pos, delivery_pos in self._candidate_positions(len(curr)):
+                    if time.perf_counter() >= deadline:
                         break
-                if not cap_ok:
-                    continue
-
-                # 2D packing check (Cached)
-                if not self._validate_stops_cached(v_idx, cand):
-                    continue
-
-                # Distance & incremental cost
-                cand_dist = 0.0
-                prev = depot
-                for st in cand:
-                    cur = self.node_id_to_index.get(st.location_id, 0)
-                    cand_dist += self.distance_matrix[prev][cur]
-                    prev = cur
-                cand_dist += self.distance_matrix[prev][depot]
-
-                inc_dist_m = max(0.0, cand_dist - base_dist)
-                inc_dist_km = inc_dist_m / 1000.0
-                inc_fuel = (
-                    (v.fuel_consumption_liters_per_100_km / 100.0)
-                    * inc_dist_km
-                    * self.policy.fuel_price_per_liter_vnd
-                )
-                inc_fixed = v.fixed_operating_cost_vnd if len(curr) == 0 else 0
-                inc_driver = (
-                    150_000 if len(curr) == 0 else 0
-                ) + round(1_200 * inc_dist_km)
-                inc_cost = inc_fuel + inc_fixed + inc_driver
-
-                if inc_cost < best_cost:
-                    best_cost = inc_cost
-                    best_v = v_idx
-                    best_stops = cand
+                    cand = (
+                        curr[:pickup_pos]
+                        + [copy.deepcopy(p_stop)]
+                        + curr[pickup_pos : delivery_pos - 1]
+                        + [copy.deepcopy(d_stop)]
+                        + curr[delivery_pos - 1 :]
+                    )
+                    evaluation = schedule_and_evaluate_route(
+                        v,
+                        self.drivers[v_idx],
+                        cand,
+                        self.order_by_id,
+                        self.cargo_by_id,
+                        self.policy,
+                        self.distance_matrix,
+                        self.duration_matrix,
+                        self.node_id_to_index,
+                    )
+                    if not evaluation.feasible or evaluation.cost is None:
+                        continue
+                    incremental_cost = evaluation.cost.total_cost_vnd - base_cost
+                    if incremental_cost < best_cost:
+                        best_cost = incremental_cost
+                        best_v = v_idx
+                        best_stops = evaluation.stops
 
             if best_v is not None and best_stops is not None:
                 routes_stops[best_v] = best_stops
@@ -180,8 +202,10 @@ class GeneticRoutingSolver:
 
         return routes_stops, unassigned
 
-    def _fitness(self, chromosome: List[str]) -> Tuple[float, List[List[ScheduledStop]], List[str]]:
-        routes_stops, unassigned = self._decode_chromosome(chromosome)
+    def _fitness(
+        self, chromosome: List[str], deadline: float
+    ) -> Tuple[float, List[List[ScheduledStop]], List[str]]:
+        routes_stops, unassigned = self._decode_chromosome(chromosome, deadline)
         econ_cost = 0
         for v_idx, stops in enumerate(routes_stops):
             if not stops:
@@ -206,7 +230,9 @@ class GeneticRoutingSolver:
     def _ox_crossover(self, parent1: List[str], parent2: List[str]) -> List[str]:
         """Order Crossover (OX)."""
         size = len(parent1)
-        a, b = sorted(random.sample(range(size), 2))
+        if size < 2:
+            return list(parent1)
+        a, b = sorted(self.rng.sample(range(size), 2))
         child = [None] * size
         child[a : b + 1] = parent1[a : b + 1]
         p2_remaining = [item for item in parent2 if item not in child[a : b + 1]]
@@ -222,19 +248,20 @@ class GeneticRoutingSolver:
         """Swap mutation."""
         c = list(chromosome)
         if len(c) >= 2:
-            i, j = random.sample(range(len(c)), 2)
+            i, j = self.rng.sample(range(len(c)), 2)
             c[i], c[j] = c[j], c[i]
         return c
 
     def solve(self) -> OptimizationSolution:
         start_time = time.perf_counter()
+        deadline = start_time + self.time_limit_sec
         order_ids = [o.id for o in self.orders]
 
         # Initialize population
         population: List[List[str]] = []
         for _ in range(self.population_size):
             ind = list(order_ids)
-            random.shuffle(ind)
+            self.rng.shuffle(ind)
             population.append(ind)
 
         # Include sorted by weight/volume as elite seed
@@ -248,9 +275,9 @@ class GeneticRoutingSolver:
         ]
         population[0] = elite_seed
 
-        best_cost = float("inf")
-        best_routes: List[List[ScheduledStop]] = []
-        best_unassigned: List[str] = []
+        best_cost, best_routes, best_unassigned = self._fitness(
+            elite_seed, deadline
+        )
 
         for gen in range(self.generations):
             if time.perf_counter() - start_time >= self.time_limit_sec:
@@ -260,7 +287,7 @@ class GeneticRoutingSolver:
             for ind in population:
                 if time.perf_counter() - start_time >= self.time_limit_sec and scored_pop:
                     break
-                cost, r, u = self._fitness(ind)
+                cost, r, u = self._fitness(ind, deadline)
                 scored_pop.append((cost, ind, r, u))
                 if cost < best_cost:
                     best_cost = cost
@@ -281,11 +308,11 @@ class GeneticRoutingSolver:
 
             while len(new_population) < self.population_size:
                 # Tournament selection
-                p1 = min(random.sample(scored_pop, tour_k), key=lambda x: x[0])[1]
-                p2 = min(random.sample(scored_pop, tour_k), key=lambda x: x[0])[1]
+                p1 = min(self.rng.sample(scored_pop, tour_k), key=lambda x: x[0])[1]
+                p2 = min(self.rng.sample(scored_pop, tour_k), key=lambda x: x[0])[1]
 
                 child = self._ox_crossover(p1, p2)
-                if random.random() < 0.25:
+                if self.rng.random() < 0.25:
                     child = self._mutate(child)
                 new_population.append(child)
 
@@ -302,55 +329,45 @@ class GeneticRoutingSolver:
             v = self.vehicles[v_idx]
             d = self.drivers[v_idx]
 
-            depot = self.node_id_to_index.get(v.depot.id, 0)
-            curr_time = 0
-            prev_node = depot
-            w = 0.0
-            for seq, st in enumerate(stops, start=1):
-                st.sequence = seq
-                cur_node = self.node_id_to_index.get(st.location_id, 0)
-                transit = self.duration_matrix[prev_node][cur_node]
-                st.arrival_time_sec = int(curr_time + transit)
-                order = self.order_by_id[st.order_id]
-                st.departure_time_sec = st.arrival_time_sec + order.service_time_sec
-                curr_time = st.departure_time_sec
-                prev_node = cur_node
-                if st.stop_type == "PICKUP":
-                    w += order.total_weight_kg
-                else:
-                    w -= order.total_weight_kg
-                st.current_weight_kg = w
-
-            breakdown, dist_km, dur_min = calculate_route_cost(
+            evaluation = schedule_and_evaluate_route(
                 v,
                 d,
                 stops,
                 self.order_by_id,
+                self.cargo_by_id,
                 self.policy,
                 self.distance_matrix,
                 self.duration_matrix,
                 self.node_id_to_index,
             )
+            if not evaluation.feasible or evaluation.cost is None:
+                best_unassigned.extend(
+                    stop.order_id
+                    for stop in stops
+                    if stop.stop_type == "PICKUP" and stop.order_id
+                )
+                continue
             optimized_routes.append(
                 OptimizedRoute(
                     vehicle=v,
                     driver=d,
-                    stops=stops,
-                    total_distance_km=dist_km,
-                    total_duration_minutes=dur_min,
-                    cost_breakdown=breakdown,
+                    stops=evaluation.stops,
+                    total_distance_km=evaluation.distance_km,
+                    total_duration_minutes=evaluation.duration_minutes,
+                    cost_breakdown=evaluation.cost,
                 )
             )
-            total_econ += breakdown.total_cost_vnd
-            total_km += dist_km
+            total_econ += evaluation.cost.total_cost_vnd
+            total_km += evaluation.distance_km
 
         elapsed = round(time.perf_counter() - start_time, 3)
+        best_unassigned = list(dict.fromkeys(best_unassigned))
         unassigned_numbers = [self.order_by_id[oid].order_number for oid in best_unassigned]
         fulfillment = round(
             (len(self.orders) - len(best_unassigned)) / max(1, len(self.orders)) * 100, 1
         )
 
-        return OptimizationSolution(
+        solution = OptimizationSolution(
             solver_name="Genetic Algorithm (OX Crossover + LIFO Packing)",
             execution_time_sec=elapsed,
             routes=optimized_routes,
@@ -361,7 +378,21 @@ class GeneticRoutingSolver:
             fulfillment_rate=fulfillment,
             is_spatial_valid=True,
             spatial_notes="Hợp lệ không gian & cửa xe",
+            random_seed=self.random_seed,
         )
+        audit_solution(
+            solution,
+            self.vehicles,
+            self.drivers,
+            self.orders,
+            self.policy,
+            self.distance_matrix,
+            self.duration_matrix,
+            self.node_id_to_index,
+            spatial_time_limit_sec=self.final_spatial_time_limit_sec,
+        )
+        solution.execution_time_sec = round(time.perf_counter() - start_time, 3)
+        return solution
 
 
 def solve_genetic(
@@ -373,6 +404,8 @@ def solve_genetic(
     duration_matrix: List[List[float]],
     node_id_to_index: Dict[str, int],
     time_limit_sec: float = 3.0,
+    random_seed: int = 0,
+    final_spatial_time_limit_sec: float = 1.5,
 ) -> OptimizationSolution:
     solver = GeneticRoutingSolver(
         vehicles,
@@ -383,6 +416,8 @@ def solve_genetic(
         duration_matrix,
         node_id_to_index,
         time_limit_sec=time_limit_sec,
+        random_seed=random_seed,
+        final_spatial_time_limit_sec=final_spatial_time_limit_sec,
     )
     return solver.solve()
 

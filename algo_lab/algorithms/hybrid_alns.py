@@ -56,9 +56,13 @@ class HybridALNSSolver:
         time_limit_sec: float = 3.0,
         max_iterations: int = 300,
         random_seed: int = 0,
+        final_spatial_time_limit_sec: float = 1.5,
+        initial_solution: Optional[OptimizationSolution] = None,
     ):
         if time_limit_sec <= 0:
             raise ValueError("time_limit_sec must be greater than zero")
+        if final_spatial_time_limit_sec <= 0:
+            raise ValueError("final_spatial_time_limit_sec must be greater than zero")
         if len(drivers) < len(vehicles):
             raise ValueError("Mỗi xe ứng viên phải có một tài xế trong benchmark")
         self.vehicles = vehicles
@@ -73,6 +77,8 @@ class HybridALNSSolver:
         self.time_limit_sec = time_limit_sec
         self.max_iterations = max_iterations
         self.random_seed = random_seed
+        self.final_spatial_time_limit_sec = final_spatial_time_limit_sec
+        self.initial_solution = initial_solution
         self.rng = random.Random(random_seed)
         self._route_cache: Dict[Tuple[int, Tuple[Tuple[str, str], ...]], RouteEvaluation] = {}
 
@@ -376,7 +382,7 @@ class HybridALNSSolver:
         started_at = time.perf_counter()
         deadline = started_at + self.time_limit_sec
         # Khởi tạo nghiệm xuất phát bằng Greedy Insertion nhanh (đảm bảo 100% khả thi ban đầu)
-        sol_gr = solve_greedy(
+        sol_gr = self.initial_solution or solve_greedy(
             self.vehicles,
             self.drivers,
             self.orders,
@@ -498,7 +504,7 @@ class HybridALNSSolver:
             self.distance_matrix,
             self.duration_matrix,
             self.node_id_to_index,
-            spatial_time_limit_sec=1.5,
+            spatial_time_limit_sec=self.final_spatial_time_limit_sec,
         )
         solution.execution_time_sec = round(time.perf_counter() - started_at, 3)
         return solution
@@ -515,6 +521,8 @@ def solve_hybrid_alns(
     *,
     time_limit_sec: float = 3.0,
     random_seed: int = 0,
+    final_spatial_time_limit_sec: float = 1.5,
+    initial_solution: Optional[OptimizationSolution] = None,
 ) -> OptimizationSolution:
     return HybridALNSSolver(
         vehicles,
@@ -526,4 +534,6 @@ def solve_hybrid_alns(
         node_id_to_index,
         time_limit_sec=time_limit_sec,
         random_seed=random_seed,
+        final_spatial_time_limit_sec=final_spatial_time_limit_sec,
+        initial_solution=initial_solution,
     ).solve()

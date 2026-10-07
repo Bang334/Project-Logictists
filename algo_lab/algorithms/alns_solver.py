@@ -46,7 +46,14 @@ class ALNSSolver:
         node_id_to_index: Dict[str, int],
         max_iterations: int = 150,
         time_limit_sec: float = 10.0,
+        random_seed: int = 0,
+        final_spatial_time_limit_sec: float = 1.5,
+        initial_solution: Optional[OptimizationSolution] = None,
     ):
+        if time_limit_sec <= 0:
+            raise ValueError("time_limit_sec must be greater than zero")
+        if final_spatial_time_limit_sec <= 0:
+            raise ValueError("final_spatial_time_limit_sec must be greater than zero")
         self.vehicles = vehicles
         self.drivers = drivers
         self.orders = orders
@@ -58,6 +65,10 @@ class ALNSSolver:
         self.node_id_to_index = node_id_to_index
         self.max_iterations = max_iterations
         self.time_limit_sec = time_limit_sec
+        self.random_seed = random_seed
+        self.final_spatial_time_limit_sec = final_spatial_time_limit_sec
+        self.initial_solution = initial_solution
+        self.rng = random.Random(random_seed)
         self.checkers = [FastPackingChecker(v) for v in vehicles]
         self._packing_cache: Dict[Tuple[str, Tuple[Tuple[str, str], ...]], bool] = {}
 
@@ -173,7 +184,7 @@ class ALNSSolver:
         """Inserts unassigned orders into best feasible positions."""
         still_unassigned = []
         orders_to_insert = [self.order_by_id[oid] for oid in unassigned_ids]
-        random.shuffle(orders_to_insert)
+        self.rng.shuffle(orders_to_insert)
 
         for order in orders_to_insert:
             if start_time is not None and time.perf_counter() - start_time >= self.time_limit_sec:
@@ -275,7 +286,7 @@ class ALNSSolver:
 
         remove_orders = {
             item[0]
-            for item in random.sample(
+            for item in self.rng.sample(
                 all_assigned, min(num_remove, len(all_assigned))
             )
         }
@@ -288,8 +299,9 @@ class ALNSSolver:
         return new_routes, list(remove_orders)
 
     def solve(self) -> OptimizationSolution:
+        start_time = time.perf_counter()
         # 1. Initial solution: construct feasible base plan using greedy seed
-        sol_gr = solve_greedy(
+        sol_gr = self.initial_solution or solve_greedy(
             self.vehicles,
             self.drivers,
             self.orders,
@@ -312,8 +324,6 @@ class ALNSSolver:
         )
         current_unassigned = [o.id for o in self.orders if o.id not in assigned]
 
-        start_time = time.perf_counter()
-
         best_routes = copy.deepcopy(current_routes)
         best_unassigned = list(current_unassigned)
         best_penalized_cost, best_econ_cost, best_km = self._evaluate_plan_cost(
@@ -332,7 +342,7 @@ class ALNSSolver:
             iteration += 1
 
             # Destroy 1 to 3 orders
-            num_to_remove = random.randint(1, max(1, min(3, len(self.orders) // 3)))
+            num_to_remove = self.rng.randint(1, max(1, min(3, len(self.orders) // 3)))
             destroyed_routes, removed_ids = self._destroy_random(
                 copy.deepcopy(current_routes), num_to_remove
             )
@@ -346,7 +356,7 @@ class ALNSSolver:
 
             # Accept criterion
             delta = new_cost - curr_penalized_cost
-            if delta < 0 or random.random() < math.exp(-delta / max(1.0, temperature)):
+            if delta < 0 or self.rng.random() < math.exp(-delta / max(1.0, temperature)):
                 current_routes = repaired_routes
                 current_unassigned = new_unassigned
                 curr_penalized_cost = new_cost
@@ -413,6 +423,7 @@ class ALNSSolver:
             fulfillment_rate=fulfillment,
             is_spatial_valid=True,
             spatial_notes="100% hợp lệ: LIFO & Door Clearance được kiểm tra tại từng bước Repair",
+            random_seed=self.random_seed,
         )
         audit_solution(
             solution,
@@ -423,7 +434,7 @@ class ALNSSolver:
             self.distance_matrix,
             self.duration_matrix,
             self.node_id_to_index,
-            spatial_time_limit_sec=1.5,
+            spatial_time_limit_sec=self.final_spatial_time_limit_sec,
         )
         solution.execution_time_sec = round(time.perf_counter() - start_time, 3)
         return solution
@@ -438,6 +449,9 @@ def solve_alns(
     duration_matrix: List[List[float]],
     node_id_to_index: Dict[str, int],
     time_limit_sec: float = 2.0,
+    random_seed: int = 0,
+    final_spatial_time_limit_sec: float = 1.5,
+    initial_solution: Optional[OptimizationSolution] = None,
 ) -> OptimizationSolution:
     solver = ALNSSolver(
         vehicles,
@@ -448,6 +462,9 @@ def solve_alns(
         duration_matrix,
         node_id_to_index,
         time_limit_sec=time_limit_sec,
+        random_seed=random_seed,
+        final_spatial_time_limit_sec=final_spatial_time_limit_sec,
+        initial_solution=initial_solution,
     )
     return solver.solve()
 

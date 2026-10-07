@@ -6,8 +6,11 @@ import pytest
 
 from algo_lab.algorithms.advanced_metaheuristics import (
     PackingAwareVNSSolver,
+    solve_grasp,
     solve_ils,
     solve_late_acceptance,
+    solve_memetic,
+    solve_simulated_annealing,
     solve_tabu,
     solve_vns,
 )
@@ -96,7 +99,16 @@ def _problem():
 
 
 @pytest.mark.parametrize(
-    "solver", [solve_vns, solve_tabu, solve_ils, solve_late_acceptance]
+    "solver",
+    [
+        solve_vns,
+        solve_tabu,
+        solve_ils,
+        solve_late_acceptance,
+        solve_simulated_annealing,
+        solve_grasp,
+        solve_memetic,
+    ],
 )
 def test_advanced_solver_returns_audited_fully_served_solution(solver) -> None:
     solution = solver(*_problem(), time_limit_sec=0.35, random_seed=7)
@@ -110,7 +122,16 @@ def test_advanced_solver_returns_audited_fully_served_solution(solver) -> None:
 
 
 @pytest.mark.parametrize(
-    "solver", [solve_vns, solve_tabu, solve_ils, solve_late_acceptance]
+    "solver",
+    [
+        solve_vns,
+        solve_tabu,
+        solve_ils,
+        solve_late_acceptance,
+        solve_simulated_annealing,
+        solve_grasp,
+        solve_memetic,
+    ],
 )
 def test_advanced_solver_rejects_non_positive_time_budget(solver) -> None:
     with pytest.raises(ValueError, match="time_limit_sec"):

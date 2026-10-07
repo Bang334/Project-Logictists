@@ -8,7 +8,7 @@ production ``SpatialValidator`` before it can be reported as valid.
 import copy
 import math
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from algo_lab.algorithms.greedy_insertion import solve_greedy
 from algo_lab.algorithms.hybrid_alns import HybridALNSSolver
@@ -33,8 +33,23 @@ PlanCandidate = Tuple[int, List[List[ScheduledStop]], List[str]]
 class _AdvancedSearchBase(HybridALNSSolver):
     """Shared construction and final independent audit for VNS and Tabu."""
 
+    def __init__(
+        self,
+        *args,
+        final_spatial_time_limit_sec: float = 1.5,
+        final_repair_time_limit_sec: Optional[float] = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        if final_spatial_time_limit_sec <= 0:
+            raise ValueError("final_spatial_time_limit_sec must be greater than zero")
+        if final_repair_time_limit_sec is not None and final_repair_time_limit_sec <= 0:
+            raise ValueError("final_repair_time_limit_sec must be greater than zero")
+        self.final_spatial_time_limit_sec = final_spatial_time_limit_sec
+        self.final_repair_time_limit_sec = final_repair_time_limit_sec
+
     def _initial_state(self) -> Tuple[List[List[ScheduledStop]], List[str]]:
-        greedy = solve_greedy(
+        greedy = self.initial_solution or solve_greedy(
             self.vehicles,
             self.drivers,
             self.orders,
@@ -50,6 +65,90 @@ class _AdvancedSearchBase(HybridALNSSolver):
         assigned = set(self._assigned_order_ids(routes))
         unassigned = [order.id for order in self.orders if order.id not in assigned]
         return routes, unassigned
+
+    def _randomized_construction(
+        self,
+        deadline: float,
+        *,
+        alpha: float,
+        order_sequence: Optional[Sequence[str]] = None,
+    ) -> Tuple[List[List[ScheduledStop]], List[str]]:
+        """Build a feasible plan with a restricted candidate list.
+
+        ``alpha=0`` is deterministic best insertion for the supplied order
+        sequence. Higher values admit more near-best insertions and create the
+        diversity required by GRASP and the memetic population.
+        """
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError("alpha must be between zero and one")
+        routes: List[List[ScheduledStop]] = [[] for _ in self.vehicles]
+        pending = list(order_sequence or (order.id for order in self.orders))
+        if order_sequence is None:
+            self.rng.shuffle(pending)
+        unassigned: List[str] = []
+
+        for order_index, order_id in enumerate(pending):
+            if time.perf_counter() >= deadline:
+                unassigned.extend(
+                    remaining_id
+                    for remaining_id in pending[order_index:]
+                    if remaining_id not in unassigned
+                )
+                break
+            options = self._insertions_for_order(
+                order_id,
+                routes,
+                deadline,
+                limit=max(4, min(12, len(self.vehicles) * 2)),
+            )
+            if not options:
+                unassigned.append(order_id)
+                continue
+            best_delta = options[0].delta_cost
+            worst_delta = options[-1].delta_cost
+            threshold = best_delta + alpha * (worst_delta - best_delta)
+            restricted = [
+                option for option in options if option.delta_cost <= threshold
+            ]
+            selected = self.rng.choice(restricted or [options[0]])
+            routes[selected.vehicle_index] = selected.stops
+
+        return routes, list(dict.fromkeys(unassigned))
+
+    def _best_relocation_candidate(
+        self,
+        routes: List[List[ScheduledStop]],
+        unassigned: List[str],
+        deadline: float,
+        *,
+        sample_limit: int = 12,
+        option_limit: int = 6,
+    ) -> Optional[PlanCandidate]:
+        incumbent_cost = self._plan_cost(routes, unassigned)
+        best_neighbor: Optional[PlanCandidate] = None
+        assigned = list(dict.fromkeys(self._assigned_order_ids(routes)))
+        self.rng.shuffle(assigned)
+
+        for order_id in assigned[: min(sample_limit, len(assigned))]:
+            if time.perf_counter() >= deadline:
+                break
+            reduced = self._remove_orders(routes, {order_id})
+            options = self._insertions_for_order(
+                order_id, reduced, deadline, limit=option_limit
+            )
+            for option in options:
+                candidate_routes = copy.deepcopy(reduced)
+                candidate_routes[option.vehicle_index] = option.stops
+                candidate_cost = self._plan_cost(candidate_routes, unassigned)
+                if candidate_cost >= incumbent_cost:
+                    continue
+                if best_neighbor is None or candidate_cost < best_neighbor[0]:
+                    best_neighbor = (
+                        candidate_cost,
+                        candidate_routes,
+                        list(unassigned),
+                    )
+        return best_neighbor
 
     def _finalize(
         self,
@@ -181,7 +280,6 @@ class _AdvancedSearchBase(HybridALNSSolver):
             seen.add(signature)
             unique_candidates.append(candidate)
 
-        valid_solutions: List[OptimizationSolution] = []
         for rank, (_, routes, unassigned) in enumerate(
             unique_candidates[:max_audit_candidates], start=1
         ):
@@ -198,33 +296,31 @@ class _AdvancedSearchBase(HybridALNSSolver):
                 and solution.is_temporally_valid
                 and solution.is_spatial_valid
             ):
-                valid_solutions.append(solution)
+                # Candidates are already ordered by the same penalized cost
+                # recomputed by the audit, so the first valid plan is the
+                # cheapest valid elite. Continuing would only repeat costly
+                # production geometry checks without changing the winner.
+                solution.execution_time_sec = round(
+                    time.perf_counter() - started_at, 3
+                )
+                return solution
 
-        if valid_solutions:
-            best_solution = min(
-                valid_solutions,
-                key=lambda solution: (
-                    -solution.fulfillment_rate,
-                    solution.penalized_objective_vnd,
-                    solution.real_economic_cost_vnd,
-                    len(solution.routes),
-                    solution.total_distance_km,
-                ),
+        if unique_candidates:
+            # Preserve the elapsed search/audit time on the fallback path too.
+            fallback_solution = self._finalize(
+                copy.deepcopy(fallback[1]),
+                list(fallback[2]),
+                started_at,
+                f"{solver_name}, verified fallback",
+                spatial_time_limit_sec=spatial_time_limit_sec,
+                repair_time_limit_sec=repair_time_limit_sec,
             )
-            best_solution.execution_time_sec = round(
+            fallback_solution.execution_time_sec = round(
                 time.perf_counter() - started_at, 3
             )
-            return best_solution
+            return fallback_solution
 
-        _, fallback_routes, fallback_unassigned = fallback
-        return self._finalize(
-            copy.deepcopy(fallback_routes),
-            list(fallback_unassigned),
-            started_at,
-            f"{solver_name}, verified fallback",
-            spatial_time_limit_sec=spatial_time_limit_sec,
-            repair_time_limit_sec=repair_time_limit_sec,
-        )
+        raise RuntimeError("Không có candidate hoặc fallback để hoàn tất nghiệm")
 
 
 class PackingAwareVNSSolver(_AdvancedSearchBase):
@@ -600,6 +696,8 @@ class PackingAwareTabuSolver(_AdvancedSearchBase):
             best_unassigned,
             started_at,
             f"Packing-aware Tabu Search ({iteration} iterations)",
+            spatial_time_limit_sec=self.final_spatial_time_limit_sec,
+            repair_time_limit_sec=self.final_repair_time_limit_sec,
         )
 
 
@@ -697,6 +795,8 @@ class PackingAwareILSSolver(_AdvancedSearchBase):
             best_unassigned,
             started_at,
             f"Packing-aware ILS ({iteration} iterations)",
+            spatial_time_limit_sec=self.final_spatial_time_limit_sec,
+            repair_time_limit_sec=self.final_repair_time_limit_sec,
         )
 
 
@@ -758,6 +858,342 @@ class PackingAwareLateAcceptanceSolver(_AdvancedSearchBase):
             best_unassigned,
             started_at,
             f"Packing-aware Late Acceptance ({iteration} iterations)",
+            spatial_time_limit_sec=self.final_spatial_time_limit_sec,
+            repair_time_limit_sec=self.final_repair_time_limit_sec,
+        )
+
+
+class PackingAwareSimulatedAnnealingSolver(_AdvancedSearchBase):
+    """Ruin/recreate simulated annealing with bounded reheating.
+
+    This is deliberately separate from Hybrid ALNS: operator probabilities do
+    not adapt. It tests whether a simple temperature schedule is more robust
+    than adaptive operator scoring on the same feasible neighborhood.
+    """
+
+    def __init__(
+        self,
+        *args,
+        cooling_rate: float = 0.995,
+        reheat_after: int = 40,
+        final_spatial_time_limit_sec: float = 3.0,
+        final_repair_time_limit_sec: float = 5.0,
+        max_elite_audit_candidates: int = 8,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        if not 0.0 < cooling_rate < 1.0:
+            raise ValueError("cooling_rate must be between zero and one")
+        if reheat_after <= 0:
+            raise ValueError("reheat_after must be greater than zero")
+        if final_spatial_time_limit_sec <= 0:
+            raise ValueError("final_spatial_time_limit_sec must be greater than zero")
+        if final_repair_time_limit_sec <= 0:
+            raise ValueError("final_repair_time_limit_sec must be greater than zero")
+        if max_elite_audit_candidates <= 0:
+            raise ValueError("max_elite_audit_candidates must be greater than zero")
+        self.cooling_rate = cooling_rate
+        self.reheat_after = reheat_after
+        self.final_spatial_time_limit_sec = final_spatial_time_limit_sec
+        self.final_repair_time_limit_sec = final_repair_time_limit_sec
+        self.max_elite_audit_candidates = max_elite_audit_candidates
+
+    def solve(self) -> OptimizationSolution:
+        started_at = time.perf_counter()
+        deadline = started_at + self.time_limit_sec
+        routes, unassigned = self._initial_state()
+        current_routes = copy.deepcopy(routes)
+        current_unassigned = list(unassigned)
+        current_cost = self._plan_cost(current_routes, current_unassigned)
+        fallback: PlanCandidate = (
+            current_cost,
+            copy.deepcopy(current_routes),
+            list(current_unassigned),
+        )
+        best_routes = copy.deepcopy(current_routes)
+        best_unassigned = list(current_unassigned)
+        best_cost = current_cost
+        elite_candidates: List[PlanCandidate] = [fallback]
+        initial_temperature = max(1.0, current_cost * 0.03)
+        temperature = initial_temperature
+        stagnant = 0
+        iteration = 0
+        destroy_names = tuple(self.destroy_operators)
+
+        while iteration < self.max_iterations and time.perf_counter() < deadline:
+            assigned_count = len(self._assigned_order_ids(current_routes))
+            if assigned_count == 0:
+                break
+            iteration += 1
+            remove_count = self.rng.randint(
+                1, max(1, min(6, assigned_count // 3 or 1))
+            )
+            destroy_name = self.rng.choice(destroy_names)
+            repair_name = self.rng.choice(self.repair_operators)
+            destroyed, removed = self.destroy_operators[destroy_name](
+                copy.deepcopy(current_routes), remove_count
+            )
+            candidate_routes, candidate_unassigned = self._repair(
+                destroyed,
+                list(dict.fromkeys(current_unassigned + removed)),
+                repair_name,
+                deadline,
+            )
+            candidate_cost = self._plan_cost(
+                candidate_routes, candidate_unassigned
+            )
+            delta = candidate_cost - current_cost
+            if delta <= 0 or self.rng.random() < math.exp(
+                -delta / max(1.0, temperature)
+            ):
+                current_routes = candidate_routes
+                current_unassigned = candidate_unassigned
+                current_cost = candidate_cost
+
+            if candidate_cost < best_cost:
+                best_cost = candidate_cost
+                best_routes = copy.deepcopy(candidate_routes)
+                best_unassigned = list(candidate_unassigned)
+                elite_candidates.append(
+                    (
+                        best_cost,
+                        copy.deepcopy(best_routes),
+                        list(best_unassigned),
+                    )
+                )
+                stagnant = 0
+            else:
+                stagnant += 1
+
+            temperature *= self.cooling_rate
+            if stagnant >= self.reheat_after:
+                temperature = max(temperature, initial_temperature * 0.35)
+                stagnant = 0
+
+        return self._finalize_best_valid(
+            elite_candidates,
+            fallback,
+            started_at,
+            f"Packing-aware Simulated Annealing ({iteration} iterations)",
+            spatial_time_limit_sec=self.final_spatial_time_limit_sec,
+            repair_time_limit_sec=self.final_repair_time_limit_sec,
+            max_audit_candidates=self.max_elite_audit_candidates,
+        )
+
+
+class PackingAwareGRASPSolver(_AdvancedSearchBase):
+    """Multi-start GRASP with randomized insertion and relocation descent."""
+
+    def __init__(
+        self,
+        *args,
+        final_spatial_time_limit_sec: float = 3.0,
+        final_repair_time_limit_sec: float = 5.0,
+        max_elite_audit_candidates: int = 8,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        if final_spatial_time_limit_sec <= 0:
+            raise ValueError("final_spatial_time_limit_sec must be greater than zero")
+        if final_repair_time_limit_sec <= 0:
+            raise ValueError("final_repair_time_limit_sec must be greater than zero")
+        if max_elite_audit_candidates <= 0:
+            raise ValueError("max_elite_audit_candidates must be greater than zero")
+        self.final_spatial_time_limit_sec = final_spatial_time_limit_sec
+        self.final_repair_time_limit_sec = final_repair_time_limit_sec
+        self.max_elite_audit_candidates = max_elite_audit_candidates
+
+    def solve(self) -> OptimizationSolution:
+        started_at = time.perf_counter()
+        deadline = started_at + self.time_limit_sec
+        fallback_routes, fallback_unassigned = self._initial_state()
+        fallback: PlanCandidate = (
+            self._plan_cost(fallback_routes, fallback_unassigned),
+            copy.deepcopy(fallback_routes),
+            list(fallback_unassigned),
+        )
+        elite_candidates: List[PlanCandidate] = [fallback]
+        iteration = 0
+
+        while iteration < self.max_iterations and time.perf_counter() < deadline:
+            iteration += 1
+            alpha = self.rng.uniform(0.10, 0.45)
+            order_sequence = [order.id for order in self.orders]
+            self.rng.shuffle(order_sequence)
+            routes, unassigned = self._randomized_construction(
+                deadline,
+                alpha=alpha,
+                order_sequence=order_sequence,
+            )
+            cost = self._plan_cost(routes, unassigned)
+
+            while time.perf_counter() < deadline:
+                improved = self._best_relocation_candidate(
+                    routes,
+                    unassigned,
+                    deadline,
+                    sample_limit=10,
+                    option_limit=5,
+                )
+                if improved is None:
+                    break
+                cost, routes, unassigned = improved
+
+            elite_candidates.append(
+                (cost, copy.deepcopy(routes), list(unassigned))
+            )
+
+        return self._finalize_best_valid(
+            elite_candidates,
+            fallback,
+            started_at,
+            f"Packing-aware GRASP ({iteration} starts)",
+            spatial_time_limit_sec=self.final_spatial_time_limit_sec,
+            repair_time_limit_sec=self.final_repair_time_limit_sec,
+            max_audit_candidates=self.max_elite_audit_candidates,
+        )
+
+
+class PackingAwareMemeticSolver(_AdvancedSearchBase):
+    """Permutation genetic search with packing-aware decode and local search."""
+
+    def __init__(
+        self,
+        *args,
+        population_size: int = 10,
+        mutation_rate: float = 0.30,
+        final_spatial_time_limit_sec: float = 3.0,
+        final_repair_time_limit_sec: float = 5.0,
+        max_elite_audit_candidates: int = 8,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        if population_size < 4:
+            raise ValueError("population_size must be at least four")
+        if not 0.0 <= mutation_rate <= 1.0:
+            raise ValueError("mutation_rate must be between zero and one")
+        if final_spatial_time_limit_sec <= 0:
+            raise ValueError("final_spatial_time_limit_sec must be greater than zero")
+        if final_repair_time_limit_sec <= 0:
+            raise ValueError("final_repair_time_limit_sec must be greater than zero")
+        if max_elite_audit_candidates <= 0:
+            raise ValueError("max_elite_audit_candidates must be greater than zero")
+        self.population_size = population_size
+        self.mutation_rate = mutation_rate
+        self.final_spatial_time_limit_sec = final_spatial_time_limit_sec
+        self.final_repair_time_limit_sec = final_repair_time_limit_sec
+        self.max_elite_audit_candidates = max_elite_audit_candidates
+
+    def _crossover(
+        self, first: Sequence[str], second: Sequence[str]
+    ) -> List[str]:
+        if len(first) < 2:
+            return list(first)
+        left, right = sorted(self.rng.sample(range(len(first)), 2))
+        child: List[Optional[str]] = [None] * len(first)
+        child[left : right + 1] = first[left : right + 1]
+        remaining = [order_id for order_id in second if order_id not in child]
+        remaining_index = 0
+        for index, order_id in enumerate(child):
+            if order_id is None:
+                child[index] = remaining[remaining_index]
+                remaining_index += 1
+        return [order_id for order_id in child if order_id is not None]
+
+    def _mutate(self, chromosome: Sequence[str]) -> List[str]:
+        mutated = list(chromosome)
+        if len(mutated) < 2:
+            return mutated
+        first, second = sorted(self.rng.sample(range(len(mutated)), 2))
+        if self.rng.random() < 0.5:
+            mutated[first], mutated[second] = mutated[second], mutated[first]
+        else:
+            mutated[first : second + 1] = reversed(mutated[first : second + 1])
+        return mutated
+
+    def _evaluate_chromosome(
+        self, chromosome: Sequence[str], deadline: float
+    ) -> PlanCandidate:
+        routes, unassigned = self._randomized_construction(
+            deadline,
+            alpha=0.0,
+            order_sequence=chromosome,
+        )
+        improved = self._best_relocation_candidate(
+            routes,
+            unassigned,
+            deadline,
+            sample_limit=6,
+            option_limit=4,
+        )
+        if improved is not None:
+            return improved
+        return self._plan_cost(routes, unassigned), routes, unassigned
+
+    def solve(self) -> OptimizationSolution:
+        started_at = time.perf_counter()
+        deadline = started_at + self.time_limit_sec
+        fallback_routes, fallback_unassigned = self._initial_state()
+        fallback: PlanCandidate = (
+            self._plan_cost(fallback_routes, fallback_unassigned),
+            copy.deepcopy(fallback_routes),
+            list(fallback_unassigned),
+        )
+        order_ids = [order.id for order in self.orders]
+        population: List[List[str]] = [list(order_ids)]
+        by_deadline = sorted(
+            order_ids,
+            key=lambda order_id: self.order_by_id[order_id].delivery_window_end_sec,
+        )
+        population.append(by_deadline)
+        while len(population) < self.population_size:
+            chromosome = list(order_ids)
+            self.rng.shuffle(chromosome)
+            population.append(chromosome)
+
+        elite_candidates: List[PlanCandidate] = [fallback]
+        generation = 0
+        while generation < self.max_iterations and time.perf_counter() < deadline:
+            generation += 1
+            scored = []
+            for chromosome in population:
+                if time.perf_counter() >= deadline:
+                    break
+                candidate = self._evaluate_chromosome(chromosome, deadline)
+                scored.append((candidate[0], chromosome, candidate))
+                elite_candidates.append(
+                    (
+                        candidate[0],
+                        copy.deepcopy(candidate[1]),
+                        list(candidate[2]),
+                    )
+                )
+            if len(scored) < 2:
+                break
+            scored.sort(key=lambda row: row[0])
+            next_population = [list(scored[0][1]), list(scored[1][1])]
+            tournament_size = min(3, len(scored))
+            while len(next_population) < self.population_size:
+                first = min(
+                    self.rng.sample(scored, tournament_size), key=lambda row: row[0]
+                )[1]
+                second = min(
+                    self.rng.sample(scored, tournament_size), key=lambda row: row[0]
+                )[1]
+                child = self._crossover(first, second)
+                if self.rng.random() < self.mutation_rate:
+                    child = self._mutate(child)
+                next_population.append(child)
+            population = next_population
+
+        return self._finalize_best_valid(
+            elite_candidates,
+            fallback,
+            started_at,
+            f"Packing-aware Memetic Search ({generation} generations)",
+            spatial_time_limit_sec=self.final_spatial_time_limit_sec,
+            repair_time_limit_sec=self.final_repair_time_limit_sec,
+            max_audit_candidates=self.max_elite_audit_candidates,
         )
 
 
@@ -775,6 +1211,7 @@ def solve_vns(
     final_spatial_time_limit_sec: float = 5.0,
     final_repair_time_limit_sec: float = 8.0,
     max_elite_audit_candidates: int = 16,
+    initial_solution: Optional[OptimizationSolution] = None,
 ) -> OptimizationSolution:
     return PackingAwareVNSSolver(
         vehicles,
@@ -789,6 +1226,7 @@ def solve_vns(
         final_spatial_time_limit_sec=final_spatial_time_limit_sec,
         final_repair_time_limit_sec=final_repair_time_limit_sec,
         max_elite_audit_candidates=max_elite_audit_candidates,
+        initial_solution=initial_solution,
     ).solve()
 
 
@@ -803,6 +1241,9 @@ def solve_tabu(
     *,
     time_limit_sec: float = 3.0,
     random_seed: int = 0,
+    final_spatial_time_limit_sec: float = 1.5,
+    final_repair_time_limit_sec: Optional[float] = None,
+    initial_solution: Optional[OptimizationSolution] = None,
 ) -> OptimizationSolution:
     return PackingAwareTabuSolver(
         vehicles,
@@ -814,6 +1255,9 @@ def solve_tabu(
         node_id_to_index,
         time_limit_sec=time_limit_sec,
         random_seed=random_seed,
+        final_spatial_time_limit_sec=final_spatial_time_limit_sec,
+        final_repair_time_limit_sec=final_repair_time_limit_sec,
+        initial_solution=initial_solution,
     ).solve()
 
 
@@ -828,6 +1272,9 @@ def solve_ils(
     *,
     time_limit_sec: float = 3.0,
     random_seed: int = 0,
+    final_spatial_time_limit_sec: float = 1.5,
+    final_repair_time_limit_sec: Optional[float] = None,
+    initial_solution: Optional[OptimizationSolution] = None,
 ) -> OptimizationSolution:
     return PackingAwareILSSolver(
         vehicles,
@@ -839,6 +1286,9 @@ def solve_ils(
         node_id_to_index,
         time_limit_sec=time_limit_sec,
         random_seed=random_seed,
+        final_spatial_time_limit_sec=final_spatial_time_limit_sec,
+        final_repair_time_limit_sec=final_repair_time_limit_sec,
+        initial_solution=initial_solution,
     ).solve()
 
 
@@ -853,6 +1303,9 @@ def solve_late_acceptance(
     *,
     time_limit_sec: float = 3.0,
     random_seed: int = 0,
+    final_spatial_time_limit_sec: float = 1.5,
+    final_repair_time_limit_sec: Optional[float] = None,
+    initial_solution: Optional[OptimizationSolution] = None,
 ) -> OptimizationSolution:
     return PackingAwareLateAcceptanceSolver(
         vehicles,
@@ -864,4 +1317,100 @@ def solve_late_acceptance(
         node_id_to_index,
         time_limit_sec=time_limit_sec,
         random_seed=random_seed,
+        final_spatial_time_limit_sec=final_spatial_time_limit_sec,
+        final_repair_time_limit_sec=final_repair_time_limit_sec,
+        initial_solution=initial_solution,
+    ).solve()
+
+
+def solve_simulated_annealing(
+    vehicles: List[FleetVehicle],
+    drivers: List[DriverOption],
+    orders: List[OrderPair],
+    policy: CostPolicy,
+    distance_matrix: List[List[float]],
+    duration_matrix: List[List[float]],
+    node_id_to_index: Dict[str, int],
+    *,
+    time_limit_sec: float = 3.0,
+    random_seed: int = 0,
+    final_spatial_time_limit_sec: float = 3.0,
+    final_repair_time_limit_sec: float = 5.0,
+    initial_solution: Optional[OptimizationSolution] = None,
+) -> OptimizationSolution:
+    return PackingAwareSimulatedAnnealingSolver(
+        vehicles,
+        drivers,
+        orders,
+        policy,
+        distance_matrix,
+        duration_matrix,
+        node_id_to_index,
+        time_limit_sec=time_limit_sec,
+        random_seed=random_seed,
+        final_spatial_time_limit_sec=final_spatial_time_limit_sec,
+        final_repair_time_limit_sec=final_repair_time_limit_sec,
+        initial_solution=initial_solution,
+    ).solve()
+
+
+def solve_grasp(
+    vehicles: List[FleetVehicle],
+    drivers: List[DriverOption],
+    orders: List[OrderPair],
+    policy: CostPolicy,
+    distance_matrix: List[List[float]],
+    duration_matrix: List[List[float]],
+    node_id_to_index: Dict[str, int],
+    *,
+    time_limit_sec: float = 3.0,
+    random_seed: int = 0,
+    final_spatial_time_limit_sec: float = 3.0,
+    final_repair_time_limit_sec: float = 5.0,
+    initial_solution: Optional[OptimizationSolution] = None,
+) -> OptimizationSolution:
+    return PackingAwareGRASPSolver(
+        vehicles,
+        drivers,
+        orders,
+        policy,
+        distance_matrix,
+        duration_matrix,
+        node_id_to_index,
+        time_limit_sec=time_limit_sec,
+        random_seed=random_seed,
+        final_spatial_time_limit_sec=final_spatial_time_limit_sec,
+        final_repair_time_limit_sec=final_repair_time_limit_sec,
+        initial_solution=initial_solution,
+    ).solve()
+
+
+def solve_memetic(
+    vehicles: List[FleetVehicle],
+    drivers: List[DriverOption],
+    orders: List[OrderPair],
+    policy: CostPolicy,
+    distance_matrix: List[List[float]],
+    duration_matrix: List[List[float]],
+    node_id_to_index: Dict[str, int],
+    *,
+    time_limit_sec: float = 3.0,
+    random_seed: int = 0,
+    final_spatial_time_limit_sec: float = 3.0,
+    final_repair_time_limit_sec: float = 5.0,
+    initial_solution: Optional[OptimizationSolution] = None,
+) -> OptimizationSolution:
+    return PackingAwareMemeticSolver(
+        vehicles,
+        drivers,
+        orders,
+        policy,
+        distance_matrix,
+        duration_matrix,
+        node_id_to_index,
+        time_limit_sec=time_limit_sec,
+        random_seed=random_seed,
+        final_spatial_time_limit_sec=final_spatial_time_limit_sec,
+        final_repair_time_limit_sec=final_repair_time_limit_sec,
+        initial_solution=initial_solution,
     ).solve()

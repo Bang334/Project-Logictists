@@ -156,6 +156,7 @@ def main() -> None:
             lambda seed: solve_genetic(
                 vehicles, drivers, orders, policy, dist, dur, node_map,
                 time_limit_sec=args.time_limit,
+                random_seed=seed,
             ),
         ),
         (
@@ -163,6 +164,7 @@ def main() -> None:
             lambda seed: solve_alns(
                 vehicles, drivers, orders, policy, dist, dur, node_map,
                 time_limit_sec=args.time_limit,
+                random_seed=seed,
             ),
         ),
         (

@@ -133,7 +133,15 @@ def audit_solution(
     *,
     spatial_time_limit_sec: float = 1.5,
 ) -> SolutionAudit:
-    """Normalize metrics and independently validate a solver result in place."""
+    """Normalize metrics and independently validate a solver result in place.
+
+    ``spatial_time_limit_sec`` is a solution-wide budget. Reapplying the full
+    budget to every route makes runtime grow silently with the number of used
+    vehicles and prevents fair comparisons between algorithms.
+    """
+    if spatial_time_limit_sec <= 0:
+        raise ValueError("spatial_time_limit_sec must be greater than zero")
+    spatial_remaining = spatial_time_limit_sec
     order_by_id = {order.id: order for order in orders}
     cargo_by_id = {item.id: item for order in orders for item in order.items}
     vehicle_by_id = {vehicle.id: vehicle for vehicle in vehicles}
@@ -216,12 +224,20 @@ def audit_solution(
             total_cost += evaluation.cost.total_cost_vnd
         total_distance += evaluation.distance_km
 
-        route_spatial_valid, reason, layouts, unload_sequences = _validate_spatial_route(
-            vehicle,
-            route.stops,
-            cargo_by_id,
-            max_time_seconds=spatial_time_limit_sec,
-        )
+        if spatial_remaining <= 0:
+            route_spatial_valid = False
+            reason = "Hết ngân sách kiểm tra bố trí cho toàn nghiệm"
+            layouts = []
+            unload_sequences = []
+        else:
+            spatial_started_at = time.monotonic()
+            route_spatial_valid, reason, layouts, unload_sequences = _validate_spatial_route(
+                vehicle,
+                route.stops,
+                cargo_by_id,
+                max_time_seconds=spatial_remaining,
+            )
+            spatial_remaining -= time.monotonic() - spatial_started_at
         if not route_spatial_valid:
             spatial_valid = False
             spatially_invalid_vehicle_ids.append(vehicle.id)

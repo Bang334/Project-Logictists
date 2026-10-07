@@ -13,8 +13,8 @@ Tài liệu này giải thích chi tiết và toàn diện 4 câu hỏi cốt l�
 Thư mục **`algo_lab/`** (Algorithm Laboratory) được tạo ra với vai trò là **một môi trường nghiên cứu và thực nghiệm độc lập (Sandbox)**:
 
 * **Chạy 100% trong Terminal (CLI):** Không cần khởi động Frontend (React), không cần Backend (NestJS), không cần Database (PostgreSQL). Giúp nhà phát triển kiểm tra thuật toán ngay lập tức với tốc độ nhanh nhất.
-* **Đấu trường so tài đa thuật toán:** Cho phép đặt các trường phái thuật toán khác nhau (Greedy Heuristic, Genetic Algorithm, ALNS, OR-Tools) lên cùng một bàn cân để so sánh trực tiếp trên cùng một bộ dữ liệu.
-* **Tìm ra giải pháp "Vừa nhanh vừa tối ưu nhất":** 
+* **Tuyển chọn metaheuristic cho project:** So sánh 10 thuật toán tìm kiếm trên cùng 12 dataset, nhiều random seed, cùng ngân sách và cùng validator. Greedy/OR-Tools không được xếp hạng trong phép tuyển chọn chính.
+* **Tìm ứng viên vừa tin cậy vừa có chất lượng tốt:**
   * Trả lời được câu hỏi thuật toán nào phản hồi trong 1-3 giây.
   * Thuật toán nào tiết kiệm chi phí xăng xe và nhân công nhất.
   * Thuật toán nào giải quyết triệt để vấn đề xếp hàng lên thùng xe ngoài đời thực.
@@ -22,12 +22,12 @@ Thư mục **`algo_lab/`** (Algorithm Laboratory) được tạo ra với vai tr
 
 ```mermaid
 flowchart LR
-    A["Dữ liệu thực tế<br/>(Orders, Fleet, Map)"] --> B["algo_lab/run_benchmark.py"]
-    B --> C1["Greedy Heuristic"]
-    B --> C2["Genetic Algorithm (GA)"]
-    B --> C3["ALNS (Metaheuristic)"]
-    B --> C4["Google OR-Tools"]
-    C1 & C2 & C3 & C4 --> D["Bảng so sánh Terminal<br/>(Thời gian, Chi phí, Xếp dỡ 2D, Tỷ lệ đơn)"]
+    A["Dữ liệu thực tế<br/>(Orders, Fleet, Map)"] --> B["algo_lab/run_parallel_benchmark.py"]
+    B --> C1["ALNS / Hybrid ALNS"]
+    B --> C2["Genetic / Memetic"]
+    B --> C3["VNS / Tabu / ILS"]
+    B --> C4["LAHC / SA / GRASP"]
+    C1 & C2 & C3 & C4 --> D["Xếp hạng đa seed<br/>(PASS, phục vụ đủ, gap chi phí, độ ổn định, thời gian)"]
 ```
 
 ---
@@ -149,7 +149,7 @@ Bản đồ vị trí 2D của từng kiện hàng trên mặt sàn thùng xe:
             │
             ▼
 [ THUẬT TOÁN & BỘ KIỂM TRA LIFO DOOR CLEARANCE ]
- (Greedy Insertion / Genetic Algorithm / ALNS / OR-Tools)
+ (ALNS / Genetic / VNS / Tabu / ILS / LAHC / SA / GRASP / Memetic)
             │
             ▼
 [ MỤC TIÊU TỐI ƯU / OBJECTIVE ]
