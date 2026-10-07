@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from algo_lab.run_parallel_benchmark import (
     ALGORITHM_NAMES,
     DATASETS,
@@ -5,6 +8,9 @@ from algo_lab.run_parallel_benchmark import (
     _markdown,
     _parse_seeds,
 )
+
+
+NOTEBOOK_PATH = Path(__file__).resolve().parents[1] / "TMS_Algorithm_Colab.ipynb"
 
 
 def _row(algorithm: str, audit: str, cost: int):
@@ -72,6 +78,20 @@ def test_benchmark_uses_ten_metaheuristics_and_twelve_datasets() -> None:
     assert len(DATASETS) == 12
     assert "Greedy" not in ALGORITHM_NAMES
     assert "OR-Tools" not in ALGORITHM_NAMES
+
+
+def test_colab_bootstrap_always_syncs_git_source_before_import() -> None:
+    notebook = json.loads(NOTEBOOK_PATH.read_text(encoding="utf-8"))
+    source = "\n".join(
+        "".join(cell.get("source", [])) for cell in notebook["cells"]
+    )
+
+    assert "files.upload" not in source
+    assert "tms_colab_bundle.zip" not in source
+    assert 'REPO_BRANCH = "feat/phase-1-core-tms"' in source
+    assert '"fetch", "--depth", "1", "origin", REPO_BRANCH' in source
+    assert "sys.modules" in source
+    assert "SOURCE_COMMIT" in source
 
 
 def test_seed_parser_requires_unique_integer_seeds() -> None:
