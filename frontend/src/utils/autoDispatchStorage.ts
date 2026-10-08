@@ -7,6 +7,7 @@ export interface StoredAutoDispatchState {
   scheduleMode: AutomaticDispatchScheduleModeUI;
   customStartTimeStr?: string | null;
   useCustomTime: boolean;
+  searchBudgetSeconds?: number;
   selectedVehicleForMap?: string | 'ALL';
   savedAt: string;
 }

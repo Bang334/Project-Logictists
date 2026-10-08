@@ -66,6 +66,7 @@ export class OptimizationJobsService {
       branchId,
       scheduleMode: dto.scheduleMode ?? null,
       customStartTime: dto.customStartTime ?? null,
+      searchBudgetSeconds: dto.searchBudgetSeconds ?? null,
     };
     const requestHash = createHash('sha256')
       .update(JSON.stringify(request))
@@ -397,6 +398,7 @@ export class OptimizationJobsService {
     const snapshot = job.requestSnapshot as {
       planningEpochIso?: unknown;
       scheduleMode?: unknown;
+      searchBudgetSeconds?: unknown;
     };
     const parameters =
       job.parameters &&
@@ -432,6 +434,10 @@ export class OptimizationJobsService {
           : null,
       scheduleMode:
         typeof snapshot.scheduleMode === 'string' ? snapshot.scheduleMode : null,
+      searchBudgetSeconds:
+        typeof snapshot.searchBudgetSeconds === 'number'
+          ? snapshot.searchBudgetSeconds
+          : null,
       progress: {
         stage: progressStage,
         details: progressDetails,

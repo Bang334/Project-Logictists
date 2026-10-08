@@ -84,6 +84,7 @@ class BaselineCostCalculator:
             node_index = self.node_idx_by_id[action.stop_id]
             order = self.nodes[node_index]["order"]
             travel_seconds = self.request.duration_matrix_seconds[current_node][node_index]
+            leg_start = round(current_time)
             total_distance += self.request.distance_matrix_meters[current_node][node_index]
             arrival = current_time + travel_seconds
             if arrival > vehicle.available_end_sec:
@@ -105,7 +106,9 @@ class BaselineCostCalculator:
                     f"LOAD_STATE:{order.order_number} dỡ kiện chưa có trên xe"
                 )
 
-            departure = arrival + order.service_seconds(action.stop_type)
+            rounded_arrival = round(arrival)
+            service_time_sec = order.service_seconds(action.stop_type)
+            departure = rounded_arrival + service_time_sec
             scheduled.append(
                 ScheduledStop(
                     sequence=len(scheduled) + 1,
@@ -115,8 +118,11 @@ class BaselineCostCalculator:
                     order_id=order.id,
                     latitude=action.latitude,
                     longitude=action.longitude,
-                    arrival_time_sec=round(arrival),
-                    departure_time_sec=round(departure),
+                    arrival_time_sec=rounded_arrival,
+                    departure_time_sec=departure,
+                    travel_time_sec=max(0, rounded_arrival - leg_start),
+                    waiting_time_sec=0,
+                    service_time_sec=service_time_sec,
                     items_loaded=[item.id for item in action.items_to_load],
                     items_unloaded=action.items_to_unload,
                     current_weight_kg=round(max(0.0, current_weight), 3),

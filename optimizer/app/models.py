@@ -170,6 +170,7 @@ class FloorState(StrictContractModel):
     weight_utilization_percent: float
     area_utilization_percent: float
     is_valid: bool
+    unload_sequence: List[str] = Field(default_factory=list)
     package_access_paths: List[PackageAccessPath] = Field(default_factory=list)
     error_code: Optional[str] = None
     error_message: Optional[str] = None
@@ -241,6 +242,7 @@ class FleetOptimizationRequest(StrictContractModel):
     orders: List[OrderPair] = Field(min_length=1)
     policy: CostPolicy
     max_time_seconds: int = Field(default=15, ge=1, le=120)
+    search_time_seconds: Optional[int] = Field(default=None, ge=1, le=120)
     distance_matrix_meters: List[List[float]]
     duration_matrix_seconds: List[List[float]]
 
@@ -272,6 +274,9 @@ class ScheduledStop(StrictContractModel):
     longitude: float
     arrival_time_sec: int
     departure_time_sec: int
+    travel_time_sec: int = Field(default=0, ge=0)
+    waiting_time_sec: int = Field(default=0, ge=0)
+    service_time_sec: int = Field(default=0, ge=0)
     items_loaded: List[str] = Field(default_factory=list)
     items_unloaded: List[str] = Field(default_factory=list)
     current_weight_kg: float = 0.0
@@ -305,6 +310,8 @@ class OptimizedRoute(StrictContractModel):
     driver_license_class: Optional[str] = None
     total_distance_km: float
     total_duration_minutes: float
+    return_travel_time_sec: int = Field(default=0, ge=0)
+    return_waiting_time_sec: int = Field(default=0, ge=0)
     stops: List[ScheduledStop]
     spatial_validation: SpatialValidationResult
     cost: Optional[RouteCostBreakdown] = None

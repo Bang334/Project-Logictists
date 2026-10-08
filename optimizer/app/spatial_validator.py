@@ -29,6 +29,7 @@ class _StepSnapshot:
 
     stop_index: int
     placed_items: Tuple[PlacedItem, ...]
+    unload_sequence: Tuple[str, ...] = ()
 
 
 @dataclass
@@ -368,7 +369,92 @@ class SpatialValidator:
         return None
 
     def validate_plan(self, stops: List[StopAction]) -> SpatialValidationResult:
-        """Search and validate a fixed pickup/delivery sequence step by step."""
+        """Search and validate a fixed pickup/delivery sequence step by step.
+
+        Once the vehicle is empty, later cargo cannot constrain any earlier
+        placement.  Validate those independent load cycles separately so the
+        delivery rank and search branching of a future cycle cannot create a
+        false negative in a completed cycle.
+        """
+        cycles = self._split_independent_load_cycles(stops)
+        if len(cycles) <= 1:
+            return self._validate_load_cycle(stops)
+
+        step_states: List[FloorState] = []
+        max_weight = 0.0
+        max_area = 0.0
+        step_offset = 0
+        for cycle in cycles:
+            result = self._validate_load_cycle(cycle)
+            adjusted_states = [
+                state.model_copy(
+                    update={"step_index": state.step_index + step_offset}
+                )
+                for state in result.step_states
+            ]
+            max_weight = max(max_weight, result.max_weight_kg)
+            max_area = max(max_area, result.max_area_cm2)
+            if not result.is_valid:
+                return result.model_copy(
+                    update={
+                        "max_weight_kg": max_weight,
+                        "max_area_cm2": max_area,
+                        "step_states": step_states + adjusted_states,
+                    }
+                )
+            step_states.extend(adjusted_states)
+            step_offset += len(cycle)
+
+        return SpatialValidationResult(
+            is_valid=True,
+            max_weight_kg=max_weight,
+            max_area_cm2=max_area,
+            step_states=step_states,
+        )
+
+    def _split_independent_load_cycles(
+        self, stops: List[StopAction]
+    ) -> List[List[StopAction]]:
+        """Split only at proven empty-vehicle boundaries.
+
+        If the declarations contain a missing unload or duplicate load, keep
+        the plan intact so the normal validator reports the original contract
+        violation instead of accidentally hiding it behind segmentation.
+        """
+        if not stops:
+            return [stops]
+
+        onboard_ids: Set[str] = set()
+        cycle_start = 0
+        cycles: List[List[StopAction]] = []
+        for stop_index, stop in enumerate(stops):
+            unload_ids = list(stop.items_to_unload)
+            if (
+                len(unload_ids) != len(set(unload_ids))
+                or any(item_id not in onboard_ids for item_id in unload_ids)
+            ):
+                return [stops]
+            onboard_ids.difference_update(unload_ids)
+
+            load_ids = [item.id for item in stop.items_to_load]
+            if (
+                len(load_ids) != len(set(load_ids))
+                or any(item_id in onboard_ids for item_id in load_ids)
+            ):
+                return [stops]
+            onboard_ids.update(load_ids)
+
+            if not onboard_ids and stop_index + 1 < len(stops):
+                cycles.append(stops[cycle_start : stop_index + 1])
+                cycle_start = stop_index + 1
+
+        cycles.append(stops[cycle_start:])
+        return cycles
+
+    def _validate_load_cycle(
+        self, stops: List[StopAction]
+    ) -> SpatialValidationResult:
+        """Validate one continuous interval during which cargo is on board."""
         unload_step_by_item = self._build_unload_steps(stops)
         context = _SearchContext(
             max_nodes=self.max_search_nodes,
@@ -466,6 +552,7 @@ class SpatialValidator:
                         (occupied_area / self.total_floor_area) * 100, 1
                     ),
                     is_valid=True,
+                    unload_sequence=list(snapshot.unload_sequence),
                     package_access_paths=self._build_package_access_paths(
                         placed_by_id
                     ),
@@ -660,6 +747,9 @@ class SpatialValidator:
                 continue
             explored_layouts.add(layout_key)
             if len(explored_layouts) > 6:
+                # This local branch cap is a search budget just like the global
+                # node/time limits.  Exhausting it cannot prove infeasibility.
+                context.limit_reached = True
                 break
             current_weight = sum(item.weight_kg for item in loaded_items.values())
             occupied_area = sum(
@@ -671,6 +761,7 @@ class SpatialValidator:
                 _StepSnapshot(
                     stop_index=stop_index,
                     placed_items=tuple(loaded_items.values()),
+                    unload_sequence=tuple(unload_sequence),
                 )
             ]
             solution = self._search_stops(

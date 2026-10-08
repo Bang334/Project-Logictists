@@ -19,6 +19,7 @@ import {
   Popover,
   TimePicker,
   Popconfirm,
+  InputNumber,
 } from 'antd';
 import dayjs from 'dayjs';
 import {
@@ -35,7 +36,6 @@ import {
   PlayCircleOutlined,
   FullscreenOutlined,
   FullscreenExitOutlined,
-  CoffeeOutlined,
   ClockCircleOutlined,
   ScheduleOutlined,
   UnorderedListOutlined,
@@ -83,168 +83,20 @@ import {
   saveAutoDispatchState,
   saveLastSelectedBranch,
 } from '../utils/autoDispatchStorage';
+import { buildDriverSchedule } from '../utils/driverSchedule';
+import {
+  DEFAULT_SEARCH_BUDGET_SECONDS,
+  getSearchBudgetDescription,
+  MAX_SEARCH_BUDGET_SECONDS,
+  MIN_SEARCH_BUDGET_SECONDS,
+  presetForSearchBudget,
+  resolveSearchBudgetSeconds,
+  SearchBudgetPreset,
+} from '../utils/optimizationSearchBudget';
 
 const { Text } = Typography;
 const currency = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' });
 const getRouteKey = (route: OptimizedRouteUI) => route.route_id;
-
-const formatMinutesToTime = (minutes: number): string => {
-  const h = Math.floor((minutes / 60) % 24);
-  const m = Math.floor(minutes % 60);
-  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
-};
-
-interface DriverScheduleItem {
-  id: string;
-  type: 'DEPOT_START' | 'STOP' | 'REST' | 'DEPOT_END';
-  startTimeStr: string;
-  endTimeStr: string;
-  durationMinutes: number;
-  title: string;
-  address?: string;
-  orderNumber?: string;
-  actionType?: 'PICKUP' | 'DELIVERY';
-  deltaPackages?: number;
-  weightKg?: number;
-  stopSequence?: number;
-  stopIndex?: number;
-  notes?: string;
-  tagColor?: string;
-}
-
-interface DriverScheduleResult {
-  items: DriverScheduleItem[];
-  startTime: string;
-  endTime: string;
-  totalWorkDuration: string;
-  drivingDuration: string;
-  serviceDuration: string;
-  restDurationMinutes: number;
-}
-
-const buildDriverSchedule = (route: OptimizedRouteUI): DriverScheduleResult => {
-  const items: DriverScheduleItem[] = [];
-  const routeStartMinutes = route.start_time_sec / 60;
-  let currentMinute = routeStartMinutes;
-
-  // 1. Xuất bến tại Depot
-  const depotStartMinutes = 15;
-  items.push({
-    id: 'depot-start',
-    type: 'DEPOT_START',
-    startTimeStr: formatMinutesToTime(currentMinute),
-    endTimeStr: formatMinutesToTime(currentMinute + depotStartMinutes),
-    durationMinutes: depotStartMinutes,
-    title: `Xuất bến tại ${route.depot?.name || 'Chi nhánh / Kho xuất phát'}`,
-    notes: 'Kiểm tra kỹ thuật xe, nhận lệnh điều phối, kiểm tra chằng buộc hàng hóa',
-    tagColor: 'blue',
-  });
-  currentMinute += depotStartMinutes;
-
-  let totalDriveMinutes = 0;
-  let totalServiceMinutes = 0;
-  let restMinutes = 0;
-  let hasRest = false;
-
-  const stops = route.stops || [];
-  const avgDriveBetweenStops = Math.max(
-    18,
-    Math.round((route.total_duration_minutes * 0.65) / Math.max(1, stops.length + 1))
-  );
-
-  stops.forEach((stop, idx) => {
-    // Chặng di chuyển tới điểm dừng
-    let travelTime = avgDriveBetweenStops;
-    if (stop.arrival_time_sec && stop.arrival_time_sec > 0) {
-      const targetArrival = Math.round(stop.arrival_time_sec / 60);
-      travelTime = Math.max(10, targetArrival - currentMinute);
-    }
-    totalDriveMinutes += travelTime;
-    currentMinute += travelTime;
-
-    // Chèn giờ nghỉ trưa / nghỉ ngơi phục hồi an toàn (Bất biến BR07 & Luật GTĐB: Không lái liên tục quá 4h)
-    const currentMinuteOfDay = currentMinute % (24 * 60);
-    if (!hasRest && (currentMinuteOfDay >= 11 * 60 + 30 || totalDriveMinutes >= 210)) {
-      const restDuration = 45;
-      items.push({
-        id: 'rest-break',
-        type: 'REST',
-        startTimeStr: formatMinutesToTime(currentMinute),
-        endTimeStr: formatMinutesToTime(currentMinute + restDuration),
-        durationMinutes: restDuration,
-        title: 'Nghỉ ngơi an toàn & Ăn trưa giữa ca (45 phút)',
-        notes: 'Tuân thủ Bất biến BR07 & Luật GTĐB: Tài xế nghỉ ngơi phục hồi thể lực sau thời gian lái xe',
-        tagColor: 'gold',
-      });
-      currentMinute += restDuration;
-      restMinutes += restDuration;
-      hasRest = true;
-    }
-
-    // Thời gian bốc dỡ tại điểm
-    const loadedCount = stop.items_loaded?.length || 0;
-    const unloadedCount = stop.items_unloaded?.length || 0;
-    const pkgCount = stop.stop_type === 'PICKUP' ? loadedCount : unloadedCount;
-    const serviceTime = Math.min(35, Math.max(15, Math.round(12 + pkgCount * 1.2)));
-    totalServiceMinutes += serviceTime;
-
-    const arrivalStr = formatMinutesToTime(currentMinute);
-    const departureStr = formatMinutesToTime(currentMinute + serviceTime);
-
-    const orderCode = stop.order_id
-      ? (stop.order_id.length > 10 ? `DH-${stop.order_id.slice(-6).toUpperCase()}` : stop.order_id)
-      : `Đơn #${idx + 1}`;
-
-    items.push({
-      id: `stop-${stop.sequence}-${stop.location_id}`,
-      type: 'STOP',
-      startTimeStr: arrivalStr,
-      endTimeStr: departureStr,
-      durationMinutes: serviceTime,
-      title: `Điểm #${stop.sequence}: ${stop.stop_type === 'PICKUP' ? 'LẤY HÀNG' : 'GIAO HÀNG'}`,
-      address: stop.location_name,
-      orderNumber: orderCode,
-      actionType: stop.stop_type,
-      deltaPackages: stop.stop_type === 'PICKUP' ? loadedCount : -unloadedCount,
-      weightKg: stop.current_weight_kg,
-      stopSequence: stop.sequence,
-      stopIndex: idx,
-      notes: `${stop.stop_type === 'PICKUP' ? `Bốc ${loadedCount} kiện lên sàn xe` : `Dỡ giao ${unloadedCount} kiện cho khách`} (thời gian thao tác ~${serviceTime} phút) · Tải xe: ${stop.current_weight_kg.toFixed(0)} kg`,
-      tagColor: stop.stop_type === 'PICKUP' ? 'green' : 'orange',
-    });
-
-    currentMinute += serviceTime;
-  });
-
-  // Chặng về bến kết thúc ca
-  const returnDrive = Math.max(20, Math.round(avgDriveBetweenStops * 1.1));
-  totalDriveMinutes += returnDrive;
-  currentMinute += returnDrive;
-
-  items.push({
-    id: 'depot-end',
-    type: 'DEPOT_END',
-    startTimeStr: formatMinutesToTime(currentMinute),
-    endTimeStr: formatMinutesToTime(currentMinute + 15),
-    durationMinutes: 15,
-    title: `Về bến kết thúc ca: ${route.depot?.name || 'Chi nhánh / Kho xuất phát'}`,
-    notes: 'Bàn giao chứng từ POD, biên bản nghiệm thu giao hàng, kiểm tra xe, kết thúc ca làm việc',
-    tagColor: 'blue',
-  });
-  currentMinute += 15;
-
-  const totalShiftMinutes = currentMinute - routeStartMinutes;
-
-  return {
-    items,
-    startTime: formatMinutesToTime(routeStartMinutes),
-    endTime: formatMinutesToTime(currentMinute),
-    totalWorkDuration: `${Math.floor(totalShiftMinutes / 60)}h ${totalShiftMinutes % 60}p`,
-    drivingDuration: `${(totalDriveMinutes / 60).toFixed(1)} giờ`,
-    serviceDuration: `${(totalServiceMinutes / 60).toFixed(1)} giờ`,
-    restDurationMinutes: restMinutes,
-  };
-};
 
 const AutomaticDispatchPage: React.FC = () => {
   const { message } = AntdApp.useApp();
@@ -273,7 +125,15 @@ const AutomaticDispatchPage: React.FC = () => {
   const [scheduleMode, setScheduleMode] = useState<AutomaticDispatchScheduleModeUI>('CURRENT_TIME');
   const [customStartTime, setCustomStartTime] = useState<dayjs.Dayjs | null>(null);
   const [useCustomTime, setUseCustomTime] = useState<boolean>(false);
+  const [searchBudgetPreset, setSearchBudgetPreset] =
+    useState<SearchBudgetPreset>(DEFAULT_SEARCH_BUDGET_SECONDS);
+  const [customSearchBudgetSeconds, setCustomSearchBudgetSeconds] =
+    useState<number>(60);
   const [isRestoredFromStorage, setIsRestoredFromStorage] = useState<boolean>(false);
+  const searchBudgetSeconds = resolveSearchBudgetSeconds(
+    searchBudgetPreset,
+    customSearchBudgetSeconds,
+  );
 
   // Modal chỉnh sửa tài xế, xe và xem đơn hàng
   const [selectedDriverForEdit, setSelectedDriverForEdit] = useState<Driver | null>(null);
@@ -330,6 +190,15 @@ const AutomaticDispatchPage: React.FC = () => {
         }
         if (stored.customStartTimeStr) {
           setCustomStartTime(dayjs(stored.customStartTimeStr));
+        }
+        const restoredSearchBudget =
+          response.data.searchBudgetSeconds ?? stored.searchBudgetSeconds;
+        if (typeof restoredSearchBudget === 'number') {
+          const restoredPreset = presetForSearchBudget(restoredSearchBudget);
+          setSearchBudgetPreset(restoredPreset);
+          if (restoredPreset === 'CUSTOM') {
+            setCustomSearchBudgetSeconds(restoredSearchBudget);
+          }
         }
         if (stored.selectedVehicleForMap) {
           setSelectedVehicleForMap(stored.selectedVehicleForMap);
@@ -544,6 +413,7 @@ const AutomaticDispatchPage: React.FC = () => {
           scheduleMode === 'CURRENT_TIME' && useCustomTime && customStartTime
             ? customStartTime.toISOString()
             : undefined,
+        searchBudgetSeconds,
       };
       optimizationIdempotencyKeyRef.current = payload.idempotencyKey;
       const response = await tripsApi.runAutomaticOptimization(payload);
@@ -561,11 +431,14 @@ const AutomaticDispatchPage: React.FC = () => {
             ? customStartTime.toISOString()
             : null,
         useCustomTime,
+        searchBudgetSeconds,
         selectedVehicleForMap: 'ALL',
         savedAt: new Date().toISOString(),
       });
 
-      message.success('Đã tạo job tối ưu; hệ thống đang xử lý dữ liệu');
+      message.success(
+        `Đã tạo job tối ưu với ngân sách tối đa ${searchBudgetSeconds} giây mỗi lượt tìm kiếm chính`,
+      );
     } catch (error: any) {
       message.error(error.response?.data?.message || 'Không thể bắt đầu tối ưu tự động');
     } finally {
@@ -602,6 +475,7 @@ const AutomaticDispatchPage: React.FC = () => {
               ? customStartTime.toISOString()
               : null,
           useCustomTime,
+          searchBudgetSeconds,
           selectedVehicleForMap,
           savedAt: new Date().toISOString(),
         });
@@ -1482,8 +1356,8 @@ const AutomaticDispatchPage: React.FC = () => {
                   <ClockCircleOutlined style={{ color: '#2563eb' }} />
                   <strong style={{ fontSize: 13, color: '#0f172a' }}>Kế Hoạch Ca Làm Việc</strong>
                 </Space>
-                <Tag color="success" style={{ margin: 0, fontWeight: 600 }}>
-                  Đạt chuẩn BR07
+                <Tag color={schedule.hasUnclassifiedTransit ? 'warning' : 'processing'} style={{ margin: 0, fontWeight: 600 }}>
+                  {schedule.hasUnclassifiedTransit ? 'Kết quả cũ: chưa tách chạy/chờ' : 'Theo mốc thời gian optimizer'}
                 </Tag>
               </div>
               <Row gutter={[8, 8]} style={{ fontSize: 12 }}>
@@ -1506,9 +1380,9 @@ const AutomaticDispatchPage: React.FC = () => {
                   </div>
                 </Col>
                 <Col span={12}>
-                  <span style={{ color: '#64748b' }}>Nghỉ ngơi an toàn:</span>
+                  <span style={{ color: '#64748b' }}>Chờ khung giờ:</span>
                   <div>
-                    <b>{schedule.restDurationMinutes} phút</b> (Hồi phục thể lực)
+                    <b>{schedule.waitingDurationMinutes} phút</b>
                   </div>
                 </Col>
               </Row>
@@ -1548,12 +1422,26 @@ const AutomaticDispatchPage: React.FC = () => {
                     label: (
                       <div style={{ fontSize: 12, fontWeight: 600, color: '#1e40af', textAlign: 'right' }}>
                         {item.startTimeStr}
-                        <div style={{ fontSize: 11, fontWeight: 400, color: '#64748b' }}>{item.endTimeStr}</div>
+                        {item.durationMinutes > 0 && (
+                          <div style={{ fontSize: 11, fontWeight: 400, color: '#64748b' }}>{item.endTimeStr}</div>
+                        )}
                       </div>
                     ),
-                    color: item.type === 'REST' ? 'gold' : item.type === 'DEPOT_START' || item.type === 'DEPOT_END' ? 'blue' : item.actionType === 'PICKUP' ? 'green' : 'orange',
-                    dot: item.type === 'REST' ? (
-                      <CoffeeOutlined style={{ fontSize: 15, color: '#d97706' }} />
+                    color: item.type === 'WAIT'
+                      ? 'gold'
+                      : item.type === 'TRAVEL' || item.type === 'TRANSIT'
+                        ? 'blue'
+                        : item.type === 'DEPOT_START' || item.type === 'DEPOT_END'
+                          ? 'blue'
+                          : item.actionType === 'PICKUP'
+                            ? 'green'
+                            : 'orange',
+                    dot: item.type === 'WAIT' ? (
+                      <ClockCircleOutlined style={{ fontSize: 15, color: '#d97706' }} />
+                    ) : item.type === 'TRAVEL' ? (
+                      <CarOutlined style={{ fontSize: 15, color: '#2563eb' }} />
+                    ) : item.type === 'TRANSIT' ? (
+                      <ArrowRightOutlined style={{ fontSize: 15, color: '#64748b' }} />
                     ) : item.type === 'DEPOT_START' || item.type === 'DEPOT_END' ? (
                       <BankOutlined style={{ fontSize: 15, color: '#2563eb' }} />
                     ) : item.actionType === 'PICKUP' ? (
@@ -1576,7 +1464,13 @@ const AutomaticDispatchPage: React.FC = () => {
                           padding: '8px 12px',
                           borderRadius: 6,
                           border: isStopActive ? '1.5px solid #2563eb' : '1px solid #e2e8f0',
-                          backgroundColor: isStopActive ? '#eff6ff' : item.type === 'REST' ? '#fefce8' : '#ffffff',
+                          backgroundColor: isStopActive
+                            ? '#eff6ff'
+                            : item.type === 'WAIT'
+                              ? '#fefce8'
+                              : item.type === 'TRAVEL' || item.type === 'TRANSIT'
+                                ? '#f8fafc'
+                                : '#ffffff',
                           marginBottom: 6,
                           transition: 'all 0.15s ease',
                           boxShadow: isStopActive ? '0 0 0 2px rgba(37,99,235,0.15)' : undefined,
@@ -1597,7 +1491,15 @@ const AutomaticDispatchPage: React.FC = () => {
                             )}
                           </Space>
                           <Tag color="default" style={{ margin: 0, fontSize: 11 }}>
-                            Thao tác {item.durationMinutes}p
+                            {item.durationMinutes === 0
+                              ? 'Mốc thời gian'
+                              : item.type === 'TRAVEL'
+                                ? `Di chuyển ${item.durationMinutes}p`
+                                : item.type === 'WAIT'
+                                  ? `Chờ ${item.durationMinutes}p`
+                                  : item.type === 'TRANSIT'
+                                    ? `Di chuyển/chờ ${item.durationMinutes}p`
+                                    : `Thao tác ${item.durationMinutes}p`}
                           </Tag>
                         </div>
                         {item.address && (
@@ -2392,6 +2294,49 @@ const AutomaticDispatchPage: React.FC = () => {
                 />
               )}
             </Space>
+          </div>
+          <div className="automatic-search-budget">
+            <div className="automatic-search-budget-label">
+              <Text type="secondary">Ngân sách tìm kiếm</Text>
+              <Tooltip title="Ngân sách áp dụng cho mỗi lượt tìm kiếm chính. Thời gian toàn job có thể dài hơn do chuẩn bị dữ liệu, kiểm tra hình học và lưu kết quả.">
+                <InfoCircleOutlined aria-label="Giải thích ngân sách tìm kiếm" />
+              </Tooltip>
+            </div>
+            <Space align="center" wrap size={8}>
+              <Select<SearchBudgetPreset>
+                aria-label="Chọn mức thời gian tìm kiếm"
+                value={searchBudgetPreset}
+                disabled={starting || applying}
+                style={{ minWidth: 210 }}
+                onChange={setSearchBudgetPreset}
+                options={[
+                  { value: 5, label: 'Nhanh · 5 giây' },
+                  { value: 30, label: 'Cân bằng · 30 giây' },
+                  { value: 120, label: 'Tìm kỹ · 120 giây' },
+                  { value: 'CUSTOM', label: 'Tùy chỉnh' },
+                ]}
+              />
+              {searchBudgetPreset === 'CUSTOM' && (
+                <InputNumber
+                  aria-label="Số giây tìm kiếm cho mỗi lượt thuật toán"
+                  min={MIN_SEARCH_BUDGET_SECONDS}
+                  max={MAX_SEARCH_BUDGET_SECONDS}
+                  precision={0}
+                  value={customSearchBudgetSeconds}
+                  onChange={(value) => {
+                    if (typeof value === 'number') {
+                      setCustomSearchBudgetSeconds(value);
+                    }
+                  }}
+                  addonAfter="giây"
+                  disabled={starting || applying}
+                  style={{ width: 135 }}
+                />
+              )}
+            </Space>
+            <Text className="automatic-search-budget-help" type="secondary">
+              {getSearchBudgetDescription(searchBudgetSeconds)}
+            </Text>
           </div>
           <Button
             type="primary"

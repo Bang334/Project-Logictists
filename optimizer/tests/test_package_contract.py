@@ -54,4 +54,5 @@ def test_real_solver_preserves_package_ids_grams_and_overnight_windows():
         service_start = max(start, stop.arrival_time_sec)
         assert service_start <= end
         assert stop.departure_time_sec == service_start + service
+        assert stop.service_time_sec == service
     assert delivery.arrival_time_sec >= pickup.departure_time_sec + 60

@@ -245,6 +245,81 @@ def test_search_limit_is_not_reported_as_infeasible() -> None:
     assert "không kết luận chuyến bất khả thi" in result.error_message
 
 
+def test_empty_vehicle_boundary_isolates_future_loading_cycle() -> None:
+    """A later, independent load cycle must not change an earlier layout."""
+    truck = VehicleFloor(
+        id="truck-independent-cycles",
+        plate_number="TEST-TW-08",
+        length_cm=500,
+        width_cm=205,
+        height_cm=220,
+        payload_limit_kg=5_000,
+    )
+
+    def packages(order_id: str, count: int) -> List[CargoItem]:
+        return [
+            CargoItem(
+                id=f"{order_id}-{index}",
+                order_id=order_id,
+                length_cm=70,
+                width_cm=55,
+                height_cm=50,
+                weight_kg=100,
+                can_rotate=True,
+            )
+            for index in range(count)
+        ]
+
+    order_9 = packages("order-9", 3)
+    order_8 = packages("order-8", 2)
+    order_1 = packages("order-1", 1)
+    actions = [
+        StopAction(
+            stop_id="pickup-9",
+            sequence=1,
+            stop_type="PICKUP",
+            items_to_load=order_9,
+        ),
+        StopAction(
+            stop_id="pickup-8",
+            sequence=2,
+            stop_type="PICKUP",
+            items_to_load=order_8,
+        ),
+        StopAction(
+            stop_id="delivery-8",
+            sequence=3,
+            stop_type="DELIVERY",
+            items_to_unload=[item.id for item in order_8],
+        ),
+        StopAction(
+            stop_id="delivery-9",
+            sequence=4,
+            stop_type="DELIVERY",
+            items_to_unload=[item.id for item in order_9],
+        ),
+        StopAction(
+            stop_id="pickup-1",
+            sequence=5,
+            stop_type="PICKUP",
+            items_to_load=order_1,
+        ),
+        StopAction(
+            stop_id="delivery-1",
+            sequence=6,
+            stop_type="DELIVERY",
+            items_to_unload=[item.id for item in order_1],
+        ),
+    ]
+
+    result = SpatialValidator(truck).validate_plan(actions)
+
+    assert result.is_valid is True
+    assert len(result.step_states) == len(actions)
+    assert result.step_states[3].placed_items == []
+    assert result.step_states[-1].placed_items == []
+
+
 def test_ten_packages_per_order_are_arranged_for_delivery_sequence() -> None:
     truck = VehicleFloor(
         id="truck-twenty-packages",

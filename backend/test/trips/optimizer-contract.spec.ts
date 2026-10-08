@@ -18,7 +18,7 @@ const validResult = () => ({
       vehicle_width_cm: 190,
       total_distance_km: 10,
       total_duration_minutes: 20,
-      stops: [],
+      stops: [] as Array<Record<string, unknown>>,
       spatial_validation: { is_valid: true, step_states: [] },
       cost: {
         base_fuel_cost_vnd: 100,
@@ -66,6 +66,28 @@ function benchmarkMetric(isFeasible: boolean) {
   };
 }
 
+function validStop() {
+  return {
+    sequence: 1,
+    location_id: 'pickup-1',
+    location_name: 'Kho nhận',
+    stop_type: 'PICKUP',
+    order_id: 'order-1',
+    allocation_id: 'allocation-1',
+    order_stop_id: 'order-stop-1',
+    latitude: 16,
+    longitude: 108,
+    arrival_time_sec: 29_400,
+    departure_time_sec: 30_000,
+    travel_time_sec: 300,
+    waiting_time_sec: 300,
+    service_time_sec: 600,
+    items_loaded: ['package-1'],
+    items_unloaded: [] as string[],
+    current_weight_kg: 100,
+  };
+}
+
 describe('assertFleetOptimizationResult', () => {
   it('accepts the load-sensitive cost contract', () => {
     expect(() => assertFleetOptimizationResult(validResult())).not.toThrow();
@@ -89,6 +111,48 @@ describe('assertFleetOptimizationResult', () => {
 
     expect(() => assertFleetOptimizationResult(result)).toThrow(
       'is_feasible',
+    );
+  });
+
+  it('accepts a stop whose travel, waiting and service durations match its timestamps', () => {
+    const result = validResult();
+    result.routes[0].stops = [validStop()];
+    Object.assign(result.routes[0], {
+      return_travel_time_sec: 0,
+      return_waiting_time_sec: 0,
+    });
+
+    expect(() => assertFleetOptimizationResult(result)).not.toThrow();
+  });
+
+  it('accepts a historical stop that predates the leg breakdown fields', () => {
+    const result = validResult();
+    const stop = validStop();
+    delete (stop as Partial<typeof stop>).travel_time_sec;
+    delete (stop as Partial<typeof stop>).waiting_time_sec;
+    delete (stop as Partial<typeof stop>).service_time_sec;
+    result.routes[0].stops = [stop];
+
+    expect(() => assertFleetOptimizationResult(result)).not.toThrow();
+  });
+
+  it('rejects a partial leg breakdown', () => {
+    const result = validResult();
+    const stop = validStop();
+    delete (stop as Partial<typeof stop>).waiting_time_sec;
+    result.routes[0].stops = [stop];
+
+    expect(() => assertFleetOptimizationResult(result)).toThrow(
+      'thiếu trường phân rã thời gian chặng',
+    );
+  });
+
+  it('rejects a stop whose leg breakdown leaves an unexplained timeline gap', () => {
+    const result = validResult();
+    result.routes[0].stops = [{ ...validStop(), waiting_time_sec: 0 }];
+
+    expect(() => assertFleetOptimizationResult(result)).toThrow(
+      'phân rã thời gian chặng',
     );
   });
 });

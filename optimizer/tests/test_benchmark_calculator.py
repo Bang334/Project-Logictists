@@ -88,6 +88,26 @@ def _order(index: int, *, length_cm: float = 10, width_cm: float = 10, weight=10
     )
 
 
+def test_baseline_preserves_distinct_service_durations_and_timing_breakdown():
+    vehicle = _vehicle(1)
+    order = _order(1).model_copy(update={
+        "pickup_service_time_sec": 60,
+        "delivery_service_time_sec": 120,
+    })
+    matrix = [[0 if i == j else 30 for j in range(3)] for i in range(3)]
+    request = _request(vehicles=[vehicle], orders=[order], distances=matrix, durations=matrix)
+    calculator = BaselineCostCalculator(request, FleetRoutingSolver(request).nodes)
+
+    route = calculator._evaluate_actions(vehicle, 0, calculator._actions_for_order(order))
+
+    assert not route.violations
+    pickup, delivery = route.stops
+    assert (pickup.arrival_time_sec, pickup.departure_time_sec, pickup.service_time_sec) == (30, 90, 60)
+    assert (delivery.arrival_time_sec, delivery.departure_time_sec, delivery.service_time_sec) == (120, 240, 120)
+    assert all(stop.travel_time_sec == 30 and stop.waiting_time_sec == 0 for stop in route.stops)
+    assert route.duration_seconds == 270
+
+
 def test_direct_dedicated_benchmark_uses_the_same_cargo_holding_cost_component():
     vehicle = _vehicle(1)
     order = _order(1, weight=1_000)

@@ -1411,6 +1411,8 @@ export class TripsService {
       typeof dto === 'object' ? dto?.scheduleMode : undefined;
     const customStartTimeStr =
       typeof dto === 'object' ? dto?.customStartTime : undefined;
+    const searchBudgetSeconds =
+      typeof dto === 'object' ? dto?.searchBudgetSeconds : undefined;
     const branchId = resolveBranchScope(user, requestedBranchId);
 
     const [branch, vehicles, drivers, candidateOrders] = await Promise.all([
@@ -1583,6 +1585,9 @@ export class TripsService {
       // Backend chỉ truyền trần cứng hai phút để snapshot/provenance không
       // nhân đôi công thức chính sách giữa Node và Python.
       max_time_seconds: 120,
+      ...(searchBudgetSeconds !== undefined
+        ? { search_time_seconds: searchBudgetSeconds }
+        : {}),
     };
     const vehicleCount = snapshot.vehicles.length;
     const optimizationUnitCount = snapshot.orders.length;
@@ -1687,6 +1692,7 @@ export class TripsService {
         branchId,
         planningEpochIso: planningEpoch.toISOString(),
         scheduleMode: scheduleMode ?? null,
+        searchBudgetSeconds: searchBudgetSeconds ?? null,
         resources: {
           orders: orders.map((order) => ({
             id: order.id,
@@ -1758,7 +1764,10 @@ export class TripsService {
         `${this.optimizerUrl}/optimize-fleet/candidates`,
         payload,
         {
-          timeout: Math.max(120000, (snapshot.max_time_seconds + 90) * 1000),
+          timeout: Math.max(
+            120000,
+            ((snapshot.search_time_seconds ?? snapshot.max_time_seconds) + 90) * 1000,
+          ),
         },
       );
       assertFleetOptimizationBatchResult(response.data);

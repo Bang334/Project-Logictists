@@ -33,6 +33,7 @@ def calculate_search_policy(
     physical_vehicle_count: int,
     virtual_vehicle_count: int,
     requested_max_time_seconds: int,
+    requested_search_time_seconds: Optional[int] = None,
 ) -> AdaptiveSearchPolicy:
     """Return a monotonic, bounded policy for the supplied problem shape.
 
@@ -65,15 +66,22 @@ def calculate_search_policy(
         and safe_item_count <= 4
         and safe_physical_vehicle_count <= 2
     )
-    if is_tiny:
-        desired_budget = 3
+    if requested_search_time_seconds is not None:
+        # An explicit UI choice is an execution contract, not merely a cap.
+        # Keep the server/global hard limit while avoiding adaptive shortening.
+        time_budget_seconds = min(
+            caller_cap,
+            max(1, int(requested_search_time_seconds)),
+        )
     else:
-        # Package-heavy and multi-resource jobs need disproportionately more
-        # local-search time than tiny routing graphs.  Scale the shared score
-        # while retaining the caller-provided and global 120-second caps.
-        desired_budget = math.ceil(5 + complexity_score * 1.30)
-
-    time_budget_seconds = min(caller_cap, max(1, desired_budget))
+        if is_tiny:
+            desired_budget = 3
+        else:
+            # Package-heavy and multi-resource jobs need disproportionately more
+            # local-search time than tiny routing graphs. Scale the shared score
+            # while retaining the caller-provided and global 120-second caps.
+            desired_budget = math.ceil(5 + complexity_score * 1.30)
+        time_budget_seconds = min(caller_cap, max(1, desired_budget))
     if time_budget_seconds <= 3:
         strategy_count = 2
         desired_stagnation = 0.5
@@ -132,6 +140,7 @@ def derive_search_policy(request: FleetOptimizationRequest) -> AdaptiveSearchPol
         physical_vehicle_count=usable_physical_resources,
         virtual_vehicle_count=len(request.vehicles),
         requested_max_time_seconds=request.max_time_seconds,
+        requested_search_time_seconds=request.search_time_seconds,
     )
 
 
