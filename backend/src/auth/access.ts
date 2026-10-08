@@ -7,7 +7,8 @@ export const PERMISSIONS = [
   'orders.write', 'trips.read', 'trips.plan', 'trips.publish',
   'users.read', 'users.create', 'users.lock',
 ] as const;
-export type PermissionCode = typeof PERMISSIONS[number];
+export const DRIVER_PERMISSIONS = ['driver.profile.read', 'driver.assignments.read', 'driver.assignments.respond'] as const;
+export type PermissionCode = typeof PERMISSIONS[number] | typeof DRIVER_PERMISSIONS[number];
 export const DISPATCHER_PERMISSIONS = PERMISSIONS.filter(p => !p.endsWith('.manage') && !p.startsWith('users.'));
 export const RequirePermission = (permission: PermissionCode | 'authenticated') => SetMetadata('permission', permission);
 export const Public = () => SetMetadata('public', true);
@@ -35,6 +36,7 @@ export interface AuthRequest {
   headers: Record<string, string | string[] | undefined>;
 }
 export function hasPermission(user: Principal, permission: PermissionCode, branchId?: string | null): boolean {
+  if (permission.startsWith('driver.')) return user.grants.some(g => g.role === 'DRIVER' && g.scopeType === 'BRANCH' && !!g.branchId && (!branchId || g.branchId === branchId) && g.permissions.includes(permission));
   // Account administration is a closed capability, even if a dispatcher is accidentally granted it.
   // Principal.username and grants are loaded from PostgreSQL by SessionGuard on every request.
   if (permission.startsWith('users.')) return user.username === 'demo_auth_admin' && user.grants.some(g =>

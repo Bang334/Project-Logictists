@@ -1,0 +1,23 @@
+import { fireEvent, waitFor } from '@testing-library/react-native';
+import { renderRouter, screen } from 'expo-router/testing-library';
+import RootLayout from '../app/_layout';
+import LoginRoute from '../app/index';
+import AssignmentsRoute from '../app/assignments/index';
+import AssignmentRoute from '../app/assignments/[id]';
+import { createStore } from '../runtime';
+import { harness } from './fixtures';
+jest.mock('../runtime', () => ({ createStore: jest.fn() }));
+jest.mock('expo-status-bar', () => ({ StatusBar: () => null }));
+test('router restores login, navigates list/detail and returns to login on logout', async () => {
+  const h = harness('token-a'); jest.mocked(createStore).mockReturnValue(h.store);
+  const rendered = renderRouter({ _layout: RootLayout, index: LoginRoute, 'assignments/index': AssignmentsRoute, 'assignments/[id]': AssignmentRoute }, { initialUrl: '/' });
+  await waitFor(() => expect(rendered.getPathname()).toBe('/assignments'));
+  fireEvent.press(await screen.findByRole('button', { name: 'Xem TRIP-A' }));
+  await waitFor(() => expect(rendered.getPathname()).toBe('/assignments/a'));
+  await screen.findByText('Kế hoạch v2 · Phân công v1');
+  fireEvent.press(screen.getByRole('button', { name: 'Về danh sách' }));
+  await waitFor(() => expect(rendered.getPathname()).toBe('/assignments'));
+  fireEvent.press(screen.getByRole('button', { name: 'Đăng xuất' }));
+  await waitFor(() => expect(rendered.getPathname()).toBe('/'));
+  expect(screen.getByLabelText('Tên đăng nhập')).toBeTruthy();
+}, 20000);

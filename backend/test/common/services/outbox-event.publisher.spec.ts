@@ -21,6 +21,12 @@ describe('OutboxEventPublisher', () => {
 
   beforeEach(() => jest.clearAllMocks());
 
+  it.each(['driver.assignment.accepted', 'driver.assignment.rejected'])('delivers %s without leaking manifest/rejection reason', async eventType => {
+    await publisher.publish({ ...baseEvent, aggregateType: 'DriverAssignment', aggregateId: 'assignment-1', eventType, payload: { tripId: 'trip-1', assignmentId: 'assignment-1', version: 2 } });
+    expect(gateway.emitTripUpdate).toHaveBeenCalledWith({ id: 'trip-1' });
+    expect(gateway.emitToLocations).not.toHaveBeenCalled();
+  });
+
   it.each(['TRIP_CREATED', 'TRIP_PUBLISHED', 'TRIP_PLAN_UPDATED', 'OPTIMIZATION_TRIP_APPLIED'])('delivers %s through the scoped trip gateway', async eventType => {
     await publisher.publish({ ...baseEvent, aggregateType: 'Trip', aggregateId: 'trip-1', eventType, payload: {} });
     expect(gateway.emitTripUpdate).toHaveBeenCalledWith({ id: 'trip-1' });

@@ -565,11 +565,16 @@ model DriverAssignment {
   endTime     DateTime  @db.Timestamptz(3)
   role        String    @default("PRIMARY") // PRIMARY, SECONDARY
   status      String    @default("ASSIGNED")
+  offeredAt   DateTime  @default(now()) @map("offered_at") @db.Timestamptz(3)
+  respondedAt DateTime? @map("responded_at") @db.Timestamptz(3)
+  rejectionReason String? @map("rejection_reason")
+  version     Int       @default(1)
   createdAt   DateTime  @default(now()) @db.Timestamptz(3)
 
   @@index([driverId, startTime, endTime])
   @@map("driver_assignments")
   @@index([tripId, status])
+  @@index([driverId, status, startTime, id], map: "driver_assignment_mobile_list")
 }
 
 model AuditLog {

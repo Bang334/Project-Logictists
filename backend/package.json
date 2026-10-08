@@ -37,7 +37,12 @@
     "start:orders-demo": "node scripts/with-merge-test-env.cjs dist/src/main.js",
     "test:orders": "node scripts/with-merge-test-env.cjs --optimizer --test tests/orders.integration.cjs",
     "test:orders:auth": "node scripts/with-merge-test-env.cjs --test tests/auth.integration.cjs",
-    "test:orders:mapbox": "node scripts/check-orders-mapbox.cjs"
+    "test:orders:mapbox": "node scripts/check-orders-mapbox.cjs",
+    "driver:demo:prepare": "node scripts/prepare-driver-test.cjs",
+    "driver:demo:seed": "node scripts/with-driver-test-env.cjs node_modules/ts-node/dist/bin.js prisma/seed-driver-mobile.ts",
+    "start:driver-demo": "node scripts/with-driver-test-env.cjs dist/src/main.js",
+    "test:driver": "node scripts/with-driver-test-env.cjs --test tests/driver-mobile.integration.cjs",
+    "test:driver:client": "node scripts/with-driver-test-env.cjs --test tests/driver-mobile-client.integration.cjs"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.5",

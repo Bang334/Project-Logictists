@@ -57,7 +57,8 @@ export class AuthService {
       where: { userId, active: true, role: { active: true }, OR: [{ scopeType: 'COMPANY', branchId: null }, { scopeType: 'BRANCH', branch: { active: true } }] },
       include: { role: { include: { permissions: { include: { permission: true } } } } },
     });
-    return scopes.filter(s => (s.role.code === 'ADMIN' && s.scopeType === 'COMPANY' && s.branchId === null) || (s.role.code === 'DISPATCHER' && s.scopeType === 'BRANCH' && !!s.branchId))
+    const driver = scopes.some(s => s.role.code === 'DRIVER') ? await db.driver.findUnique({ where: { userId }, select: { homeBranchId: true } }) : null;
+    return scopes.filter(s => (s.role.code === 'ADMIN' && s.scopeType === 'COMPANY' && s.branchId === null) || (s.role.code === 'DISPATCHER' && s.scopeType === 'BRANCH' && !!s.branchId) || (s.role.code === 'DRIVER' && s.scopeType === 'BRANCH' && !!driver && s.branchId === driver.homeBranchId))
       .map(s => ({ role: s.role.code, scopeType: s.scopeType, branchId: s.branchId, permissions: s.role.permissions.map(p => p.permission.code) }));
   }
   async authenticatePayload(payload: unknown, db: Prisma.TransactionClient = this.prisma): Promise<Principal> {

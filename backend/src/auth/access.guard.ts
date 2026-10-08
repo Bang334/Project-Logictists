@@ -24,7 +24,9 @@ export class PermissionGuard implements CanActivate {
     const permission = this.reflector.getAllAndOverride<PermissionCode | 'authenticated'>('permission', [context.getHandler(), context.getClass()]);
     const request = context.switchToHttp().getRequest<AuthRequest>();
     const roles = this.reflector.getAllAndOverride<string[]>('roles', [context.getHandler(), context.getClass()]);
-    if (!permission && roles?.length && request.user.role && roles.includes(request.user.role)) {
+    // Mobile DRIVER has explicit RBAC permissions only; legacy @Roles must not
+    // implicitly enable file upload, location browsing or other execution work.
+    if (!permission && roles?.length && request.user.role && request.user.role !== 'DRIVER' && roles.includes(request.user.role)) {
       if (request.user.role !== 'ADMIN' || request.user.grants.some(g => g.role === 'ADMIN' && g.scopeType === 'COMPANY')) return true;
     }
     if (!permission) { assertPermission({ ...request.user, grants: [] }, 'branches.read'); return false; }
