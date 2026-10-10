@@ -348,6 +348,16 @@ class BenchmarkComparisonResponse(StrictContractModel):
     savings_vs_direct_percent: Optional[float] = None
 
 
+class PlanningObjectiveBreakdown(StrictContractModel):
+    planning_span_days: int = Field(default=0, ge=0)
+    operating_cost_vnd: int = Field(default=0, ge=0)
+    driver_active_salary_allocation_vnd: int = Field(default=0, ge=0)
+    driver_calendar_salary_vnd: int = Field(default=0, ge=0)
+    driver_idle_salary_allocation_vnd: int = Field(default=0, ge=0)
+    operational_late_penalty_vnd: int = Field(default=0, ge=0)
+    selection_score_vnd: int = Field(default=0, ge=0)
+
+
 class FleetOptimizationResponse(StrictContractModel):
     package_contract_version: Literal["1"] = "1"
     job_id: str
@@ -357,6 +367,7 @@ class FleetOptimizationResponse(StrictContractModel):
     total_distance_km: float = 0.0
     total_duration_minutes: float = 0.0
     total_cost_vnd: int = 0
+    planning_objective: Optional[PlanningObjectiveBreakdown] = None
     benchmarks: Optional[BenchmarkComparisonResponse] = None
     diagnostics: List[str] = Field(default_factory=list)
 

@@ -44,6 +44,8 @@ def _mock_plan(
     spatial.is_valid = spatial_valid
     stops = []
     for seq, oid in enumerate(order_ids, 1):
+        previous_departure = 0 if seq == 1 else 100 * (seq - 1) + 30
+        arrival = 100 * seq
         stops.append(
             ScheduledStop(
                 sequence=seq,
@@ -53,17 +55,24 @@ def _mock_plan(
                 order_id=oid,
                 latitude=21.0,
                 longitude=105.8,
-                arrival_time_sec=100 * seq,
-                departure_time_sec=100 * seq + 30,
+                arrival_time_sec=arrival,
+                departure_time_sec=arrival + 30,
+                travel_time_sec=arrival - previous_departure,
+                waiting_time_sec=0,
+                service_time_sec=30,
             )
         )
     route = OptimizedRoute(
         vehicle_id="veh-1",
+        start_time_sec=0,
+        end_time_sec=stops[-1].departure_time_sec,
         plate_number="29C-12345",
         vehicle_length_cm=400,
         vehicle_width_cm=200,
         total_distance_km=10.0,
         total_duration_minutes=20.0,
+        return_travel_time_sec=0,
+        return_waiting_time_sec=0,
         stops=stops,
         spatial_validation=spatial,
     )
@@ -108,6 +117,15 @@ def test_is_fully_served_checks_all_orders_and_spatial_validity():
     spatial_invalid = _mock_plan("j1", "SUCCESS", 100_000, ["o1", "o2"], spatial_valid=False)
     assert is_fully_served(spatial_invalid, all_orders) is False
 
+    # A malformed candidate must be removed before the backend receives the
+    # whole batch and rejects otherwise valid alternatives with it.
+    timeline_invalid = _mock_plan("j1", "SUCCESS", 100_000, ["o1", "o2"])
+    first_stop = timeline_invalid.routes[0].stops[0]
+    first_stop.travel_time_sec = 99
+    first_stop.waiting_time_sec = 0
+    first_stop.service_time_sec = 30
+    assert is_fully_served(timeline_invalid, all_orders) is False
+
 
 def test_select_ranked_candidates_sorts_cheapest_and_deduplicates():
     all_orders = {"o1", "o2"}
@@ -147,6 +165,27 @@ def test_select_ranked_candidates_sorts_cheapest_and_deduplicates():
     assert candidates[1].rank == 2
     assert candidates[1].is_best_found is False
     assert candidates[1].result.total_cost_vnd == 400_000
+
+
+def test_select_ranked_candidates_prefers_shared_objective_over_route_cost():
+    all_orders = {"o1", "o2"}
+    compact_strategy, stretched_strategy = SEARCH_STRATEGIES[:2]
+    compact = _mock_plan("j", "SUCCESS", 400_000, ["o1", "o2"])
+    stretched = _mock_plan("j", "SUCCESS", 300_000, ["o2", "o1"])
+
+    candidates, fully_served, _ = select_ranked_candidates(
+        [
+            (stretched_strategy, stretched, 2_000_000),
+            (compact_strategy, compact, 1_000_000),
+        ],
+        all_orders,
+        max_candidates=2,
+    )
+
+    assert fully_served == 2
+    assert candidates[0].search_strategy == compact_strategy.label
+    assert candidates[0].solver_objective == 1_000_000
+    assert candidates[0].result.total_cost_vnd == 400_000
 
 
 def test_select_ranked_candidates_fallback_when_none_fully_served():

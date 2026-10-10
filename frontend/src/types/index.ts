@@ -474,6 +474,10 @@ export interface OptimizationCandidateSummaryUI {
   searchStrategy?: string;
   improvementSequence: number;
   solverObjective: number;
+  planningSpanDays: number;
+  driverCalendarSalaryVnd: number;
+  driverIdleSalaryAllocationVnd: number;
+  operationalLatePenaltyVnd: number;
   isBestFound: boolean;
   feasibilityStatus: string;
   totalCostVnd: number;

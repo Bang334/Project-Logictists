@@ -35,3 +35,6 @@ logs/
 frontend/test-results/
 frontend/playwright-report/
 *.zip
+
+# Local algorithm research/benchmarks (kept outside production source control)
+/algo_lab/

@@ -132,6 +132,15 @@ export type FleetOptimizationResult = {
   total_distance_km: number;
   total_duration_minutes: number;
   total_cost_vnd: number;
+  planning_objective?: {
+    planning_span_days: number;
+    operating_cost_vnd: number;
+    driver_active_salary_allocation_vnd: number;
+    driver_calendar_salary_vnd: number;
+    driver_idle_salary_allocation_vnd: number;
+    operational_late_penalty_vnd: number;
+    selection_score_vnd: number;
+  };
   benchmarks?: BenchmarkComparison;
   diagnostics: string[];
 };
@@ -185,6 +194,57 @@ export function assertFleetOptimizationResult(
     !value.diagnostics.every((item) => typeof item === 'string')
   ) {
     throw new Error('Optimizer response thiếu diagnostics hợp lệ');
+  }
+  if (value.planning_objective !== undefined) {
+    if (!isRecord(value.planning_objective)) {
+      throw new Error('Optimizer planning_objective phải là object');
+    }
+    for (const field of [
+      'planning_span_days',
+      'operating_cost_vnd',
+      'driver_active_salary_allocation_vnd',
+      'driver_calendar_salary_vnd',
+      'driver_idle_salary_allocation_vnd',
+      'operational_late_penalty_vnd',
+      'selection_score_vnd',
+    ]) {
+      const fieldValue = value.planning_objective[field];
+      if (!Number.isInteger(fieldValue) || Number(fieldValue) < 0) {
+        throw new Error(`Optimizer planning_objective.${field} không hợp lệ`);
+      }
+    }
+    if (
+      Number(value.planning_objective.operating_cost_vnd) !==
+      Number(value.total_cost_vnd)
+    ) {
+      throw new Error('Optimizer planning_objective không khớp tổng chi phí vận hành');
+    }
+    const activeSalary = Number(
+      value.planning_objective.driver_active_salary_allocation_vnd,
+    );
+    const calendarSalary = Number(
+      value.planning_objective.driver_calendar_salary_vnd,
+    );
+    const idleSalary = Number(
+      value.planning_objective.driver_idle_salary_allocation_vnd,
+    );
+    if (
+      calendarSalary < activeSalary ||
+      idleSalary !== calendarSalary - activeSalary
+    ) {
+      throw new Error('Optimizer planning_objective có breakdown lương tài xế không khớp');
+    }
+    const expectedSelectionScore =
+      Number(value.total_cost_vnd) -
+      activeSalary +
+      calendarSalary +
+      Number(value.planning_objective.operational_late_penalty_vnd);
+    if (
+      Number(value.planning_objective.selection_score_vnd) !==
+      expectedSelectionScore
+    ) {
+      throw new Error('Optimizer planning_objective có điểm xếp hạng không khớp');
+    }
   }
   for (const route of value.routes) {
     if (
@@ -474,6 +534,15 @@ export function assertFleetOptimizationBatchResult(
     }
     if (candidate.is_best_found) bestCount += 1;
     assertFleetOptimizationResult(candidate.result);
+    if (
+      candidate.result.planning_objective !== undefined &&
+      Number(candidate.solver_objective) !==
+        Number(candidate.result.planning_objective.selection_score_vnd)
+    ) {
+      throw new Error(
+        `Objective phương án rank #${candidate.rank} không khớp planning_objective`,
+      );
+    }
     if (candidate.result.job_id !== value.job_id) {
       throw new Error('Optimizer batch chứa kết quả của job khác');
     }
@@ -497,13 +566,14 @@ export function assertFleetOptimizationBatchResult(
     }
   }
 
-  // Các phương án phải được xếp theo tổng chi phí vận hành tăng dần (hoặc bằng nhau)
+  // Candidate dùng objective chung: chi phí vận hành sau khi thay phân bổ
+  // lương hoạt động bằng lương lịch, cộng penalty vận hành cho đơn trễ.
   for (let index = 1; index < value.candidates.length; index += 1) {
     if (
-      value.candidates[index].result.total_cost_vnd <
-      value.candidates[index - 1].result.total_cost_vnd
+      value.candidates[index].solver_objective <
+      value.candidates[index - 1].solver_objective
     ) {
-      throw new Error('Danh sách phương án chưa được sắp xếp theo tổng chi phí tăng dần');
+      throw new Error('Danh sách phương án chưa được sắp xếp theo objective tăng dần');
     }
   }
 }

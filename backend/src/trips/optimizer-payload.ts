@@ -4,8 +4,15 @@ export type PhysicalPackageLine = {
   packages: Array<PackageMeasurements & { id: string; orderItemId: string | null }>;
 };
 export type OptimizerCargoUnit = {
-  id: string; order_id: string; order_item_id: string; description: string;
-  length_cm: number; width_cm: number; height_cm: number; weight_kg: number; can_rotate: false;
+  id: string;
+  order_id: string;
+  order_item_id: string;
+  description: string;
+  length_cm: number;
+  width_cm: number;
+  height_cm: number;
+  weight_kg: number;
+  can_rotate: boolean;
 };
 /** Only persisted packages. Compatibility units are converted once at this boundary. */
 export function packagesToCargoUnits(items: PhysicalPackageLine[]): OptimizerCargoUnit[] {
@@ -53,6 +60,7 @@ export type OptimizerOrder = {
   order_value_vnd: number;
   service_time_sec: number;
 };
+
 
 
 function cargoFitsVehicle(

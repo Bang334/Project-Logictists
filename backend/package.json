@@ -31,6 +31,7 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:postgres": "node scripts/require-test-database.cjs && jest --runInBand --testPathPattern=.postgres.spec.ts",
+    "test-data:orders-today": "node scripts/refresh-order-dates-today.cjs --confirm",
     "prisma:migrate:status": "prisma migrate status",
     "orders:demo:prepare": "node scripts/prepare-merge-test.cjs",
     "orders:demo:seed": "node scripts/with-merge-test-env.cjs node_modules/ts-node/dist/bin.js prisma/seed-auth.ts",

@@ -17,6 +17,7 @@ from .models import (
 
 _GEOMETRY_TOLERANCE_CM = 0.01
 _DEFAULT_MAX_SEARCH_NODES = 20_000
+_MAX_LAYOUTS_PER_STOP = 32
 
 
 @dataclass(frozen=True)
@@ -376,16 +377,28 @@ class SpatialValidator:
         delivery rank and search branching of a future cycle cannot create a
         false negative in a completed cycle.
         """
+        validation_started_at = time.monotonic()
         cycles = self._split_independent_load_cycles(stops)
         if len(cycles) <= 1:
-            return self._validate_load_cycle(stops)
+            return self._validate_load_cycle(
+                stops,
+                max_time_seconds=self.max_time_seconds,
+            )
 
         step_states: List[FloorState] = []
         max_weight = 0.0
         max_area = 0.0
         step_offset = 0
         for cycle in cycles:
-            result = self._validate_load_cycle(cycle)
+            remaining_time = max(
+                0.0,
+                self.max_time_seconds
+                - (time.monotonic() - validation_started_at),
+            )
+            result = self._validate_load_cycle(
+                cycle,
+                max_time_seconds=remaining_time,
+            )
             adjusted_states = [
                 state.model_copy(
                     update={"step_index": state.step_index + step_offset}
@@ -452,13 +465,20 @@ class SpatialValidator:
         return cycles
 
     def _validate_load_cycle(
-        self, stops: List[StopAction]
+        self,
+        stops: List[StopAction],
+        *,
+        max_time_seconds: Optional[float] = None,
     ) -> SpatialValidationResult:
         """Validate one continuous interval during which cargo is on board."""
         unload_step_by_item = self._build_unload_steps(stops)
         context = _SearchContext(
             max_nodes=self.max_search_nodes,
-            max_time_seconds=self.max_time_seconds,
+            max_time_seconds=(
+                self.max_time_seconds
+                if max_time_seconds is None
+                else max(0.0, max_time_seconds)
+            ),
             item_class_by_id=self._build_item_classes(stops, unload_step_by_item),
         )
         failed_states: Set[Tuple[int, Tuple[Tuple[object, ...], ...]]] = set()
@@ -746,7 +766,7 @@ class SpatialValidator:
             if layout_key in explored_layouts:
                 continue
             explored_layouts.add(layout_key)
-            if len(explored_layouts) > 6:
+            if len(explored_layouts) > _MAX_LAYOUTS_PER_STOP:
                 # This local branch cap is a search budget just like the global
                 # node/time limits.  Exhausting it cannot prove infeasibility.
                 context.limit_reached = True
