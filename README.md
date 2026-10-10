@@ -8,7 +8,7 @@ Yêu cầu: Node.js 20+, Python 3.11+, PostgreSQL và Redis. `compose.yaml` hi�
 
 1. Sao chép `backend/.env.example` thành `backend/.env` và điền database test/cục bộ, JWT, Mapbox. Không commit giá trị thật.
 2. Sao chép `frontend/.env.example` thành `frontend/.env.local` và điền public Mapbox token.
-3. Backend: `cd backend`, `npm ci`, `npm run prisma:generate`, `npx prisma migrate deploy`, `npm run start:dev`.
+3. Backend: `cd backend`, `npm ci`, `npm run prisma:generate`. Đọc [hướng dẫn nâng cấp sau merge](MERGE_RECOVERY.md) và hoàn tất đối chiếu lịch sử migration trước khi chạy ứng dụng bằng `npm run start:dev`. Không chạy thẳng `prisma migrate deploy`: repo đang hợp nhất hai lịch sử schema; database theo baseline mới cần migration bổ sung và reconciliation được review.
 4. Optimizer: `cd optimizer`, tạo virtualenv, `pip install -r requirements.txt`, `uvicorn app.main:app --reload --port 8000`.
 5. Frontend: `cd frontend`, `npm ci`, `npm run dev`.
 

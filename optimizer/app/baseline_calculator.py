@@ -107,7 +107,8 @@ class BaselineCostCalculator:
                 )
 
             rounded_arrival = round(arrival)
-            departure = rounded_arrival + order.service_time_sec
+            service_time_sec = order.service_seconds(action.stop_type)
+            departure = rounded_arrival + service_time_sec
             scheduled.append(
                 ScheduledStop(
                     sequence=len(scheduled) + 1,
@@ -121,10 +122,10 @@ class BaselineCostCalculator:
                     departure_time_sec=departure,
                     travel_time_sec=max(0, rounded_arrival - leg_start),
                     waiting_time_sec=0,
-                    service_time_sec=order.service_time_sec,
+                    service_time_sec=service_time_sec,
                     items_loaded=[item.id for item in action.items_to_load],
                     items_unloaded=action.items_to_unload,
-                    current_weight_kg=round(max(0.0, current_weight), 2),
+                    current_weight_kg=round(max(0.0, current_weight), 3),
                 )
             )
             current_time = departure

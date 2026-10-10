@@ -42,6 +42,7 @@ describe('OptimizationProcessor', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     processor = new OptimizationProcessor(
+      { principalForWorker: jest.fn().mockResolvedValue({ id: "user-1", username: "dispatcher", fullName: "Dispatcher", sessionId: "", grants: [] }) } as never,
       prisma as never,
       trips as never,
       events as never,

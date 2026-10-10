@@ -34,20 +34,22 @@ afterEach(() => {
 });
 
 describe('LoginPage', () => {
-  it('prefills and submits the development demo credentials', async () => {
+  it('requires explicit credentials and submits them', async () => {
     render(
       <AntdApp>
         <LoginPage />
       </AntdApp>,
     );
 
-    expect(screen.getByLabelText('Tên đăng nhập')).toHaveValue('admin');
-    expect(screen.getByLabelText('Mật khẩu')).toHaveValue('admin123');
+    expect(screen.getByLabelText('Tên đăng nhập')).toHaveValue('');
+    expect(screen.getByLabelText('Mật khẩu')).toHaveValue('');
 
+    fireEvent.change(screen.getByLabelText('Tên đăng nhập'), { target: { value: 'test-user' } });
+    fireEvent.change(screen.getByLabelText('Mật khẩu'), { target: { value: 'test-password' } });
     fireEvent.click(screen.getByRole('button', { name: 'Đăng nhập' }));
 
     await waitFor(() => {
-      expect(authMocks.login).toHaveBeenCalledWith('admin', 'admin123');
+      expect(authMocks.login).toHaveBeenCalledWith('test-user', 'test-password');
     });
   });
 });

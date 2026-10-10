@@ -1,3 +1,5 @@
+import { Public } from '../auth/access';
+import { Roles } from '../auth/roles.decorator';
 import {
   Body,
   Controller,
@@ -25,16 +27,19 @@ export class CatalogController {
   constructor(private readonly catalogService: CatalogService) {}
 
   // ================= PUBLIC ENDPOINTS (CUSTOMER & GUEST) =================
+  @Public()
   @Get('products')
   queryProducts(@Query() query: QueryCatalogDto) {
     return this.catalogService.queryProducts(query);
   }
 
+  @Public()
   @Get('products/:id')
   findProductById(@Param('id') id: string) {
     return this.catalogService.findProductById(id);
   }
 
+  @Public()
   @Get('categories')
   findAllCategories() {
     return this.catalogService.findAllCategories();
@@ -42,6 +47,7 @@ export class CatalogController {
 
   // ================= ADMIN / STAFF MANAGEMENT ENDPOINTS =================
   @Post('categories')
+  @Roles(Role.ADMIN, Role.STAFF)
   @UseGuards(AuthGuard('jwt'))
   createCategory(
     @Body() dto: CreateCategoryDto,
@@ -52,6 +58,7 @@ export class CatalogController {
   }
 
   @Post('products')
+  @Roles(Role.ADMIN, Role.STAFF)
   @UseGuards(AuthGuard('jwt'))
   createProduct(
     @Body() dto: CreateProductDto,
@@ -62,6 +69,7 @@ export class CatalogController {
   }
 
   @Patch('products/:id')
+  @Roles(Role.ADMIN, Role.STAFF)
   @UseGuards(AuthGuard('jwt'))
   updateProduct(
     @Param('id') id: string,
@@ -73,6 +81,7 @@ export class CatalogController {
   }
 
   @Post('skus')
+  @Roles(Role.ADMIN, Role.STAFF)
   @UseGuards(AuthGuard('jwt'))
   createSku(
     @Body() dto: CreateSkuDto,
@@ -83,6 +92,7 @@ export class CatalogController {
   }
 
   @Post('price-lists')
+  @Roles(Role.ADMIN, Role.STAFF)
   @UseGuards(AuthGuard('jwt'))
   createPriceList(
     @Body() dto: CreatePriceListDto,
@@ -93,6 +103,7 @@ export class CatalogController {
   }
 
   @Post('sku-prices')
+  @Roles(Role.ADMIN, Role.STAFF)
   @UseGuards(AuthGuard('jwt'))
   setSkuPrice(
     @Body() dto: SetSkuPriceDto,

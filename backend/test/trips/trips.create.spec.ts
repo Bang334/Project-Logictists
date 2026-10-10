@@ -22,7 +22,7 @@ describe('TripsService.create', () => {
         }),
       },
     };
-    const service = new TripsService(prisma as never, {} as never, {} as never);
+    const service = new TripsService(prisma as never, {} as never, {} as never, { tripInputs: jest.fn() } as never);
 
     await expect(
       service.create(
@@ -36,7 +36,7 @@ describe('TripsService.create', () => {
           endLocation: { address: 'End', latitude: 10.8, longitude: 106.7 },
           orderIds: ['order-1'],
         },
-        { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       ),
     ).rejects.toThrow(BadRequestException);
     await expect(
@@ -51,7 +51,7 @@ describe('TripsService.create', () => {
           endLocation: { address: 'End', latitude: 10.8, longitude: 106.7 },
           orderIds: ['order-1'],
         },
-        { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       ),
     ).rejects.toThrow('chưa được gán kho đỗ');
   });

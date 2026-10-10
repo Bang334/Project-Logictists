@@ -25,13 +25,13 @@ def _can_serve_order_with_zero_travel_lower_bound(
         return False
 
     delivery_arrival = max(
-        pickup_arrival + order.service_time_sec,
+        pickup_arrival + order.service_seconds("PICKUP"),
         float(order.delivery_window_start_sec),
     )
     if delivery_arrival > order.delivery_window_end_sec:
         return False
 
-    route_end = delivery_arrival + order.service_time_sec
+    route_end = delivery_arrival + order.service_seconds("DELIVERY")
     return route_end <= vehicle.available_end_sec
 
 

@@ -1,3 +1,4 @@
+import { useAuth } from '../context/AuthContext';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Table,
@@ -37,6 +38,7 @@ const { Title, Text } = Typography;
 
 const FleetPage: React.FC = () => {
   const { message } = AntdApp.useApp();
+  const { can, branchId, setBranchId } = useAuth();
 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
@@ -44,7 +46,8 @@ const FleetPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
 
   // Bộ lọc
-  const [selectedBranchId, setSelectedBranchId] = useState<string>('ALL');
+  const selectedBranchId = branchId || 'ALL';
+  const setSelectedBranchId = (value: string) => setBranchId(value === 'ALL' ? undefined : value);
   const [vehicleStatusFilter, setVehicleStatusFilter] = useState<string>('ALL');
   const [driverStatusFilter, setDriverStatusFilter] = useState<string>('ALL');
   const [searchText, setSearchText] = useState<string>('');
@@ -212,6 +215,7 @@ const FleetPage: React.FC = () => {
           size="small"
           value={status}
           style={{ width: 145 }}
+          disabled={!can('vehicles.manage')}
           onChange={(newVal) => handleQuickVehicleStatusChange(r, newVal)}
           options={[
             { value: 'AVAILABLE', label: <Tag color="green">Sẵn sàng</Tag> },
@@ -231,6 +235,7 @@ const FleetPage: React.FC = () => {
           type="primary"
           ghost
           size="small"
+          disabled={!can('vehicles.manage')}
           icon={<EditOutlined />}
           onClick={() => {
             setSelectedVehicleForEdit(r);
@@ -301,6 +306,7 @@ const FleetPage: React.FC = () => {
           size="small"
           value={status}
           style={{ width: 160 }}
+          disabled={!can('drivers.manage')}
           onChange={(newVal) => handleQuickDriverStatusChange(r, newVal)}
           options={[
             { value: 'AVAILABLE', label: <Tag color="success">Sẵn sàng nhận lệnh</Tag> },
@@ -320,6 +326,7 @@ const FleetPage: React.FC = () => {
           type="primary"
           ghost
           size="small"
+          disabled={!can('drivers.manage')}
           icon={<EditOutlined />}
           onClick={() => {
             setSelectedDriverForEdit(r);
@@ -400,6 +407,7 @@ const FleetPage: React.FC = () => {
           type="primary"
           ghost
           size="small"
+          disabled={!can('branches.manage')}
           icon={<EditOutlined />}
           onClick={() => {
             setSelectedBranchForEdit(r);

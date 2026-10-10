@@ -1,3 +1,5 @@
+import { canOpenTab } from '../utils/navigationAccess';
+
 import React from 'react';
 import { Layout, Menu } from 'antd';
 import {
@@ -11,6 +13,7 @@ import {
   ShopOutlined,
   ShoppingOutlined,
   ThunderboltOutlined,
+  UserOutlined,
 } from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
 
@@ -22,49 +25,62 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
-  const { user } = useAuth();
+  const { can, user } = useAuth();
   const menuItems = [
-    { key: 'customer-shop', icon: <ShoppingOutlined />, label: 'Mua hàng & đơn của tôi' },
-    { key: 'dashboard', icon: <DashboardOutlined />, label: 'Tổng quan vận hành' },
-    { key: 'catalog', icon: <AppstoreOutlined />, label: 'Danh mục & giá' },
+    { key: 'customer-shop', icon: <ShopOutlined />, label: 'Đặt hàng' },
+    { key: 'catalog', icon: <AppstoreOutlined />, label: 'Danh mục hàng' },
     { key: 'inventory', icon: <DatabaseOutlined />, label: 'Tồn kho' },
-    { key: 'sales-orders', icon: <ShoppingOutlined />, label: 'Đơn bán hàng' },
-    { key: 'order-processing', icon: <InboxOutlined />, label: 'Chuẩn bị & đóng kiện' },
-    { key: 'pickup-ops', icon: <ShopOutlined />, label: 'Điểm nhận & giao khách' },
-    { key: 'retail-analytics', icon: <BarChartOutlined />, label: 'Doanh thu & đối soát' },
-    { key: 'orders', icon: <CarOutlined />, label: 'Đơn vận tải' },
-    { key: 'dispatch-manual', icon: <CompassOutlined />, label: 'Điều phối thủ công' },
-    { key: 'dispatch-auto', icon: <ThunderboltOutlined />, label: 'Điều phối tự động' },
-    { key: 'fleet', icon: <CarOutlined />, label: 'Đội xe & tài xế' },
+    { key: 'sales-orders', icon: <ShoppingOutlined />, label: 'Đơn bán lẻ' },
+    { key: 'order-processing', icon: <InboxOutlined />, label: 'Xử lý đơn bán lẻ' },
+    { key: 'pickup-ops', icon: <ShopOutlined />, label: 'Điểm nhận hàng' },
+    { key: 'retail-analytics', icon: <BarChartOutlined />, label: 'Báo cáo bán lẻ' },
+    { key: 'accounts', icon: <UserOutlined aria-hidden="true" />, label: 'Quản lý tài khoản' },
+    {
+      key: 'dashboard',
+      icon: <DashboardOutlined style={{ fontSize: '16px' }} />,
+      label: 'Tổng quan Vận hành',
+    },
+    {
+      key: 'orders',
+      icon: <ShoppingOutlined style={{ fontSize: '16px' }} />,
+      label: 'Quản lý Đơn hàng',
+    },
+    {
+      key: 'dispatch-manual',
+      icon: <CompassOutlined style={{ fontSize: '16px' }} />,
+      label: 'Điều Phối Thủ Công',
+    },
+    {
+      key: 'dispatch-auto',
+      icon: <ThunderboltOutlined style={{ fontSize: '16px' }} />,
+      label: 'Điều Phối Tự Động',
+    },
+    {
+      key: 'fleet',
+      icon: <CarOutlined style={{ fontSize: '16px' }} />,
+      label: 'Đội Xe & Tài Xế',
+    },
   ];
 
-  const allowedByRole: Record<string, string[]> = {
-    CUSTOMER: ['customer-shop'],
-    DRIVER: ['dashboard'],
-    DISPATCHER: ['dashboard', 'orders', 'fleet', 'dispatch-manual', 'dispatch-auto'],
-    STAFF: ['dashboard', 'catalog', 'inventory', 'sales-orders', 'order-processing', 'pickup-ops'],
-    ADMIN: menuItems.map((item) => item.key).filter((key) => key !== 'customer-shop'),
-  };
-  const visibleItems = menuItems.filter((item) =>
-    user ? (allowedByRole[user.role] || []).includes(item.key) : false,
-  );
 
   return (
-    <Sider width={264} breakpoint="lg" collapsedWidth={0} className="tms-sidebar">
-      <div className="tms-sidebar-inner">
-        <div className="tms-sidebar-label">Không gian làm việc</div>
-        <Menu
-          mode="inline"
-          selectedKeys={[currentTab]}
-          onClick={({ key }) => onSelectTab(key)}
-          className="tms-sidebar-menu"
-          items={visibleItems}
-        />
-        <div className="tms-sidebar-footer">
-          <span className="tms-status-dot" aria-hidden="true" />
-          Hệ thống đang hoạt động
-        </div>
-      </div>
+    <Sider
+      width={240}
+      breakpoint="lg"
+      collapsedWidth={0}
+      style={{
+        background: '#ffffff',
+        borderRight: '1px solid #e2e8f0',
+        minHeight: 'calc(100vh - 64px)',
+      }}
+    >
+      <Menu
+        mode="inline"
+        selectedKeys={[currentTab]}
+        onClick={({ key }) => onSelectTab(key)}
+        style={{ borderRight: 0, paddingTop: '12px' }}
+        items={menuItems.filter(item => canOpenTab(user, item.key, can))}
+      />
     </Sider>
   );
 };

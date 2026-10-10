@@ -19,6 +19,7 @@ describe('TripsValidator - TMS Invariants', () => {
     fixedOperatingCostPerTrip: new Prisma.Decimal(120000),
     status: VehicleStatus.AVAILABLE,
     homeDepotLocationId: null,
+    vehicleTypeId: null,
     currentLatitude: null,
     currentLongitude: null,
     lastLocationAt: null,
@@ -42,6 +43,7 @@ describe('TripsValidator - TMS Invariants', () => {
     totalVolumeM3,
     totalPackages: items.length || 1,
     version: 1,
+    packageDataStatus: 'LEGACY_REVIEW',
     notes: null,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -65,6 +67,22 @@ describe('TripsValidator - TMS Invariants', () => {
     },
   ];
 
+  it('uses physical grams and mm³, ignores stale projections and rejects a one-gram overload', () => {
+    const packages = [1, 2].map(n => ({ id: `pkg-${n}`, orderItemId: 'i1', packageCode: `PKG-${n}`,
+      lengthMm: 1, widthMm: 1, heightMm: 1, weightG: 2500000n,
+      status: 'READY' as const, version: 1, orderId: null, releasedAt: null, holdingSlot: null, arrivedAtPickupPointAt: null, measurementSource: 'USER_DECLARED', measuredAt: null,
+      allowedOrientations: null, createdAt: new Date(), updatedAt: new Date() }));
+    const order = { ...createMockOrder('ord-1', 'O1', 0, 0, [{ ...sampleItems[0], quantity: 2, weightKg: 0, volumeM3: 0, packages }]), packageDataStatus: 'COMPLETE' };
+    const orderStop = { id: 'p1', orderId: order.id, type: StopType.PICKUP, sequence: 1, address: 'test', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowBasis: null, windowStart: null, windowEnd: null, serviceDurationMinutes: 0, createdAt: new Date() };
+    const stops = [{ order, orderStop }, { order, orderStop: { ...orderStop, id: 'd1', type: StopType.DELIVERY } }];
+    const result = TripsValidator.calculateAndValidateLoad(mockVehicle, stops);
+    expect(result.maxWeightKg).toBe(5000);
+    expect(result.maxVolumeM3).toBe(2e-9);
+    expect(result.loadProfile[1].currentWeightKg).toBe(0);
+    packages[0].weightG += 1n;
+    expect(() => TripsValidator.calculateAndValidateLoad(mockVehicle, stops)).toThrow(BadRequestException);
+  });
+
   describe('BR03: validatePickupBeforeDelivery', () => {
     it('Hợp lệ khi Điểm PICKUP đứng trước Điểm DELIVERY', () => {
       const stops: StopWithItems[] = [
@@ -79,7 +97,7 @@ describe('TripsValidator - TMS Invariants', () => {
             longitude: 105.8,
             contactName: 'A',
             contactPhone: '091',
-            windowStart: null,
+            windowBasis: null, windowStart: null,
             windowEnd: null,
             serviceDurationMinutes: 15,
             createdAt: new Date(),
@@ -97,7 +115,7 @@ describe('TripsValidator - TMS Invariants', () => {
             longitude: 106.6,
             contactName: 'B',
             contactPhone: '092',
-            windowStart: null,
+            windowBasis: null, windowStart: null,
             windowEnd: null,
             serviceDurationMinutes: 15,
             createdAt: new Date(),
@@ -122,7 +140,7 @@ describe('TripsValidator - TMS Invariants', () => {
             longitude: 106.6,
             contactName: 'B',
             contactPhone: '092',
-            windowStart: null,
+            windowBasis: null, windowStart: null,
             windowEnd: null,
             serviceDurationMinutes: 15,
             createdAt: new Date(),
@@ -140,7 +158,7 @@ describe('TripsValidator - TMS Invariants', () => {
             longitude: 105.8,
             contactName: 'A',
             contactPhone: '091',
-            windowStart: null,
+            windowBasis: null, windowStart: null,
             windowEnd: null,
             serviceDurationMinutes: 15,
             createdAt: new Date(),
@@ -166,19 +184,19 @@ describe('TripsValidator - TMS Invariants', () => {
 
       const stops: StopWithItems[] = [
         {
-          orderStop: { id: 'p1', orderId: 'o1', type: StopType.PICKUP, sequence: 1, address: 'Kho A', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
+          orderStop: { id: 'p1', orderId: 'o1', type: StopType.PICKUP, sequence: 1, address: 'Kho A', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowBasis: null, windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
           order: createMockOrder('o1', 'O1', 3500, 10, item1),
         },
         {
-          orderStop: { id: 'd1', orderId: 'o1', type: StopType.DELIVERY, sequence: 2, address: 'Kho B', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
+          orderStop: { id: 'd1', orderId: 'o1', type: StopType.DELIVERY, sequence: 2, address: 'Kho B', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowBasis: null, windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
           order: createMockOrder('o1', 'O1', 3500, 10, item1),
         },
         {
-          orderStop: { id: 'p2', orderId: 'o2', type: StopType.PICKUP, sequence: 3, address: 'Kho C', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
+          orderStop: { id: 'p2', orderId: 'o2', type: StopType.PICKUP, sequence: 3, address: 'Kho C', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowBasis: null, windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
           order: createMockOrder('o2', 'O2', 3000, 10, item2),
         },
         {
-          orderStop: { id: 'd2', orderId: 'o2', type: StopType.DELIVERY, sequence: 4, address: 'Kho D', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
+          orderStop: { id: 'd2', orderId: 'o2', type: StopType.DELIVERY, sequence: 4, address: 'Kho D', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowBasis: null, windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
           order: createMockOrder('o2', 'O2', 3000, 10, item2),
         },
       ];
@@ -196,19 +214,19 @@ describe('TripsValidator - TMS Invariants', () => {
 
       const overloadedStops: StopWithItems[] = [
         {
-          orderStop: { id: 'p1', orderId: 'o1', type: StopType.PICKUP, sequence: 1, address: 'Kho A', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
+          orderStop: { id: 'p1', orderId: 'o1', type: StopType.PICKUP, sequence: 1, address: 'Kho A', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowBasis: null, windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
           order: createMockOrder('o1', 'O1', 3500, 10, item1),
         },
         {
-          orderStop: { id: 'p2', orderId: 'o2', type: StopType.PICKUP, sequence: 2, address: 'Kho C', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
+          orderStop: { id: 'p2', orderId: 'o2', type: StopType.PICKUP, sequence: 2, address: 'Kho C', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowBasis: null, windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
           order: createMockOrder('o2', 'O2', 3000, 10, item2),
         },
         {
-          orderStop: { id: 'd1', orderId: 'o1', type: StopType.DELIVERY, sequence: 3, address: 'Kho B', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
+          orderStop: { id: 'd1', orderId: 'o1', type: StopType.DELIVERY, sequence: 3, address: 'Kho B', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowBasis: null, windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
           order: createMockOrder('o1', 'O1', 3500, 10, item1),
         },
         {
-          orderStop: { id: 'd2', orderId: 'o2', type: StopType.DELIVERY, sequence: 4, address: 'Kho D', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
+          orderStop: { id: 'd2', orderId: 'o2', type: StopType.DELIVERY, sequence: 4, address: 'Kho D', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowBasis: null, windowStart: null, windowEnd: null, serviceDurationMinutes: 15, createdAt: new Date() },
           order: createMockOrder('o2', 'O2', 3000, 10, item2),
         },
       ];

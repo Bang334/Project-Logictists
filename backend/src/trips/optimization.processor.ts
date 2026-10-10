@@ -1,6 +1,7 @@
+import { AuthService } from '../auth/auth.service';
 import { Logger } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Prisma, Role } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { Job } from 'bullmq';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
@@ -24,6 +25,7 @@ export class OptimizationProcessor extends WorkerHost {
   private readonly workerId = `optimizer-${process.pid}-${randomUUID()}`;
 
   constructor(
+    private readonly auth: AuthService,
     private readonly prisma: PrismaService,
     private readonly tripsService: TripsService,
     private readonly events: EventsGateway,
@@ -149,11 +151,7 @@ export class OptimizationProcessor extends WorkerHost {
 
     try {
       const candidateBatch = await this.tripsService.executeAutomaticOptimization(
-        {
-          id: optimizationJob.createdById,
-          branchId: optimizationJob.branchId,
-          role: optimizationJob.createdBy.role as Role,
-        },
+        await this.auth.principalForWorker(optimizationJob.createdById),
         dto,
         optimizationJob.id,
         reportProgress,

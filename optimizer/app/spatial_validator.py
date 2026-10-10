@@ -498,7 +498,7 @@ class SpatialValidator:
             snapshots, max_weight, max_area = solution
             return SpatialValidationResult(
                 is_valid=True,
-                max_weight_kg=max_weight,
+                max_weight_kg=round(max_weight, 3),
                 max_area_cm2=max_area,
                 step_states=self._build_floor_states(stops, snapshots),
             )
@@ -562,7 +562,7 @@ class SpatialValidator:
                     placed_items=sorted(
                         snapshot.placed_items, key=lambda item: item.item_id
                     ),
-                    current_weight_kg=round(current_weight, 1),
+                    current_weight_kg=round(current_weight, 3),
                     current_occupied_area_cm2=round(occupied_area, 1),
                     floor_area_cm2=self.total_floor_area,
                     weight_utilization_percent=round(
@@ -1371,7 +1371,7 @@ class SpatialValidator:
                 violation_code=violation_code,
                 violation_scenario=violation_scenario,
                 error_message=error_message,
-                max_weight_kg=max_weight,
+                max_weight_kg=round(max_weight, 3),
                 max_area_cm2=max_area,
                 step_states=step_states,
             )

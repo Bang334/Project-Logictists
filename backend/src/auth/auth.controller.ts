@@ -1,19 +1,20 @@
-import { Controller, Post, Body, Get, UseGuards, Request } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+﻿import { Body, Controller, Get, HttpCode, Ip, Post, Req } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import { AuthRequest, Public, RequirePermission } from './access';
+import { LoginDto } from './login.dto';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private authService: AuthService) {}
-
+  constructor(private readonly auth: AuthService) {}
+  @Public()
   @Post('login')
-  async login(@Body() body: { username: string; pass?: string; password?: string }) {
-    return this.authService.login(body);
-  }
-
-  @UseGuards(AuthGuard('jwt'))
+  @HttpCode(200)
+  login(@Body() body: LoginDto, @Ip() ip: string) { return this.auth.login(body, ip); }
+  @RequirePermission('authenticated')
   @Get('profile')
-  getProfile(@Request() req: any) {
-    return req.user;
-  }
+  profile(@Req() req: AuthRequest) { return this.auth.profile(req.user); }
+  @RequirePermission('authenticated')
+  @Post('logout')
+  @HttpCode(200)
+  logout(@Req() req: AuthRequest) { return this.auth.logout(req.user); }
 }

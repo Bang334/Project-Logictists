@@ -187,6 +187,8 @@ class SpatialValidationResult(StrictContractModel):
 
 
 class OrderPair(StrictContractModel):
+    ordered_at_sec: int = 0
+    order_value_vnd: int = Field(default=0, ge=0)
     id: str
     source_order_id: Optional[str] = None
     source_order_number: Optional[str] = None
@@ -196,16 +198,26 @@ class OrderPair(StrictContractModel):
     pickup_location: LocationPoint
     delivery_location: LocationPoint
     items: List[CargoItem] = Field(min_length=1)
-    ordered_at_sec: int = 0
-    order_value_vnd: int = Field(default=0, ge=0)
-    service_time_sec: int = Field(default=1200, ge=0)
     pickup_window_start_sec: int = Field(default=0, ge=0)
-    pickup_window_end_sec: int = Field(default=30 * 86400, ge=0)
+    pickup_window_end_sec: int = Field(default=604800, ge=0)
     delivery_window_start_sec: int = Field(default=0, ge=0)
-    delivery_window_end_sec: int = Field(default=30 * 86400, ge=0)
+    delivery_window_end_sec: int = Field(default=604800, ge=0)
+    # Legacy scalar remains for old snapshots; v1 producers send both explicit durations.
+    service_time_sec: int = Field(default=1200, ge=0)
+    pickup_service_time_sec: Optional[int] = Field(default=None, ge=0)
+    delivery_service_time_sec: Optional[int] = Field(default=None, ge=0)
+    time_window_basis: Literal["SERVICE_START"] = "SERVICE_START"
+    package_contract_version: Optional[Literal["1"]] = None
+
+    def service_seconds(self, stop_type: str) -> int:
+        duration = self.pickup_service_time_sec if stop_type == "PICKUP" else self.delivery_service_time_sec
+        return self.service_time_sec if duration is None else duration
+
 
     @model_validator(mode="after")
-    def validate_time_windows(self):
+    def validate_windows(self):
+        if self.package_contract_version == "1" and (self.pickup_service_time_sec is None or self.delivery_service_time_sec is None):
+            raise ValueError("Package v1 requires both service durations")
         if self.pickup_window_start_sec > self.pickup_window_end_sec:
             raise ValueError("pickup time window is invalid")
         if self.delivery_window_start_sec > self.delivery_window_end_sec:
@@ -347,6 +359,7 @@ class PlanningObjectiveBreakdown(StrictContractModel):
 
 
 class FleetOptimizationResponse(StrictContractModel):
+    package_contract_version: Literal["1"] = "1"
     job_id: str
     status: Literal["SUCCESS", "PARTIAL", "INFEASIBLE", "TIMEOUT", "ERROR"]
     routes: List[OptimizedRoute] = Field(default_factory=list)
@@ -376,6 +389,7 @@ class FleetOptimizationBatchResponse(StrictContractModel):
 
 
 class OptimizationResponse(StrictContractModel):
+    package_contract_version: Literal["1"] = "1"
     job_id: str
     status: Literal["SUCCESS", "PARTIAL", "FAILED", "INFEASIBLE", "TIMEOUT"]
     total_distance_km: float = 0.0

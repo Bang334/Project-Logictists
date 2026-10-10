@@ -1,54 +1,55 @@
 import React from 'react';
-import { Avatar, Button, Grid, Layout, Space, Tag, Typography } from 'antd';
-import {
-  CarOutlined,
-  EnvironmentOutlined,
-  LogoutOutlined,
-  UserOutlined,
-} from '@ant-design/icons';
+import { Layout, Button, Space, Typography, Tag, Select, Grid } from 'antd';
+import { CarOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
 
 const { Header } = Layout;
 const { Text } = Typography;
 
-const ROLE_LABELS: Record<string, string> = {
-  ADMIN: 'Quản trị viên',
-  DISPATCHER: 'Điều phối viên',
-  STAFF: 'Nhân viên',
-  DRIVER: 'Tài xế',
-  CUSTOMER: 'Khách hàng',
-};
-
 const Navbar: React.FC = () => {
-  const { user, logout } = useAuth();
   const screens = Grid.useBreakpoint();
-  const displayName = user?.fullName || user?.username || 'Người dùng';
+  const { user, logout, branchId, setBranchId } = useAuth();
 
   return (
-    <Header className="tms-navbar">
-      <div className="tms-brand" aria-label="TMS Logistics">
-        <span className="tms-brand-mark"><CarOutlined /></span>
-        <span className="tms-brand-copy">
-          <strong>TMS Logistics</strong>
-          {screens.md && <small>Trung tâm vận hành</small>}
-        </span>
+    <Header
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '8px 16px',
+        flexWrap: 'wrap',
+        gap: 12,
+        background: '#001529',
+        borderBottom: '1px solid #1e293b',
+        height: 'auto',
+        minHeight: 64,
+        position: 'sticky',
+        top: 0,
+        zIndex: 100,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <CarOutlined aria-label="TMS Logistics" style={{ color: '#60a5fa', fontSize: '24px' }} />
+        <div>
+          <span style={{ color: '#ffffff', fontWeight: 700, fontSize: '18px', letterSpacing: '-0.02em' }}>
+            TMS LOGISTICS
+          </span>
+          <span style={{ color: '#94a3b8', fontSize: '12px', marginLeft: '8px' }}>
+            Phase 1: Core Dispatch
+          </span>
+        </div>
       </div>
 
-      <Space size={screens.md ? 16 : 8} className="tms-navbar-actions">
-        {screens.lg && user?.branch && (
-          <Tag className="tms-branch-tag" icon={<EnvironmentOutlined />}>
-            {user.branch.name}
-          </Tag>
-        )}
+      <Space size="middle" wrap>
+        <Select aria-label="Chi nhánh làm việc" style={{ minWidth: 210 }} value={branchId || 'ALL'} onChange={value => setBranchId(value === 'ALL' ? undefined : value)} options={[{ value: 'ALL', label: user?.companyScope ? 'Toàn công ty' : 'Các chi nhánh được cấp' }, ...(user?.branches || []).map(b => ({ value: b.id, label: b.name }))]} />
 
-        <div className="tms-user-summary">
-          <Avatar className="tms-user-avatar" icon={<UserOutlined />} />
-          {screens.md && (
-            <span className="tms-user-copy">
-              <Text>{displayName}</Text>
-              <small>{ROLE_LABELS[user?.role || ''] || user?.role}</small>
-            </span>
-          )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Tag color="geekblue" icon={<UserOutlined />}>
+            {[...new Set(user?.grants.map(g => g.role))].join(', ') || user?.role}
+          </Tag>
+          <Text style={{ color: '#ffffff', fontWeight: 500 }}>
+            {user?.fullName || user?.username}
+          </Text>
         </div>
 
         <Button

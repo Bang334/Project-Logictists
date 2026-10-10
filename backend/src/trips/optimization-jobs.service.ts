@@ -1,3 +1,4 @@
+import { Principal, hasPermission } from '../auth/access';
 import {
   ConflictException,
   ForbiddenException,
@@ -5,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
-import { Prisma, Role } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { createHash } from 'crypto';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
@@ -19,7 +20,7 @@ import { OPTIMIZATION_PROGRESS_STAGES } from './optimization-progress';
 export const OPTIMIZATION_QUEUE = 'optimization';
 export const OPTIMIZATION_JOB_NAME = 'run-automatic-optimization';
 
-type JobUser = { id: string; branchId?: string | null; role: Role };
+type JobUser = Principal;
 type StoredJobResult = {
   proposal: Record<string, unknown>;
   signature: string;
@@ -374,7 +375,7 @@ export class OptimizationJobsService {
   private async getAuthorizedJob(user: JobUser, id: string) {
     const job = await this.prisma.optimizationJob.findUnique({ where: { id } });
     if (!job) throw new NotFoundException(`Không tìm thấy optimization job ${id}`);
-    if (user.role !== Role.ADMIN && user.branchId !== job.branchId) {
+    if (!hasPermission(user, 'trips.plan', job.branchId)) {
       throw new ForbiddenException('KhÃ´ng cÃ³ quyá»n truy cáº­p job ngoÃ i chi nhÃ¡nh');
     }
     return job;

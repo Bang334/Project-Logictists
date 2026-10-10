@@ -1,58 +1,24 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Patch,
-  Query,
-  Req,
-  UseGuards,
-} from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+﻿import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Query, Req, ParseEnumPipe } from '@nestjs/common';
+import { DriverStatus } from '@prisma/client';
 import { DriversService } from './drivers.service';
-import { DriverStatus, Role } from '@prisma/client';
-import { resolveBranchScope } from '../auth/branch-scope';
 import { UpdateDriverDto } from './dto/update-driver.dto';
+import { AuthRequest, RequirePermission } from '../auth/access';
 
 @Controller('drivers')
-@UseGuards(AuthGuard('jwt'))
 export class DriversController {
-  constructor(private readonly driversService: DriversService) {}
-
+  constructor(private readonly service: DriversService) {}
+  @RequirePermission('drivers.read')
   @Get()
-  findAll(
-    @Req() req: { user: { branchId?: string; role: Role } },
-    @Query('branchId') branchId?: string,
-    @Query('status') status?: DriverStatus,
-  ) {
-    const effectiveBranchId =
-      req.user.role === Role.ADMIN
-        ? (branchId && branchId !== 'ALL' ? branchId : undefined)
-        : req.user.branchId;
-    return this.driversService.findAll(effectiveBranchId, status);
+  findAll(@Req() req: AuthRequest, @Query('branchId') branchId?: string, @Query('status', new ParseEnumPipe(DriverStatus, { optional: true })) status?: DriverStatus) {
+    return this.service.findAll(req.user, branchId, status);
   }
-
+  @RequirePermission('drivers.read')
   @Get('available')
-  getAvailable(
-    @Req() req: { user: { branchId?: string; role: Role } },
-    @Query('branchId', new ParseUUIDPipe({ optional: true })) branchId?: string,
-  ) {
-    return this.driversService.getAvailable(resolveBranchScope(req.user, branchId));
-  }
-
+  available(@Req() req: AuthRequest, @Query('branchId') branchId?: string) { return this.service.getAvailable(req.user, branchId); }
+  @RequirePermission('drivers.read')
   @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.driversService.findOne(id);
-  }
-
+  findOne(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.service.findOne(id, req.user); }
+  @RequirePermission('drivers.manage')
   @Patch(':id')
-  update(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() updateDriverDto: UpdateDriverDto,
-    @Req() req: { user: { branchId?: string; role: Role } },
-  ) {
-    return this.driversService.update(id, updateDriverDto, req.user);
-  }
+  update(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateDriverDto) { return this.service.update(id, dto, req.user); }
 }
-

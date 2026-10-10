@@ -1,12 +1,23 @@
 export interface User {
+  role?: 'ADMIN' | 'DISPATCHER' | 'STAFF' | 'CUSTOMER' | 'DRIVER';
+  phone?: string | null;
+  locationId?: string | null;
   id: string;
   username: string;
   fullName: string;
-  role: 'ADMIN' | 'DISPATCHER' | 'DRIVER' | 'STAFF' | 'CUSTOMER';
-  branchId?: string;
-  locationId?: string;
-  phone?: string;
-  branch?: Branch;
+  grants: Array<{ role: string; scopeType: 'COMPANY' | 'BRANCH'; branchId: string | null; permissions: string[] }>;
+  branches: Array<{ id: string; code: string; name: string }>;
+  companyScope: boolean;
+  permissions: string[];
+}
+export function parseUser(value: unknown): User {
+  if (!value || typeof value !== 'object') throw new Error('Invalid profile');
+  const v = value as Record<string, unknown>;
+  const strings = (x: unknown): x is string[] => Array.isArray(x) && x.every(i => typeof i === 'string');
+  if (typeof v.id !== 'string' || typeof v.username !== 'string' || typeof v.fullName !== 'string' || typeof v.companyScope !== 'boolean' || !strings(v.permissions)
+      || !Array.isArray(v.branches) || !v.branches.every(b => b && typeof b.id === 'string' && typeof b.code === 'string' && typeof b.name === 'string')
+      || !Array.isArray(v.grants) || !v.grants.every(g => g && typeof g.role === 'string' && ['COMPANY', 'BRANCH'].includes(g.scopeType) && (g.branchId === null || typeof g.branchId === 'string') && strings(g.permissions))) throw new Error('Invalid profile');
+  return value as User;
 }
 
 export interface Branch {
@@ -83,6 +94,12 @@ export interface Driver {
   perKmPay?: string;
 }
 
+export interface OrderPackage {
+  id: string; orderId: string; orderItemId: string; packageCode: string;
+  lengthMm: number; widthMm: number; heightMm: number; weightG: string;
+  pickupStopId: string | null; deliveryStopId: string | null; status: string; version: number;
+}
+
 export interface OrderItem {
   id: string;
   sku?: string;
@@ -90,10 +107,11 @@ export interface OrderItem {
   packageType: string;
   quantity: number;
   weightKg: number;
-  lengthCm: number;
-  widthCm: number;
-  heightCm: number;
+  lengthCm: number | null;
+  widthCm: number | null;
+  heightCm: number | null;
   volumeM3: number;
+  packages: OrderPackage[];
 }
 
 export interface OrderStop {
@@ -106,6 +124,9 @@ export interface OrderStop {
   longitude: number;
   contactName: string;
   contactPhone: string;
+  windowBasis?: string | null;
+  windowStart?: string | null;
+  windowEnd?: string | null;
   serviceDurationMinutes: number;
 }
 
@@ -130,6 +151,10 @@ export interface Order {
   totalVolumeM3: number;
   totalPackages: number;
   version: number;
+  packageDataStatus: "COMPLETE" | "LEGACY_REVIEW";
+  totalWeightG: string | null;
+  totalVolumeMm3: string | null;
+  operationalTimezone: string;
   notes?: string;
   orderedAt: string;
   totalAmount: string;

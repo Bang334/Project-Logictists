@@ -34,6 +34,9 @@ export class TripStopInputDto {
 }
 
 export class CreateTripDto {
+  @IsOptional()
+  @IsUUID()
+  branchId?: string;
   @IsUUID()
   idempotencyKey: string;
 

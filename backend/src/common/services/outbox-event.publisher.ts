@@ -36,6 +36,17 @@ export class OutboxEventPublisher {
   ) {}
 
   async publish(event: PublishableOutboxEvent): Promise<void> {
+    if (['driver.assignment.accepted', 'driver.assignment.rejected'].includes(event.eventType)) {
+      const payload = this.asObject(event.payload);
+      if (typeof payload.tripId !== 'string') throw new Error('Driver assignment event thiếu tripId');
+      // Existing gateway reauthorizes each dispatcher before snapshot invalidation.
+      await this.eventsGateway.emitTripUpdate({ id: payload.tripId });
+      return;
+    }
+    if (['TRIP_CREATED', 'TRIP_PUBLISHED', 'TRIP_PLAN_UPDATED', 'OPTIMIZATION_TRIP_APPLIED'].includes(event.eventType)) {
+      await this.eventsGateway.emitTripUpdate({ id: event.aggregateId });
+      return;
+    }
     if (event.eventType === 'OPTIMIZATION_JOB_CREATED') {
       await this.publishOptimizationJob(event);
       return;
@@ -54,7 +65,7 @@ export class OutboxEventPublisher {
       throw new Error(`Event ${event.eventType} thiếu location scope`);
     }
     const { customerPhone: _customerPhone, otpCode: _otpCode, qrToken: _qrToken, ...safePayload } = payload;
-    this.eventsGateway.emitToLocations(locationIds, 'retail:event', {
+    await this.eventsGateway.emitToLocations(locationIds, 'retail:event', {
       eventId: event.eventId,
       eventType: event.eventType,
       aggregateType: event.aggregateType,

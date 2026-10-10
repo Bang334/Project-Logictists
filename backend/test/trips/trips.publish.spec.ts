@@ -41,6 +41,7 @@ describe('TripsService.publish', () => {
     ],
   };
   const tx = {
+    $queryRaw: jest.fn(),
     $executeRaw: jest.fn(),
     trip: { findUnique: jest.fn(), findFirst: jest.fn(), updateMany: jest.fn() },
     driverAssignment: { findFirst: jest.fn() },
@@ -58,7 +59,7 @@ describe('TripsService.publish', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new TripsService(prisma as never, {} as never, outbox as never);
+    service = new TripsService(prisma as never, {} as never, outbox as never, {} as never);
     tx.trip.findUnique.mockResolvedValue(trip);
     tx.loadPlan.findFirst.mockResolvedValue({
       id: 'load-plan-1',
@@ -91,7 +92,7 @@ describe('TripsService.publish', () => {
     const result = await service.publish(
       'trip-1',
       { expectedVersion: 4 },
-      { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+      { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
     );
 
     expect(tx.trip.updateMany).toHaveBeenCalledWith({
@@ -114,7 +115,7 @@ describe('TripsService.publish', () => {
       service.publish(
         'trip-1',
         { expectedVersion: 3 },
-        { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       ),
     ).rejects.toBeInstanceOf(ConflictException);
 
@@ -132,7 +133,7 @@ describe('TripsService.publish', () => {
       service.publish(
         'trip-1',
         { expectedVersion: 4 },
-        { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       ),
     ).rejects.toBeInstanceOf(ConflictException);
   });
@@ -144,7 +145,7 @@ describe('TripsService.publish', () => {
       service.publish(
         'trip-1',
         { expectedVersion: 4 },
-        { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       ),
     ).rejects.toBeInstanceOf(ConflictException);
 
@@ -166,7 +167,7 @@ describe('TripsService.publish', () => {
       service.publish(
         'trip-1',
         { expectedVersion: 4 },
-        { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       ),
     ).rejects.toBeInstanceOf(ConflictException);
 
@@ -182,7 +183,7 @@ describe('TripsService.publish', () => {
       service.publish(
         'trip-1',
         { expectedVersion: 4 },
-        { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       ),
     ).rejects.toBeInstanceOf(ConflictException);
 

@@ -1,122 +1,39 @@
-import {
-  ArrayMinSize,
-  IsArray,
-  IsDate,
-  IsEnum,
-  IsInt,
-  IsNotEmpty,
-  IsNumber,
-  IsOptional,
-  IsPositive,
-  IsString,
-  Max,
-  Min,
-  ValidateNested,
-} from 'class-validator';
 import { Type } from 'class-transformer';
-import { StopType } from '@prisma/client';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsInt, IsISO8601, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 
+export class PackageInputDto {
+  @IsOptional() @IsUUID() id?: string;
+  @IsInt() @Min(1) @Max(2147483647) lengthMm: number;
+  @IsInt() @Min(1) @Max(2147483647) widthMm: number;
+  @IsInt() @Min(1) @Max(2147483647) heightMm: number;
+  @IsString() @Matches(/^[1-9][0-9]{0,18}$/) weightG: string;
+}
 export class CreateOrderItemDto {
-  @IsOptional()
-  @IsString()
-  sku?: string;
-
-  @IsString()
-  @IsNotEmpty()
-  description: string;
-
-  @IsOptional()
-  @IsString()
-  packageType?: string;
-
-  @IsInt()
-  @Min(1)
-  @Max(500)
-  quantity: number;
-
-  @IsNumber()
-  @IsPositive()
-  weightKg: number;
-
-  @IsNumber()
-  @IsPositive()
-  lengthCm: number;
-
-  @IsNumber()
-  @IsPositive()
-  widthCm: number;
-
-  @IsNumber()
-  @IsPositive()
-  heightCm: number;
-
-  @IsOptional()
-  @IsNumber()
-  @IsPositive()
-  volumeM3?: number;
+  @IsOptional() @IsUUID() id?: string;
+  @IsOptional() @IsString() @MaxLength(100) sku?: string;
+  @IsString() @IsNotEmpty() @MaxLength(500) description: string;
+  @IsString() @IsNotEmpty() @MaxLength(50) packageType: string;
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(500) @ValidateNested({ each: true }) @Type(() => PackageInputDto)
+  packages: PackageInputDto[];
 }
-
 export class CreateOrderStopDto {
-  @IsEnum(StopType)
-  type: StopType;
-
-  @IsNumber()
-  sequence: number;
-
-  @IsString()
-  @IsNotEmpty()
-  address: string;
-
-  @IsNumber()
-  latitude: number;
-
-  @IsNumber()
-  longitude: number;
-
-  @IsString()
-  @IsNotEmpty()
-  contactName: string;
-
-  @IsString()
-  @IsNotEmpty()
-  contactPhone: string;
-
-  @IsOptional()
-  @IsNumber()
-  serviceDurationMinutes?: number;
+  @IsOptional() @IsUUID() id?: string;
+  @IsIn(['PICKUP', 'DELIVERY']) type: 'PICKUP' | 'DELIVERY';
+  @IsString() @IsNotEmpty() @MaxLength(1000) address: string;
+  @IsNumber() @Min(-90) @Max(90) latitude: number;
+  @IsNumber() @Min(-180) @Max(180) longitude: number;
+  @IsString() @IsNotEmpty() @MaxLength(150) contactName: string;
+  @IsString() @IsNotEmpty() @MaxLength(50) contactPhone: string;
+  @IsOptional() @IsISO8601({ strict: true }) @Matches(/(Z|[+-]\d{2}:\d{2})$/) windowStart?: string | null;
+  @IsOptional() @IsISO8601({ strict: true }) @Matches(/(Z|[+-]\d{2}:\d{2})$/) windowEnd?: string | null;
+  @IsInt() @Min(0) @Max(2147483647) serviceDurationMinutes: number;
 }
-
 export class CreateOrderDto {
-  @IsString()
-  @IsNotEmpty()
-  customerId: string;
-
-  @IsOptional()
-  @IsString()
-  branchId?: string;
-
-  @IsOptional()
-  @IsString()
-  notes?: string;
-
-  @Type(() => Date)
-  @IsDate()
-  orderedAt: Date;
-
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  totalAmount?: number;
-
-  @IsArray()
-  @ArrayMinSize(1)
-  @ValidateNested({ each: true })
-  @Type(() => CreateOrderItemDto)
+  @IsUUID() customerId: string;
+  @IsUUID() branchId: string;
+  @IsOptional() @IsString() @MaxLength(5000) notes?: string;
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(100) @ValidateNested({ each: true }) @Type(() => CreateOrderItemDto)
   items: CreateOrderItemDto[];
-
-  @IsArray()
-  @ArrayMinSize(2)
-  @ValidateNested({ each: true })
-  @Type(() => CreateOrderStopDto)
+  @IsArray() @ArrayMinSize(2) @ArrayMaxSize(2) @ValidateNested({ each: true }) @Type(() => CreateOrderStopDto)
   stops: CreateOrderStopDto[];
 }

@@ -2,6 +2,8 @@
 
 Ngày lập: 09/09/2026 · Phiên bản: 0.3 · Trạng thái: Bản nháp để phản hồi; đã chốt Mapbox và quy tắc xếp/dỡ hàng động, không xếp chồng
 
+**Cập nhật thiết kế ngày 23/09/2026:** người dùng yêu cầu chốt cấu trúc database chung. [THIET_KE_DATABASE.md v0.2](THIET_KE_DATABASE.md) là nguồn chuẩn cho bảng/quan hệ, nguồn dữ liệu nhân sự–lương–bảo dưỡng–thanh toán và ràng buộc Order–Package–TripPlan–Reservation. Các mô tả schema khái niệm cũ bên dưới được đọc theo bản này khi có khác biệt. Công thức, định mức, quyền nghiệp vụ chi tiết và các mục POL01–POL08 vẫn cần chốt; không suy việc chốt thiết kế là cho phép viết code/chạy migration.
+
 > Tài liệu này mô tả phương án nghiệp vụ và kỹ thuật đề xuất, chưa phải đặc tả đã được duyệt. Người dùng đã cho phép tạo file kế hoạch; chưa cho phép triển khai ứng dụng. Chỉ bắt đầu viết code, tạo database hoặc migration khi người dùng nói chính xác: **“OK, bắt đầu triển khai”**.
 
 ## 1. Hiện trạng và cách đọc tài liệu
@@ -13,7 +15,7 @@ Quy ước:
 - **Đã chốt:** yêu cầu người dùng nêu rõ.
 - **Đề xuất:** lựa chọn để kế hoạch đủ cụ thể và có thể phản biện; chưa tự động trở thành yêu cầu.
 - **Cần chốt:** quyết định ảnh hưởng phạm vi, dữ liệu hoặc cách vận hành.
-- Các quy tắc, trạng thái, schema, API, vai trò và phase dưới đây đều là **đề xuất**, trừ phần ghi rõ đã chốt.
+- Các quy tắc, trạng thái, schema, API, vai trò và phase dưới đây đều là **đề xuất**, trừ phần ghi rõ đã chốt hoặc cấu trúc đã được chốt tại THIET_KE_DATABASE.md v0.2.
 - Các thông số tải, thời gian và tiến độ là mốc lập kế hoạch để kiểm chứng, không phải cam kết hiệu năng hoặc quy định pháp luật.
 
 ## 2. Mục tiêu và phạm vi
@@ -53,6 +55,8 @@ Quy ước:
 Trong kế hoạch: quản lý vận chuyển và tình trạng phần hàng đang được vận chuyển; điểm nghỉ, bàn giao và chuyển tải phục vụ chuyến; chi phí vận tải và kết quả giao nhận.
 
 Không đưa vào kế hoạch triển khai mặc định: tồn kho, vị trí kệ, nhập/xuất kho WMS, mua hàng, ERP, kế toán tổng hợp, tính lương đầy đủ, sàn giao dịch vận tải, thủ tục hải quan. Nếu có nhu cầu sẽ bổ sung qua quyết định phạm vi.
+
+Theo phân công hiện hành và bản thiết kế database v0.2, Người 3 phụ trách nhân sự vận hành, lương phục vụ TMS, bảo dưỡng, chi phí, hóa đơn và ghi nhận thanh toán. Phạm vi này không bao gồm HRM/kế toán đầy đủ; cấu trúc đã chốt, policy tính tiền và quy trình duyệt cụ thể còn mở. Không còn hiểu phần lương vận hành là chỉ một trường đơn giá trên Driver.
 
 ## 3. Stack và các quyết định kỹ thuật
 
@@ -127,7 +131,7 @@ flowchart LR
 | Tài xế | Xem chuyến được giao, nhận chuyến, cập nhật thực hiện, GPS, POD và sự cố |
 | Nhân viên chi phí | Nhập và xác nhận chi phí; không mặc định có quyền đổi route |
 
-Cổng khách hàng chưa thuộc bản đầu mặc định. Cần chốt ai được xem dữ liệu liên chi nhánh và ai được điều xe/tài xế thuộc chi nhánh khác. Kiểm tra quyền tại API và kênh Socket.IO, không chỉ ẩn nút trên UI.
+Phân công hiện hành có mobile khách hàng do Người 2 phụ trách; thiết kế database v0.2 đã có customer_users. Phạm vi hành động trên mobile khách hàng còn cần chốt, không tự thêm một web portal riêng. Cần chốt ai được xem dữ liệu liên chi nhánh và ai được điều xe/tài xế thuộc chi nhánh khác. Kiểm tra quyền tại API và kênh Socket.IO, không chỉ ẩn nút trên UI.
 
 ## 6. Đặc tả nghiệp vụ đề xuất
 
@@ -347,6 +351,8 @@ Các rule BR23–BR26 ghi nhận yêu cầu người dùng đã chốt về xế
 - DeliveryAttempt → nhiều kết quả phần hàng và POD; không gắn một ảnh POD duy nhất cho toàn bộ Order.
 
 ### 8.2. Bảng dự kiến
+
+Bảng dưới đây là bản khái niệm lịch sử. Danh mục và quan hệ chuẩn đã chốt nằm ở mục 3–6 của [THIET_KE_DATABASE.md](THIET_KE_DATABASE.md), bao gồm Employee, nghỉ phép dùng chung, Payroll, Maintenance, Invoice/Payment và ERD đầy đủ theo nhóm. Không tạo thêm plan_revisions hoặc nguồn driver_leave độc lập khi triển khai theo bản v0.2.
 
 | Nhóm / bảng | Trường tiêu biểu | Ghi chú |
 |---|---|---|
@@ -677,3 +683,10 @@ Mỗi lần cập nhật sẽ:
 4. Giữ các điểm chưa trả lời ở trạng thái đề xuất/cần chốt.
 
 Việc duyệt/chỉnh tài liệu chưa đồng nghĩa cho phép triển khai. Điểm bắt đầu triển khai vẫn là câu **“OK, bắt đầu triển khai”**.
+
+
+## Bổ sung Package và khung giờ — 03/10/2026
+
+Trong phiên triển khai, người dùng đã xác nhận số đo **mỗi kiện**, nhập nhanh rồi sửa riêng; khung giờ **bắt đầu phục vụ**, bắt buộc khi xác nhận, UTC/Asia/Ho_Chi_Minh, cho phép qua ngày/chồng nhau; lưu **DRAFT → CONFIRMED**, chỉ sửa hàng/điểm/giờ khi chưa có phân công hay lịch sử tham chiếu. MVP một lấy–một giao theo thiết kế hiện hành. Đơn cũ không tự chia khối lượng hoặc tạo kiện suy đoán.
+
+Chi tiết triển khai, giới hạn migration, hợp đồng với Người 1 và bằng chứng kiểm thử: [ORDERS_PACKAGES.md](ORDERS_PACKAGES.md). Đây chỉ là phần POL02 liên quan nhiệm vụ này; không chốt thêm chia đơn, mở kiện, giao thiếu, hủy sau lấy. POL03 về hình học/hướng xoay/khoảng hở/thiết bị vẫn còn mở; không thêm quyền xoay hoặc xếp chồng.

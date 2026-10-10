@@ -1,42 +1,17 @@
-import {
-  Body,
-  Controller,
-  ForbiddenException,
-  Get,
-  Param,
-  Patch,
-  Req,
-  UseGuards,
-} from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+﻿import { Body, Controller, Get, Param, Patch, Req, ParseUUIDPipe } from '@nestjs/common';
 import { BranchesService } from './branches.service';
 import { UpdateBranchDto } from './dto/update-branch.dto';
-import { Role } from '@prisma/client';
-
+import { AuthRequest, RequirePermission } from '../auth/access';
 @Controller('branches')
-@UseGuards(AuthGuard('jwt'))
 export class BranchesController {
-  constructor(private readonly branchesService: BranchesService) {}
-
+  constructor(private readonly service: BranchesService) {}
+  @RequirePermission('branches.read')
   @Get()
-  findAll() {
-    return this.branchesService.findAll();
-  }
-
+  findAll(@Req() req: AuthRequest) { return this.service.findAll(req.user); }
+  @RequirePermission('branches.read')
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.branchesService.findOne(id);
-  }
-
+  findOne(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.service.findOne(id, req.user); }
+  @RequirePermission('branches.manage')
   @Patch(':id')
-  update(
-    @Param('id') id: string,
-    @Body() updateBranchDto: UpdateBranchDto,
-    @Req() req: { user: { role: Role; branchId?: string } },
-  ) {
-    if (req.user.role !== Role.ADMIN && req.user.branchId !== id) {
-      throw new ForbiddenException('Bạn chỉ có quyền cập nhật chi nhánh mà tài khoản được gán');
-    }
-    return this.branchesService.update(id, updateBranchDto);
-  }
+  update(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateBranchDto) { return this.service.update(id, dto, req.user); }
 }

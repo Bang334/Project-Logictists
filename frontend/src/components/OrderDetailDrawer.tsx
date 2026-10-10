@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Modal,
+  Alert,
   Space,
   Tag,
   Typography,
@@ -44,6 +45,7 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const [routeInfo, setRouteInfo] = useState<{ distanceKm: string; durationMin: number } | null>(null);
 
+  const [mapError, setMapError] = useState('');
   const pickupStop = order?.stops?.find((s) => s.type === 'PICKUP');
   const deliveryStop = order?.stops?.find((s) => s.type === 'DELIVERY');
 
@@ -51,8 +53,9 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
   useEffect(() => {
     if (!open || !order || !pickupStop || !deliveryStop) return;
 
+    setRouteInfo(null); setMapError('');
     const token = import.meta.env.VITE_MAPBOX_TOKEN;
-    if (!token) return;
+    if (!token) { setMapError('Chưa cấu hình Mapbox để xem bản đồ. Thông tin điểm và kiện đã lưu vẫn hiển thị bên dưới.'); return; }
     mapboxgl.accessToken = token;
 
     let isMounted = true;
@@ -69,7 +72,7 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
       const dLng = deliveryStop.longitude;
       const dLat = deliveryStop.latitude;
 
-      const hasValidCoords = pLng && pLat && dLng && dLat;
+      const hasValidCoords = [pLng, pLat, dLng, dLat].every(Number.isFinite);
 
       const center: [number, number] = hasValidCoords
         ? [(pLng + dLng) / 2, (pLat + dLat) / 2]
@@ -82,6 +85,8 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
         zoom: 12,
       });
 
+      mapRef.current = map;
+      map.on('error', () => { if (isMounted) setMapError('Không tải được bản đồ Mapbox. Kiểm tra kết nối rồi mở lại chi tiết.'); });
       if (hasValidCoords) {
         // Marker Pickup (Xanh lá)
         const pickupEl = document.createElement('div');
@@ -118,10 +123,11 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
           });
         } else {
           setRouteInfo(null);
+          setMapError('Chưa lấy được tuyến đường từ Mapbox; chỉ hiển thị các điểm đã lưu.');
         }
 
         const renderRouteOnMap = () => {
-          if (!map.getSource('order-road-line')) {
+          if (drivingResult && !map.getSource('order-road-line')) {
             map.addSource('order-road-line', {
               type: 'geojson',
               data: {
@@ -236,7 +242,7 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
       key: 'dimensions',
       width: 140,
       align: 'center' as const,
-      render: (_: any, r: OrderItem) => `${r.lengthCm} × ${r.widthCm} × ${r.heightCm}`,
+      render: (_: any, r: OrderItem) => r.lengthCm === null ? 'Xem từng kiện bên dưới' : `${r.lengthCm} × ${r.widthCm} × ${r.heightCm}`,
     },
     {
       title: 'Thể tích (m³)',
@@ -251,10 +257,10 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
   return (
     <Modal
       title={
-        <Space align="center" style={{ fontSize: 16 }}>
+        <Space wrap align="center" style={{ fontSize: 16 }}>
           <ShoppingOutlined style={{ color: '#2563eb', fontSize: 20 }} />
           <span style={{ fontWeight: 700 }}>Chi Tiết Đơn Hàng Vận Tải:</span>
-          <strong style={{ color: '#0284c7', fontSize: 17 }}>{order.orderNumber}</strong>
+          <strong style={{ color: '#0284c7', fontSize: 17, overflowWrap: 'anywhere' }}>{order.orderNumber}</strong>
           <Tag color={statusColors[order.status] || 'default'}>{order.status}</Tag>
         </Space>
       }
@@ -289,6 +295,7 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
         </Button>,
       ]}
     >
+      {mapError && <Alert type="warning" showIcon message={mapError} style={{ marginBottom: 12 }} />}
       {/* Thông tin khách hàng & tổng quan */}
       <Card
         size="small"
@@ -488,6 +495,21 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
         Danh Sách Các Loại Hàng & Kiện Vật Lý ({order.items?.length || 0} loại)
       </div>
 
+      {order.packageDataStatus === 'LEGACY_REVIEW' && <Alert type="warning" showIcon message="Dữ liệu cũ cần đối soát Package; chưa dùng để lập kế hoạch mới" />}
+      <Typography.Title level={5}>Khung giờ bắt đầu phục vụ — Asia/Ho_Chi_Minh</Typography.Title>
+      {order.stops.filter(stop => stop.type === 'PICKUP' || stop.type === 'DELIVERY').map(stop => <div key={stop.id} style={{ marginBottom: 12 }}>
+        <strong>{stop.type === 'PICKUP' ? 'Lấy hàng' : 'Giao hàng'}</strong>: {stop.windowStart && stop.windowEnd ? <>{new Date(stop.windowStart).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })} → {new Date(stop.windowEnd).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}</> : 'Chưa nhập'}
+        <div><Text type="secondary">Stop ID: {stop.id} · Phục vụ: {stop.serviceDurationMinutes} phút</Text></div>
+      </div>)}
+      <Typography.Title level={5}>Từng kiện đã lưu</Typography.Title>
+      <Table rowKey="id" size="small" scroll={{ x: 950 }} dataSource={order.items.flatMap(item => item.packages.map(pkg => ({ ...pkg, description: item.description })))} pagination={{ pageSize: 10 }} columns={[
+        { title: 'Mã kiện / ID', render: (_, p) => <><Text copyable>{p.packageCode}</Text><br /><Text type="secondary">{p.id}</Text></> },
+        { title: 'Dòng hàng', dataIndex: 'description' },
+        { title: 'Dài × rộng × cao (mm)', render: (_, p) => `${p.lengthMm} × ${p.widthMm} × ${p.heightMm}` },
+        { title: 'Khối lượng (g)', dataIndex: 'weightG' },
+        { title: 'Điểm lấy → giao (ID)', render: (_, p) => <>{p.pickupStopId ?? 'Chưa đối soát'}<br />→ {p.deliveryStopId ?? 'Chưa đối soát'}</> },
+      ]} />
+      {order.totalWeightG !== null && <Typography.Paragraph>Tổng server: {order.totalPackages} kiện · {order.totalWeightG} g · {order.totalVolumeMm3} mm³</Typography.Paragraph>}
       <Table
         dataSource={order.items || []}
         columns={itemColumns}

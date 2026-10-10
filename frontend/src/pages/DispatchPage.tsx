@@ -1,4 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import dayjs, { Dayjs } from 'dayjs';
+import { useAuth } from '../context/AuthContext';
+import React, { useMemo, useEffect, useRef, useState } from 'react';
 import {
   Row,
   Col,
@@ -30,8 +32,7 @@ import {
   PauseCircleOutlined,
   EnvironmentOutlined,
 } from '@ant-design/icons';
-import dayjs, { Dayjs } from 'dayjs';
-import { vehiclesApi, driversApi, ordersApi, tripsApi } from '../api/client';
+import { apiErrorMessage, vehiclesApi, driversApi, ordersApi, tripsApi } from '../api/client';
 import {
   Vehicle,
   Driver,
@@ -50,6 +51,7 @@ const { Title, Text } = Typography;
 const DispatchPage: React.FC = () => {
   const createCommandRef = useRef<{ payloadHash: string; key: string } | null>(null);
   const { message } = AntdApp.useApp();
+  const { can, branchId } = useAuth();
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -81,6 +83,9 @@ const DispatchPage: React.FC = () => {
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
   const [editingTripId, setEditingTripId] = useState<string | null>(null);
   const [loadProfile, setLoadProfile] = useState<LoadProfileResult | null>(null);
+  const [loadProfileError, setLoadProfileError] = useState('');
+  const [profileLoading, setProfileLoading] = useState(false);
+  const profileRequest = useRef(0);
   const [optimizing, setOptimizing] = useState(false);
   const [optimizationResult, setOptimizationResult] = useState<OptimizationResultUI | null>(null);
   const [orderedStopIds, setOrderedStopIds] = useState<string[]>([]);
@@ -127,12 +132,14 @@ const DispatchPage: React.FC = () => {
   }, []);
 
   const fetchLoadProfile = async (tripId: string) => {
+    const request = ++profileRequest.current;
+    setLoadProfile(null); setLoadProfileError(''); setProfileLoading(true);
     try {
       const res = await tripsApi.getLoadProfile(tripId);
-      setLoadProfile(res.data);
+      if (request === profileRequest.current) setLoadProfile(res.data);
     } catch (err) {
-      console.error('Lỗi khi lấy load profile:', err);
-    }
+      if (request === profileRequest.current) setLoadProfileError(apiErrorMessage(err));
+    } finally { if (request === profileRequest.current) setProfileLoading(false); }
   };
 
   const handleSelectTrip = (trip: Trip) => {
@@ -204,6 +211,7 @@ const DispatchPage: React.FC = () => {
   };
 
   const handleCreateTrip = async () => {
+    if (!branchId) return message.warning('Hãy chọn chi nhánh làm việc trên thanh điều hướng');
     if (!selectedVehicleId) {
       return message.warning('Vui lòng chọn xe tải thực hiện chuyến đi');
     }
@@ -278,6 +286,7 @@ const DispatchPage: React.FC = () => {
   };
 
   const handleRunOptimization = async () => {
+    if (!branchId) return message.warning('Hãy chọn chi nhánh làm việc trên thanh điều hướng');
     if (!selectedVehicleId) {
       return message.warning('Vui lòng chọn xe tải để tối ưu tuyến');
     }
@@ -946,26 +955,20 @@ const DispatchPage: React.FC = () => {
                     >
                       {enableSim ? 'Dừng mô phỏng' : 'Demo xe chạy'}
                     </Button>
+                    {['DRAFT', 'PLANNED'].includes(activeTrip.status) && (
+                      <Button size="small" disabled={!can('trips.plan')} onClick={() => handleStartEdit(activeTrip)}>Chỉnh sửa kế hoạch</Button>
+                    )}
                     {activeTrip.status === 'PLANNED' && (
-                      <>
-                        <Button
-                          size="small"
-                          onClick={() => handleStartEdit(activeTrip)}
-                          disabled={submitting}
-                        >
-                          Chỉnh Trip Plan
-                        </Button>
-                        <Button
-                          type="primary"
-                          size="small"
-                          icon={<CheckCircleOutlined />}
-                          onClick={handlePublishTrip}
-                          loading={submitting}
-                          style={{ background: '#059669', borderColor: '#059669' }}
-                        >
-                          Phát Hành Chuyến (Publish)
-                        </Button>
-                      </>
+                      <Button
+                        type="primary"
+                        size="small"
+                        icon={<CheckCircleOutlined />}
+                        disabled={!can('trips.publish')} onClick={handlePublishTrip}
+                        loading={submitting}
+                        style={{ background: '#059669', borderColor: '#059669' }}
+                      >
+                        Phát Hành Chuyến (Publish)
+                      </Button>
                     )}
                   </Space>
                 </div>
@@ -1025,6 +1028,8 @@ const DispatchPage: React.FC = () => {
           )}
 
           {/* BIỂU ĐỒ PHÂN TÍCH TẢI TRỌNG TỪNG CHẶNG (BR04 INVARIANT VERIFICATION) */}
+          {profileLoading && <Spin tip="Đang tải dữ liệu tải trọng" />}
+          {loadProfileError && <Alert type="warning" showIcon message={loadProfileError} action={<Button onClick={() => activeTrip && void fetchLoadProfile(activeTrip.id)}>Thử lại</Button>} />}
           {loadProfile && (
             <Card
               title={

@@ -6,11 +6,17 @@ const SOCKET_URL =
   'http://localhost:4000';
 
 let socket: Socket | null = null;
+let socketToken: string | null = null;
+export const disconnectRealtimeSocket = () => {
+  socket?.disconnect(); socket = null; socketToken = null;
+};
 
 export const getRealtimeSocket = (): Socket | null => {
-  const token = localStorage.getItem('tms_token');
+  const token = sessionStorage.getItem('tms_token');
+  if (token !== socketToken) disconnectRealtimeSocket();
   if (!token) return null;
   if (!socket) {
+    socketToken = token;
     socket = io(SOCKET_URL, {
       auth: { token },
       transports: ['websocket', 'polling'],

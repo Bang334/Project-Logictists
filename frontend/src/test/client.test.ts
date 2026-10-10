@@ -1,6 +1,6 @@
 import type { AxiosResponse, InternalAxiosRequestConfig } from 'axios';
-import { describe, expect, it } from 'vitest';
-import { apiClient } from '../api/client';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { apiClient, setApiSession } from '../api/client';
 
 const captureRequest = async () => {
   let captured: InternalAxiosRequestConfig | undefined;
@@ -25,8 +25,9 @@ const captureRequest = async () => {
 };
 
 describe('apiClient authentication', () => {
+  beforeEach(() => setApiSession(null));
   it('adds the current bearer token to outgoing requests', async () => {
-    localStorage.setItem('tms_token', 'token-123');
+    setApiSession('token-123');
 
     const request = await captureRequest();
 

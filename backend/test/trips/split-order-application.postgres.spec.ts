@@ -4,6 +4,8 @@ import { OrderStatus, PackageStatus, Role } from '@prisma/client';
 import { OutboxService } from '../../src/common/services/outbox.service';
 import { PrismaService } from '../../src/prisma/prisma.service';
 import { signOptimizationProposal } from '../../src/trips/optimization-proposal';
+import { ResourceAccess } from '../../src/auth/resource-access.service';
+import { Principal } from '../../src/auth/access';
 import { TripsService } from '../../src/trips/trips.service';
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -38,6 +40,7 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
       prisma,
       {} as never,
       new OutboxService(prisma),
+      new ResourceAccess(prisma),
     );
 
     await prisma.branch.create({
@@ -90,6 +93,7 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
         orderNumber: `ORD-${suffix}`,
         customerId: ids.customer,
         branchId: ids.branch,
+        status: 'CONFIRMED', packageDataStatus: 'COMPLETE',
         totalPackages: 2,
         totalWeightKg: 1200,
         items: {
@@ -114,7 +118,7 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
               latitude: 12,
               longitude: 109,
               contactName: 'Kho',
-              contactPhone: '0900000000',
+              contactPhone: '0900000000', windowBasis: 'SERVICE_START', windowStart: new Date('2026-01-01'), windowEnd: new Date('2035-01-01'), serviceDurationMinutes: 1,
             },
             {
               id: ids.delivery,
@@ -124,7 +128,7 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
               latitude: 12.1,
               longitude: 109.1,
               contactName: 'Khách',
-              contactPhone: '0911111111',
+              contactPhone: '0911111111', windowBasis: 'SERVICE_START', windowStart: new Date('2026-01-01'), windowEnd: new Date('2035-01-01'), serviceDurationMinutes: 1,
             },
           ],
         },
@@ -133,7 +137,7 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
     await prisma.package.createMany({
       data: [ids.packageOne, ids.packageTwo].map((id, index) => ({
         id,
-        orderId: ids.order,
+        orderId: ids.order, orderItemId: ids.item,
         packageCode: `PKG-${suffix}-${index + 1}`,
         lengthMm: 1500,
         widthMm: 800,
@@ -170,6 +174,8 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
     await prisma.driverAssignment.deleteMany({
       where: { tripId: { in: tripIds } },
     });
+    await prisma.stopTask.deleteMany({ where: { orderId: ids.order } });
+    await prisma.allocation.deleteMany({ where: { packageId: { in: [ids.packageOne, ids.packageTwo] } } });
     await prisma.trip.deleteMany({ where: { id: { in: tripIds } } });
     await prisma.package.deleteMany({ where: { orderId: ids.order } });
     await prisma.order.deleteMany({ where: { id: ids.order } });
@@ -195,7 +201,7 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
     total_cost_vnd: 0,
   };
 
-  it('atomically assigns every package once when two apply requests race', async () => {
+  it('rolls back partial persistence and atomically assigns every package once when two apply requests race', async () => {
     const [order, vehicles, drivers] = await Promise.all([
       prisma.order.findUniqueOrThrow({ where: { id: ids.order } }),
       prisma.vehicle.findMany({
@@ -209,7 +215,7 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
     ]);
     const packageIds = [ids.packageOne, ids.packageTwo];
     const route = (index: number) => {
-      const packageItemId = `package:${packageIds[index]}`;
+      const packageItemId = packageIds[index];
       const pickupStopId = `${ids.pickup}::split:${index + 1}`;
       const deliveryStopId = `${ids.delivery}::split:${index + 1}`;
       const placedItem = {
@@ -345,7 +351,25 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
       proposal,
       signature: signOptimizationProposal(proposal, secret),
     };
-    const user = { id: randomUUID(), role: Role.ADMIN };
+    const user: Principal = { id: randomUUID(), role: Role.ADMIN, username: 'test', fullName: 'Test', sessionId: 'test', grants: [{ role: 'ADMIN', scopeType: 'COMPANY', branchId: null, permissions: ['trips.plan', 'trips.read'] }] };
+
+    // Fail on the second trip after the first was inserted: the whole order must roll back.
+    const corrupt = structuredClone(proposal);
+    corrupt.result.routes[1].spatial_validation.step_states[0].placed_items[0].weight_kg = 601;
+    await expect(service.applyAutomaticOptimization({ proposal: corrupt, signature: signOptimizationProposal(corrupt, secret) }, user)).rejects.toThrow(/Package/);
+    expect(await prisma.trip.count({ where: { managingBranchId: ids.branch } })).toBe(0);
+    expect(await prisma.allocation.count({ where: { packageId: { in: packageIds } } })).toBe(0);
+    expect(await prisma.package.count({ where: { id: { in: packageIds }, status: PackageStatus.READY } })).toBe(2);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: ids.order } })).version).toBe(order.version);
+
+    // A valid physical ID from another trip must not enter this trip's load plan.
+    const crossTrip = structuredClone(proposal);
+    crossTrip.result.routes[1].spatial_validation.step_states[0].placed_items[0].item_id =
+      proposal.result.routes[0].spatial_validation.step_states[0].placed_items[0].item_id;
+    await expect(service.applyAutomaticOptimization({ proposal: crossTrip, signature: signOptimizationProposal(crossTrip, secret) }, user)).rejects.toThrow(/Package/);
+    expect(await prisma.trip.count({ where: { managingBranchId: ids.branch } })).toBe(0);
+    expect(await prisma.allocation.count({ where: { packageId: { in: packageIds } } })).toBe(0);
+    expect(await prisma.package.count({ where: { id: { in: packageIds }, status: PackageStatus.READY } })).toBe(2);
 
     const outcomes = await Promise.allSettled([
       service.applyAutomaticOptimization(dto, user),

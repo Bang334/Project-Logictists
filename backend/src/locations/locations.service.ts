@@ -1,5 +1,5 @@
 import { ForbiddenException, Injectable } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import { AuthenticatedUser } from '../auth/branch-scope';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -28,7 +28,15 @@ export class LocationsService {
     });
   }
 
-  private resolveScope(user: AuthenticatedUser): { id?: string; managingBranchId?: string } {
+  private resolveScope(user: AuthenticatedUser): Prisma.LocationWhereInput {
+    // Session principals carry live grants; a legacy branch column cannot widen TMS scope.
+    if (user.grants && user.role !== Role.STAFF) {
+      const grants = user.grants.filter(grant => grant.permissions.includes('branches.read'));
+      if (grants.some(grant => grant.scopeType === 'COMPANY')) return {};
+      const ids = grants.flatMap(grant => grant.scopeType === 'BRANCH' && grant.branchId ? [grant.branchId] : []);
+      if (!ids.length) throw new ForbiddenException('No active location branch scope');
+      return { managingBranchId: { in: ids } };
+    }
     if (user.role === Role.ADMIN) return {};
     if (user.role === Role.STAFF && user.locationId) return { id: user.locationId };
     if ((user.role === Role.DISPATCHER || user.role === Role.DRIVER) && user.branchId) {

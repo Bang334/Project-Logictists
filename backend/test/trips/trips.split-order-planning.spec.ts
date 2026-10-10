@@ -3,7 +3,7 @@ import { PackageStatus, StopType } from '@prisma/client';
 import { TripsService } from '../../src/trips/trips.service';
 
 describe('TripsService split-order planning', () => {
-  const service = new TripsService({} as never, {} as never, {} as never);
+  const service = new TripsService({} as never, {} as never, {} as never, {} as never);
   const buildPlannedTrips = (
     proposal: Record<string, unknown>,
     routesOverride?: unknown[],
@@ -26,13 +26,14 @@ describe('TripsService split-order planning', () => {
   const order = {
     id: 'order-large',
     orderNumber: 'DH-LARGE',
-    version: 4,
+    version: 4, status: 'CONFIRMED', packageDataStatus: 'COMPLETE',
     items: [
       {
         id: 'line-large',
         orderId: 'order-large',
         description: 'Kiện lớn',
         quantity: 2,
+        packages: [1, 2].map(i => ({ id: `physical-${i}`, orderItemId: 'line-large', lengthMm: 1500, widthMm: 800, heightMm: 800, weightG: 600000n, status: 'READY' })),
         weightKg: 1_200,
         lengthCm: 150,
         widthCm: 80,
@@ -47,7 +48,7 @@ describe('TripsService split-order planning', () => {
         latitude: 12,
         longitude: 109,
         contactName: 'Kho',
-        contactPhone: '0900000000',
+        contactPhone: '0900000000', windowBasis: 'SERVICE_START', windowStart: new Date('2026-10-06T00:00:00Z'), windowEnd: new Date('2026-10-06T01:00:00Z'), serviceDurationMinutes: 1,
       },
       {
         id: 'delivery-large',
@@ -56,7 +57,7 @@ describe('TripsService split-order planning', () => {
         latitude: 12.1,
         longitude: 109.1,
         contactName: 'Khách',
-        contactPhone: '0911111111',
+        contactPhone: '0911111111', windowBasis: 'SERVICE_START', windowStart: new Date('2026-10-06T00:00:00Z'), windowEnd: new Date('2026-10-06T01:00:00Z'), serviceDurationMinutes: 1,
       },
     ],
   };
@@ -87,13 +88,13 @@ describe('TripsService split-order planning', () => {
     allocation_id: `order-large::split:${part}`,
     latitude: type === 'PICKUP' ? 12 : 12.1,
     longitude: type === 'PICKUP' ? 109 : 109.1,
-    arrival_time_sec: sequence * 60,
-    departure_time_sec: sequence * 60 + 30,
-    travel_time_sec: sequence === 1 ? 60 : 30,
+    arrival_time_sec: sequence * 120 - 60,
+    departure_time_sec: sequence * 120,
+    travel_time_sec: 60,
     waiting_time_sec: 0,
-    service_time_sec: 30,
-    items_loaded: type === 'PICKUP' ? [`line-large#${part}`] : [],
-    items_unloaded: type === 'DELIVERY' ? [`line-large#${part}`] : [],
+    service_time_sec: 60,
+    items_loaded: type === 'PICKUP' ? [`physical-${part}`] : [],
+    items_unloaded: type === 'DELIVERY' ? [`physical-${part}`] : [],
     current_weight_kg: type === 'PICKUP' ? 600 : 0,
   });
   const route = (part: number) => ({
@@ -140,7 +141,7 @@ describe('TripsService split-order planning', () => {
       true,
     );
     expect(new Set(planned.flatMap((trip) => trip.cargoUnitIds))).toEqual(
-      new Set(['line-large#1', 'line-large#2']),
+      new Set(['physical-1', 'physical-2']),
     );
   });
 
@@ -152,8 +153,8 @@ describe('TripsService split-order planning', () => {
 
   it('không cho một kiện xuất hiện trên hai tuyến', () => {
     const secondRoute = route(2);
-    secondRoute.stops[0].items_loaded = ['line-large#1'];
-    secondRoute.stops[1].items_unloaded = ['line-large#1'];
+    secondRoute.stops[0].items_loaded = ['physical-1'];
+    secondRoute.stops[1].items_unloaded = ['physical-1'];
 
     expect(() =>
       buildPlannedTrips(proposal(), [route(1), secondRoute]),
@@ -177,18 +178,7 @@ describe('TripsService split-order planning', () => {
         ...orderStop,
         serviceDurationMinutes: 15,
       })),
-      packages: [
-        {
-          id: 'package-one-box',
-          packageCode: 'PKG-ONE-BOX',
-          lengthMm: 2500,
-          widthMm: 1200,
-          heightMm: 1300,
-          weightG: BigInt(2_400_000),
-          status: PackageStatus.READY,
-          items: [{ orderItemId: 'line-large' }],
-        },
-      ],
+      items: [{ ...order.items[0], quantity: 1, packages: [{ id: 'package-one-box', orderItemId: 'line-large', lengthMm: 2500, widthMm: 1200, heightMm: 1300, weightG: 2400000n, status: PackageStatus.READY }] }],
     };
 
     const [optimizerOrder] = buildOptimizerOrders(
@@ -198,7 +188,7 @@ describe('TripsService split-order planning', () => {
 
     expect(optimizerOrder.items).toEqual([
       expect.objectContaining({
-        id: 'package:package-one-box',
+        id: 'package-one-box',
         weight_kg: 2400,
       }),
     ]);

@@ -242,3 +242,18 @@ def test_t27_unload_before_load_at_same_stop(standard_truck):
     result = validator.validate_plan(stops)
     assert result.is_valid is True
     assert len(result.step_states) == 3
+
+
+def test_physical_package_gram_precision_survives_spatial_snapshots(standard_truck):
+    items = [CargoItem(id=f"p-{i}", order_id="order", length_cm=40, width_cm=30,
+                       height_cm=20, weight_kg=weight, can_rotate=False)
+             for i, weight in enumerate([10.001, 20.002, 30.003, 40.004])]
+    for ordered in (items, list(reversed(items))):
+        result = SpatialValidator(standard_truck).validate_plan([
+            StopAction(stop_id="pickup", sequence=1, stop_type="PICKUP", items_to_load=ordered),
+            StopAction(stop_id="delivery", sequence=2, stop_type="DELIVERY", items_to_unload=[p.id for p in items]),
+        ])
+        assert result.is_valid
+        assert result.max_weight_kg == 100.010
+        assert result.step_states[0].current_weight_kg == 100.010
+        assert result.step_states[1].current_weight_kg == 0

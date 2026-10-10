@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { DriverMobileModule } from './driver-mobile/driver-mobile.module';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
@@ -10,6 +11,7 @@ import { OrdersModule } from './orders/orders.module';
 import { TripsModule } from './trips/trips.module';
 import { MapboxModule } from './mapbox/mapbox.module';
 import { EventsModule } from './events/events.module';
+import { UsersModule } from './users/users.module';
 
 import { CommonModule } from './common/common.module';
 import { CatalogModule } from './catalog/catalog.module';
@@ -27,6 +29,7 @@ import { LocationsModule } from './locations/locations.module';
     ConfigModule.forRoot({
       isGlobal: true,
       validate: (config: Record<string, unknown>) => {
+        config.CORS_ORIGIN = config.CORS_ORIGIN || config.WEB_ORIGIN;
         const required = [
           'DATABASE_URL',
           'JWT_SECRET',
@@ -98,6 +101,7 @@ import { LocationsModule } from './locations/locations.module';
       },
     }),
     PrismaModule,
+    DriverMobileModule,
     CommonModule,
     CatalogModule,
     InventoryModule,
@@ -111,6 +115,7 @@ import { LocationsModule } from './locations/locations.module';
     MapboxModule,
     EventsModule,
     AuthModule,
+    UsersModule,
     BranchesModule,
     VehiclesModule,
     DriversModule,

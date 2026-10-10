@@ -6,7 +6,7 @@ describe('TripsService.updatePlan', () => {
   it('rejects a stale expectedVersion before routing or writing', async () => {
     const prisma = {
       trip: {
-        findUnique: jest.fn().mockResolvedValue({
+        findFirst: jest.fn().mockResolvedValue({
           id: 'trip-1',
           version: 3,
           status: TripStatus.PLANNED,
@@ -19,7 +19,7 @@ describe('TripsService.updatePlan', () => {
       $transaction: jest.fn(),
     };
     const mapbox = { getRoute: jest.fn() };
-    const service = new TripsService(prisma as never, mapbox as never, {} as never);
+    const service = new TripsService(prisma as never, mapbox as never, {} as never, {} as never);
 
     await expect(
       service.updatePlan(
@@ -34,7 +34,7 @@ describe('TripsService.updatePlan', () => {
           endLocation: { address: 'End', latitude: 10.8, longitude: 106.7 },
           orderedStopIds: [],
         },
-        { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       ),
     ).rejects.toThrow(ConflictException);
 

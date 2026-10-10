@@ -14,7 +14,7 @@ import {
   InboxOutlined,
 } from '@ant-design/icons';
 import { branchesApi, vehiclesApi, driversApi, locationsApi, ordersApi, tripsApi } from '../api/client';
-import { Branch, Vehicle, Driver, Location, Order, Trip } from '../types';
+import { Branch, Vehicle, Driver, Location, Trip } from '../types';
 import MapboxMap from '../components/MapboxMap';
 import { EditBranchModal } from '../components/EditBranchModal';
 import { buildNetworkMarkers } from '../utils/dashboardMap';
@@ -31,7 +31,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [pendingOrders, setPendingOrders] = useState(0);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [selectedBranchForEdit, setSelectedBranchForEdit] = useState<Branch | null>(null);
   const [isEditBranchModalOpen, setIsEditBranchModalOpen] = useState(false);
@@ -44,14 +44,14 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
         vehiclesApi.getAll(),
         driversApi.getAll(),
         locationsApi.getAll(),
-        ordersApi.getAll(),
+        ordersApi.list({ status: 'CONFIRMED', pageSize: 1 }),
         tripsApi.getAll(),
       ]);
       setBranches(bRes.data);
       setVehicles(vRes.data);
       setDrivers(dRes.data);
       setLocations(lRes.data);
-      setOrders(oRes.data);
+      setPendingOrders(oRes.total);
       setTrips(tRes.data);
     } catch (error) {
       console.error('Lỗi khi tải dữ liệu dashboard:', error);
@@ -75,7 +75,6 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
 
   const availableVehicles = vehicles.filter((v) => v.status === 'AVAILABLE').length;
   const availableDrivers = drivers.filter((d) => d.status === 'AVAILABLE').length;
-  const pendingOrders = orders.filter((o) => o.status === 'CONFIRMED').length;
   const activeTrips = trips.filter((t) => t.status === 'DISPATCHED' || t.status === 'IN_PROGRESS').length;
 
   const networkMarkers = buildNetworkMarkers(branches, locations);

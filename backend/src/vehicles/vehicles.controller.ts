@@ -1,58 +1,24 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Patch,
-  Query,
-  Req,
-  UseGuards,
-} from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+﻿import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Query, Req, ParseEnumPipe } from '@nestjs/common';
+import { VehicleStatus } from '@prisma/client';
 import { VehiclesService } from './vehicles.service';
-import { Role, VehicleStatus } from '@prisma/client';
-import { resolveBranchScope } from '../auth/branch-scope';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
+import { AuthRequest, RequirePermission } from '../auth/access';
 
 @Controller('vehicles')
-@UseGuards(AuthGuard('jwt'))
 export class VehiclesController {
-  constructor(private readonly vehiclesService: VehiclesService) {}
-
+  constructor(private readonly service: VehiclesService) {}
+  @RequirePermission('vehicles.read')
   @Get()
-  findAll(
-    @Req() req: { user: { branchId?: string; role: Role } },
-    @Query('branchId') branchId?: string,
-    @Query('status') status?: VehicleStatus,
-  ) {
-    const effectiveBranchId =
-      req.user.role === Role.ADMIN
-        ? (branchId && branchId !== 'ALL' ? branchId : undefined)
-        : req.user.branchId;
-    return this.vehiclesService.findAll(effectiveBranchId, status);
+  findAll(@Req() req: AuthRequest, @Query('branchId') branchId?: string, @Query('status', new ParseEnumPipe(VehicleStatus, { optional: true })) status?: VehicleStatus) {
+    return this.service.findAll(req.user, branchId, status);
   }
-
+  @RequirePermission('vehicles.read')
   @Get('available')
-  getAvailable(
-    @Req() req: { user: { branchId?: string; role: Role } },
-    @Query('branchId', new ParseUUIDPipe({ optional: true })) branchId?: string,
-  ) {
-    return this.vehiclesService.getAvailable(resolveBranchScope(req.user, branchId));
-  }
-
+  available(@Req() req: AuthRequest, @Query('branchId') branchId?: string) { return this.service.getAvailable(req.user, branchId); }
+  @RequirePermission('vehicles.read')
   @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.vehiclesService.findOne(id);
-  }
-
+  findOne(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.service.findOne(id, req.user); }
+  @RequirePermission('vehicles.manage')
   @Patch(':id')
-  update(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() updateVehicleDto: UpdateVehicleDto,
-    @Req() req: { user: { branchId?: string; role: Role } },
-  ) {
-    return this.vehiclesService.update(id, updateVehicleDto, req.user);
-  }
+  update(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateVehicleDto) { return this.service.update(id, dto, req.user); }
 }
-

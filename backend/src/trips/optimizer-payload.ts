@@ -1,24 +1,8 @@
-type PhysicalOrderItem = {
-  id: string;
-  orderId: string;
-  description: string;
-  quantity: number;
-  weightKg: number;
-  lengthCm: number;
-  widthCm: number;
-  heightCm: number;
+import { PackageMeasurements, packageTotals } from '../orders/package-measurements';
+export type PhysicalPackageLine = {
+  id: string; orderId: string; description: string; quantity: number;
+  packages: Array<PackageMeasurements & { id: string; orderItemId: string | null }>;
 };
-
-type PhysicalPackage = {
-  id: string;
-  packageCode: string;
-  lengthMm: number;
-  widthMm: number;
-  heightMm: number;
-  weightG: bigint | number;
-  items: Array<{ orderItemId: string }>;
-};
-
 export type OptimizerCargoUnit = {
   id: string;
   order_id: string;
@@ -28,8 +12,22 @@ export type OptimizerCargoUnit = {
   width_cm: number;
   height_cm: number;
   weight_kg: number;
-  can_rotate: true;
+  can_rotate: boolean;
 };
+/** Only persisted packages. Compatibility units are converted once at this boundary. */
+export function packagesToCargoUnits(items: PhysicalPackageLine[]): OptimizerCargoUnit[] {
+  const seen = new Set<string>();
+  return items.flatMap(item => {
+    if (!item.packages.length || item.quantity !== item.packages.length) throw new Error('Danh sách Package chưa được đối soát');
+    packageTotals(item.packages);
+    return item.packages.map(p => {
+      if (p.orderItemId !== item.id || seen.has(p.id)) throw new Error('ID kiện trùng hoặc sai dòng hàng');
+      if (p.weightG > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Khối lượng vượt độ chính xác contract optimizer');
+      seen.add(p.id);
+      return { id: p.id, order_id: item.orderId, order_item_id: item.id, description: item.description, length_cm: p.lengthMm / 10, width_cm: p.widthMm / 10, height_cm: p.heightMm / 10, weight_kg: Number(p.weightG) / 1000, can_rotate: false as const };
+    });
+  });
+}
 
 export type OptimizerFleetVehicle = {
   id: string;
@@ -63,78 +61,7 @@ export type OptimizerOrder = {
   service_time_sec: number;
 };
 
-/**
- * OrderItem là một dòng loại hàng: quantity là số kiện vật lý, weightKg là
- * tổng khối lượng dòng. Optimizer cần từng kiện có định danh riêng để packing.
- * D11 đã chốt: kiện chữ nhật được đổi hướng trên mặt sàn theo bội số 90°.
- * Không lật kiện để hoán đổi chiều cao.
- */
-export function expandOrderItemsToCargoUnits(
-  items: PhysicalOrderItem[],
-): OptimizerCargoUnit[] {
-  return items.flatMap((item) => {
-    if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
-      throw new Error(`Số lượng kiện của dòng hàng ${item.id} không hợp lệ`);
-    }
-    if (
-      item.weightKg <= 0 ||
-      item.lengthCm <= 0 ||
-      item.widthCm <= 0 ||
-      item.heightCm <= 0
-    ) {
-      throw new Error(
-        `Khối lượng/kích thước dòng hàng ${item.id} không hợp lệ`,
-      );
-    }
-    const unitWeight = item.weightKg / item.quantity;
-    const pad = String(item.quantity).length;
-    return Array.from({ length: item.quantity }, (_, index) => ({
-      id: `${item.id}#${String(index + 1).padStart(pad, '0')}`,
-      order_id: item.orderId,
-      order_item_id: item.id,
-      description: item.description,
-      length_cm: item.lengthCm,
-      width_cm: item.widthCm,
-      height_cm: item.heightCm,
-      weight_kg: unitWeight,
-      can_rotate: true as const,
-    }));
-  });
-}
 
-/**
- * Package là đơn vị vật lý bất khả phân. Một Package có thể chứa nhiều dòng
- * OrderItem/số lượng nhưng vẫn chỉ tạo đúng một cargo unit cho optimizer.
- */
-export function expandPhysicalPackagesToCargoUnits(
-  orderId: string,
-  packages: PhysicalPackage[],
-): OptimizerCargoUnit[] {
-  return packages.map((physicalPackage) => {
-    if (
-      physicalPackage.lengthMm <= 0 ||
-      physicalPackage.widthMm <= 0 ||
-      physicalPackage.heightMm <= 0 ||
-      Number(physicalPackage.weightG) <= 0
-    ) {
-      throw new Error(
-        `Khối lượng/kích thước Package ${physicalPackage.packageCode} không hợp lệ`,
-      );
-    }
-    return {
-      id: `package:${physicalPackage.id}`,
-      order_id: orderId,
-      order_item_id:
-        physicalPackage.items[0]?.orderItemId ?? physicalPackage.id,
-      description: physicalPackage.packageCode,
-      length_cm: physicalPackage.lengthMm / 10,
-      width_cm: physicalPackage.widthMm / 10,
-      height_cm: physicalPackage.heightMm / 10,
-      weight_kg: Number(physicalPackage.weightG) / 1000,
-      can_rotate: true as const,
-    };
-  });
-}
 
 function cargoFitsVehicle(
   cargo: OptimizerCargoUnit,
@@ -353,10 +280,10 @@ function allocateCargoToPhysicalVehicles(
  * kích thước kiện và diện tích sàn; SpatialValidator vẫn là lớp quyết định cuối
  * cùng về bố trí và đường xếp/dỡ.
  */
-export function splitOversizedOrdersAcrossFleet(
-  orders: OptimizerOrder[],
+export function splitOversizedOrdersAcrossFleet<T extends OptimizerOrder>(
+  orders: T[],
   vehicles: OptimizerFleetVehicle[],
-): OptimizerOrder[] {
+): T[] {
   const physicalVehicles = Array.from(
     new Map(
       vehicles.map((vehicle) => [

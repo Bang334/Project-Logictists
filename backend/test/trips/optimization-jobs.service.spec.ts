@@ -73,7 +73,7 @@ describe('OptimizationJobsService', () => {
     outbox.enqueue.mockResolvedValue(undefined);
 
     const result = await service.create(
-      { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+      { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       { idempotencyKey: 'idem-1' },
     );
 
@@ -115,7 +115,7 @@ describe('OptimizationJobsService', () => {
     outbox.enqueue.mockResolvedValue(undefined);
 
     const result = await service.create(
-      { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+      { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       { idempotencyKey: 'idem-budget', searchBudgetSeconds: 90 },
     );
 
@@ -145,7 +145,7 @@ describe('OptimizationJobsService', () => {
     prisma.optimizationJob.findUnique.mockResolvedValue({ ...existing, requestHash });
 
     const result = await service.create(
-      { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+      { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       { idempotencyKey: 'idem-1' },
     );
 
@@ -160,7 +160,7 @@ describe('OptimizationJobsService', () => {
 
     await expect(
       service.create(
-        { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
         { idempotencyKey: 'idem-1', scheduleMode: 'NEXT_DAY' as never },
       ),
     ).rejects.toBeInstanceOf(ConflictException);
@@ -171,7 +171,7 @@ describe('OptimizationJobsService', () => {
 
     await expect(
       service.get(
-        { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
         'job-1',
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);
@@ -190,7 +190,7 @@ describe('OptimizationJobsService', () => {
 
     await expect(
       service.apply(
-        { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
         'job-1',
       ),
     ).rejects.toBeInstanceOf(ConflictException);
@@ -213,7 +213,7 @@ describe('OptimizationJobsService', () => {
     trips.applyAutomaticOptimization.mockResolvedValue({ trips: [{ id: 'trip-1' }] });
 
     const result = await service.apply(
-      { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+      { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       'job-1',
     );
 
@@ -245,7 +245,7 @@ describe('OptimizationJobsService', () => {
     trips.applyAutomaticOptimization.mockResolvedValue({ trips: [{ id: 'trip-3' }] });
 
     await service.apply(
-      { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+      { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       'job-1',
       3,
     );
@@ -309,7 +309,7 @@ describe('OptimizationJobsService', () => {
     ]);
 
     const exported = await service.exportCandidates(
-      { id: 'user-1', branchId: 'branch-1', role: Role.DISPATCHER },
+      { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       'job-1',
     );
     const workbook = new ExcelJS.Workbook();

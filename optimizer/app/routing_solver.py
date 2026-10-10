@@ -42,7 +42,7 @@ from .search_strategies import DEFAULT_SEARCH_STRATEGY, SearchStrategy
 # OR-Tools routing costs are integers. Micro-VND preserves small marginal
 # costs such as the fuel surcharge of carrying one kilogram for one metre.
 OBJECTIVE_COST_SCALE = 1_000_000
-WEIGHT_SCALE = 100
+WEIGHT_SCALE = 1000
 ROUTING_BUDGET_SHARE = 0.65
 VALIDATION_BUDGET_SHARE = 0.20
 CONSOLIDATION_BUDGET_SHARE = 0.15
@@ -189,7 +189,7 @@ class FleetRoutingSolver:
                         "lon": order.pickup_location.longitude,
                         "type": "PICKUP",
                         "order": order,
-                        "service_time_sec": order.service_time_sec,
+                        "service_time_sec": order.service_seconds("PICKUP"),
                     },
                     {
                         "id": order.delivery_location.id,
@@ -198,7 +198,7 @@ class FleetRoutingSolver:
                         "lon": order.delivery_location.longitude,
                         "type": "DELIVERY",
                         "order": order,
-                        "service_time_sec": order.service_time_sec,
+                        "service_time_sec": order.service_seconds("DELIVERY"),
                     },
                 ]
             )
@@ -869,15 +869,20 @@ class FleetRoutingSolver:
                 if self._order_allows_vehicle(order, self.request.vehicles[index])
             )
             if allowed_vehicle_indices:
-                routing.SetAllowedVehiclesForIndex(
-                    allowed_vehicle_indices, pickup_index
-                )
-                routing.SetAllowedVehiclesForIndex(
-                    allowed_vehicle_indices, delivery_index
-                )
+                # OR-Tools 9.15's Python binding cannot convert list to absl::Span.
+                # Keep -1 (unperformed) available; disallow only incompatible vehicles.
+                for vehicle_index in range(len(self.request.vehicles)):
+                    if vehicle_index not in allowed_vehicle_indices:
+                        routing.solver().Add(routing.VehicleVar(pickup_index) != vehicle_index)
+                        routing.solver().Add(routing.VehicleVar(delivery_index) != vehicle_index)
             elif order.allowed_source_vehicle_ids:
                 routing.solver().Add(routing.ActiveVar(pickup_index) == 0)
                 routing.solver().Add(routing.ActiveVar(delivery_index) == 0)
+            # Scalar domain constraints also work with the 9.15 Python binding.
+            for vehicle_index in range(vehicle_count):
+                if vehicle_index not in self.driver_safe_vehicle_indices:
+                    routing.solver().Add(routing.VehicleVar(pickup_index) != vehicle_index)
+                    routing.solver().Add(routing.VehicleVar(delivery_index) != vehicle_index)
 
             routing.AddPickupAndDelivery(pickup_index, delivery_index)
             routing.solver().Add(
@@ -1014,13 +1019,13 @@ class FleetRoutingSolver:
             latitude=action.latitude,
             longitude=action.longitude,
             arrival_time_sec=round(arrival_sec),
-            departure_time_sec=round(arrival_sec + order.service_time_sec),
+            departure_time_sec=round(arrival_sec + order.service_seconds(action.stop_type)),
             travel_time_sec=travel_time_sec,
             waiting_time_sec=waiting_time_sec,
-            service_time_sec=order.service_time_sec,
+            service_time_sec=order.service_seconds(action.stop_type),
             items_loaded=[item.id for item in action.items_to_load],
             items_unloaded=action.items_to_unload,
-            current_weight_kg=round(max(0.0, current_weight_kg), 2),
+            current_weight_kg=round(max(0.0, current_weight_kg), 3),
         )
 
     def _drafts_from_assignment(
@@ -2200,7 +2205,7 @@ class FleetRoutingSolver:
             if current_area > max_vehicle_area:
                 return None
 
-            departure = arrival + order.service_time_sec
+            departure = arrival + order.service_seconds(action.stop_type)
             rounded_arrival = round(arrival)
             travel_time_sec = min(
                 max(0, rounded_arrival - leg_start),
@@ -2227,13 +2232,13 @@ class FleetRoutingSolver:
                     latitude=action.latitude,
                     longitude=action.longitude,
                     arrival_time_sec=rounded_arrival,
-                    departure_time_sec=rounded_arrival + order.service_time_sec,
+                    departure_time_sec=rounded_arrival + order.service_seconds(action.stop_type),
                     travel_time_sec=travel_time_sec,
                     waiting_time_sec=waiting_time_sec,
-                    service_time_sec=order.service_time_sec,
+                    service_time_sec=order.service_seconds(action.stop_type),
                     items_loaded=[item.id for item in action.items_to_load],
                     items_unloaded=action.items_to_unload,
-                    current_weight_kg=round(max(0.0, current_weight), 2),
+                    current_weight_kg=round(max(0.0, current_weight), 3),
                 )
             )
             current_time = departure

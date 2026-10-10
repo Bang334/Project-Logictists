@@ -88,6 +88,8 @@ export class OrderProcessingService {
       throw new ConflictException('Đơn thiếu nguồn hoặc điểm nhận');
     }
     this.assertSourceAccess(order.allocatedSourceId, user);
+    if (order.orderType === 'B2B_TRANSPORT') throw new BadRequestException('Kiện vận tải được quản lý tại màn hình đơn hàng');
+    if (!dto.dimensionCm && order.items.some(item => item.lengthCm === null || item.widthCm === null || item.heightCm === null)) throw new BadRequestException('Cần nhập kích thước kiện');
     const dimensions = dto.dimensionCm?.split('x').map(Number) ?? [];
     if (dimensions.length > 0 && (dimensions.length !== 3 || dimensions.some((value) => !Number.isFinite(value) || value <= 0))) {
       throw new BadRequestException('Kích thước phải có dạng dài x rộng x cao và lớn hơn 0');
@@ -113,13 +115,13 @@ export class OrderProcessingService {
           packageCode: `PKG-${randomUUID().slice(0, 10).toUpperCase()}`,
           lengthMm: dimensions[0]
             ? Math.round(dimensions[0] * 10)
-            : Math.max(...order.items.map((item) => item.lengthCm * 10), 1),
+            : Math.max(...order.items.map((item) => requireDimension(item.lengthCm) * 10), 1),
           widthMm: dimensions[1]
             ? Math.round(dimensions[1] * 10)
-            : Math.max(...order.items.map((item) => item.widthCm * 10), 1),
+            : Math.max(...order.items.map((item) => requireDimension(item.widthCm) * 10), 1),
           heightMm: dimensions[2]
             ? Math.round(dimensions[2] * 10)
-            : Math.max(...order.items.map((item) => item.heightCm * 10), 1),
+            : Math.max(...order.items.map((item) => requireDimension(item.heightCm) * 10), 1),
           weightG: BigInt(Math.round((dto.weightKg ?? order.totalWeightKg) * 1000)),
           allowedOrientations: ['DEFAULT'],
           measurementSource: dto.dimensionCm ? 'MANUAL' : 'ORDER_ITEM',
@@ -218,4 +220,9 @@ export class OrderProcessingService {
     if (!sourceId) throw new ConflictException('Đơn chưa có nguồn hàng');
     if (user.role === Role.STAFF) assertLocationAccess(user, sourceId);
   }
+}
+
+function requireDimension(value: number | null): number {
+  if (value === null || !Number.isFinite(value) || value <= 0) throw new BadRequestException("Missing package dimension");
+  return value;
 }

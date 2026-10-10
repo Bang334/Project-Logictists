@@ -1,11 +1,11 @@
+import { Principal, branchFilter, assertPermission, tripFilter } from '../auth/access';
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { LocationType, Role, VehicleStatus } from '@prisma/client';
+import { VehicleStatus, LocationType } from '@prisma/client';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
 
 const HOME_DEPOT_SUMMARY_SELECT = {
@@ -21,10 +21,10 @@ const HOME_DEPOT_SUMMARY_SELECT = {
 export class VehiclesService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(branchId?: string, status?: VehicleStatus) {
+  async findAll(user: Principal, branchId?: string, status?: VehicleStatus) {
     return this.prisma.vehicle.findMany({
       where: {
-        ...(branchId ? { homeBranchId: branchId } : {}),
+        homeBranchId: branchFilter(user, 'vehicles.read', branchId),
         ...(status ? { status } : {}),
       },
       include: {
@@ -37,25 +37,28 @@ export class VehiclesService {
     });
   }
 
-  async findOne(id: string) {
-    return this.prisma.vehicle.findUnique({
-      where: { id },
+  async findOne(id: string, user: Principal) {
+    const result = await this.prisma.vehicle.findFirst({
+      where: { id, homeBranchId: branchFilter(user, 'vehicles.read') },
       include: {
         homeBranch: true,
         homeDepotLocation: { select: HOME_DEPOT_SUMMARY_SELECT },
         trips: {
+          where: tripFilter(user),
           take: 5,
           orderBy: { createdAt: 'desc' },
         },
       },
     });
+    if (!result) throw new NotFoundException('Tài nguyên không tồn tại hoặc ngoài phạm vi được cấp');
+    return result;
   }
 
-  async getAvailable(branchId?: string) {
+  async getAvailable(user: Principal, branchId?: string) {
     return this.prisma.vehicle.findMany({
       where: {
         status: VehicleStatus.AVAILABLE,
-        ...(branchId ? { homeBranchId: branchId } : {}),
+        homeBranchId: branchFilter(user, 'vehicles.read', branchId),
       },
       include: {
         homeBranch: true,
@@ -66,7 +69,7 @@ export class VehiclesService {
   async update(
     id: string,
     dto: UpdateVehicleDto,
-    user?: { role: Role; branchId?: string },
+    user: Principal,
   ) {
     const vehicle = await this.prisma.vehicle.findUnique({
       where: { id },
@@ -76,35 +79,8 @@ export class VehiclesService {
       throw new NotFoundException(`Không tìm thấy xe tải với ID ${id}`);
     }
 
-    if (
-      user &&
-      user.role !== Role.ADMIN &&
-      user.branchId &&
-      vehicle.homeBranchId !== user.branchId
-    ) {
-      throw new ForbiddenException(
-        'Bạn không có quyền chỉnh sửa xe thuộc chi nhánh khác',
-      );
-    }
-
-    if (
-      dto.homeBranchId &&
-      dto.homeBranchId !== vehicle.homeBranchId &&
-      user?.role !== Role.ADMIN
-    ) {
-      throw new ForbiddenException(
-        'Chỉ Quản trị viên (ADMIN) mới có quyền điều chuyển xe sang chi nhánh khác',
-      );
-    }
-
-    const targetBranchId = dto.homeBranchId ?? vehicle.homeBranchId;
-    const targetDepotId = await this.resolveTargetHomeDepot(
-      vehicle.homeDepotLocationId,
-      vehicle.homeBranchId,
-      targetBranchId,
-      dto.homeDepotLocationId,
-    );
-
+    assertPermission(user, 'vehicles.manage', vehicle.homeBranchId);
+    const targetDepotId = await this.resolveTargetHomeDepot(vehicle.homeDepotLocationId, vehicle.homeBranchId, dto.homeBranchId ?? vehicle.homeBranchId, dto.homeDepotLocationId);
     return this.prisma.vehicle.update({
       where: { id },
       data: {

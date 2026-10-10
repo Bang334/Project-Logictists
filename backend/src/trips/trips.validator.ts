@@ -1,32 +1,11 @@
-import { BadRequestException } from "@nestjs/common";
-import { Vehicle, StopType } from "@prisma/client";
+import { BadRequestException } from '@nestjs/common';
+import { Vehicle, Order, OrderStop, OrderItem, Package, StopType } from '@prisma/client';
+import { packageTotals } from '../orders/package-measurements';
+import { assertPackageManifest } from '../orders/order-contract';
 
 export interface StopWithItems {
-  orderStop: {
-    id?: string;
-    orderId: string;
-    type: StopType;
-    address: string;
-    latitude?: number;
-    longitude?: number;
-    contactName?: string | null;
-    contactPhone?: string | null;
-    [key: string]: unknown;
-  };
-  order: {
-    id: string;
-    orderNumber: string;
-    totalWeightKg: number;
-    totalVolumeM3: number;
-    items: Array<{
-      id?: string;
-      quantity: number;
-      weightKg: number;
-      volumeM3: number;
-      [key: string]: unknown;
-    }>;
-    [key: string]: unknown;
-  };
+  orderStop: Pick<OrderStop, 'id' | 'orderId' | 'type' | 'address'> & Partial<OrderStop>;
+  order: Pick<Order, 'id' | 'orderNumber' | 'totalWeightKg' | 'totalVolumeM3'> & Partial<Order> & { items: Array<Pick<OrderItem, 'quantity' | 'weightKg' | 'volumeM3'> & Partial<OrderItem> & { packages?: Package[] }> };
 }
 
 export interface LegLoadStatus {
@@ -91,33 +70,29 @@ export class TripsValidator {
     orderedStops: StopWithItems[],
   ): ValidationResult {
     const loadProfile: LegLoadStatus[] = [];
-    let currentWeight = 0;
-    let currentVolume = 0;
+    let currentWeightG = 0n;
+    let currentVolumeMm3 = 0n;
     let maxWeight = 0;
     let maxVolume = 0;
     const errors: string[] = [];
 
     orderedStops.forEach((stop, index) => {
-      // Tính tổng khối lượng và thể tích của order tại stop này
-      const stopWeight = stop.order.items.reduce(
-        (sum, item) => sum + item.weightKg,
-        0,
-      );
-      const stopVolume = stop.order.items.reduce(
-        (sum, item) => sum + item.volumeM3,
-        0,
-      );
-
+      const manifest = { ...stop.order, packageDataStatus: stop.order.packageDataStatus ?? 'LEGACY_REVIEW', items: stop.order.items.map(item => ({ ...item, packages: item.packages ?? [] })) };
+      const canonical = stop.order.packageDataStatus === 'COMPLETE';
+      if (canonical) assertPackageManifest(manifest);
+      // Legacy projections are only for historical display/validation. Never infer physical packages.
+      const totals = canonical ? packageTotals(manifest.items.flatMap(item => item.packages)) : {
+        weightG: BigInt(Math.round(stop.order.items.reduce((sum, item) => sum + item.weightKg, 0) * 1000)),
+        volumeMm3: BigInt(Math.round(stop.order.items.reduce((sum, item) => sum + item.volumeM3, 0) * 1e9)),
+      };
       const isPickup = stop.orderStop.type === StopType.PICKUP;
-      const deltaWeight = isPickup ? stopWeight : -stopWeight;
-      const deltaVolume = isPickup ? stopVolume : -stopVolume;
-
-      currentWeight += deltaWeight;
-      currentVolume += deltaVolume;
-
-      // Làm tròn số thập phân
-      currentWeight = Math.round(currentWeight * 10) / 10;
-      currentVolume = Math.round(currentVolume * 100) / 100;
+      const sign = isPickup ? 1n : -1n;
+      currentWeightG += sign * totals.weightG;
+      currentVolumeMm3 += sign * totals.volumeMm3;
+      const deltaWeight = Number(sign * totals.weightG) / 1000;
+      const deltaVolume = Number(sign * totals.volumeMm3) / 1e9;
+      const currentWeight = Number(currentWeightG) / 1000;
+      const currentVolume = Number(currentVolumeMm3) / 1e9;
 
       if (currentWeight > maxWeight) maxWeight = currentWeight;
       if (currentVolume > maxVolume) maxVolume = currentVolume;
@@ -128,14 +103,14 @@ export class TripsValidator {
         Math.round((currentVolume / vehicle.volumeCapacityM3) * 1000) / 10;
 
       // Kiểm tra vi phạm tải trọng
-      if (currentWeight > vehicle.payloadCapacityKg) {
+      if (currentWeightG > BigInt(Math.floor(vehicle.payloadCapacityKg * 1000))) {
         errors.push(
           `Vi phạm tải trọng tại Điểm ${index + 1} (${stop.orderStop.address}): Tải trên xe đạt ${currentWeight} kg, vượt quá tải trọng cho phép của xe ${vehicle.plateNumber} (${vehicle.payloadCapacityKg} kg)!`,
         );
       }
 
       // Kiểm tra vi phạm thể tích
-      if (currentVolume > vehicle.volumeCapacityM3) {
+      if (currentVolumeMm3 > BigInt(Math.floor(vehicle.volumeCapacityM3 * 1e9))) {
         errors.push(
           `Vi phạm thể tích tại Điểm ${index + 1} (${stop.orderStop.address}): Thể tích hàng ${currentVolume} m³, vượt quá dung tích thùng xe ${vehicle.plateNumber} (${vehicle.volumeCapacityM3} m³)!`,
         );

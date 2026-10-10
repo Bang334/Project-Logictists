@@ -1,7 +1,7 @@
+import { validationException } from './orders/validation-errors';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe, Logger } from '@nestjs/common';
-import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { CorrelationIdInterceptor } from './common/interceptors/correlation-id.interceptor';
 import { BigIntSerializationInterceptor } from './common/interceptors/bigint-serialization.interceptor';
 import { ConfiguredIoAdapter } from './events/configured-io.adapter';
@@ -22,7 +22,7 @@ async function bootstrap() {
   app.enableCors({
     origin: allowedOrigins,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    credentials: true,
+    credentials: false,
   });
 
   // Gắn Correlation ID Interceptor tự động cho mọi request
@@ -32,12 +32,13 @@ async function bootstrap() {
   );
 
   // Global Exception Filter chuẩn hóa mã lỗi và chống lộ stack trace
-  app.useGlobalFilters(new AllExceptionsFilter());
+  // AuthModule registers the structured API error filter, including field errors.
 
   // Global Validation Pipe cho Runtime Input
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
+      exceptionFactory: validationException,
       transform: true,
       forbidNonWhitelisted: true,
     }),

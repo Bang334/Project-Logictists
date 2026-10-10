@@ -79,7 +79,7 @@ import {
 import {
   clearAutoDispatchState,
   getAutoDispatchState,
-  getLastSelectedBranch,
+
   saveAutoDispatchState,
   saveLastSelectedBranch,
 } from '../utils/autoDispatchStorage';
@@ -101,9 +101,10 @@ const getRouteKey = (route: OptimizedRouteUI) => route.route_id;
 
 const AutomaticDispatchPage: React.FC = () => {
   const { message } = AntdApp.useApp();
-  const { user } = useAuth();
+  const { user, can, branchId, setBranchId } = useAuth();
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [selectedBranchId, setSelectedBranchId] = useState<string>();
+  const selectedBranchId = branchId;
+  const setSelectedBranchId = setBranchId;
   const [loadingBranches, setLoadingBranches] = useState(true);
   const [counts, setCounts] = useState({ orders: 0, vehicles: 0, drivers: 0, packages: 0 });
   const [availableOrders, setAvailableOrders] = useState<Order[]>([]);
@@ -250,22 +251,9 @@ const AutomaticDispatchPage: React.FC = () => {
         setLoadingBranches(true);
         const response = await branchesApi.getAll();
         if (!active) return;
-        const allowedBranches = user?.role === 'ADMIN'
-          ? response.data
-          : response.data.filter((branch) => branch.id === user?.branchId);
+        const allowedBranches = response.data;
         setBranches(allowedBranches);
 
-        const lastBranch = getLastSelectedBranch();
-        setSelectedBranchId((current) => {
-          if (current && allowedBranches.some((branch) => branch.id === current)) {
-            return current;
-          }
-          if (lastBranch && allowedBranches.some((branch) => branch.id === lastBranch)) {
-            return lastBranch;
-          }
-          return allowedBranches.find((branch) => branch.id === user?.branchId)?.id
-            || allowedBranches[0]?.id;
-        });
       } catch {
         if (active) message.error('Không tải được danh sách chi nhánh');
       } finally {
@@ -276,7 +264,7 @@ const AutomaticDispatchPage: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [message, user?.branchId, user?.role]);
+  }, [user?.id]);
 
   useEffect(() => {
     if (!selectedBranchId) {
@@ -860,7 +848,7 @@ const AutomaticDispatchPage: React.FC = () => {
             <Button
               type="link"
               size="small"
-              icon={<EditOutlined />}
+              disabled={!can('vehicles.manage')} icon={<EditOutlined />}
               onClick={(e) => {
                 e.stopPropagation();
                 setSelectedVehicleForEdit(v);
@@ -990,7 +978,7 @@ const AutomaticDispatchPage: React.FC = () => {
             <Button
               type="link"
               size="small"
-              icon={<EditOutlined />}
+              disabled={!can('drivers.manage')} icon={<EditOutlined />}
               onClick={(e) => {
                 e.stopPropagation();
                 setSelectedDriverForEdit(d);
@@ -1846,7 +1834,7 @@ const AutomaticDispatchPage: React.FC = () => {
                                 title: 'Kích thước (Dài × Rộng × Cao)',
                                 key: 'dim',
                                 width: 200,
-                                render: (_, it) => `${it.lengthCm} × ${it.widthCm} × ${it.heightCm} cm`,
+                                render: (_, it) => it.packages.map(p => `${p.packageCode}: ${p.lengthMm} × ${p.widthMm} × ${p.heightMm} mm`).join('; '),
                               },
                               {
                                 title: 'Thể tích / kiện',
@@ -2083,7 +2071,7 @@ const AutomaticDispatchPage: React.FC = () => {
                           type="primary"
                           ghost
                           size="small"
-                          icon={<EditOutlined />}
+                          disabled={!can('vehicles.manage')} icon={<EditOutlined />}
                           onClick={() => {
                             setSelectedVehicleForEdit(record);
                             setIsEditVehicleModalOpen(true);
@@ -2197,7 +2185,7 @@ const AutomaticDispatchPage: React.FC = () => {
                           type="primary"
                           ghost
                           size="small"
-                          icon={<EditOutlined />}
+                          disabled={!can('drivers.manage')} icon={<EditOutlined />}
                           onClick={() => {
                             setSelectedDriverForEdit(record);
                             setIsEditDriverModalOpen(true);

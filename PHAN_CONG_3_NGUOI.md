@@ -130,7 +130,9 @@ Luồng demo đã chạy được từ web → Mapbox → OR-Tools/spatial valid
 
 ## 5. Quy trình phối hợp
 
-Luồng chung: **chốt yêu cầu → chốt contract → triển khai lát cắt đầy đủ → tự kiểm tra → review chéo → tích hợp**.
+Luồng chung: **chốt yêu cầu → chốt contract → triển khai → tự test → review chéo → tích hợp**.
+
+- Chuẩn cấu trúc chung từ 23/09/2026: [THIET_KE_DATABASE.md v0.2](THIET_KE_DATABASE.md). Người 3 chủ trì đồng bộ schema/migration sau khi kiểm kê database thực; Người 1/2 đối chiếu FK, version, command/event và contract tiêu thụ trước khi tích hợp. Cấu trúc đã chốt không thay thế các policy còn mở tại mục 8 và không tự cấp quyền triển khai.
 
 1. Trước khi sửa contract dùng chung, ghi rõ producer, consumer, bảng và test bị ảnh hưởng.
 2. Người chủ trì làm trọn luồng thành công và các lỗi quan trọng; không giao file rời cho người khác tự đoán cách nối.

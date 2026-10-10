@@ -1,5 +1,8 @@
-import React, { lazy, Suspense, useCallback, useEffect, useState } from 'react';
-import { Layout, ConfigProvider, theme, App as AntdApp, Spin, Typography } from 'antd';
+import { canOpenTab, defaultTab } from './utils/navigationAccess';
+import React, { useEffect, useState, lazy, Suspense } from 'react';
+import AccountsPage from './pages/AccountsPage';
+import { canManageAccounts } from './types/accounts';
+import { Layout, ConfigProvider, theme, App as AntdApp, Spin, Alert, Button, Result } from 'antd';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import LoginPage from './pages/LoginPage';
 import Navbar from './components/Navbar';
@@ -19,66 +22,37 @@ const RetailAnalyticsPage = lazy(() => import('./pages/RetailAnalyticsPage'));
 const CustomerPortalPage = lazy(() => import('./pages/CustomerPortalPage'));
 
 const { Content } = Layout;
-const { Text } = Typography;
+
 
 const MainLayout: React.FC = () => {
-  const { user, loading } = useAuth();
-  const [currentTab, setCurrentTab] = useState(() => window.location.hash.slice(1) || 'dashboard');
-
-  const allowedTabs = useCallback(() => {
-    if (!user) return [];
-    if (user.role === 'CUSTOMER') return ['customer-shop'];
-    if (user.role === 'DRIVER') return ['dashboard'];
-    if (user.role === 'DISPATCHER') {
-      return ['dashboard', 'orders', 'fleet', 'dispatch-manual', 'dispatch-auto'];
-    }
-    if (user.role === 'STAFF') {
-      return ['dashboard', 'catalog', 'inventory', 'sales-orders', 'order-processing', 'pickup-ops'];
-    }
-    return ['dashboard', 'catalog', 'inventory', 'sales-orders', 'order-processing', 'pickup-ops', 'retail-analytics', 'orders', 'fleet', 'dispatch-manual', 'dispatch-auto'];
-  }, [user]);
-
-  const navigate = useCallback((tab: string) => {
-    window.location.hash = tab;
+  const { user, token, loading, error, retry, logout, scopeVersion, can } = useAuth();
+  const [currentTab, setTab] = useState(() => window.location.pathname.slice(1) || 'dashboard');
+  const setCurrentTab = (tab: string) => { setTab(tab); window.history.pushState(null, '', tab === 'dashboard' ? '/' : '/' + tab); };
+  useEffect(() => {
+    const pop = () => setTab(window.location.pathname.slice(1) || 'dashboard');
+    window.addEventListener('popstate', pop);
+    return () => window.removeEventListener('popstate', pop);
   }, []);
 
   useEffect(() => {
-    if (!user) return;
-    const syncFromHash = () => {
-      const requested = window.location.hash.slice(1);
-      const fallback = user.role === 'CUSTOMER' ? 'customer-shop' : 'dashboard';
-      const next = allowedTabs().includes(requested) ? requested : fallback;
-      setCurrentTab(next);
-      if (requested !== next) window.history.replaceState(null, '', `#${next}`);
-    };
-    syncFromHash();
-    window.addEventListener('hashchange', syncFromHash);
-    return () => window.removeEventListener('hashchange', syncFromHash);
-  }, [allowedTabs, user]);
-
-  useEffect(() => {
-    document.getElementById('main-content')?.focus({ preventScroll: true });
-  }, [currentTab]);
+    if (user && window.location.pathname === '/' && defaultTab(user) !== 'dashboard') setCurrentTab(defaultTab(user));
+  }, [user?.id]);
 
   if (loading) {
-    return (
-      <div role="status" aria-live="polite" style={{ display: 'grid', minHeight: '100vh', placeItems: 'center' }}>
-        <div style={{ display: 'grid', justifyItems: 'center', gap: 12 }}>
-          <Spin size="large" />
-          <Text>Đang xác thực phiên đăng nhập...</Text>
-        </div>
-      </div>
-    );
+    return <Spin fullscreen aria-label="Đang kiểm tra phiên" />;
   }
 
+  if (!user && token && error) return <Result status="warning" title="Chưa xác minh được phiên" subTitle={error} extra={<><Button onClick={() => void retry()}>Thử lại</Button><Button onClick={() => void logout()}>Xóa phiên</Button></>} />;
   if (!user) {
     return <LoginPage />;
   }
 
   const renderContent = () => {
+    if (currentTab === 'accounts') return canManageAccounts(user) ? <AccountsPage /> : <Result status="403" title="Không có quyền truy cập" subTitle="Bạn không được phép quản lý tài khoản." />;
+    if (!canOpenTab(user, currentTab, can)) return <Result status="403" title="Không có quyền truy cập" />;
     switch (currentTab) {
       case 'dashboard':
-        return <DashboardPage onNavigate={navigate} />;
+        return <DashboardPage onNavigate={setCurrentTab} />;
       case 'customer-shop':
         return <CustomerPortalPage />;
       case 'catalog':
@@ -104,7 +78,7 @@ const MainLayout: React.FC = () => {
       case 'tracking-demo':
         return <AutomaticDispatchPage />;
       default:
-        return <DashboardPage onNavigate={navigate} />;
+        return <DashboardPage onNavigate={setCurrentTab} />;
     }
   };
 
@@ -113,20 +87,10 @@ const MainLayout: React.FC = () => {
       <a className="skip-link" href="#main-content">Bỏ qua menu, tới nội dung chính</a>
       <Navbar />
       <Layout>
-        <Sidebar currentTab={currentTab} onSelectTab={navigate} />
-        <Content id="main-content" tabIndex={-1} className="tms-content">
-          <Suspense
-            fallback={
-              <div style={{ display: 'grid', minHeight: '50vh', placeItems: 'center' }}>
-                <div style={{ display: 'grid', justifyItems: 'center', gap: 12 }}>
-                  <Spin size="large" />
-                  <Text>Đang tải màn hình...</Text>
-                </div>
-              </div>
-            }
-          >
-            {renderContent()}
-          </Suspense>
+        <Sidebar currentTab={currentTab} onSelectTab={setCurrentTab} />
+        <Content key={`${user.id}:${scopeVersion}`} style={{ minHeight: 'calc(100vh - 64px)', background: '#f8fafc' }}>
+          {error && <Alert type="warning" showIcon message={error} />}
+          <Suspense fallback={<Spin />}>{renderContent()}</Suspense>
         </Content>
       </Layout>
     </Layout>
