@@ -1,6 +1,13 @@
+import time
 from typing import List
 
-from app.models import CargoItem, PlacedItem, StopAction, VehicleFloor
+from app.models import (
+    CargoItem,
+    PlacedItem,
+    SpatialValidationResult,
+    StopAction,
+    VehicleFloor,
+)
 from app.spatial_validator import SpatialValidator
 
 
@@ -25,6 +32,33 @@ def _two_by_two_truck() -> VehicleFloor:
         height_cm=200,
         payload_limit_kg=1_000,
     )
+
+
+def test_independent_load_cycles_share_one_time_budget(monkeypatch) -> None:
+    validator = SpatialValidator(
+        _two_by_two_truck(),
+        max_time_seconds=0.05,
+    )
+    observed_budgets = []
+
+    monkeypatch.setattr(
+        validator,
+        "_split_independent_load_cycles",
+        lambda _stops: [[], []],
+    )
+
+    def validate_cycle(_cycle, *, max_time_seconds=None):
+        observed_budgets.append(max_time_seconds)
+        time.sleep(0.03)
+        return SpatialValidationResult(is_valid=True)
+
+    monkeypatch.setattr(validator, "_validate_load_cycle", validate_cycle)
+
+    result = validator.validate_plan([])
+
+    assert result.is_valid is True
+    assert observed_budgets[0] <= 0.05
+    assert observed_budgets[1] < observed_budgets[0]
 
 
 def test_searches_an_alternative_layout_instead_of_rejecting_input_order() -> None:

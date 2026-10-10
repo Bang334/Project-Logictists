@@ -28,7 +28,7 @@ export type OptimizerCargoUnit = {
   width_cm: number;
   height_cm: number;
   weight_kg: number;
-  can_rotate: false;
+  can_rotate: true;
 };
 
 export type OptimizerFleetVehicle = {
@@ -66,7 +66,8 @@ export type OptimizerOrder = {
 /**
  * OrderItem là một dòng loại hàng: quantity là số kiện vật lý, weightKg là
  * tổng khối lượng dòng. Optimizer cần từng kiện có định danh riêng để packing.
- * Xoay kiện được khóa ở false cho tới khi có policy hướng xoay được phê duyệt.
+ * D11 đã chốt: kiện chữ nhật được đổi hướng trên mặt sàn theo bội số 90°.
+ * Không lật kiện để hoán đổi chiều cao.
  */
 export function expandOrderItemsToCargoUnits(
   items: PhysicalOrderItem[],
@@ -96,7 +97,7 @@ export function expandOrderItemsToCargoUnits(
       width_cm: item.widthCm,
       height_cm: item.heightCm,
       weight_kg: unitWeight,
-      can_rotate: false as const,
+      can_rotate: true as const,
     }));
   });
 }
@@ -130,7 +131,7 @@ export function expandPhysicalPackagesToCargoUnits(
       width_cm: physicalPackage.widthMm / 10,
       height_cm: physicalPackage.heightMm / 10,
       weight_kg: Number(physicalPackage.weightG) / 1000,
-      can_rotate: false as const,
+      can_rotate: true as const,
     };
   });
 }

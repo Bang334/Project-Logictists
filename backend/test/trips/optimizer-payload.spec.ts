@@ -41,7 +41,7 @@ describe('expandOrderItemsToCargoUnits', () => {
     expect(units.reduce((sum, unit) => sum + unit.weight_kg, 0)).toBeCloseTo(
       80,
     );
-    expect(units.every((unit) => unit.can_rotate === false)).toBe(true);
+    expect(units.every((unit) => unit.can_rotate === true)).toBe(true);
   });
 });
 
@@ -119,7 +119,7 @@ describe('splitOversizedOrdersAcrossFleet', () => {
     width_cm: 80,
     height_cm: 80,
     weight_kg: weight,
-    can_rotate: false as const,
+    can_rotate: true as const,
   });
 
   it('giữ nguyên đơn một kiện vượt khả năng mọi xe để solver từ chối có lý do', () => {
@@ -203,6 +203,30 @@ describe('splitOversizedOrdersAcrossFleet', () => {
 
     expect(result).toHaveLength(2);
     expect(result.map((part) => part.items.length)).toEqual([1, 1]);
+  });
+
+  it('không loại xe khi kiện chỉ vừa sau khi xoay 90 độ trên mặt sàn', () => {
+    const rotationOnlyFleet = ['truck-a', 'truck-b'].map((id) => ({
+      id,
+      length_cm: 80,
+      width_cm: 120,
+      height_cm: 120,
+      payload_limit_kg: 1000,
+    }));
+    const input = order([
+      { ...cargo('rotated-1', 600), length_cm: 100, width_cm: 70 },
+      { ...cargo('rotated-2', 600), length_cm: 100, width_cm: 70 },
+    ]);
+
+    const result = splitOversizedOrdersAcrossFleet(
+      [input],
+      rotationOnlyFleet,
+    );
+
+    expect(result).toHaveLength(2);
+    expect(
+      new Set(result.flatMap((part) => part.allowed_source_vehicle_ids ?? [])),
+    ).toEqual(new Set(['truck-a', 'truck-b']));
   });
 
   it('xếp đầy các xe đang dùng thay vì tách 100 kiện nhỏ ra 100 xe', () => {

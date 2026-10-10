@@ -195,6 +195,7 @@ export class OptimizationProcessor extends WorkerHost {
       const candidateRows = candidateBatch.candidates.map(
         (candidate, index): Prisma.OptimizationResultCreateManyInput => {
           const result = candidate.proposal.result;
+          const planningObjective = result.planning_objective;
           return {
             optimizationJobId: optimizationJob.id,
             candidateNumber: index + 1,
@@ -205,6 +206,13 @@ export class OptimizationProcessor extends WorkerHost {
               searchStrategy: candidate.searchStrategy,
               improvementSequence: candidate.improvementSequence ?? candidate.rank ?? index + 1,
               solverObjective: candidate.solverObjective,
+              planningSpanDays: planningObjective?.planning_span_days ?? 0,
+              driverCalendarSalaryVnd:
+                planningObjective?.driver_calendar_salary_vnd ?? 0,
+              driverIdleSalaryAllocationVnd:
+                planningObjective?.driver_idle_salary_allocation_vnd ?? 0,
+              operationalLatePenaltyVnd:
+                planningObjective?.operational_late_penalty_vnd ?? 0,
               isBestFound: candidate.isBestFound,
               totalCostVnd: result.total_cost_vnd,
               totalDistanceKm: result.total_distance_km,

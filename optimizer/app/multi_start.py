@@ -25,7 +25,8 @@ from .search_strategies import (
     SearchStrategy,
     find_search_strategy,
 )
-from .ils_engine import PackingAwareILSOptimizer
+from .hybrid_alns_engine import PackingAwareHybridALNSOptimizer
+from .planning_objective import apply_planning_objective
 
 
 def _run_search_worker(
@@ -49,6 +50,11 @@ def _run_search_worker(
             routing_budget_share=routing_budget_share,
             validation_budget_share=validation_budget_share,
             consolidation_budget_share=consolidation_budget_share,
+            # Multi-start adds one independently audited Hybrid candidate after
+            # all OR-Tools workers finish. Running the same expensive fallback
+            # inside every worker multiplied spatial audits and could exceed
+            # the HTTP timeout by several minutes.
+            enable_hybrid_fallback=False,
         )
         plan, objective = solver.solve_with_objective()
         return strategy.key, strategy.label, plan.model_dump(), objective, None
@@ -89,10 +95,40 @@ def is_fully_served(
 
     served_order_ids: Set[str] = set()
     for route in plan.routes:
+        previous_departure_sec = route.start_time_sec
         for stop in route.stops:
+            time_breakdown = (
+                stop.travel_time_sec,
+                stop.waiting_time_sec,
+                stop.service_time_sec,
+            )
+            if any(value is not None for value in time_breakdown):
+                if any(value is None for value in time_breakdown):
+                    return False
+                if (
+                    stop.arrival_time_sec - previous_departure_sec
+                    != stop.travel_time_sec + stop.waiting_time_sec
+                    or stop.departure_time_sec - stop.arrival_time_sec
+                    != stop.service_time_sec
+                ):
+                    return False
+            previous_departure_sec = stop.departure_time_sec
             allocation_id = stop.allocation_id or stop.order_id
             if allocation_id:
                 served_order_ids.add(allocation_id)
+
+        return_breakdown = (
+            route.return_travel_time_sec,
+            route.return_waiting_time_sec,
+        )
+        if any(value is not None for value in return_breakdown):
+            if any(value is None for value in return_breakdown):
+                return False
+            if (
+                route.end_time_sec - previous_departure_sec
+                != route.return_travel_time_sec + route.return_waiting_time_sec
+            ):
+                return False
 
     if served_order_ids != all_order_ids:
         return False
@@ -134,9 +170,11 @@ def select_ranked_candidates(
     fully_served_count = len(fully_served_runs)
 
     if fully_served_runs:
-        # Sort by total operating cost ascending, then objective value
+        # Rank by the shared planning objective. Operating cost is only the
+        # tie-breaker because it excludes paid idle salary and operational
+        # lateness when the financial penalty policy is disabled.
         fully_served_runs.sort(
-            key=lambda item: (item[1].total_cost_vnd, item[2])
+            key=lambda item: (item[2], item[1].total_cost_vnd)
         )
 
         distinct_candidates: List[Tuple[SearchStrategy, FleetOptimizationResponse, int]] = []
@@ -178,8 +216,8 @@ def select_ranked_candidates(
     evaluated_runs.sort(
         key=lambda item: (
             len(item[1].unassigned_orders),
-            item[1].total_cost_vnd,
             item[2],
+            item[1].total_cost_vnd,
         )
     )
     fallback_strategy, fallback_plan, fallback_obj = evaluated_runs[0]
@@ -202,6 +240,7 @@ class MultiStartFleetOptimizer:
         request: FleetOptimizationRequest,
         strategies: Optional[List[SearchStrategy]] = None,
     ):
+        self.objective_request = request
         self.request, self.pruned_virtual_vehicle_count = (
             prune_unserviceable_virtual_resources(request)
         )
@@ -232,15 +271,24 @@ class MultiStartFleetOptimizer:
                 time_budget_seconds=self.policy.time_budget_seconds,
             ).solve_exhaustive_tiny_candidates(max_candidates=max_candidates)
             if exhaustive.plans:
+                for plan in exhaustive.plans:
+                    apply_planning_objective(self.objective_request, plan)
+                ranked_plans = sorted(
+                    exhaustive.plans,
+                    key=lambda plan: (
+                        plan.planning_objective.selection_score_vnd,
+                        plan.total_cost_vnd,
+                    ),
+                )
                 candidates = [
                     FleetOptimizationCandidate(
                         rank=index + 1,
                         search_strategy="Vét cạn tuyến nhỏ",
-                        solver_objective=plan.total_cost_vnd,
+                        solver_objective=plan.planning_objective.selection_score_vnd,
                         is_best_found=(index == 0),
                         result=plan,
                     )
-                    for index, plan in enumerate(exhaustive.plans)
+                    for index, plan in enumerate(ranked_plans)
                 ]
                 diagnostics = [
                     (
@@ -305,7 +353,12 @@ class MultiStartFleetOptimizer:
                         worker_errors.append(f"{strategy.label}: {err}")
                     elif plan_dict is not None:
                         plan = FleetOptimizationResponse(**plan_dict)
-                        evaluated_runs.append((strategy, plan, objective))
+                        planning_objective = apply_planning_objective(
+                            self.objective_request, plan
+                        )
+                        evaluated_runs.append(
+                            (strategy, plan, planning_objective.selection_score_vnd)
+                        )
                 except Exception as exc:
                     worker_errors.append(f"{strategy.label}: {str(exc)}")
 
@@ -317,26 +370,55 @@ class MultiStartFleetOptimizer:
 
         ortools_run_count = len(evaluated_runs)
 
-        # Add the benchmark-winning packing-aware ILS as an independently
-        # validated candidate next to the OR-Tools multi-start results.
+        # Add the benchmark-winning Hybrid ALNS as an independently validated
+        # candidate next to the OR-Tools multi-start results.
         try:
-            ils = PackingAwareILSOptimizer(
-                self.request,
-                time_budget_seconds=min(worker_time_budget_seconds, 6.0),
+            hybrid_budget_seconds = min(
+                worker_time_budget_seconds,
+                max(6.0, worker_time_budget_seconds * 0.25),
+                20.0,
             )
-            ils_plan = ils.solve()
-            if ils_plan.routes:
-                ils_strategy = SearchStrategy(
-                    "packing-aware-ils",
-                    "Packing-aware ILS",
+            hybrid_seeds = (
+                (0, 1)
+                if hybrid_budget_seconds >= 12.0 and len(self.request.orders) >= 8
+                else (0,)
+            )
+            hybrid_run_budget = hybrid_budget_seconds / len(hybrid_seeds)
+            warm_start_plan = min(
+                evaluated_runs,
+                key=lambda item: (
+                    len(item[1].unassigned_orders),
+                    item[1].total_cost_vnd,
+                ),
+            )[1]
+            for seed in hybrid_seeds:
+                hybrid = PackingAwareHybridALNSOptimizer(
+                    self.request,
+                    time_budget_seconds=hybrid_run_budget,
+                    random_seed=seed,
+                    initial_plan=warm_start_plan,
+                )
+                hybrid_plan = hybrid.solve()
+                if not hybrid_plan.routes:
+                    continue
+                planning_objective = apply_planning_objective(
+                    self.objective_request, hybrid_plan
+                )
+                hybrid_strategy = SearchStrategy(
+                    f"packing-aware-hybrid-alns-seed-{seed}",
+                    f"Packing-aware Hybrid ALNS (seed {seed})",
                     DEFAULT_SEARCH_STRATEGY.first_solution_strategy,
                     DEFAULT_SEARCH_STRATEGY.local_search_metaheuristic,
                 )
                 evaluated_runs.append(
-                    (ils_strategy, ils_plan, ils_plan.total_cost_vnd)
+                    (
+                        hybrid_strategy,
+                        hybrid_plan,
+                        planning_objective.selection_score_vnd,
+                    )
                 )
         except Exception as exc:
-            worker_errors.append(f"Packing-aware ILS: {exc}")
+            worker_errors.append(f"Packing-aware Hybrid ALNS: {exc}")
 
         candidates, fully_served_count, diagnostics = select_ranked_candidates(
             evaluated_runs,

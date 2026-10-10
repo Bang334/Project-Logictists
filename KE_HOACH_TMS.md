@@ -180,6 +180,7 @@ Cổng khách hàng chưa thuộc bản đầu mặc định. Cần chốt ai đ
 
 - Một xe có thể chở nhiều kiện/hàng đồng thời; không ép một xe chỉ được nhận một kiện hoặc một đơn. Việc ghép đơn của nhiều khách vẫn cần xét tương thích và các điều kiện đơn liên quan.
 - Không xếp chồng: không đặt kiện này lên kiện khác. Không cho một cờ `stackable` của kiện tự mở lại khả năng xếp chồng.
+- Kiện chữ nhật được phép xoay trên mặt sàn theo bội số 90° (0°/90°/180°/270°). Không lật kiện để hoán đổi chiều cao; mô hình hiện tại không dùng góc chéo tùy ý ngoài các hướng vuông góc.
 - Các kiện không được chiếm cùng không gian hoặc vượt thùng. Mỗi kiện phải có đường đưa vào/lấy ra qua cửa phù hợp mà không va chạm với hàng còn trên xe.
 - Mỗi lần dỡ giải phóng đúng vùng kiện đó chiếm. Vùng trống được dùng cho lần pickup sau nếu hàng mới vừa vùng trống, lọt cửa, có đường thao tác và không chặn các lần giao tiếp theo.
 - Không cộng vùng trống rời rạc thành một ô liên tục giả. Không sử dụng chỗ của hàng chưa dỡ; không tự dịch chuyển các kiện còn lại trong mô hình chỉ để tạo chỗ trống.
@@ -199,7 +200,7 @@ Tổng thể tích nhỏ hơn thể tích thùng **không chứng minh** xếp v
 
 **Thay đổi so với v0.2:** bỏ phương án chỉ kiểm tra tải/thể tích/kiện riêng lẻ rồi dùng xác nhận thủ công thay thế kiểm tra bố trí trong optimizer. Tối ưu chuyến phải bao gồm các kiểm tra trên ngay khi bàn giao năng lực này; xác nhận xếp thực tế chỉ bổ sung bằng chứng, không hợp thức hóa phương án solver chưa kiểm tra.
 
-**Thiết kế đề xuất:** dùng bố trí mặt sàn một lớp kèm chiều cao từng kiện, vị trí/hướng cửa và kiểm tra đường thao tác. Chi tiết hình dạng kiện, pallet, hướng xoay, khoảng hở thao tác, thiết bị bốc/dỡ, chướng ngại cố định và mô hình ổn định tải/trọng tâm còn cần chốt. Không tự giả định đủ diện tích sàn là đủ thao tác.
+**Thiết kế đề xuất:** dùng bố trí mặt sàn một lớp kèm chiều cao từng kiện, vị trí/hướng cửa và kiểm tra đường thao tác. Hướng xoay kiện chữ nhật trên mặt sàn đã chốt theo bội số 90°; chi tiết hình dạng không chữ nhật, pallet, khoảng hở thao tác, thiết bị bốc/dỡ, chướng ngại cố định và mô hình ổn định tải/trọng tâm còn cần chốt. Không tự giả định đủ diện tích sàn là đủ thao tác.
 
 ### 6.6. Tài xế và ca làm việc
 
@@ -294,6 +295,9 @@ Tracking nền cần quyền và cấu hình ứng dụng; phải thử nghiệm
 - Giá cước/doanh thu cần chốt nguồn trước khi báo cáo lợi nhuận. Khi chưa có doanh thu, chỉ báo cáo chi phí.
 - Phân bổ chi phí chung theo phương pháp đã chọn như kg-km, thể tích-km hoặc quy tắc hợp đồng; tổng phân bổ phải khớp chi phí gốc.
 - Không tính hai lần lương/phụ cấp đã nằm trong đơn giá km và lại nhập riêng.
+- **Đã chốt:** lương cố định của đội tài xế vẫn phát sinh trong ngày tài xế không chạy. Khi xếp hạng phương án, optimizer thay phần lương cố định phân bổ theo phút chạy bằng lương lịch của toàn bộ tài xế ứng viên từ ngày bắt đầu đến ngày hoàn tất cuối cùng; nhờ đó kéo kế hoạch sang thêm ngày làm tăng điểm chi phí. Chi phí route vẫn giữ phần phân bổ theo thời gian hoạt động để truy vết và không bị cộng trùng vào điểm xếp hạng.
+- **Đã chốt:** giao càng muộn càng bất lợi trong objective. Khi chi nhánh chưa cấu hình khoản phạt tài chính, optimizer dùng penalty vận hành tách biệt để xếp hạng; penalty này không được trình bày như khoản phải trả khách hàng. Khi có policy phạt tài chính, dùng mức đã cấu hình và không cộng trùng penalty vận hành.
+- Phương án tốt nhất được xếp theo objective chung gồm chi phí vận hành, lương lịch và penalty trễ áp dụng; không chỉ sort theo tổng chi phí của các route. UI phải hiển thị riêng tổng chi phí vận hành và điểm xếp hạng.
 - Optimizer hiện hỗ trợ phụ trội nhiên liệu tuyến tính theo tỷ lệ tải của từng chặng và chi phí giữ hàng theo tấn-giờ. `fuelConsumptionLitersPer100Km` được hiểu là mức nền khi xe không chở hàng. Hai hệ số mới là policy cấu hình, mặc định `0` trên migration để không áp đặt số liệu kinh doanh chưa hiệu chuẩn; số trong seed chỉ phục vụ demo.
 
 ## 7. Danh mục business rule để phản hồi
@@ -648,7 +652,7 @@ Nếu ưu tiên đồ án thể hiện thuật toán, có thể đẩy P3 lên t
 | D08 | Đã chốt Mapbox vì người dùng có key | Còn kiểm chứng quyền API, dữ liệu tuyến, quota, chi phí và cấu hình token khi triển khai |
 | D09 | Giới hạn lịch/nghỉ/tăng ca | Policy được xác nhận; không hardcode con số suy đoán |
 | D10 | Hàng lạnh/nguy hiểm, trọng tâm và tải trục | Chốt phạm vi trước khi tuyên bố kiểm tra xe phù hợp |
-| D11 | Đã chốt nhiều hàng/xe, không chồng, xếp/dỡ không cản, tái sử dụng vùng trống; optimizer phải xét tất cả | Còn chốt hình học/hướng xoay/khoảng hở/thiết bị; kiểm tra bố trí động bắt buộc trong P3, không để tới P5 |
+| D11 | Đã chốt nhiều hàng/xe, không chồng, xếp/dỡ không cản, tái sử dụng vùng trống; kiện chữ nhật được xoay trên mặt sàn theo bội số 90° nhưng không lật; optimizer phải xét tất cả | Còn chốt hình học không chữ nhật/khoảng hở/thiết bị; kiểm tra bố trí động bắt buộc trong P3, không để tới P5 |
 | D12 | Tự publish hay dispatcher duyệt | Dispatcher duyệt, mọi bản chỉnh phải validate |
 | D13 | GPS, thiết bị, tần suất và lưu trữ | Điện thoại trước, benchmark pin/nền/mạng |
 | D14 | POD bắt buộc và giao một phần | Policy theo loại đơn, có bằng chứng và phần hàng còn lại |

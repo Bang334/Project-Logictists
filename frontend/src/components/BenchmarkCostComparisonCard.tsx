@@ -23,11 +23,9 @@ import {
   WarningOutlined,
 } from '@ant-design/icons';
 import { BenchmarkComparisonUI, BenchmarkMetricUI } from '../types';
+import { formatCurrency, formatDecimal } from '../utils/format';
 
 const { Text, Title, Paragraph } = Typography;
-
-const formatCurrency = (val: number) =>
-  new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(val);
 
 interface Props {
   benchmarks?: BenchmarkComparisonUI | null;
@@ -195,8 +193,8 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
           {savings_vs_direct_percent !== null ? (
             <Tag color={savings_vs_direct_percent >= 0 ? 'success' : 'warning'} icon={<SafetyCertificateOutlined />} style={{ padding: '4px 10px', fontSize: 13 }}>
               {savings_vs_direct_percent >= 0
-                ? `Tiết kiệm ${savings_vs_direct_percent}% so với Direct hợp lệ`
-                : `Cao hơn ${Math.abs(savings_vs_direct_percent)}% so với Direct hợp lệ`}
+                ? `Tiết kiệm ${formatDecimal(savings_vs_direct_percent)}% so với Direct hợp lệ`
+                : `Cao hơn ${formatDecimal(Math.abs(savings_vs_direct_percent))}% so với Direct hợp lệ`}
             </Tag>
           ) : (
             <Tag icon={<InfoCircleOutlined />} style={{ padding: '4px 10px', fontSize: 13 }}>
@@ -245,11 +243,11 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
             <Row gutter={8}>
               <Col span={8}>
                 <Text type="secondary" style={{ fontSize: 11 }}>Quãng đường</Text>
-                <div style={{ fontWeight: 600, color: '#1e293b' }}>{or_tools.total_distance_km} km</div>
+                <div style={{ fontWeight: 600, color: '#1e293b' }}>{formatDecimal(or_tools.total_distance_km)} km</div>
               </Col>
               <Col span={8}>
                 <Text type="secondary" style={{ fontSize: 11 }}>Thời gian</Text>
-                <div style={{ fontWeight: 600, color: '#1e293b' }}>{or_tools.total_duration_minutes} p</div>
+                <div style={{ fontWeight: 600, color: '#1e293b' }}>{formatDecimal(or_tools.total_duration_minutes)} p</div>
               </Col>
               <Col span={8}>
                 <Text type="secondary" style={{ fontSize: 11 }}>Lượt chuyến</Text>
@@ -305,11 +303,11 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
             <Row gutter={8}>
               <Col span={8}>
                 <Text type="secondary" style={{ fontSize: 11 }}>Quãng đường</Text>
-                <div style={{ fontWeight: 600, color: '#1e293b' }}>{direct_dedicated.total_distance_km} km</div>
+                <div style={{ fontWeight: 600, color: '#1e293b' }}>{formatDecimal(direct_dedicated.total_distance_km)} km</div>
               </Col>
               <Col span={8}>
                 <Text type="secondary" style={{ fontSize: 11 }}>Thời gian</Text>
-                <div style={{ fontWeight: 600, color: '#1e293b' }}>{direct_dedicated.total_duration_minutes} p</div>
+                <div style={{ fontWeight: 600, color: '#1e293b' }}>{formatDecimal(direct_dedicated.total_duration_minutes)} p</div>
               </Col>
               <Col span={8}>
                 <Text type="secondary" style={{ fontSize: 11 }}>Lượt chuyến</Text>
@@ -354,7 +352,7 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
               </Text>{' '}
               <Text strong style={{ color: savings_vs_direct_vnd >= 0 ? '#047857' : '#b45309', fontSize: 14 }}>
                 {savings_vs_direct_vnd >= 0 ? 'Tiết kiệm ' : 'Cao hơn '}
-                {formatCurrency(Math.abs(savings_vs_direct_vnd))} ({Math.abs(savings_vs_direct_percent)}%)
+                {formatCurrency(Math.abs(savings_vs_direct_vnd))} ({formatDecimal(Math.abs(savings_vs_direct_percent))}%)
               </Text>
             </div>
           ) : (

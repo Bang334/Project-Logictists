@@ -36,7 +36,11 @@ from .models import (
     UnassignedOrder,
     can_driver_drive_vehicle,
 )
-from .route_costing import calculate_driver_cost, calculate_route_economic_metrics
+from .route_costing import (
+    calculate_driver_cost,
+    calculate_late_delivery_penalty,
+    calculate_route_economic_metrics,
+)
 from .spatial_validator import SpatialValidator
 
 
@@ -74,10 +78,26 @@ class FastLIFOPackingChecker:
                     placed_boxes.append(placed)
 
             elif stop.stop_type == "DELIVERY":
-                for item_id in stop.items_unloaded:
-                    target_box = next((b for b in placed_boxes if b["id"] == item_id), None)
-                    if not target_box:
-                        continue
+                # Packages unloaded at the same stop may leave one by one.  The
+                # former input-order loop treated a nearer package from the same
+                # delivery as a permanent blocker and rejected most multi-item
+                # orders.  Remove door-nearest packages first, without moving any
+                # package that remains onboard after this stop.
+                onboard_ids = {box["id"] for box in placed_boxes}
+                missing_ids = [
+                    item_id
+                    for item_id in stop.items_unloaded
+                    if item_id not in onboard_ids
+                ]
+                if missing_ids:
+                    return False, "Dỡ kiện chưa có trên xe"
+                target_boxes = [
+                    box for box in placed_boxes if box["id"] in stop.items_unloaded
+                ]
+                target_boxes.sort(
+                    key=lambda box: box["x"] + box["l"], reverse=True
+                )
+                for target_box in target_boxes:
 
                     # LIFO door clearance: Check if path from rear door (x = bed_l) to target box is blocked
                     for other in placed_boxes:
@@ -87,8 +107,10 @@ class FastLIFOPackingChecker:
                             if not (other["y"] + other["w"] <= target_box["y"] + 0.01 or other["y"] >= target_box["y"] + target_box["w"] - 0.01):
                                 return False, "Bị hàng dỡ sau chặn lối ra cửa đuôi"
 
-                    placed_boxes = [b for b in placed_boxes if b["id"] != item_id]
-                    item = cargo_by_id.get(item_id)
+                    placed_boxes = [
+                        box for box in placed_boxes if box["id"] != target_box["id"]
+                    ]
+                    item = cargo_by_id.get(target_box["id"])
                     if item:
                         onboard_weight = max(0.0, onboard_weight - item.weight_kg)
 
@@ -170,7 +192,9 @@ class ALNSFleetOptimizer:
         }
 
         self.checkers = [FastLIFOPackingChecker(v) for v in self.vehicles]
-        self._packing_cache: Dict[Tuple[str, Tuple[Tuple[str, str], ...]], bool] = {}
+        self._packing_cache: Dict[
+            Tuple[Tuple[object, ...], Tuple[Tuple[str, str], ...]], bool
+        ] = {}
 
     def _stop_node_index(self, stop: ScheduledStop) -> Optional[int]:
         """Resolve a stop to its exact matrix node, even when locations repeat."""
@@ -216,8 +240,16 @@ class ALNSFleetOptimizer:
                 return None
 
             arrival = round(current_time)
-            travel_seconds = max(0, round(travel_time))
-            waiting_seconds = max(0, arrival - round(leg_start) - travel_seconds)
+            leg_elapsed_seconds = max(0, arrival - round(leg_start))
+            # Matrix durations may contain half seconds. Rounding the absolute
+            # arrival and the duration independently can differ by one second
+            # (Python uses round-to-even), so decompose the already-rounded
+            # leg elapsed time to keep the public timeline contract exact.
+            travel_seconds = min(
+                leg_elapsed_seconds,
+                max(0, round(travel_time)),
+            )
+            waiting_seconds = leg_elapsed_seconds - travel_seconds
             departure = arrival + order.service_time_sec
             if departure > vehicle.available_end_sec:
                 return None
@@ -248,8 +280,19 @@ class ALNSFleetOptimizer:
     def _validate_stops_cached(self, v_idx: int, cand_stops: List[ScheduledStop]) -> bool:
         v = self.vehicles[v_idx]
         cache_key = (
-            v.id,
-            tuple((st.order_id, st.stop_type) for st in cand_stops if st.order_id),
+            (
+                v.length_cm,
+                v.width_cm,
+                v.height_cm,
+                v.payload_limit_kg,
+                v.door_position,
+                v.door_width_cm,
+            ),
+            tuple(
+                (st.allocation_id or st.order_id or "", st.stop_type)
+                for st in cand_stops
+                if st.allocation_id or st.order_id
+            ),
         )
         if cache_key in self._packing_cache:
             return self._packing_cache[cache_key]
@@ -326,6 +369,7 @@ class ALNSFleetOptimizer:
         order: OrderPair,
         p_pos: int,
         d_pos: int,
+        check_packing: bool = True,
     ) -> Tuple[bool, List[ScheduledStop]]:
         v = self.vehicles[v_idx]
 
@@ -386,12 +430,15 @@ class ALNSFleetOptimizer:
             if w > v.payload_limit_kg + 0.01:
                 return False, []
 
-        # 2. Packing & LIFO door clearance check
-        if not self._validate_stops_cached(v_idx, cand_stops):
+        # 2. Reject cheap temporal failures before the more expensive packing
+        # check. Multi-day snapshots contain many vehicle-day copies that cannot
+        # serve a given order, so the former order wasted most of the ALNS budget
+        # packing routes that the schedule would reject immediately.
+        if self._schedule_stops(v_idx, cand_stops) is None:
             return False, []
 
-        # 3. Time windows, vehicle availability and return-to-depot feasibility.
-        if self._schedule_stops(v_idx, cand_stops) is None:
+        # 3. Packing & LIFO door clearance check.
+        if check_packing and not self._validate_stops_cached(v_idx, cand_stops):
             return False, []
 
         return True, cand_stops
@@ -402,6 +449,7 @@ class ALNSFleetOptimizer:
         unassigned_ids: List[str],
         start_time: Optional[float] = None,
         randomize: bool = True,
+        deadline: Optional[float] = None,
     ) -> Tuple[List[List[ScheduledStop]], List[str]]:
         still_unassigned = []
         orders_to_insert = [self.order_by_id[oid] for oid in unassigned_ids]
@@ -418,9 +466,12 @@ class ALNSFleetOptimizer:
                     ),
                 ),
                 reverse=True,
-            )
+        )
 
         for order in orders_to_insert:
+            if deadline is not None and time.perf_counter() >= deadline:
+                still_unassigned.append(order.id)
+                continue
             if start_time is not None and time.perf_counter() - start_time >= self.time_limit_sec:
                 still_unassigned.append(order.id)
                 continue
@@ -588,8 +639,28 @@ class ALNSFleetOptimizer:
         # 3. Post-process & Format Final Response
         return self._build_final_response(best_routes, best_unassigned)
 
+    def _validate_spatial_actions(
+        self,
+        vehicle_index: int,
+        actions: List[StopAction],
+        max_time_seconds: Optional[float] = None,
+    ) -> SpatialValidationResult:
+        validator_kwargs = (
+            {"max_time_seconds": max_time_seconds}
+            if max_time_seconds is not None
+            else {}
+        )
+        return SpatialValidator(
+            self.vehicles[vehicle_index], **validator_kwargs
+        ).validate_plan(actions)
+
     def _build_final_response(
-        self, routes_stops: List[List[ScheduledStop]], unassigned_ids: List[str]
+        self,
+        routes_stops: List[List[ScheduledStop]],
+        unassigned_ids: List[str],
+        *,
+        include_benchmarks: bool = True,
+        spatial_time_budget_seconds: Optional[float] = None,
     ) -> FleetOptimizationResponse:
         optimized_routes: List[OptimizedRoute] = []
         total_dist_km = 0.0
@@ -603,13 +674,55 @@ class ALNSFleetOptimizer:
         for v in self.vehicles:
             nodes.append({"id": v.depot.id, "latitude": v.depot.latitude, "longitude": v.depot.longitude})
         for o in self.orders:
-            nodes.append({"id": o.pickup_location.id, "latitude": o.pickup_location.latitude, "longitude": o.pickup_location.longitude})
-            nodes.append({"id": o.delivery_location.id, "latitude": o.delivery_location.latitude, "longitude": o.delivery_location.longitude})
+            nodes.append(
+                {
+                    "id": o.pickup_location.id,
+                    "latitude": o.pickup_location.latitude,
+                    "longitude": o.pickup_location.longitude,
+                    "order": o,
+                }
+            )
+            nodes.append(
+                {
+                    "id": o.delivery_location.id,
+                    "latitude": o.delivery_location.latitude,
+                    "longitude": o.delivery_location.longitude,
+                    "order": o,
+                }
+            )
+
+        spatial_deadline = (
+            time.perf_counter() + spatial_time_budget_seconds
+            if spatial_time_budget_seconds is not None
+            else None
+        )
+        remaining_route_count = sum(bool(stops) for stops in routes_stops)
 
         for v_idx, stops in enumerate(routes_stops):
             if not stops:
                 continue
             v = self.vehicles[v_idx]
+            route_order_ids = {
+                stop.allocation_id or stop.order_id
+                for stop in stops
+                if stop.stop_type == "PICKUP"
+                and (stop.allocation_id or stop.order_id)
+            }
+            disallowed_order_ids = [
+                order_id
+                for order_id in route_order_ids
+                if order_id in self.order_by_id
+                and not self._order_allows_vehicle(
+                    self.order_by_id[order_id], v
+                )
+            ]
+            if disallowed_order_ids:
+                final_unassigned_ids.extend(disallowed_order_ids)
+                diagnostics.append(
+                    f"Bộ tìm kiếm loại tuyến {v.plate_number} vì có đơn "
+                    "không cho phép xe vật lý này."
+                )
+                continue
             schedule_result = self._schedule_stops(v_idx, stops)
             if schedule_result is None:
                 final_unassigned_ids.extend(
@@ -619,7 +732,7 @@ class ALNSFleetOptimizer:
                     and (stop.allocation_id or stop.order_id)
                 )
                 diagnostics.append(
-                    f"ILS loại tuyến {v.plate_number} vì không còn thỏa time window/ca xe khi kiểm tra cuối."
+                    f"Bộ tìm kiếm loại tuyến {v.plate_number} vì không còn thỏa time window/ca xe khi kiểm tra cuối."
                 )
                 continue
             scheduled_stops, route_end_sec, return_travel_sec = schedule_result
@@ -665,7 +778,13 @@ class ALNSFleetOptimizer:
                 )
                 formatted_stops.append(f_stop)
 
-                action_items_load = [self.cargo_by_id[it_id] for it_id in st.items_loaded if it_id in self.cargo_by_id]
+                action_items_load = [
+                    self.cargo_by_id[item_id].model_copy(
+                        update={"can_rotate": True}
+                    )
+                    for item_id in st.items_loaded
+                    if item_id in self.cargo_by_id
+                ]
                 stop_actions.append(
                     StopAction(
                         stop_id=st.location_id,
@@ -680,13 +799,46 @@ class ALNSFleetOptimizer:
                 )
 
             route_dist_km = self._calc_route_distance_km(v_idx, formatted_stops)
+            first_stop = formatted_stops[0]
+            route_start_sec = max(
+                v.available_start_sec,
+                first_stop.arrival_time_sec - first_stop.travel_time_sec,
+            )
+            # A route starts just in time when the first time window would
+            # otherwise make the vehicle wait at the customer.  Move that wait
+            # to the depot consistently: keeping the original stop waiting
+            # would double-count it and violate the response timeline contract
+            # (arrival - previous departure = travel + waiting).
+            first_stop_waiting_sec = max(
+                0,
+                first_stop.arrival_time_sec
+                - route_start_sec
+                - first_stop.travel_time_sec,
+            )
+            if first_stop_waiting_sec != first_stop.waiting_time_sec:
+                formatted_stops[0] = first_stop.model_copy(
+                    update={"waiting_time_sec": first_stop_waiting_sec}
+                )
             route_dur_min = round(
-                (route_end_sec - v.available_start_sec) / 60.0, 1
+                (route_end_sec - route_start_sec) / 60.0, 1
             )
 
             # Spatial validation using production validator
-            validator = SpatialValidator(v)
-            spatial_res = validator.validate_plan(stop_actions)
+            spatial_route_budget = None
+            if spatial_deadline is not None:
+                remaining_seconds = max(
+                    0.01, spatial_deadline - time.perf_counter()
+                )
+                spatial_route_budget = max(
+                    0.01,
+                    remaining_seconds / max(1, remaining_route_count),
+                )
+            spatial_res = self._validate_spatial_actions(
+                v_idx,
+                stop_actions,
+                max_time_seconds=spatial_route_budget,
+            )
+            remaining_route_count -= 1
             if not spatial_res.is_valid:
                 final_unassigned_ids.extend(
                     stop.allocation_id or stop.order_id
@@ -695,18 +847,25 @@ class ALNSFleetOptimizer:
                     and (stop.allocation_id or stop.order_id)
                 )
                 diagnostics.append(
-                    f"ILS loại tuyến {v.plate_number}: "
+                    f"Bộ tìm kiếm loại tuyến {v.plate_number}: "
                     f"{spatial_res.error_message or spatial_res.violation_code or 'bố trí không hợp lệ'}."
                 )
                 continue
 
-            fuel_cost, holding_cost, late_penalty, ton_km, ton_hrs = calculate_route_economic_metrics(
+            base_fuel, load_fuel, holding_cost, ton_km, ton_hrs = calculate_route_economic_metrics(
                 self.request, nodes, order_by_id, v, formatted_stops
             )
-
-            liters = (v.fuel_consumption_liters_per_100_km / 100.0) * route_dist_km
-            base_fuel = round(liters * self.policy.fuel_price_per_liter_vnd)
-            load_fuel = max(0, fuel_cost - base_fuel)
+            fuel_cost = base_fuel + load_fuel
+            late_penalty = sum(
+                calculate_late_delivery_penalty(
+                    order_by_id[stop.allocation_id or stop.order_id],
+                    stop.arrival_time_sec,
+                    self.policy,
+                )
+                for stop in formatted_stops
+                if stop.stop_type == "DELIVERY"
+                and (stop.allocation_id or stop.order_id) in order_by_id
+            )
 
             cost_bd = RouteCostBreakdown(
                 base_fuel_cost_vnd=base_fuel,
@@ -729,7 +888,7 @@ class ALNSFleetOptimizer:
                 vehicle_length_cm=v.length_cm,
                 vehicle_width_cm=v.width_cm,
                 service_day_index=v.service_day_index,
-                start_time_sec=v.available_start_sec,
+                start_time_sec=route_start_sec,
                 end_time_sec=route_end_sec,
                 total_distance_km=round(route_dist_km, 2),
                 total_duration_minutes=route_dur_min,
@@ -776,17 +935,18 @@ class ALNSFleetOptimizer:
 
         # 5. Compute Direct Dedicated Baseline Comparison
         benchmarks = None
-        try:
-            calc = BaselineCostCalculator(self.request, nodes)
-            benchmarks = calc.build_comparison(
-                optimized_routes,
-                total_cost_vnd,
-                total_dist_km,
-                total_dur_min,
-                ortools_is_feasible=(status_str == "SUCCESS"),
-            )
-        except Exception as error:
-            diagnostics.append(f"Không tính được benchmark ILS: {error}")
+        if include_benchmarks:
+            try:
+                calc = BaselineCostCalculator(self.request, nodes)
+                benchmarks = calc.build_comparison(
+                    optimized_routes,
+                    total_cost_vnd,
+                    round(total_dist_km, 2),
+                    round(total_dur_min, 2),
+                    ortools_is_feasible=(status_str == "SUCCESS"),
+                )
+            except Exception as error:
+                diagnostics.append(f"Không tính được benchmark phương án: {error}")
 
         return FleetOptimizationResponse(
             job_id=self.request.job_id,
@@ -794,7 +954,7 @@ class ALNSFleetOptimizer:
             routes=optimized_routes,
             unassigned_orders=unassigned_objects,
             total_distance_km=round(total_dist_km, 2),
-            total_duration_minutes=round(total_dur_min, 1),
+            total_duration_minutes=round(total_dur_min, 2),
             total_cost_vnd=total_cost_vnd,
             benchmarks=benchmarks,
             diagnostics=diagnostics

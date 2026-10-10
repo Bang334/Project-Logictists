@@ -21,6 +21,7 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:postgres": "node scripts/require-test-database.cjs && jest --runInBand --testPathPattern=.postgres.spec.ts",
+    "test-data:orders-today": "node scripts/refresh-order-dates-today.cjs --confirm",
     "prisma:migrate:status": "prisma migrate status"
   },
   "dependencies": {

@@ -43,6 +43,7 @@ import {
 import MapboxMap from '../components/MapboxMap';
 import FloorPackingVisualizer from '../components/FloorPackingVisualizer';
 import { MapLocationPickerModal } from '../components/MapLocationPickerModal';
+import { formatDecimal } from '../utils/format';
 
 const { Title, Text } = Typography;
 
@@ -291,7 +292,7 @@ const DispatchPage: React.FC = () => {
       if (res.data.status === 'SUCCESS') {
         setOrderedStopIds(res.data.stops.map((stop) => stop.location_id));
         message.success(
-          `Google OR-Tools đã tối ưu thành công! Cự ly: ${res.data.total_distance_km} km, thời gian: ${res.data.total_duration_minutes} phút, xếp dỡ 2D hợp lệ.`
+          `Google OR-Tools đã tối ưu thành công! Cự ly: ${formatDecimal(res.data.total_distance_km)} km, thời gian: ${formatDecimal(res.data.total_duration_minutes)} phút, xếp dỡ 2D hợp lệ.`
         );
       } else {
         message.warning(`Kết quả tối ưu: ${res.data.status}`);
@@ -892,8 +893,8 @@ const DispatchPage: React.FC = () => {
                     <strong>{t.assignments[0]?.driver.fullName}</strong>
                   </div>
                   <div style={{ display: 'flex', gap: '16px', fontSize: '12px', color: '#64748b', marginTop: '6px' }}>
-                    <span>Cự ly Mapbox: <strong>{t.totalDistanceKm} km</strong></span>
-                    <span>Thời gian: <strong>{t.totalDurationMinutes} phút</strong></span>
+                    <span>Cự ly Mapbox: <strong>{formatDecimal(t.totalDistanceKm)} km</strong></span>
+                    <span>Thời gian: <strong>{formatDecimal(t.totalDurationMinutes)} phút</strong></span>
                     <span>Số chặng: <strong>{t.stops.length} điểm</strong></span>
                   </div>
                 </div>
@@ -913,8 +914,8 @@ const DispatchPage: React.FC = () => {
                     <Tag color="blue">{orderedStopIds.length} điểm dừng</Tag>
                     {draftRouteStats && (
                       <>
-                        <Tag color="green">~{draftRouteStats.distanceKm} km</Tag>
-                        <Tag color="purple">~{draftRouteStats.durationMinutes} phút</Tag>
+                        <Tag color="green">~{formatDecimal(draftRouteStats.distanceKm)} km</Tag>
+                        <Tag color="purple">~{formatDecimal(draftRouteStats.durationMinutes)} phút</Tag>
                       </>
                     )}
                     <Button
@@ -934,8 +935,8 @@ const DispatchPage: React.FC = () => {
                     Bản Đồ Lộ Trình Mapbox — Chuyến <strong>{activeTrip.tripNumber}</strong>
                   </span>
                   <Space wrap>
-                    <Tag color="blue">{activeTrip.totalDistanceKm} km</Tag>
-                    <Tag color="purple">~{activeTrip.totalDurationMinutes} phút</Tag>
+                    <Tag color="blue">{formatDecimal(activeTrip.totalDistanceKm)} km</Tag>
+                    <Tag color="purple">~{formatDecimal(activeTrip.totalDurationMinutes)} phút</Tag>
                     <Button
                       type={enableSim ? 'default' : 'primary'}
                       size="small"

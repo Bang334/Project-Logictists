@@ -40,7 +40,7 @@ def health():
     return {
         "status": "ok",
         "service": "optimizer",
-        "engine": "Google OR-Tools multi-start + Packing-aware ILS + Dynamic 2D Spatial Validator",
+        "engine": "Google OR-Tools multi-start + Packing-aware Hybrid ALNS + Dynamic 2D Spatial Validator",
     }
 
 @app.post("/validate-spatial", response_model=SpatialValidationResult)

@@ -23,12 +23,16 @@ from .models import (
 )
 from .spatial_validator import SpatialValidator
 from .baseline_calculator import BaselineCostCalculator
-from .ils_engine import PackingAwareILSOptimizer
+from .hybrid_alns_engine import PackingAwareHybridALNSOptimizer
 from .route_costing import (
     build_route_cost_breakdown,
     calculate_driver_cost,
     calculate_route_economic_metrics,
     late_delivery_daily_penalty,
+)
+from .planning_objective import (
+    apply_planning_objective,
+    operational_late_daily_weight_vnd,
 )
 from .route_draft import RouteDraft
 from .search_policy import SearchProgressTracker
@@ -67,6 +71,7 @@ class FleetRoutingSolver:
         routing_budget_share: float = ROUTING_BUDGET_SHARE,
         validation_budget_share: float = VALIDATION_BUDGET_SHARE,
         consolidation_budget_share: float = CONSOLIDATION_BUDGET_SHARE,
+        enable_hybrid_fallback: bool = True,
     ):
         self.request = request
         self.search_strategy = search_strategy
@@ -91,6 +96,7 @@ class FleetRoutingSolver:
         self.routing_budget_share = float(routing_budget_share)
         self.validation_budget_share = float(validation_budget_share)
         self.consolidation_budget_share = float(consolidation_budget_share)
+        self.enable_hybrid_fallback = enable_hybrid_fallback
         self.vehicle_count = len(request.vehicles)
         self.nodes = self._build_nodes()
         self.order_by_id = {order.id: order for order in request.orders}
@@ -441,7 +447,7 @@ class FleetRoutingSolver:
     ) -> FleetOptimizationResponse:
         total_distance_km = round(sum(route.total_distance_km for route in routes), 2)
         total_duration_minutes = round(
-            sum(route.total_duration_minutes for route in routes), 1
+            sum(route.total_duration_minutes for route in routes), 2
         )
         total_cost_vnd = sum(
             route.cost.total_cost_vnd for route in routes if route.cost is not None
@@ -625,35 +631,42 @@ class FleetRoutingSolver:
             extra_diagnostics=search_diagnostics,
         )
 
-        # Packing-aware ILS fallback: only replace the OR-Tools result with a
+        # Packing-aware Hybrid ALNS fallback: only replace the OR-Tools result with a
         # production-validated plan that serves more orders (or repairs a
         # spatially invalid result at the same service level).
-        needs_ils = (
+        needs_hybrid = (
             len(plan.unassigned_orders) > 0
             or not plan.routes
             or any(not r.spatial_validation.is_valid for r in plan.routes)
         )
-        if needs_ils:
+        if needs_hybrid and self.enable_hybrid_fallback:
             try:
-                ils = PackingAwareILSOptimizer(
-                    self.request,
-                    time_budget_seconds=min(self.time_budget_seconds, 6.0),
+                hybrid_budget_seconds = min(
+                    self.time_budget_seconds,
+                    max(6.0, self.time_budget_seconds * 0.25),
+                    20.0,
                 )
-                ils_plan = ils.solve()
-                ils_served = len(self.request.orders) - len(ils_plan.unassigned_orders)
+                hybrid = PackingAwareHybridALNSOptimizer(
+                    self.request,
+                    time_budget_seconds=hybrid_budget_seconds,
+                    initial_plan=plan,
+                )
+                hybrid_plan = hybrid.solve()
+                hybrid_served = len(self.request.orders) - len(hybrid_plan.unassigned_orders)
                 ortools_served = len(self.request.orders) - len(plan.unassigned_orders)
-                ils_all_valid = all(r.spatial_validation.is_valid for r in ils_plan.routes) if ils_plan.routes else False
+                hybrid_all_valid = all(r.spatial_validation.is_valid for r in hybrid_plan.routes) if hybrid_plan.routes else False
                 ortools_all_valid = all(r.spatial_validation.is_valid for r in plan.routes) if plan.routes else False
 
-                if (ils_served > ortools_served) or (
-                    ils_served == ortools_served
-                    and ils_all_valid
+                if (hybrid_served > ortools_served) or (
+                    hybrid_served == ortools_served
+                    and hybrid_all_valid
                     and not ortools_all_valid
                 ):
-                    plan = ils_plan
+                    plan = hybrid_plan
             except Exception as error:
-                plan.diagnostics.append(f"Packing-aware ILS fallback lỗi: {error}")
+                plan.diagnostics.append(f"Packing-aware Hybrid ALNS fallback lỗi: {error}")
 
+        apply_planning_objective(self.request, plan)
         return plan, int(solution.ObjectiveValue())
 
     def _build_routing_model(
@@ -895,6 +908,10 @@ class FleetRoutingSolver:
             daily_late_penalty = late_delivery_daily_penalty(
                 order, self.request.policy
             )
+            if daily_late_penalty <= 0:
+                daily_late_penalty = operational_late_daily_weight_vnd(
+                    self.request
+                )
             late_penalty_per_second = round(
                 daily_late_penalty * OBJECTIVE_COST_SCALE / 86_400
             )
@@ -1284,7 +1301,7 @@ class FleetRoutingSolver:
             else "INFEASIBLE"
         )
         total_dist_km = round(sum(route.total_distance_km for route in routes), 2)
-        total_dur_min = round(sum(route.total_duration_minutes for route in routes), 1)
+        total_dur_min = round(sum(route.total_duration_minutes for route in routes), 2)
         total_cost_vnd = sum(route.cost.total_cost_vnd for route in routes if route.cost)
 
         benchmarks = None

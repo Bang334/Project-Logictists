@@ -272,7 +272,7 @@ class BaselineCostCalculator:
                 sum(route.distance_meters for route, _, _ in chosen) / 1000, 2
             ),
             total_duration_minutes=round(
-                sum(route.duration_seconds for route, _, _ in chosen) / 60, 1
+                sum(route.duration_seconds for route, _, _ in chosen) / 60, 2
             ),
             vehicles_used=len(chosen),
             fuel_cost_vnd=fuel,
@@ -291,7 +291,7 @@ class BaselineCostCalculator:
         if not baseline.is_feasible or baseline.total_cost_vnd <= 0:
             return None, None
         difference = baseline.total_cost_vnd - optimized_cost
-        return difference, round(difference / baseline.total_cost_vnd * 100, 1)
+        return difference, round(difference / baseline.total_cost_vnd * 100, 2)
 
     def build_comparison(
         self,
@@ -325,8 +325,8 @@ class BaselineCostCalculator:
             method_name="Google OR-Tools Metaheuristic",
             description="Nghiệm khả thi tốt nhất tìm thấy trong giới hạn thời gian",
             total_cost_vnd=ortools_total_cost_vnd,
-            total_distance_km=ortools_total_distance_km,
-            total_duration_minutes=ortools_total_duration_minutes,
+            total_distance_km=round(ortools_total_distance_km, 2),
+            total_duration_minutes=round(ortools_total_duration_minutes, 2),
             vehicles_used=len(ortools_routes),
             fuel_cost_vnd=ortools_fuel,
             vehicle_fixed_cost_vnd=ortools_fixed,

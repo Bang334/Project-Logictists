@@ -93,6 +93,7 @@ import {
   resolveSearchBudgetSeconds,
   SearchBudgetPreset,
 } from '../utils/optimizationSearchBudget';
+import { formatDecimal } from '../utils/format';
 
 const { Text } = Typography;
 const currency = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' });
@@ -1179,7 +1180,7 @@ const AutomaticDispatchPage: React.FC = () => {
               >
                 <div style={{ fontSize: 11, color: '#64748b' }}>Quãng đường</div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
-                  {route.total_distance_km} km
+                  {formatDecimal(route.total_distance_km)} km
                 </div>
               </div>
               <div
@@ -1193,7 +1194,7 @@ const AutomaticDispatchPage: React.FC = () => {
               >
                 <div style={{ fontSize: 11, color: '#64748b' }}>Thời gian</div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
-                  {route.total_duration_minutes} phút
+                  {formatDecimal(route.total_duration_minutes)} phút
                 </div>
               </div>
               <div
@@ -1382,7 +1383,7 @@ const AutomaticDispatchPage: React.FC = () => {
                 <Col span={12}>
                   <span style={{ color: '#64748b' }}>Thời gian lái xe:</span>
                   <div>
-                    <b>{schedule.drivingDuration}</b> ({route.total_distance_km} km)
+                    <b>{schedule.drivingDuration}</b> ({formatDecimal(route.total_distance_km)} km)
                   </div>
                 </Col>
                 <Col span={12}>
@@ -2717,7 +2718,7 @@ const AutomaticDispatchPage: React.FC = () => {
                   type="success"
                   showIcon
                   message={`Đã ghi lại ${optimization.candidates.length} phương án tối ưu giao đủ 100% đơn`}
-                  description="Các phương án được trích xuất từ các lượt chạy OR-Tools độc lập song song (khác chiến lược). #1 là phương án có chi phí vận hành thấp nhất."
+                  description="Phương án #1 có điểm xếp hạng thấp nhất: chi phí vận hành, lương cố định của toàn đội trong suốt lịch và penalty vận hành cho đơn trễ. Penalty vận hành không phải khoản phạt tài chính khách hàng."
                   style={{ marginBottom: 12 }}
                 />
               )}
@@ -2758,13 +2759,31 @@ const AutomaticDispatchPage: React.FC = () => {
                     render: (value: number) => <Text strong>{currency.format(value)}</Text>,
                   },
                   {
+                    title: 'Điểm xếp hạng',
+                    dataIndex: 'solverObjective',
+                    render: (value: number, candidate) => (
+                      <Tooltip
+                        title={`Lịch ${candidate.planningSpanDays} ngày · Lương lịch ${currency.format(candidate.driverCalendarSalaryVnd)} · Lương thời gian rảnh ${currency.format(candidate.driverIdleSalaryAllocationVnd)} · Penalty trễ vận hành ${currency.format(candidate.operationalLatePenaltyVnd)}`}
+                      >
+                        <Space direction="vertical" size={0}>
+                          <Text strong>{currency.format(value)}</Text>
+                          <Text type="secondary" style={{ fontSize: 12 }}>
+                            {candidate.planningSpanDays > 0
+                              ? `Hoàn tất trong ${candidate.planningSpanDays} ngày`
+                              : 'Kết quả cũ chưa có breakdown'}
+                          </Text>
+                        </Space>
+                      </Tooltip>
+                    ),
+                  },
+                  {
                     title: 'Chênh với #1',
                     render: (_, candidate) => {
                       if (candidate.unassignedOrderCount > 0) {
                         return <Text type="secondary">—</Text>;
                       }
-                      const best = optimization.candidates[0]?.totalCostVnd ?? candidate.totalCostVnd;
-                      const diff = candidate.totalCostVnd - best;
+                      const best = optimization.candidates[0]?.solverObjective ?? candidate.solverObjective;
+                      const diff = candidate.solverObjective - best;
                       return diff === 0 ? '0 đ' : `+${currency.format(diff)}`;
                     },
                   },
@@ -2913,8 +2932,8 @@ const AutomaticDispatchPage: React.FC = () => {
                         </Tag>
                         <Text>Khởi hành: <b>{formatRouteStart(selectedRouteInfo)}</b></Text>
                         <Text>Tài xế: <b>{selectedRouteInfo.driver_name}</b></Text>
-                        <Text>Quãng đường: <b>{selectedRouteInfo.total_distance_km} km</b></Text>
-                        <Text>Thời gian: <b>{selectedRouteInfo.total_duration_minutes} phút</b></Text>
+                        <Text>Quãng đường: <b>{formatDecimal(selectedRouteInfo.total_distance_km)} km</b></Text>
+                        <Text>Thời gian: <b>{formatDecimal(selectedRouteInfo.total_duration_minutes)} phút</b></Text>
                         <Text>Điểm dừng: <b>{selectedRouteInfo.stops.length} điểm</b></Text>
                         <Text>Chi phí: <b>{currency.format(selectedRouteInfo.cost?.total_cost_vnd || 0)}</b></Text>
                       </Space>

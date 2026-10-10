@@ -93,6 +93,42 @@ describe('assertFleetOptimizationResult', () => {
     expect(() => assertFleetOptimizationResult(validResult())).not.toThrow();
   });
 
+  it('accepts a consistent planning objective breakdown', () => {
+    const result = {
+      ...validResult(),
+      planning_objective: {
+        planning_span_days: 3,
+        operating_cost_vnd: 300,
+        driver_active_salary_allocation_vnd: 40,
+        driver_calendar_salary_vnd: 100,
+        driver_idle_salary_allocation_vnd: 60,
+        operational_late_penalty_vnd: 25,
+        selection_score_vnd: 385,
+      },
+    };
+
+    expect(() => assertFleetOptimizationResult(result)).not.toThrow();
+  });
+
+  it('rejects an internally inconsistent planning objective breakdown', () => {
+    const result = {
+      ...validResult(),
+      planning_objective: {
+        planning_span_days: 3,
+        operating_cost_vnd: 300,
+        driver_active_salary_allocation_vnd: 40,
+        driver_calendar_salary_vnd: 100,
+        driver_idle_salary_allocation_vnd: 59,
+        operational_late_penalty_vnd: 25,
+        selection_score_vnd: 385,
+      },
+    };
+
+    expect(() => assertFleetOptimizationResult(result)).toThrow(
+      'breakdown lương tài xế không khớp',
+    );
+  });
+
   it('rejects a response that omits a load-sensitive cost field', () => {
     const result = validResult();
     delete (result.routes[0].cost as Partial<typeof result.routes[0]['cost']>)
@@ -230,7 +266,7 @@ describe('assertFleetOptimizationBatchResult', () => {
     );
   });
 
-  it('rejects candidates not sorted by total cost ascending', () => {
+  it('accepts higher operating cost when the shared planning objective is lower', () => {
     const res1 = validResult();
     res1.total_cost_vnd = 2_000_000;
     const res2 = validResult();
@@ -258,8 +294,36 @@ describe('assertFleetOptimizationBatchResult', () => {
       ],
     };
 
+    expect(() => assertFleetOptimizationBatchResult(batch)).not.toThrow();
+  });
+
+  it('rejects candidates not sorted by the shared planning objective', () => {
+    const res1 = validResult();
+    const res2 = validResult();
+    const batch = {
+      job_id: 'job-1',
+      solver_run_count: 6,
+      fully_served_candidate_count: 2,
+      candidates: [
+        {
+          rank: 1,
+          search_strategy: 'Strategy 1',
+          solver_objective: 90,
+          is_best_found: true,
+          result: res1,
+        },
+        {
+          rank: 2,
+          search_strategy: 'Strategy 2',
+          solver_objective: 80,
+          is_best_found: false,
+          result: res2,
+        },
+      ],
+    };
+
     expect(() => assertFleetOptimizationBatchResult(batch)).toThrow(
-      'chưa được sắp xếp theo tổng chi phí tăng dần',
+      'chưa được sắp xếp theo objective tăng dần',
     );
   });
 });

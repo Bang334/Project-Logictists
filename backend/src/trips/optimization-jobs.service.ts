@@ -31,6 +31,10 @@ type CandidateSummary = {
   searchStrategy?: string;
   improvementSequence: number;
   solverObjective: number;
+  planningSpanDays: number;
+  driverCalendarSalaryVnd: number;
+  driverIdleSalaryAllocationVnd: number;
+  operationalLatePenaltyVnd: number;
   isBestFound: boolean;
   feasibilityStatus: string;
   totalCostVnd: number;
@@ -475,6 +479,14 @@ export class OptimizationJobsService {
       searchStrategy: typeof objective.searchStrategy === 'string' ? objective.searchStrategy : 'Nghiệm trung gian (cũ)',
       improvementSequence: Number(objective.improvementSequence ?? result.candidateNumber),
       solverObjective: Number(objective.solverObjective ?? 0),
+      planningSpanDays: Number(objective.planningSpanDays ?? 0),
+      driverCalendarSalaryVnd: Number(objective.driverCalendarSalaryVnd ?? 0),
+      driverIdleSalaryAllocationVnd: Number(
+        objective.driverIdleSalaryAllocationVnd ?? 0,
+      ),
+      operationalLatePenaltyVnd: Number(
+        objective.operationalLatePenaltyVnd ?? 0,
+      ),
       isBestFound: objective.isBestFound === true,
       feasibilityStatus: result.feasibilityStatus,
       totalCostVnd: Number(objective.totalCostVnd ?? 0),
