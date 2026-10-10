@@ -18,6 +18,9 @@ const trip = z.object({
   version: z.number().int().positive(),
   plannedStartTime: z.string().datetime(),
   plannedEndTime: z.string().datetime(),
+  actualStartTime: nullableDate,
+  actualEndTime: nullableDate,
+  executionSnapshot: z.object({ id: z.string(), sourceTripVersion: z.number().int().positive() }).nullable(),
   vehicle: z.object({
     id: z.string(),
     plateNumber: z.string(),
@@ -58,11 +61,17 @@ export const detailSchema = assignment.extend({
         contactPhone: z.string().nullable(),
         plannedArrivalTime: nullableDate,
         plannedDepartureTime: nullableDate,
+        actualArrivalTime: nullableDate,
+        actualDepartureTime: nullableDate,
+        status: z.enum(["PENDING", "ARRIVED", "COMPLETED", "SKIPPED"]),
+        pickupSummary: z.object({ plannedCount: z.number().int().positive(), loadedCount: z.number().int().nonnegative(), outcome: z.enum(["FULL", "PARTIAL", "NONE"]) }).nullable().default(null),
         tasks: z.array(
           z.object({
             id: z.string(),
             action: z.enum(["LOAD", "UNLOAD"]),
             plannedQuantity: z.number(),
+            actualQuantity: z.number().int().nonnegative().nullable().default(null),
+            pickup: z.object({ outcome: z.enum(["LOADED", "NOT_COLLECTED"]), reason: z.string().nullable(), occurredAt: z.string().datetime() }).nullable().default(null),
             allocationId: z.string().nullable(),
             description: z.string().nullable(),
             order: z
@@ -100,5 +109,20 @@ export const responseSchema = z.object({
   respondedAt: z.string().datetime(),
 });
 export type Profile = z.infer<typeof profileSchema>;
+export const executionResponseSchema = z.object({
+  assignmentId: z.string(), tripId: z.string(), tripVersion: z.number().int().positive(),
+  stopId: z.string().nullable(), eventId: z.string(), snapshotId: z.string(),
+  sourceTripVersion: z.number().int().positive(), occurredAt: z.string().datetime(),
+  status: z.enum(["IN_PROGRESS", "ARRIVED"]),
+});
 export type AssignmentList = z.infer<typeof listSchema>;
 export type AssignmentDetail = z.infer<typeof detailSchema>;
+export const pickupResponseSchema = z.object({
+  assignmentId: z.string(), tripId: z.string(), stopId: z.string(), tripVersion: z.number().int().positive(),
+  eventId: z.string(), packageId: z.string().nullable(), outcome: z.enum(["LOADED", "FULL", "PARTIAL", "NONE"]), occurredAt: z.string().datetime(),
+});
+export const pickupScanSchema = z.object({
+  taskId: z.string(), packageId: z.string(), packageCode: z.string(), tripVersion: z.number().int().positive(), loadPlanRevision: z.number().int(),
+  placement: z.object({ packageId: z.string(), xMm: z.number(), yMm: z.number(), zMm: z.number(), effectiveLengthMm: z.number(), effectiveWidthMm: z.number(), effectiveHeightMm: z.number() }),
+});
+export type PickupScan = z.infer<typeof pickupScanSchema>;

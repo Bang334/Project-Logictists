@@ -13,7 +13,8 @@ import {
   View,
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
-import { DriverStore } from "./store";
+import { DriverStore, actionLabels } from "./store";
+import { ExecutionControls } from "./ExecutionControls";
 
 const labels = {
   ASSIGNED: "Chờ phản hồi",
@@ -157,15 +158,18 @@ export function DriverApp({
                     <Text style={s.title}>{detail.trip.tripNumber}</Text>
                     <Text style={s.badge}>{labels[detail.status]}</Text>
                     <Text>Trạng thái chuyến: {detail.trip.status}</Text>
+                    <Text>Bắt đầu thực tế: {time(detail.trip.actualStartTime)}</Text>
+                    <ExecutionControls key={`${detail.id}:${detail.trip.version}`} detail={detail} store={store} disabled={state.busy || !!state.intent} />
                     <Text>Xe: {detail.trip.vehicle.plateNumber}</Text>
                     <Text>
                       {time(detail.trip.plannedStartTime)} →{" "}
                       {time(detail.trip.plannedEndTime)}
                     </Text>
                     <Text>
-                      Kế hoạch v{detail.trip.version} · Phân công v
+                      Chuyến v{detail.trip.version} · Phân công v
                       {detail.version}
                     </Text>
+                    {detail.trip.executionSnapshot && <Text>Kế hoạch nguồn v{detail.trip.executionSnapshot.sourceTripVersion}</Text>}
                     {detail.rejectionReason && (
                       <Text>Lý do: {detail.rejectionReason}</Text>
                     )}
@@ -178,6 +182,9 @@ export function DriverApp({
                           {stop.latitude}, {stop.longitude}
                         </Text>
                         <Text>Dự kiến: {time(stop.plannedArrivalTime)}</Text>
+                        <Text>Trạng thái điểm: {stop.status}</Text>
+                        {stop.pickupSummary && <Text>Kết quả lấy hàng: {stop.pickupSummary.outcome === 'FULL' ? 'Lấy đủ' : stop.pickupSummary.outcome === 'PARTIAL' ? 'Lấy thiếu' : 'Chưa lấy được kiện nào'} — {stop.pickupSummary.loadedCount}/{stop.pickupSummary.plannedCount} kiện.</Text>}
+                        <Text>Đến thực tế: {time(stop.actualArrivalTime)}</Text>
                         <Text>
                           Liên hệ: {stop.contactName ?? "Chưa có"} ·{" "}
                           {stop.contactPhone ?? "Chưa có"}
@@ -195,6 +202,7 @@ export function DriverApp({
                               Kiện: {task.package?.packageCode ?? "Chưa có"}
                             </Text>
                             <Text>{task.description}</Text>
+                            <Text>Thực tế: {task.pickup?.outcome === 'LOADED' ? 'Đã xếp lên xe' : task.pickup?.outcome === 'NOT_COLLECTED' ? `Chưa lấy — ${task.pickup.reason}` : 'Chưa ghi nhận'}</Text>
                             <Text>
                               Kích thước (mm): {task.package?.lengthMm ?? "?"} ×{" "}
                               {task.package?.widthMm ?? "?"} ×{" "}
@@ -338,7 +346,7 @@ export function DriverApp({
               <View style={s.card}>
                 <Text>
                   Phản hồi{" "}
-                  {state.intent.action === "accept" ? "nhận" : "từ chối"} chưa
+                  {actionLabels[state.intent.action]} chưa
                   được xác nhận. Thử lại cùng yêu cầu để tránh gửi trùng.
                 </Text>
                 <Button

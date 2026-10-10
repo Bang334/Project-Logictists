@@ -43,7 +43,7 @@ export class OutboxEventPublisher {
       await this.eventsGateway.emitTripUpdate({ id: payload.tripId });
       return;
     }
-    if (['TRIP_CREATED', 'TRIP_PUBLISHED', 'TRIP_PLAN_UPDATED', 'OPTIMIZATION_TRIP_APPLIED'].includes(event.eventType)) {
+    if (['TRIP_CREATED', 'TRIP_PUBLISHED', 'TRIP_PLAN_UPDATED', 'OPTIMIZATION_TRIP_APPLIED', 'driver.trip.started', 'driver.stop.arrived', 'driver.package.loaded', 'driver.pickup.completed'].includes(event.eventType)) {
       await this.eventsGateway.emitTripUpdate({ id: event.aggregateId });
       return;
     }

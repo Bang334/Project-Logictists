@@ -25,6 +25,9 @@ export const assignment = {
     version: 2,
     plannedStartTime: date,
     plannedEndTime: date,
+    actualStartTime: null,
+    actualEndTime: null,
+    executionSnapshot: null,
     vehicle: { id: "vehicle", plateNumber: "DEMO-A", model: "Demo" },
     start: { id: "s1", sequence: 1, address: "Điểm lấy" },
     end: { id: "s2", sequence: 2, address: "Điểm giao" },
@@ -47,6 +50,9 @@ export const detail = {
         contactPhone: "000",
         plannedArrivalTime: date,
         plannedDepartureTime: null,
+        actualArrivalTime: null,
+        actualDepartureTime: null,
+        status: "PENDING",
         tasks: [
           {
             id: "task",

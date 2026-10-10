@@ -27,7 +27,7 @@ describe('OutboxEventPublisher', () => {
     expect(gateway.emitToLocations).not.toHaveBeenCalled();
   });
 
-  it.each(['TRIP_CREATED', 'TRIP_PUBLISHED', 'TRIP_PLAN_UPDATED', 'OPTIMIZATION_TRIP_APPLIED'])('delivers %s through the scoped trip gateway', async eventType => {
+  it.each(['TRIP_CREATED', 'TRIP_PUBLISHED', 'TRIP_PLAN_UPDATED', 'OPTIMIZATION_TRIP_APPLIED', 'driver.trip.started', 'driver.stop.arrived', 'driver.package.loaded', 'driver.pickup.completed'])('delivers %s through the scoped trip gateway', async eventType => {
     await publisher.publish({ ...baseEvent, aggregateType: 'Trip', aggregateId: 'trip-1', eventType, payload: {} });
     expect(gateway.emitTripUpdate).toHaveBeenCalledWith({ id: 'trip-1' });
     expect(gateway.emitToLocations).not.toHaveBeenCalled();

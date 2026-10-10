@@ -19,7 +19,7 @@ test("login, list, detail and accept confirmation through UI", async () => {
   fireEvent.press(screen.getByRole("button", { name: "Đăng nhập" }));
   await screen.findByText("Chuyến của tôi");
   fireEvent.press(screen.getByRole("button", { name: "Xem TRIP-A" }));
-  await screen.findByText("Kế hoạch v2 · Phân công v1");
+  await screen.findByText("Chuyến v2 · Phân công v1");
   fireEvent.press(screen.getByRole("button", { name: "Nhận chuyến" }));
   expect(screen.getByText("Xác nhận nhận chuyến này?")).toBeTruthy();
   expect(
@@ -49,7 +49,7 @@ test("reject UI requires reason and confirmed action", async () => {
   render(<DriverApp store={h.store} />);
   await screen.findByText("Chuyến của tôi");
   fireEvent.press(screen.getByRole("button", { name: "Xem TRIP-A" }));
-  await screen.findByText("Kế hoạch v2 · Phân công v1");
+  await screen.findByText("Chuyến v2 · Phân công v1");
   fireEvent.press(screen.getByRole("button", { name: "Từ chối chuyến" }));
   expect(screen.getByRole("button", { name: "Xác nhận" })).toBeDisabled();
   fireEvent.changeText(

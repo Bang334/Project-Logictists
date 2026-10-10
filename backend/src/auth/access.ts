@@ -7,7 +7,7 @@ export const PERMISSIONS = [
   'orders.write', 'trips.read', 'trips.plan', 'trips.publish',
   'users.read', 'users.create', 'users.lock',
 ] as const;
-export const DRIVER_PERMISSIONS = ['driver.profile.read', 'driver.assignments.read', 'driver.assignments.respond'] as const;
+export const DRIVER_PERMISSIONS = ['driver.profile.read', 'driver.assignments.read', 'driver.assignments.respond', 'driver.trips.execute'] as const;
 export type PermissionCode = typeof PERMISSIONS[number] | typeof DRIVER_PERMISSIONS[number];
 export const DISPATCHER_PERMISSIONS = PERMISSIONS.filter(p => !p.endsWith('.manage') && !p.startsWith('users.'));
 export const RequirePermission = (permission: PermissionCode | 'authenticated') => SetMetadata('permission', permission);

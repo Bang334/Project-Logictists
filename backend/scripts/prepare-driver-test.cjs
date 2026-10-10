@@ -75,6 +75,17 @@ const db = new PrismaClient({ datasources: { db: { url: target.href } } });
   console.log(
     "Driver test database ready; accepted assignments retain schedule protection. No reset.",
   );
+  const execution = await db.$queryRaw`SELECT to_regclass('public.trip_execution_snapshots')::text AS name`;
+  if (!execution[0].name) apply('prisma/migrations/20261009090000_driver_trip_execution/migration.sql');
+  console.log('Driver execution migration ready. Existing execution history is not inferred.');
+  const pickup = await db.$queryRaw`SELECT to_regclass('public.pickup_results')::text AS name`;
+  if (!pickup[0].name) {
+    const before = await db.stopTask.count();
+    apply('prisma/migrations/20261010090000_driver_pickup_results/migration.sql');
+    assert.equal(await db.stopTask.count(), before);
+    assert.equal(await db.pickupResult.count(), 0);
+    console.log('Pickup migration preserves existing tasks and infers no results.');
+  }
 })()
   .catch((e) => {
     console.error(e.message);

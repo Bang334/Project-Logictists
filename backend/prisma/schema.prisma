@@ -448,6 +448,7 @@ model Trip {
   assignments          DriverAssignment[]
 
   executionEvents  ExecutionEvent[]
+  executionSnapshot TripExecutionSnapshot?
   gpsEvents        GpsEvent[]
   incidents        Incident[]
   notifications    Notification[]
@@ -492,6 +493,7 @@ model TripStop {
   createdAt        DateTime           @default(now()) @db.Timestamptz(3)
 
   @@unique([tripId, sequence])
+  @@unique([id, tripId], map: "trip_stop_id_trip_unique")
   @@index([tripId, status])
   @@map("trip_stops")
   transferPickups  TripTransferShipment[] @relation("TransferPickupStop")
@@ -499,6 +501,7 @@ model TripStop {
 }
 
 model Allocation {
+  pickupResults PickupResult[]
   id                String     @id @default(uuid())
   orderItemId       String
   orderItem         OrderItem  @relation(fields: [orderItemId], references: [id])
@@ -521,6 +524,7 @@ model Allocation {
 }
 
 model StopTask {
+  pickupResult PickupResult?
   loadPlanValidationSteps LoadPlanStep[] @relation("LoadPlanStepTasks")
   id              String     @id @default(uuid())
   tripStopId      String
@@ -714,6 +718,7 @@ model CustomerUser {
 }
 
 model Package {
+  pickupResults PickupResult[]
   id                  String           @id @default(uuid())
   orderItemId         String?
   orderItem           OrderItem?        @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
@@ -871,6 +876,7 @@ model DriverActivityEvent {
 }
 
 model ExecutionEvent {
+  pickupResult PickupResult?
   id         String    @id @default(uuid())
   tripId     String
   trip       Trip      @relation(fields: [tripId], references: [id], onDelete: Restrict)
@@ -885,12 +891,29 @@ model ExecutionEvent {
   actorUserId String
   actorUser   User     @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
   commandId   String
+  command     ProcessedCommand @relation(fields: [commandId], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "execution_command_fk")
+  eventSequence Int @default(0)
+  sourceSnapshotId String?
+  sourceSnapshot TripExecutionSnapshot? @relation(fields: [sourceSnapshotId, tripId], references: [id, tripId], onDelete: Restrict, onUpdate: NoAction, map: "execution_snapshot_trip_fk")
   payload     Json?
 
-  @@unique([commandId])
+  @@unique([commandId, eventSequence])
   @@index([tripId, occurredAt])
   @@index([tripStopId, occurredAt])
   @@map("execution_events")
+}
+
+model TripExecutionSnapshot {
+  id String @id @default(uuid())
+  tripId String @unique
+  trip Trip @relation(fields: [tripId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  sourceTripVersion Int
+  planHash String
+  plan Json
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  events ExecutionEvent[]
+  @@unique([id, tripId])
+  @@map("trip_execution_snapshots")
 }
 
 model TrackingDevice {
@@ -1070,6 +1093,7 @@ model OutboxEvent {
 }
 
 model ProcessedCommand {
+  executionEvents ExecutionEvent[]
   id             String   @id @default(uuid())
   actorUserId    String
   actorUser      User     @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
@@ -2133,4 +2157,21 @@ model UserLocationScope {
   @@index([branchId, active])
   @@index([locationId, active])
   @@map("user_location_scopes")
+}
+
+// Immutable per-physical-package outcome, tied to its command event and plan snapshot.
+model PickupResult {
+  id String @id @default(uuid())
+  stopTaskId String @unique
+  stopTask StopTask @relation(fields: [stopTaskId], references: [id], onDelete: Restrict)
+  eventId String @unique
+  event ExecutionEvent @relation(fields: [eventId], references: [id], onDelete: Restrict)
+  packageId String
+  package Package @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  allocationId String
+  allocation Allocation @relation(fields: [allocationId], references: [id], onDelete: Restrict)
+  outcome String
+  reason String?
+  @@index([packageId, outcome])
+  @@map("pickup_results")
 }

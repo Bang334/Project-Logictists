@@ -9,20 +9,34 @@ import {
   Profile,
   profileSchema,
   responseSchema,
+  executionResponseSchema,
+  pickupResponseSchema,
+  pickupScanSchema,
 } from "./contracts";
 export interface TokenStorage {
   read(): Promise<string | null>;
   write(token: string): Promise<void>;
   clear(): Promise<void>;
 }
+export type DriverAction = "accept" | "reject" | "start" | "arrive" | "pickup" | "complete-pickup";
+export type PickupInput = { qrCode: string; loadedOnVehicle: true } | { declaredOutcome: "FULL" | "PARTIAL" | "NONE"; missing: { taskId: string; reason: string }[] };
+export const actionLabels: Record<DriverAction, string> = {
+  accept: "nhận chuyến", reject: "từ chối chuyến", start: "bắt đầu chuyến", arrive: "đến điểm",
+  pickup: "xác nhận đã xếp kiện lên xe", "complete-pickup": "kết thúc lấy hàng",
+};
 type Intent = {
   id: string;
-  action: "accept" | "reject";
+  action: DriverAction;
+  stopId?: string;
   key: string;
   body: {
     expectedVersion: number;
     expectedTripVersion: number;
     reason?: string;
+    qrCode?: string;
+    loadedOnVehicle?: true;
+    declaredOutcome?: "FULL" | "PARTIAL" | "NONE";
+    missing?: { taskId: string; reason: string }[];
   };
 };
 export interface State {
@@ -232,12 +246,33 @@ export class DriverStore {
     ++this.detailRequest;
     this.set({ detail: null, loadingDetail: false, error: null });
   }
-  async respond(action: "accept" | "reject", reason = "") {
+  async scanPickup(stopId: string, qrCode: string) {
+    if (this.state.busy || this.state.intent || !this.token || !this.state.detail) return;
+    const detail = this.state.detail, epoch = this.epoch, request = this.detailRequest;
+    this.set({ busy: true, error: null, notice: null });
+    try {
+      const scan = await this.api.call(`/driver/assignments/${detail.id}/stops/${stopId}/scan-pickup`, pickupScanSchema, this.token,
+        { qrCode, expectedVersion: detail.version, expectedTripVersion: detail.trip.version });
+      if (epoch === this.epoch && request === this.detailRequest) return scan;
+    } catch (e) {
+      if (epoch !== this.epoch) return;
+      if (e instanceof ApiError && e.status === 409) {
+        this.set({ notice: e.message });
+        await this.open(detail.id);
+      } else await this.failure(e, epoch);
+    } finally { if (epoch === this.epoch) this.set({ busy: false }); }
+  }
+  async respond(action: DriverAction, reason = "", stopId?: string, pickup?: PickupInput) {
     if (this.state.busy || !this.token) return;
     const detail = this.state.detail;
     let intent = this.state.intent;
     if (!intent) {
-      if (!detail || detail.status !== "ASSIGNED") return;
+      if (!detail) return;
+      if ((action === "accept" || action === "reject") && detail.status !== "ASSIGNED") return;
+      if (!["accept", "reject"].includes(action) && detail.status !== "ACCEPTED") return;
+      if (["arrive", "pickup", "complete-pickup"].includes(action) && !stopId) return;
+      if (action === "pickup" && (!pickup || !("qrCode" in pickup) || !pickup.qrCode || pickup.loadedOnVehicle !== true)) return;
+      if (action === "complete-pickup" && (!pickup || !("missing" in pickup) || pickup.missing.some(m => !m.reason.trim() || m.reason.trim().length > 1000))) return;
       if (
         action === "reject" &&
         (!reason.trim() || reason.trim().length > 1000)
@@ -248,11 +283,13 @@ export class DriverStore {
       intent = {
         id: detail.id,
         action,
+        ...(["arrive", "pickup", "complete-pickup"].includes(action) ? { stopId } : {}),
         key: this.uuid(),
         body: {
           expectedVersion: detail.version,
           expectedTripVersion: detail.trip.version,
           ...(action === "reject" ? { reason: reason.trim() } : {}),
+          ...(["pickup", "complete-pickup"].includes(action) ? pickup : {}),
         },
       };
     }
@@ -260,9 +297,9 @@ export class DriverStore {
       token = this.token;
     this.set({ intent, busy: true, error: null, notice: null });
     try {
-      await this.api.call(
-        `/driver/assignments/${intent.id}/${intent.action}`,
-        responseSchema,
+      await this.api.call<unknown>(
+        `/driver/assignments/${intent.id}/${intent.stopId ? `stops/${intent.stopId}/${intent.action}` : intent.action}`,
+        ["pickup", "complete-pickup"].includes(intent.action) ? pickupResponseSchema : intent.action === "start" || intent.action === "arrive" ? executionResponseSchema : responseSchema,
         token,
         intent.body,
         intent.key,
@@ -276,8 +313,9 @@ export class DriverStore {
       if (e instanceof ApiError && e.status === 409) {
         this.set({
           intent: null,
-          notice:
-            "Kế hoạch hoặc phân công đã thay đổi. Đang tải lại; hãy kiểm tra trước khi phản hồi.",
+          notice: e.code === "VERSION_CONFLICT"
+            ? "Kế hoạch hoặc phân công đã thay đổi. Đang tải lại; hãy kiểm tra trước khi phản hồi."
+            : e.message,
         });
         await this.loadList();
         if (epoch === this.epoch) await this.open(intent.id);

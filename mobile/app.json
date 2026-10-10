@@ -23,7 +23,16 @@
     },
     "plugins": [
       "expo-secure-store",
-      "expo-router"
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Cho phép TMS quét QR riêng của từng kiện hàng.",
+          "recordAudioAndroid": false,
+          "microphonePermission": false,
+          "barcodeScannerEnabled": true
+        }
+      ]
     ],
     "scheme": "tms-driver"
   }

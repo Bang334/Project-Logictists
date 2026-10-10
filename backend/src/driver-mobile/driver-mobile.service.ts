@@ -39,6 +39,9 @@ const stopFields = {
   contactPhone: true,
   plannedArrivalTime: true,
   plannedDepartureTime: true,
+  actualArrivalTime: true,
+  actualDepartureTime: true,
+  status: true,
 } as const;
 const tripFields = {
   id: true,
@@ -47,6 +50,9 @@ const tripFields = {
   version: true,
   plannedStartTime: true,
   plannedEndTime: true,
+  actualStartTime: true,
+  actualEndTime: true,
+  executionSnapshot: { select: { id: true, sourceTripVersion: true } },
   vehicle: { select: { id: true, plateNumber: true, model: true } },
 } as const;
 const packageFields = {
@@ -65,7 +71,7 @@ export class DriverMobileService {
     private readonly auth: AuthService,
   ) {}
 
-  private async identity(
+  async identity(
     user: Principal,
     permission: PermissionCode,
     tx: Prisma.TransactionClient,
@@ -191,6 +197,8 @@ export class DriverMobileService {
                         id: true,
                         action: true,
                         plannedQuantity: true,
+                        actualQuantity: true,
+                        pickupResult: { select: { outcome: true, reason: true, event: { select: { occurredAt: true } } } },
                         orderStop: {
                           select: {
                             orderId: true,
@@ -232,6 +240,10 @@ export class DriverMobileService {
             ...assignment.trip,
             stops: assignment.trip.stops.map((stop) => ({
               ...stop,
+              pickupSummary: stop.stopType === 'PICKUP' && stop.status === 'COMPLETED' && stop.tasks.length > 0 && stop.tasks.every(t => t.action === 'LOAD' && t.pickupResult)
+                ? { plannedCount: stop.tasks.length, loadedCount: stop.tasks.filter(t => t.pickupResult?.outcome === 'LOADED').length,
+                  outcome: stop.tasks.every(t => t.pickupResult?.outcome === 'LOADED') ? 'FULL' : stop.tasks.some(t => t.pickupResult?.outcome === 'LOADED') ? 'PARTIAL' : 'NONE' }
+                : null,
               tasks: stop.tasks.map((task) => {
                 const order = task.allocation?.orderItem.order ?? task.order;
                 if (
@@ -249,6 +261,8 @@ export class DriverMobileService {
                   id: task.id,
                   action: task.action,
                   plannedQuantity: task.plannedQuantity,
+                  actualQuantity: task.actualQuantity,
+                  pickup: task.pickupResult ? { outcome: task.pickupResult.outcome, reason: task.pickupResult.reason, occurredAt: task.pickupResult.event.occurredAt } : null,
                   allocationId: task.allocation?.id ?? null,
                   description: task.allocation?.orderItem.description ?? null,
                   order,

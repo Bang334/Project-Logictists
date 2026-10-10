@@ -14,7 +14,7 @@ test('router restores login, navigates list/detail and returns to login on logou
   await waitFor(() => expect(rendered.getPathname()).toBe('/assignments'));
   fireEvent.press(await screen.findByRole('button', { name: 'Xem TRIP-A' }));
   await waitFor(() => expect(rendered.getPathname()).toBe('/assignments/a'));
-  await screen.findByText('Kế hoạch v2 · Phân công v1');
+  await screen.findByText('Chuyến v2 · Phân công v1');
   fireEvent.press(screen.getByRole('button', { name: 'Về danh sách' }));
   await waitFor(() => expect(rendered.getPathname()).toBe('/assignments'));
   fireEvent.press(screen.getByRole('button', { name: 'Đăng xuất' }));

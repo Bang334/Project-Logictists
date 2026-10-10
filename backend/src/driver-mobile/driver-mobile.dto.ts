@@ -9,6 +9,12 @@ import {
   MaxLength,
   Min,
   MinLength,
+  IsArray,
+  ArrayMaxSize,
+  ArrayUnique,
+  IsUUID,
+  ValidateNested,
+  Equals,
 } from "class-validator";
 
 export class AssignmentQuery {
@@ -30,4 +36,21 @@ export class RejectAssignmentDto extends AssignmentResponseDto {
   @MinLength(1)
   @MaxLength(1000)
   reason: string;
+}
+
+export class InspectPickupDto extends AssignmentResponseDto {
+  @IsString() @MinLength(1) @MaxLength(256) qrCode: string;
+}
+export class PickupPackageDto extends InspectPickupDto {
+  @Equals(true) loadedOnVehicle: boolean;
+}
+export class MissingPickupDto {
+  @IsUUID() taskId: string;
+  @Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value)
+  @IsString() @MinLength(1) @MaxLength(1000) reason: string;
+}
+export class CompletePickupDto extends AssignmentResponseDto {
+  @IsIn(['FULL', 'PARTIAL', 'NONE']) declaredOutcome: 'FULL' | 'PARTIAL' | 'NONE';
+  @IsArray() @ArrayMaxSize(1000) @ArrayUnique((entry: MissingPickupDto) => entry.taskId)
+  @ValidateNested({ each: true }) @Type(() => MissingPickupDto) missing: MissingPickupDto[];
 }
