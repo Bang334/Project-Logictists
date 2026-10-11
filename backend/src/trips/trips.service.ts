@@ -1729,6 +1729,9 @@ export class TripsService {
       orders: snapshot.orders,
       policy: snapshot.policy,
       max_time_seconds: snapshot.max_time_seconds,
+      ...(snapshot.search_time_seconds !== undefined
+        ? { search_time_seconds: snapshot.search_time_seconds }
+        : {}),
       distance_matrix_meters: fullDistances,
       duration_matrix_seconds: fullDurations,
     };
