@@ -66,6 +66,7 @@ describe('TripsService split-order planning', () => {
     plateNumber: `79C-00${index}`,
     licenseClass: 'C',
     updatedAt: new Date('2026-10-06T00:00:00Z'),
+    vehicleTypeRecord: { updatedAt: new Date('2026-10-06T00:00:00Z') },
   }));
   const drivers = [1, 2].map((index) => ({
     id: `driver-${index}`,
@@ -124,6 +125,7 @@ describe('TripsService split-order planning', () => {
       vehicles: vehicles.map((vehicle) => ({
         id: vehicle.id,
         updatedAt: vehicle.updatedAt.toISOString(),
+        vehicleTypeUpdatedAt: vehicle.updatedAt.toISOString(),
       })),
       drivers: drivers.map((driver) => ({
         id: driver.id,

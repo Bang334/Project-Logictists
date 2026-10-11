@@ -206,19 +206,27 @@ export async function seedDriverMobile(db: PrismaClient) {
               branchId: branch.id,
             },
           });
+        const vehicleType = await tx.vehicleType.upsert({
+          where: { code: 'DEMO-MOBILE' },
+          update: {},
+          create: {
+            code: 'DEMO-MOBILE',
+            name: 'Demo',
+            payloadCapacityKg: 1000,
+            volumeCapacityM3: 10,
+            lengthCm: 400,
+            widthCm: 200,
+            heightCm: 200,
+          },
+        });
         const vehicle = await tx.vehicle.upsert({
           where: { plateNumber: code },
           update: {},
           create: {
             plateNumber: code,
             model: "[DEMO MOBILE]",
-            vehicleType: "Demo",
+            vehicleTypeId: vehicleType.id,
             homeBranchId: branch.id,
-            payloadCapacityKg: 1000,
-            volumeCapacityM3: 10,
-            lengthCm: 400,
-            widthCm: 200,
-            heightCm: 200,
           },
         });
         const trip = await createDriverDemoTrip(

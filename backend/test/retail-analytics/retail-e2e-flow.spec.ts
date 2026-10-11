@@ -2,12 +2,13 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 describe('Merged retail and TMS database contract', () => {
-  it('giữ 66 model retail và bổ sung 20 model TMS/auth/lịch sử đã duyệt', () => {
+  it('giữ model retail và các model TMS/auth/lịch sử đã duyệt sau khi đơn giản lịch/cửa xe', () => {
     const schema = readFileSync(join(process.cwd(), 'prisma', 'schema.prisma'), 'utf8');
     for (const model of ['AuthSession', 'AuthLoginLimit', 'Allocation', 'Package', 'OrderStop', 'UserRoleScope', 'UserLocationScope', 'TrackingDevice', 'Invoice']) {
       expect(schema).toContain(`model ${model} {`);
     }
-    expect([...schema.matchAll(/^model\s+\w+\s*\{/gm)]).toHaveLength(86);
+    expect([...schema.matchAll(/^model\s+\w+\s*\{/gm)]).toHaveLength(83);
+    expect(schema).not.toMatch(/^model\s+(DriverShift|DriverLeave|VehicleDoor)\s*\{/m);
   });
   it('không còn bảng ca và pick task riêng', () => {
     const schema = readFileSync(join(process.cwd(), 'prisma', 'schema.prisma'), 'utf8');

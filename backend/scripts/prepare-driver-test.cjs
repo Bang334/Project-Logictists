@@ -11,15 +11,15 @@ if (
 )
   throw new Error("Local test database required");
 const target = new URL(source);
-target.pathname = "/tms_driver_test_20261007";
+target.pathname = "/tms_driver_test_20261011";
 const admin = new PrismaClient({ datasources: { db: { url: source.href } } });
 const db = new PrismaClient({ datasources: { db: { url: target.href } } });
 (async () => {
   const existing =
-    await admin.$queryRaw`SELECT 1 FROM pg_database WHERE datname='tms_driver_test_20261007'`;
+    await admin.$queryRaw`SELECT 1 FROM pg_database WHERE datname='tms_driver_test_20261011'`;
   if (!existing.length)
     await admin.$executeRawUnsafe(
-      "CREATE DATABASE tms_driver_test_20261007 TEMPLATE tms_merge_test_20261005",
+      "CREATE DATABASE tms_driver_test_20261011 TEMPLATE tms_merge_test_20261011",
     );
   const applied =
     await db.$queryRaw`SELECT 1 FROM information_schema.columns WHERE table_name='driver_assignments' AND column_name='offered_at'`;
@@ -36,8 +36,8 @@ const db = new PrismaClient({ datasources: { db: { url: target.href } } });
         "node_modules/prisma/build/index.js",
         "db",
         "execute",
-        "--schema",
-        "prisma/schema.prisma",
+        "--url",
+        target.href,
         "--file",
         file,
       ],
@@ -68,10 +68,16 @@ const db = new PrismaClient({ datasources: { db: { url: target.href } } });
   }
   const constraints =
     await db.$queryRaw`SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid='driver_assignments'::regclass AND conname='driver_assignments_no_overlap'`;
-  if (!constraints[0]?.definition.includes("ACCEPTED"))
+  const scheduleGuard = constraints[0]?.definition ?? "";
+  if (!scheduleGuard.includes("ACCEPTED") || scheduleGuard.includes("ACTIVE"))
     apply(
       "prisma/migrations/20261007100000_driver_accepted_schedule_guard/migration.sql",
     );
+  const verifiedConstraints =
+    await db.$queryRaw`SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid='driver_assignments'::regclass AND conname='driver_assignments_no_overlap'`;
+  assert.match(verifiedConstraints[0]?.definition ?? "", /ASSIGNED/);
+  assert.match(verifiedConstraints[0]?.definition ?? "", /ACCEPTED/);
+  assert.doesNotMatch(verifiedConstraints[0]?.definition ?? "", /ACTIVE/);
   console.log(
     "Driver test database ready; accepted assignments retain schedule protection. No reset.",
   );

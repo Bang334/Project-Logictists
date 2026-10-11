@@ -173,18 +173,45 @@ export async function seedCentralBranchData() {
   ];
 
   for (const v of additionalVehicles) {
+    const {
+      vehicleType: typeName,
+      payloadCapacityKg,
+      volumeCapacityM3,
+      lengthCm,
+      widthCm,
+      heightCm,
+      fuelConsumptionLitersPer100Km,
+      loadFuelSurchargePercentAtFullPayload,
+      fixedOperatingCostPerTrip,
+      ...vehicleData
+    } = v;
+    const typeData = {
+      name: typeName,
+      payloadCapacityKg,
+      volumeCapacityM3,
+      lengthCm,
+      widthCm,
+      heightCm,
+      fuelConsumptionLitersPer100Km,
+      loadFuelSurchargePercentAtFullPayload,
+      fixedOperatingCostPerTrip,
+    };
+    const vehicleType = await prisma.vehicleType.upsert({
+      where: { code: `SEED-${v.plateNumber.replace(/[^A-Z0-9]/gi, '-')}` },
+      update: typeData,
+      create: {
+        code: `SEED-${v.plateNumber.replace(/[^A-Z0-9]/gi, '-')}`,
+        ...typeData,
+      },
+    });
     await prisma.vehicle.upsert({
       where: { plateNumber: v.plateNumber },
       update: {
         homeBranchId: v.homeBranchId,
         status: v.status,
-        payloadCapacityKg: v.payloadCapacityKg,
-        volumeCapacityM3: v.volumeCapacityM3,
-        lengthCm: v.lengthCm,
-        widthCm: v.widthCm,
-        heightCm: v.heightCm,
+        vehicleTypeId: vehicleType.id,
       },
-      create: v,
+      create: { ...vehicleData, vehicleTypeId: vehicleType.id },
     });
   }
   console.log(`✅ Đã bổ sung ${additionalVehicles.length} xe tải vào đội xe Chi nhánh Miền Trung.`);

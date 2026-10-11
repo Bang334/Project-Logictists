@@ -27,6 +27,7 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
     packageTwo: randomUUID(),
     vehicleOne: randomUUID(),
     vehicleTwo: randomUUID(),
+    vehicleType: randomUUID(),
     driverOne: randomUUID(),
     driverTwo: randomUUID(),
   };
@@ -61,18 +62,25 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
         phone: `it-${suffix}`,
       },
     });
-    await prisma.vehicle.createMany({
-      data: [ids.vehicleOne, ids.vehicleTwo].map((id, index) => ({
-        id,
-        plateNumber: `IT-${suffix.slice(0, 6)}-${index + 1}`,
-        model: 'Integration truck',
-        vehicleType: 'TRUCK',
-        homeBranchId: ids.branch,
+    await prisma.vehicleType.create({
+      data: {
+        id: ids.vehicleType,
+        code: `IT-TYPE-${suffix}`,
+        name: 'Integration truck',
         payloadCapacityKg: 1000,
         volumeCapacityM3: 20,
         lengthCm: 300,
         widthCm: 200,
         heightCm: 200,
+      },
+    });
+    await prisma.vehicle.createMany({
+      data: [ids.vehicleOne, ids.vehicleTwo].map((id, index) => ({
+        id,
+        plateNumber: `IT-${suffix.slice(0, 6)}-${index + 1}`,
+        model: 'Integration truck',
+        vehicleTypeId: ids.vehicleType,
+        homeBranchId: ids.branch,
       })),
     });
     await prisma.driver.createMany({
@@ -181,6 +189,7 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
     await prisma.order.deleteMany({ where: { id: ids.order } });
     await prisma.driver.deleteMany({ where: { homeBranchId: ids.branch } });
     await prisma.vehicle.deleteMany({ where: { homeBranchId: ids.branch } });
+    await prisma.vehicleType.deleteMany({ where: { id: ids.vehicleType } });
     await prisma.customer.deleteMany({ where: { id: ids.customer } });
     await prisma.branch.deleteMany({ where: { id: ids.branch } });
     await prisma.$disconnect();
@@ -206,6 +215,7 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
       prisma.order.findUniqueOrThrow({ where: { id: ids.order } }),
       prisma.vehicle.findMany({
         where: { id: { in: [ids.vehicleOne, ids.vehicleTwo] } },
+        include: { vehicleTypeRecord: true },
         orderBy: { id: 'asc' },
       }),
       prisma.driver.findMany({
@@ -235,8 +245,8 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
         start_time_sec: 0,
         end_time_sec: 1800,
         plate_number: vehicles[index].plateNumber,
-        vehicle_length_cm: vehicles[index].lengthCm,
-        vehicle_width_cm: vehicles[index].widthCm,
+        vehicle_length_cm: vehicles[index].vehicleTypeRecord.lengthCm,
+        vehicle_width_cm: vehicles[index].vehicleTypeRecord.widthCm,
         driver_id: drivers[index].id,
         driver_name: drivers[index].fullName,
         driver_license_class: drivers[index].licenseClass,
@@ -330,6 +340,7 @@ describePostgres('Split-order application concurrency (PostgreSQL)', () => {
         vehicles: vehicles.map((vehicle) => ({
           id: vehicle.id,
           updatedAt: vehicle.updatedAt.toISOString(),
+          vehicleTypeUpdatedAt: vehicle.vehicleTypeRecord.updatedAt.toISOString(),
         })),
         drivers: drivers.map((driver) => ({
           id: driver.id,

@@ -13,6 +13,7 @@ import {
   RunAutomaticOptimizationPayloadUI,
   Trip,
   Vehicle,
+  VehicleType,
 } from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
@@ -90,6 +91,7 @@ export const vehiclesApi = {
     apiClient.get<Vehicle[]>('/vehicles', { params: { branchId, status } }),
   getAvailable: (branchId?: string) =>
     apiClient.get<Vehicle[]>('/vehicles/available', { params: { branchId } }),
+  getTypes: () => apiClient.get<VehicleType[]>('/vehicles/types'),
   getById: (id: string) => apiClient.get<Vehicle>(`/vehicles/${id}`),
   update: (id: string, data: Partial<Vehicle>) =>
     apiClient.patch<Vehicle>(`/vehicles/${id}`, data),

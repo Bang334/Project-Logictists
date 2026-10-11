@@ -80,20 +80,18 @@ Một dòng hàng “10 thùng” được biểu diễn thành 10 package ID đ
 
 | Bảng | Mục đích và cột chính | Khóa/ràng buộc chính |
 |---|---|---|
-| `vehicle_types` | code, name, required_license_category, handling_capabilities | Danh mục loại xe; không thay số đo từng xe |
-| `vehicles` | plate, vehicle_type_id → vehicle_types, home_branch_id → branches, payload_limit_g, tare_weight_g?, usable_length/width/height_mm, operational_status | Unique biển số chuẩn hóa; hình học/tải dương trước điều phối |
-| `vehicle_doors` | vehicle_id → vehicles, door_code, side, offset_mm, sill_height_mm, clear_width/height_mm, approach_geometry | Unique(vehicle_id, door_code); vị trí cửa phải nằm trên thùng phù hợp |
+| `vehicle_types` | code, name, payload/volume capacity, usable length/width/height, fuel/cost baselines, required_license_category, handling_capabilities | **Đã chốt 11/10/2026:** nguồn chuẩn cho cấu hình kỹ thuật dùng chung; các giá trị tải/hình học phải dương |
+| `vehicles` | plate, vehicle_type_id → vehicle_types, home_branch_id → branches, operational_status, vị trí hiện tại | Unique biển số chuẩn hóa; xe giữ danh tính và trạng thái, không lặp cấu hình kỹ thuật của loại xe |
 | `vehicle_obstacles` | vehicle_id → vehicles, name, geometry, geometry_version | Chướng ngại cố định nếu có; không coi cả hình hộp thùng là vùng trống |
 | `vehicle_unavailability` | vehicle_id → vehicles, maintenance_work_order_id? → maintenance_work_orders, starts_at, ends_at?, reason, status | Xe của phiếu phải trùng vehicle_id; một phiếu có thể có nhiều khoảng lịch sử; không là reservation chuyến |
 | `drivers` | employee_id → employees, status, can_drive_night, can_long_distance | Unique employee_id; tài khoản, tên và chi nhánh nhân sự lấy qua Employee; bằng lái là dữ liệu chuyên môn riêng |
 | `driver_licenses` | driver_id → drivers, category, valid_from, valid_until, verification_status | Đối chiếu đủ điều kiện trên toàn khoảng cần lái |
 | `work_policies` | code, revision, effective_from/to?, jurisdiction, limits_json, approval_reference | Unique(code, revision); policy đã dùng bất biến |
-| `driver_shifts` | driver_id → drivers, work_policy_id → work_policies, starts_at, ends_at, timezone, overtime_approved, status | Ngày giờ đầy đủ, end > start; không mặc định ca chung |
 | `driver_activity_events` | driver_id → drivers, trip_id? → trips, activity_type, occurred_at, received_at, source, correction_of_id? → cùng bảng | Lái/làm việc/nghỉ; append-only; không reset ở nửa đêm |
 
 Chưa lưu `current_trip_id` hoặc `current_branch_id` trên xe/tài xế làm nguồn sự thật độc lập. Chuyến hiện tại suy ra từ phân công hợp lệ; vị trí hiện tại từ dữ liệu tracking có timestamp. Nếu cần projection để đọc nhanh phải có quy trình đồng bộ/tái tạo.
 
-Nghỉ phép lấy từ `employee_leave` qua `drivers.employee_id`; không duy trì thêm nguồn ghi `driver_leave`. Lịch làm việc tài xế vẫn ở `driver_shifts`; giờ lái/nghỉ thực tế ở `driver_activity_events`, không suy từ chấm công hoặc qua nửa đêm. Phạm vi hiện tại là nhân sự do công ty quản lý; tài xế thuê ngoài cần đặc tả riêng. Chi nhánh quản lý không quyết định vị trí hiện tại của tài xế.
+Nghỉ phép lấy từ `employee_leave` qua `drivers.employee_id`; không duy trì thêm nguồn ghi `driver_leave`. **Đã chốt 11/10/2026:** phạm vi đồ án chỉ vận hành ca ngày cố định 08:00–17:00 theo `branches.workStartTime/workEndTime`, nên chưa tạo `driver_shifts`. Giờ lái/nghỉ thực tế vẫn có thể ghi ở `driver_activity_events`; nếu sau này có nhiều ca hoặc ca qua ngày thì phải bổ sung mô hình lịch trước khi mở rộng optimizer. Phạm vi hiện tại là nhân sự do công ty quản lý; tài xế thuê ngoài cần đặc tả riêng. Chi nhánh quản lý không quyết định vị trí hiện tại của tài xế.
 
 ### 3.4. Chuyến, phiên bản kế hoạch và phân công — P1
 
@@ -122,11 +120,11 @@ Chốt vòng đời allocation: PROPOSED → ACTIVE → FULFILLED hoặc RELEASE
 | Bảng | Mục đích và cột chính | Khóa/ràng buộc chính |
 |---|---|---|
 | `load_plans` | trip_plan_id → trip_plans, revision, initial_state_snapshot, geometry_snapshot, validation_status, validator_version, input_hash | Unique(trip_plan_id, revision); hình học/kiện/chính sách được chụp lại |
-| `load_plan_steps` | load_plan_id → load_plans, step_number, trip_plan_task_id? → trip_plan_tasks, operation_type, package_id? → packages, door_id? → vehicle_doors, handling_path, validation_result | Step 0 là trạng thái đầu, không task; step > 0 gắn đúng thao tác; unique(load_plan_id, step_number) |
+| `load_plan_steps` | load_plan_id → load_plans, step_number, trip_plan_task_id? → trip_plan_tasks, operation_type, package_id? → packages, handling_path, validation_result | Step 0 là trạng thái đầu, không task; step > 0 gắn đúng thao tác; unique(load_plan_id, step_number); mặc định thao tác qua một cửa sau |
 | `load_placements` | load_plan_step_id → load_plan_steps, package_id → packages, x_mm, y_mm, z_mm, orientation, effective_length/width/height_mm | Unique(step, package); lưu trạng thái **sau** bước đó; một lớp không chồng, không giao nhau |
 | `load_observations` | trip_id → trips, source_load_step_id? → load_plan_steps, observed_at, actor_user_id → users, actual_layout_snapshot, verification_status | Bố trí thực tế do tài xế/nhân viên xác nhận; không sửa bố trí kế hoạch |
 
-Quy ước hình học đề xuất: gốc tọa độ ở góc sàn gần cửa sau, x theo chiều dài hướng về đầu thùng, y theo chiều rộng, z theo chiều cao. Cần chốt hướng trái/phải và quy ước chiều quay trong contract. Snapshot chứa hệ tọa độ/version để web và Python diễn giải giống nhau.
+Quy ước hình học: mỗi xe có đúng một cửa sau, không tạo bảng `vehicle_doors`; gốc tọa độ ở góc sàn gần cửa sau, x theo chiều dài hướng về đầu thùng, y theo chiều rộng, z theo chiều cao. Cần chốt hướng trái/phải và quy ước chiều quay trong contract. Snapshot chứa hệ tọa độ/version để web và Python diễn giải giống nhau.
 
 Quy tắc dữ liệu bắt buộc:
 
@@ -303,8 +301,6 @@ erDiagram
     users o|--o{ attendance_entries : approved_by
     attendance_entries o|--o{ attendance_entries : correction_of_id
     drivers ||--o{ driver_licenses : driver_id
-    drivers ||--o{ driver_shifts : driver_id
-    work_policies ||--o{ driver_shifts : work_policy_id
     drivers ||--o{ driver_activity_events : driver_id
     trips o|--o{ driver_activity_events : trip_id
     driver_activity_events o|--o{ driver_activity_events : correction_of_id
@@ -332,7 +328,6 @@ erDiagram
 erDiagram
     branches ||--o{ vehicles : home_branch_id
     vehicle_types ||--o{ vehicles : vehicle_type_id
-    vehicles ||--o{ vehicle_doors : vehicle_id
     vehicles ||--o{ vehicle_obstacles : vehicle_id
     vehicles ||--o{ vehicle_unavailability : vehicle_id
     maintenance_work_orders o|--o{ vehicle_unavailability : maintenance_work_order_id
@@ -395,7 +390,6 @@ erDiagram
     load_plans ||--o{ load_plan_steps : load_plan_id
     trip_plan_tasks o|--o{ load_plan_steps : trip_plan_task_id
     packages o|--o{ load_plan_steps : package_id
-    vehicle_doors o|--o{ load_plan_steps : door_id
     load_plan_steps ||--o{ load_placements : load_plan_step_id
     packages ||--o{ load_placements : package_id
     trips ||--o{ load_observations : trip_id

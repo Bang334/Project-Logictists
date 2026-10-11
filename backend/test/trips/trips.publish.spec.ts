@@ -14,7 +14,7 @@ describe('TripsService.publish', () => {
     plannedEndTime: new Date('2026-10-04T03:00:00.000Z'),
     planningSnapshot: {
       orders: [{ id: 'order-1', version: 3 }],
-      vehicle: { id: 'vehicle-1', updatedAt: '2026-10-03T00:00:00.000Z' },
+      vehicle: { id: 'vehicle-1', updatedAt: '2026-10-03T00:00:00.000Z', vehicleTypeUpdatedAt: '2026-10-03T00:00:00.000Z' },
       driver: { id: 'driver-1', updatedAt: '2026-10-03T00:00:00.000Z' },
     },
     vehicle: {
@@ -24,6 +24,7 @@ describe('TripsService.publish', () => {
       payloadCapacityKg: 1000,
       volumeCapacityM3: 10,
       plateNumber: '51A-00001',
+      vehicleTypeRecord: { updatedAt: new Date('2026-10-03T00:00:00.000Z') },
     },
     assignments: [{
       id: 'assignment-1',
@@ -74,6 +75,7 @@ describe('TripsService.publish', () => {
       id: 'vehicle-1',
       status: VehicleStatus.AVAILABLE,
       updatedAt: new Date('2026-10-03T00:00:00.000Z'),
+      vehicleTypeRecord: { updatedAt: new Date('2026-10-03T00:00:00.000Z') },
     });
     tx.driver.findUnique.mockResolvedValue({
       id: 'driver-1',

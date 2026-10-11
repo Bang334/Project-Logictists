@@ -352,7 +352,7 @@ Các rule BR23–BR26 ghi nhận yêu cầu người dùng đã chốt về xế
 
 ### 8.2. Bảng dự kiến
 
-Bảng dưới đây là bản khái niệm lịch sử. Danh mục và quan hệ chuẩn đã chốt nằm ở mục 3–6 của [THIET_KE_DATABASE.md](THIET_KE_DATABASE.md), bao gồm Employee, nghỉ phép dùng chung, Payroll, Maintenance, Invoice/Payment và ERD đầy đủ theo nhóm. Không tạo thêm plan_revisions hoặc nguồn driver_leave độc lập khi triển khai theo bản v0.2.
+Bảng dưới đây là bản khái niệm lịch sử. Danh mục và quan hệ chuẩn đã chốt nằm ở mục 3–6 của [THIET_KE_DATABASE.md](THIET_KE_DATABASE.md), bao gồm Employee, nghỉ phép dùng chung, Payroll, Maintenance, Invoice/Payment và ERD đầy đủ theo nhóm. Không tạo thêm plan_revisions hoặc nguồn driver_leave độc lập khi triển khai theo bản v0.2. Quyết định ngày 11/10/2026 đơn giản hóa đồ án: cấu hình tải/hình học nằm ở `vehicle_types`, mỗi xe chỉ có một cửa sau nên không tạo `vehicle_doors`, và ca ngày 08:00–17:00 lấy từ chi nhánh nên chưa tạo `driver_shifts`.
 
 | Nhóm / bảng | Trường tiêu biểu | Ghi chú |
 |---|---|---|

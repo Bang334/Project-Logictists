@@ -206,26 +206,15 @@ model Vehicle {
   id                                    String        @id @default(uuid())
   plateNumber                           String        @unique
   model                                 String
-  vehicleType                           String // Ví dụ: Xe tải 1.5 tấn, 5 tấn, 8 tấn, Đầu kéo
   homeBranchId                          String
   homeBranch                            Branch        @relation(fields: [homeBranchId], references: [id])
-  vehicleTypeId                         String?
-  vehicleTypeRecord                     VehicleType?  @relation(fields: [vehicleTypeId], references: [id], onDelete: Restrict)
-  payloadCapacityKg                     Float // Tải trọng tối đa cho phép (kg)
-  volumeCapacityM3                      Float // Thể tích tối đa (m³)
-  lengthCm                              Float // Kích thước lọt lòng thùng: Dài (cm)
-  widthCm                               Float // Rộng (cm)
-  heightCm                              Float // Cao (cm)
-  fuelConsumptionLitersPer100Km         Decimal       @default(12) @db.Decimal(8, 3) // Mức nền khi không chở hàng; cần hiệu chuẩn theo xe
-  loadFuelSurchargePercentAtFullPayload Decimal       @default(0) @db.Decimal(6, 3)
-  fixedOperatingCostPerTrip             Decimal       @default(0) @db.Decimal(14, 2)
+  vehicleTypeId                         String
+  vehicleTypeRecord                     VehicleType   @relation(fields: [vehicleTypeId], references: [id], onDelete: Restrict)
   status                                VehicleStatus @default(AVAILABLE)
   currentLatitude                       Float?
   currentLongitude                      Float?
   lastLocationAt                        DateTime?     @db.Timestamptz(3)
   trips                                 Trip[]
-
-  doors VehicleDoor[]
 
   trackingDevices TrackingDevice[]
   gpsEvents       GpsEvent[]
@@ -262,10 +251,8 @@ model Driver {
   fixedSalaryMonthly Decimal               @default(0) @db.Decimal(14, 2)
   tripBasePay        Decimal               @default(0) @db.Decimal(14, 2)
   perKmPay           Decimal               @default(0) @db.Decimal(12, 2)
-  shifts             DriverShift[]
   assignments        DriverAssignment[]
   licenses           DriverLicense[]
-  leaveRecords       DriverLeave[]
   activityEvents     DriverActivityEvent[]
 
   gpsEvents GpsEvent[]
@@ -279,24 +266,6 @@ model Driver {
   employee      Employee?             @relation(fields: [employeeId], references: [id], onDelete: Restrict)
   reservations  ResourceReservation[]
   payrollItems  PayrollItem[]
-}
-
-model DriverShift {
-  id               String      @id @default(uuid())
-  driverId         String
-  driver           Driver      @relation(fields: [driverId], references: [id], onDelete: Cascade)
-  workPolicyId     String?
-  workPolicy       WorkPolicy? @relation(fields: [workPolicyId], references: [id], onDelete: Restrict)
-  startTime        DateTime    @db.Timestamptz(3)
-  endTime          DateTime    @db.Timestamptz(3)
-  timezone         String      @default("Asia/Ho_Chi_Minh")
-  overtimeApproved Boolean     @default(false)
-  status           String      @default("SCHEDULED")
-  notes            String?
-  createdAt        DateTime    @default(now()) @db.Timestamptz(3)
-
-  @@index([driverId, startTime, endTime])
-  @@map("driver_shifts")
 }
 
 model Customer {
@@ -773,6 +742,14 @@ model VehicleType {
   id                      String    @id @default(uuid())
   code                    String    @unique
   name                    String
+  payloadCapacityKg                     Float
+  volumeCapacityM3                      Float
+  lengthCm                              Float
+  widthCm                               Float
+  heightCm                              Float
+  fuelConsumptionLitersPer100Km         Decimal   @default(12) @db.Decimal(8, 3)
+  loadFuelSurchargePercentAtFullPayload Decimal   @default(0) @db.Decimal(6, 3)
+  fixedOperatingCostPerTrip             Decimal   @default(0) @db.Decimal(14, 2)
   requiredLicenseCategory String?
   handlingCapabilities    Json?
   active                  Boolean   @default(true)
@@ -781,25 +758,6 @@ model VehicleType {
   updatedAt               DateTime  @updatedAt @db.Timestamptz(3)
 
   @@map("vehicle_types")
-}
-
-model VehicleDoor {
-  id               String   @id @default(uuid())
-  vehicleId        String
-  vehicle          Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
-  doorCode         String
-  side             String
-  offsetMm         Int
-  sillHeightMm     Int      @default(0)
-  clearWidthMm     Int
-  clearHeightMm    Int
-  approachGeometry Json?
-  active           Boolean  @default(true)
-  createdAt        DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime @updatedAt @db.Timestamptz(3)
-
-  @@unique([vehicleId, doorCode])
-  @@map("vehicle_doors")
 }
 
 model DriverLicense {
@@ -828,26 +786,10 @@ model WorkPolicy {
   jurisdiction      String
   limits            Json
   approvalReference String?
-  shifts            DriverShift[]
   createdAt         DateTime      @default(now()) @db.Timestamptz(3)
 
   @@unique([code, revision])
   @@map("work_policies")
-}
-
-model DriverLeave {
-  id        String         @id @default(uuid())
-  driverId  String
-  driver    Driver         @relation(fields: [driverId], references: [id], onDelete: Restrict)
-  startsAt  DateTime       @db.Timestamptz(3)
-  endsAt    DateTime       @db.Timestamptz(3)
-  reason    String
-  status    ApprovalStatus @default(PENDING)
-  createdAt DateTime       @default(now()) @db.Timestamptz(3)
-  updatedAt DateTime       @updatedAt @db.Timestamptz(3)
-
-  @@index([driverId, startsAt, endsAt])
-  @@map("driver_leave")
 }
 
 model DriverActivityEvent {

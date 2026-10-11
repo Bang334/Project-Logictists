@@ -28,6 +28,7 @@ import {
   TripStatus,
   VehicleStatus,
   Vehicle as VehicleRecord,
+  VehicleType,
 } from "@prisma/client";
 import { OptimizeTripDto } from "./dto/optimize-trip.dto";
 import { packagesToCargoUnits, splitOversizedOrdersAcrossFleet } from "./optimizer-payload";
@@ -62,6 +63,10 @@ import {
   VEHICLE_HOME_DEPOT_SELECT,
 } from './vehicle-planning-start';
 import { OptimizationProgressReporter } from './optimization-progress';
+import {
+  flattenVehicleType,
+  vehicleCapabilities,
+} from '../vehicles/vehicle-capabilities';
 
 const ACTIVE_TRIP_STATUSES = [
   TripStatus.PLANNED,
@@ -86,9 +91,11 @@ type DispatchStopWithItems = {
 
 type TripPlanningSnapshot = {
   orders: Array<{ id: string; version: number }>;
-  vehicle: { id: string; updatedAt: string };
+  vehicle: { id: string; updatedAt: string; vehicleTypeUpdatedAt: string };
   driver: { id: string; updatedAt: string };
 };
+
+type VehicleRecordWithType = VehicleRecord & { vehicleTypeRecord: VehicleType };
 
 type PlannedAutomaticTrip = {
   vehicleId: string;
@@ -103,7 +110,7 @@ type PlannedAutomaticTrip = {
   cargoUnitIds: string[];
   planningSnapshot: {
     orders: Array<{ id: string; version: number }>;
-    vehicle: { id: string; updatedAt: string };
+    vehicle: { id: string; updatedAt: string; vehicleTypeUpdatedAt: string };
     driver: { id: string; updatedAt: string };
   };
   stops: Array<{
@@ -148,14 +155,14 @@ export class TripsService {
   ) {}
 
   async findAll(user: Principal, status?: TripStatus, branchId?: string) {
-    return this.prisma.trip.findMany({
+    const trips = await this.prisma.trip.findMany({
       where: {
         ...(status ? { status } : {}),
         ...tripFilter(user, 'trips.read', branchId),
       },
       include: {
         vehicle: {
-          include: { homeBranch: true },
+          include: { homeBranch: true, vehicleTypeRecord: true },
         },
         assignments: {
           include: { driver: true },
@@ -167,13 +174,17 @@ export class TripsService {
       },
       orderBy: { createdAt: "desc" },
     });
+    return trips.map((trip) => ({
+      ...trip,
+      vehicle: flattenVehicleType(trip.vehicle),
+    }));
   }
 
   async findOne(id: string, user: Principal) {
     const trip = await this.prisma.trip.findFirst({
       where: { id, ...tripFilter(user) },
       include: {
-        vehicle: { include: { homeBranch: true } },
+        vehicle: { include: { homeBranch: true, vehicleTypeRecord: true } },
         assignments: { include: { driver: true } },
         stops: {
           orderBy: { sequence: "asc" },
@@ -196,7 +207,7 @@ export class TripsService {
       throw new NotFoundException(`Không tìm thấy chuyến đi [${id}]`);
     }
 
-    return { ...trip, stops: trip.stops.map(stop => ({ ...stop, tasks: stop.tasks.map(task => ({ ...task, allocation: task.allocation ? { ...task.allocation, package: task.allocation.package ? { ...task.allocation.package, weightG: task.allocation.package.weightG.toString() } : null } : null })) })) };
+    return { ...trip, vehicle: flattenVehicleType(trip.vehicle), stops: trip.stops.map(stop => ({ ...stop, tasks: stop.tasks.map(task => ({ ...task, allocation: task.allocation ? { ...task.allocation, package: task.allocation.package ? { ...task.allocation.package, weightG: task.allocation.package.weightG.toString() } : null } : null })) })) };
   }
 
   async findOneAuthorized(
@@ -281,6 +292,7 @@ export class TripsService {
       include: {
         homeBranch: true,
         homeDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT },
+        vehicleTypeRecord: true,
       },
     });
     if (!vehicle) {
@@ -510,6 +522,7 @@ export class TripsService {
               homeBranchId: vehicle.homeBranchId,
               status: VehicleStatus.AVAILABLE,
             },
+            include: { vehicleTypeRecord: true },
           }),
           tx.driver.findFirst({
             where: {
@@ -549,6 +562,15 @@ export class TripsService {
       if (!currentVehicle || !currentDriver || currentOrders.length !== dto.orderIds.length) {
         throw new ConflictException(
           'Xe hoặc tài xế không còn khả dụng trong chi nhánh',
+        );
+      }
+      if (
+        currentVehicle.updatedAt.getTime() !== vehicle.updatedAt.getTime() ||
+        currentVehicle.vehicleTypeRecord.updatedAt.getTime() !==
+          vehicle.vehicleTypeRecord.updatedAt.getTime()
+      ) {
+        throw new ConflictException(
+          'Xe hoặc cấu hình loại xe đã thay đổi sau khi kiểm tra tuyến; hãy lập lại phương án',
         );
       }
       const originalOrderVersions = new Map(
@@ -591,6 +613,8 @@ export class TripsService {
             vehicle: {
               id: currentVehicle.id,
               updatedAt: currentVehicle.updatedAt.toISOString(),
+              vehicleTypeUpdatedAt:
+                currentVehicle.vehicleTypeRecord.updatedAt.toISOString(),
             },
             driver: {
               id: currentDriver.id,
@@ -783,7 +807,10 @@ export class TripsService {
           homeBranchId: branchId,
           status: VehicleStatus.AVAILABLE,
         },
-        include: { homeDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT } },
+        include: {
+          homeDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT },
+          vehicleTypeRecord: true,
+        },
       }),
       this.prisma.driver.findFirst({
         where: {
@@ -860,6 +887,7 @@ export class TripsService {
         tx.trip.findUnique({ where: { id }, select: { version: true, status: true } }),
         tx.vehicle.findFirst({
           where: { id: dto.vehicleId, homeBranchId: branchId, status: VehicleStatus.AVAILABLE },
+          include: { vehicleTypeRecord: true },
         }),
         tx.driver.findFirst({
           where: {
@@ -884,6 +912,15 @@ export class TripsService {
         currentOrders.length !== orderIds.length
       ) {
         throw new ConflictException('Trip Plan hoặc tài nguyên đã thay đổi trong lúc sửa');
+      }
+      if (
+        currentVehicle.updatedAt.getTime() !== vehicle.updatedAt.getTime() ||
+        currentVehicle.vehicleTypeRecord.updatedAt.getTime() !==
+          vehicle.vehicleTypeRecord.updatedAt.getTime()
+      ) {
+        throw new ConflictException(
+          'Xe hoặc cấu hình loại xe đã thay đổi trong lúc sửa chuyến; hãy thử lại',
+        );
       }
       const originalVersions = new Map(orders.map((order) => [order.id, order.version]));
       if (currentOrders.some((order) => originalVersions.get(order.id) !== order.version)) {
@@ -1020,6 +1057,8 @@ export class TripsService {
             vehicle: {
               id: currentVehicle.id,
               updatedAt: currentVehicle.updatedAt.toISOString(),
+              vehicleTypeUpdatedAt:
+                currentVehicle.vehicleTypeRecord.updatedAt.toISOString(),
             },
             driver: {
               id: currentDriver.id,
@@ -1069,7 +1108,7 @@ export class TripsService {
       const trip = await tx.trip.findUnique({
         where: { id },
         include: {
-          vehicle: true,
+          vehicle: { include: { vehicleTypeRecord: true } },
           assignments: { include: { driver: true } },
           stops: {
             orderBy: { sequence: 'asc' },
@@ -1134,7 +1173,10 @@ export class TripsService {
           where: { id: { in: orderIds } },
           select: { id: true, version: true, status: true },
         }),
-        tx.vehicle.findUnique({ where: { id: trip.vehicleId } }),
+        tx.vehicle.findUnique({
+          where: { id: trip.vehicleId },
+          include: { vehicleTypeRecord: true },
+        }),
         tx.driver.findUnique({ where: { id: primaryAssignment.driverId } }),
         tx.trip.findFirst({
           where: {
@@ -1170,6 +1212,8 @@ export class TripsService {
         !currentVehicle ||
         currentVehicle.status !== VehicleStatus.AVAILABLE ||
         currentVehicle.updatedAt.toISOString() !== planningSnapshot.vehicle.updatedAt ||
+        currentVehicle.vehicleTypeRecord.updatedAt.toISOString() !==
+          planningSnapshot.vehicle.vehicleTypeUpdatedAt ||
         !currentDriver ||
         currentDriver.status !== DriverStatus.AVAILABLE ||
         currentDriver.licenseExpiry <= trip.plannedEndTime ||
@@ -1317,6 +1361,7 @@ export class TripsService {
       include: {
         homeBranch: true,
         homeDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT },
+        vehicleTypeRecord: true,
       },
     });
     if (!vehicle) {
@@ -1366,10 +1411,10 @@ export class TripsService {
       vehicle: {
         id: vehicle.id,
         plate_number: vehicle.plateNumber,
-        length_cm: vehicle.lengthCm,
-        width_cm: vehicle.widthCm,
-        height_cm: vehicle.heightCm,
-        payload_limit_kg: vehicle.payloadCapacityKg,
+        length_cm: vehicle.vehicleTypeRecord.lengthCm,
+        width_cm: vehicle.vehicleTypeRecord.widthCm,
+        height_cm: vehicle.vehicleTypeRecord.heightCm,
+        payload_limit_kg: vehicle.vehicleTypeRecord.payloadCapacityKg,
         door_position: "REAR",
       },
       depot: {
@@ -1426,6 +1471,7 @@ export class TripsService {
         include: {
           homeBranch: true,
           homeDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT },
+          vehicleTypeRecord: true,
         },
         orderBy: { plateNumber: 'asc' },
       }),
@@ -1520,11 +1566,11 @@ export class TripsService {
       source_vehicle_id: vehicle.id,
       plate_number: vehicle.plateNumber,
       model: vehicle.model,
-      vehicle_type: vehicle.vehicleType,
-      length_cm: vehicle.lengthCm,
-      width_cm: vehicle.widthCm,
-      height_cm: vehicle.heightCm,
-      payload_limit_kg: vehicle.payloadCapacityKg,
+      vehicle_type: vehicle.vehicleTypeRecord.name,
+      length_cm: vehicle.vehicleTypeRecord.lengthCm,
+      width_cm: vehicle.vehicleTypeRecord.widthCm,
+      height_cm: vehicle.vehicleTypeRecord.heightCm,
+      payload_limit_kg: vehicle.vehicleTypeRecord.payloadCapacityKg,
       door_position: 'REAR',
       depot: {
         id: `depot:${vehicle.planningStart.locationId}`,
@@ -1533,12 +1579,12 @@ export class TripsService {
         longitude: vehicle.planningStart.longitude,
       },
       fuel_consumption_liters_per_100_km: Number(
-        vehicle.fuelConsumptionLitersPer100Km,
+        vehicle.vehicleTypeRecord.fuelConsumptionLitersPer100Km,
       ),
       load_fuel_surcharge_percent_at_full_payload: Number(
-        vehicle.loadFuelSurchargePercentAtFullPayload,
+        vehicle.vehicleTypeRecord.loadFuelSurchargePercentAtFullPayload,
       ),
-      fixed_operating_cost_vnd: Number(vehicle.fixedOperatingCostPerTrip),
+      fixed_operating_cost_vnd: Number(vehicle.vehicleTypeRecord.fixedOperatingCostPerTrip),
     }));
     const baseDrivers = drivers.map((driver) => ({
       source_driver_id: driver.id,
@@ -1701,6 +1747,7 @@ export class TripsService {
           vehicles: candidateVehicles.map((vehicle) => ({
             id: vehicle.id,
             updatedAt: vehicle.updatedAt.toISOString(),
+            vehicleTypeUpdatedAt: vehicle.vehicleTypeRecord.updatedAt.toISOString(),
           })),
           drivers: drivers.map((driver) => ({
             id: driver.id,
@@ -1818,6 +1865,7 @@ export class TripsService {
             vehicles: candidateVehicles.map((vehicle) => ({
               id: vehicle.id,
               updatedAt: vehicle.updatedAt.toISOString(),
+              vehicleTypeUpdatedAt: vehicle.vehicleTypeRecord.updatedAt.toISOString(),
             })),
             drivers: drivers.map((driver) => ({
               id: driver.id,
@@ -1882,6 +1930,7 @@ export class TripsService {
           vehicles: candidateVehicles.map((vehicle) => ({
             id: vehicle.id,
             updatedAt: vehicle.updatedAt.toISOString(),
+            vehicleTypeUpdatedAt: vehicle.vehicleTypeRecord.updatedAt.toISOString(),
           })),
           drivers: drivers.map((driver) => ({
             id: driver.id,
@@ -2019,6 +2068,7 @@ export class TripsService {
           }),
           tx.vehicle.findMany({
             where: { id: { in: vehicleIds }, homeBranchId: branchId },
+            include: { vehicleTypeRecord: true },
           }),
           tx.driver.findMany({
             where: { id: { in: driverIds }, homeBranchId: branchId },
@@ -2210,6 +2260,7 @@ export class TripsService {
       parsedOrders.length === 0 ||
       typeof vehicle.id !== 'string' ||
       typeof vehicle.updatedAt !== 'string' ||
+      typeof vehicle.vehicleTypeUpdatedAt !== 'string' ||
       typeof driver.id !== 'string' ||
       typeof driver.updatedAt !== 'string'
     ) {
@@ -2217,7 +2268,11 @@ export class TripsService {
     }
     return {
       orders: parsedOrders,
-      vehicle: { id: vehicle.id, updatedAt: vehicle.updatedAt },
+      vehicle: {
+        id: vehicle.id,
+        updatedAt: vehicle.updatedAt,
+        vehicleTypeUpdatedAt: vehicle.vehicleTypeUpdatedAt,
+      },
       driver: { id: driver.id, updatedAt: driver.updatedAt },
     };
   }
@@ -2230,7 +2285,7 @@ export class TripsService {
   }
 
   private async validateSpatialPlan(
-    vehicle: VehicleRecord,
+    vehicle: VehicleRecord & { vehicleTypeRecord: VehicleType },
     stopsWithItems: DispatchStopWithItems[],
   ) {
     const cargoByOrderId = new Map<string, ReturnType<typeof packagesToCargoUnits>>();
@@ -2257,6 +2312,7 @@ export class TripsService {
       };
     });
 
+    const capabilities = vehicleCapabilities(vehicle);
     try {
       const response = await axios.post(
         `${this.optimizerUrl}/validate-spatial`,
@@ -2264,10 +2320,10 @@ export class TripsService {
           vehicle: {
             id: vehicle.id,
             plate_number: vehicle.plateNumber,
-            length_cm: vehicle.lengthCm,
-            width_cm: vehicle.widthCm,
-            height_cm: vehicle.heightCm,
-            payload_limit_kg: vehicle.payloadCapacityKg,
+            length_cm: capabilities.lengthCm,
+            width_cm: capabilities.widthCm,
+            height_cm: capabilities.heightCm,
+            payload_limit_kg: capabilities.payloadCapacityKg,
             door_position: 'REAR',
           },
           stops,
@@ -2312,7 +2368,7 @@ export class TripsService {
   private assertProposalResourcesCurrent(
     proposal: OptimizationProposal,
     orders: OrderWithStopsAndItems[],
-    vehicles: VehicleRecord[],
+    vehicles: VehicleRecordWithType[],
     drivers: DriverRecord[],
   ): void {
     const usedOrderIds = new Set(
@@ -2356,7 +2412,7 @@ export class TripsService {
     }
 
     const vehicleVersions = new Map(
-      proposal.resources.vehicles.map((item) => [item.id, item.updatedAt]),
+      proposal.resources.vehicles.map((item) => [item.id, item]),
     );
     for (const vehicle of vehicles) {
       if (vehicle.status !== VehicleStatus.AVAILABLE) {
@@ -2364,7 +2420,12 @@ export class TripsService {
           `Xe ${vehicle.plateNumber} không còn AVAILABLE`,
         );
       }
-      if (vehicleVersions.get(vehicle.id) !== vehicle.updatedAt.toISOString()) {
+      const expectedVehicle = vehicleVersions.get(vehicle.id);
+      if (
+        expectedVehicle?.updatedAt !== vehicle.updatedAt.toISOString() ||
+        expectedVehicle.vehicleTypeUpdatedAt !==
+          vehicle.vehicleTypeRecord.updatedAt.toISOString()
+      ) {
         throw new ConflictException(
           `Xe ${vehicle.plateNumber} đã thay đổi sau khi tối ưu; hãy chạy lại`,
         );
@@ -2397,7 +2458,7 @@ export class TripsService {
   private buildPlannedAutomaticTrips(
     proposal: OptimizationProposal,
     orders: OrderWithStopsAndItems[],
-    vehicles: VehicleRecord[],
+    vehicles: VehicleRecordWithType[],
     drivers: DriverRecord[],
   ): PlannedAutomaticTrip[] {
     const orderById = new Map(orders.map((order) => [order.id, order]));
@@ -2672,6 +2733,8 @@ export class TripsService {
           vehicle: {
             id: vehicle.id,
             updatedAt: vehicle.updatedAt.toISOString(),
+            vehicleTypeUpdatedAt:
+              vehicle.vehicleTypeRecord.updatedAt.toISOString(),
           },
           driver: {
             id: driver.id,
@@ -2959,7 +3022,10 @@ export class TripsService {
         'Không thể lưu chuyến khi chưa có Load Plan hợp lệ',
       );
     }
-    const vehicle = await tx.vehicle.findUnique({ where: { id: vehicleId } });
+    const vehicle = await tx.vehicle.findUnique({
+      where: { id: vehicleId },
+      include: { vehicleTypeRecord: true },
+    });
     if (!vehicle)
       throw new ConflictException('Xe của Load Plan không còn tồn tại');
     const resolvedPackageIdByCargoUnit =
@@ -2986,9 +3052,9 @@ export class TripsService {
         initialStateSnapshot: { placements: [] },
         geometrySnapshot: {
           vehicleId,
-          lengthMm: this.cmToMm(vehicle.lengthCm),
-          widthMm: this.cmToMm(vehicle.widthCm),
-          heightMm: this.cmToMm(vehicle.heightCm),
+          lengthMm: this.cmToMm(vehicle.vehicleTypeRecord.lengthCm),
+          widthMm: this.cmToMm(vehicle.vehicleTypeRecord.widthCm),
+          heightMm: this.cmToMm(vehicle.vehicleTypeRecord.heightCm),
           doorPosition: 'REAR',
           spatialValidation,
         } as unknown as Prisma.InputJsonValue,

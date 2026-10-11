@@ -36,22 +36,6 @@ ALTER COLUMN "allowedOrientations" DROP NOT NULL;
 ALTER TABLE "gps_events" ADD COLUMN     "trackingDeviceId" TEXT;
 
 -- CreateTable
-CREATE TABLE "driver_shifts" (
-    "id" TEXT NOT NULL,
-    "driverId" TEXT NOT NULL,
-    "workPolicyId" TEXT,
-    "startTime" TIMESTAMPTZ(3) NOT NULL,
-    "endTime" TIMESTAMPTZ(3) NOT NULL,
-    "timezone" TEXT NOT NULL DEFAULT 'Asia/Ho_Chi_Minh',
-    "overtimeApproved" BOOLEAN NOT NULL DEFAULT false,
-    "status" TEXT NOT NULL DEFAULT 'SCHEDULED',
-    "notes" TEXT,
-    "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT "driver_shifts_pkey" PRIMARY KEY ("id")
-);
-
--- CreateTable
 CREATE TABLE "allocations" (
     "id" TEXT NOT NULL,
     "orderItemId" TEXT NOT NULL,
@@ -144,6 +128,14 @@ CREATE TABLE "vehicle_types" (
     "id" TEXT NOT NULL,
     "code" TEXT NOT NULL,
     "name" TEXT NOT NULL,
+    "payloadCapacityKg" DOUBLE PRECISION NOT NULL,
+    "volumeCapacityM3" DOUBLE PRECISION NOT NULL,
+    "lengthCm" DOUBLE PRECISION NOT NULL,
+    "widthCm" DOUBLE PRECISION NOT NULL,
+    "heightCm" DOUBLE PRECISION NOT NULL,
+    "fuelConsumptionLitersPer100Km" DECIMAL(8,3) NOT NULL DEFAULT 12,
+    "loadFuelSurchargePercentAtFullPayload" DECIMAL(6,3) NOT NULL DEFAULT 0,
+    "fixedOperatingCostPerTrip" DECIMAL(14,2) NOT NULL DEFAULT 0,
     "requiredLicenseCategory" TEXT,
     "handlingCapabilities" JSONB,
     "active" BOOLEAN NOT NULL DEFAULT true,
@@ -151,38 +143,6 @@ CREATE TABLE "vehicle_types" (
     "updatedAt" TIMESTAMPTZ(3) NOT NULL,
 
     CONSTRAINT "vehicle_types_pkey" PRIMARY KEY ("id")
-);
-
--- CreateTable
-CREATE TABLE "vehicle_doors" (
-    "id" TEXT NOT NULL,
-    "vehicleId" TEXT NOT NULL,
-    "doorCode" TEXT NOT NULL,
-    "side" TEXT NOT NULL,
-    "offsetMm" INTEGER NOT NULL,
-    "sillHeightMm" INTEGER NOT NULL DEFAULT 0,
-    "clearWidthMm" INTEGER NOT NULL,
-    "clearHeightMm" INTEGER NOT NULL,
-    "approachGeometry" JSONB,
-    "active" BOOLEAN NOT NULL DEFAULT true,
-    "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMPTZ(3) NOT NULL,
-
-    CONSTRAINT "vehicle_doors_pkey" PRIMARY KEY ("id")
-);
-
--- CreateTable
-CREATE TABLE "driver_leave" (
-    "id" TEXT NOT NULL,
-    "driverId" TEXT NOT NULL,
-    "startsAt" TIMESTAMPTZ(3) NOT NULL,
-    "endsAt" TIMESTAMPTZ(3) NOT NULL,
-    "reason" TEXT NOT NULL,
-    "status" "ApprovalStatus" NOT NULL DEFAULT 'PENDING',
-    "createdAt" TIMESTAMPTZ(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMPTZ(3) NOT NULL,
-
-    CONSTRAINT "driver_leave_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -321,9 +281,6 @@ CREATE TABLE "_LoadPlanStepTasks" (
 );
 
 -- CreateIndex
-CREATE INDEX "driver_shifts_driverId_startTime_endTime_idx" ON "driver_shifts"("driverId", "startTime", "endTime");
-
--- CreateIndex
 CREATE INDEX "allocations_tripId_status_idx" ON "allocations"("tripId", "status");
 
 -- CreateIndex
@@ -356,11 +313,70 @@ CREATE UNIQUE INDEX "customer_users_userId_key" ON "customer_users"("userId");
 -- CreateIndex
 CREATE UNIQUE INDEX "vehicle_types_code_key" ON "vehicle_types"("code");
 
--- CreateIndex
-CREATE UNIQUE INDEX "vehicle_doors_vehicleId_doorCode_key" ON "vehicle_doors"("vehicleId", "doorCode");
+-- Normalize the existing per-vehicle technical configuration. Vehicles with the
+-- same legacy name and capabilities share one VehicleType without losing values.
+INSERT INTO "vehicle_types" (
+    "id", "code", "name", "payloadCapacityKg", "volumeCapacityM3",
+    "lengthCm", "widthCm", "heightCm", "fuelConsumptionLitersPer100Km",
+    "loadFuelSurchargePercentAtFullPayload", "fixedOperatingCostPerTrip",
+    "createdAt", "updatedAt"
+)
+SELECT
+    MIN("id"),
+    'LEGACY-' || UPPER(SUBSTRING(MD5(CONCAT_WS('|',
+        "vehicleType", "payloadCapacityKg", "volumeCapacityM3", "lengthCm",
+        "widthCm", "heightCm", "fuelConsumptionLitersPer100Km",
+        "loadFuelSurchargePercentAtFullPayload", "fixedOperatingCostPerTrip"
+    )), 1, 12)),
+    "vehicleType", "payloadCapacityKg", "volumeCapacityM3", "lengthCm",
+    "widthCm", "heightCm", "fuelConsumptionLitersPer100Km",
+    "loadFuelSurchargePercentAtFullPayload", "fixedOperatingCostPerTrip",
+    MIN("createdAt"), MAX("updatedAt")
+FROM "vehicles"
+GROUP BY
+    "vehicleType", "payloadCapacityKg", "volumeCapacityM3", "lengthCm",
+    "widthCm", "heightCm", "fuelConsumptionLitersPer100Km",
+    "loadFuelSurchargePercentAtFullPayload", "fixedOperatingCostPerTrip";
 
--- CreateIndex
-CREATE INDEX "driver_leave_driverId_startsAt_endsAt_idx" ON "driver_leave"("driverId", "startsAt", "endsAt");
+UPDATE "vehicles" AS v
+SET "vehicleTypeId" = vt."id"
+FROM "vehicle_types" AS vt
+WHERE vt."name" = v."vehicleType"
+  AND vt."payloadCapacityKg" = v."payloadCapacityKg"
+  AND vt."volumeCapacityM3" = v."volumeCapacityM3"
+  AND vt."lengthCm" = v."lengthCm"
+  AND vt."widthCm" = v."widthCm"
+  AND vt."heightCm" = v."heightCm"
+  AND vt."fuelConsumptionLitersPer100Km" = v."fuelConsumptionLitersPer100Km"
+  AND vt."loadFuelSurchargePercentAtFullPayload" = v."loadFuelSurchargePercentAtFullPayload"
+  AND vt."fixedOperatingCostPerTrip" = v."fixedOperatingCostPerTrip";
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM "vehicles" WHERE "vehicleTypeId" IS NULL) THEN
+    RAISE EXCEPTION 'Vehicle type backfill incomplete';
+  END IF;
+END $$;
+
+ALTER TABLE "vehicles"
+  ALTER COLUMN "vehicleTypeId" SET NOT NULL,
+  DROP COLUMN "vehicleType",
+  DROP COLUMN "payloadCapacityKg",
+  DROP COLUMN "volumeCapacityM3",
+  DROP COLUMN "lengthCm",
+  DROP COLUMN "widthCm",
+  DROP COLUMN "heightCm",
+  DROP COLUMN "fuelConsumptionLitersPer100Km",
+  DROP COLUMN "loadFuelSurchargePercentAtFullPayload",
+  DROP COLUMN "fixedOperatingCostPerTrip";
+
+ALTER TABLE "vehicle_types" ADD CONSTRAINT "vehicle_types_positive_capacities" CHECK (
+  "payloadCapacityKg" > 0 AND "volumeCapacityM3" > 0 AND
+  "lengthCm" > 0 AND "widthCm" > 0 AND "heightCm" > 0 AND
+  "fuelConsumptionLitersPer100Km" >= 0 AND
+  "loadFuelSurchargePercentAtFullPayload" >= 0 AND
+  "fixedOperatingCostPerTrip" >= 0
+);
 
 -- CreateIndex
 CREATE UNIQUE INDEX "tracking_devices_installationKey_key" ON "tracking_devices"("installationKey");
@@ -438,12 +454,6 @@ CREATE UNIQUE INDEX "gps_events_trackingDeviceId_deviceSessionId_sequence_key" O
 ALTER TABLE "vehicles" ADD CONSTRAINT "vehicles_vehicleTypeId_fkey" FOREIGN KEY ("vehicleTypeId") REFERENCES "vehicle_types"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "driver_shifts" ADD CONSTRAINT "driver_shifts_driverId_fkey" FOREIGN KEY ("driverId") REFERENCES "drivers"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "driver_shifts" ADD CONSTRAINT "driver_shifts_workPolicyId_fkey" FOREIGN KEY ("workPolicyId") REFERENCES "work_policies"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
 ALTER TABLE "allocations" ADD CONSTRAINT "allocations_orderItemId_fkey" FOREIGN KEY ("orderItemId") REFERENCES "order_items"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
@@ -487,12 +497,6 @@ ALTER TABLE "packages" ADD CONSTRAINT "packages_orderItemId_fkey" FOREIGN KEY ("
 
 -- AddForeignKey
 ALTER TABLE "order_status_events" ADD CONSTRAINT "order_status_events_actorUserId_fkey" FOREIGN KEY ("actorUserId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "vehicle_doors" ADD CONSTRAINT "vehicle_doors_vehicleId_fkey" FOREIGN KEY ("vehicleId") REFERENCES "vehicles"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "driver_leave" ADD CONSTRAINT "driver_leave_driverId_fkey" FOREIGN KEY ("driverId") REFERENCES "drivers"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "tracking_devices" ADD CONSTRAINT "tracking_devices_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

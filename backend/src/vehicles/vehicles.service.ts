@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { VehicleStatus, LocationType } from '@prisma/client';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
+import { flattenVehicleType } from './vehicle-capabilities';
 
 const HOME_DEPOT_SUMMARY_SELECT = {
   id: true,
@@ -22,7 +23,7 @@ export class VehiclesService {
   constructor(private prisma: PrismaService) {}
 
   async findAll(user: Principal, branchId?: string, status?: VehicleStatus) {
-    return this.prisma.vehicle.findMany({
+    const vehicles = await this.prisma.vehicle.findMany({
       where: {
         homeBranchId: branchFilter(user, 'vehicles.read', branchId),
         ...(status ? { status } : {}),
@@ -32,9 +33,11 @@ export class VehiclesService {
           select: { id: true, code: true, name: true },
         },
         homeDepotLocation: { select: HOME_DEPOT_SUMMARY_SELECT },
+        vehicleTypeRecord: true,
       },
       orderBy: { plateNumber: 'asc' },
     });
+    return vehicles.map(flattenVehicleType);
   }
 
   async findOne(id: string, user: Principal) {
@@ -43,6 +46,7 @@ export class VehiclesService {
       include: {
         homeBranch: true,
         homeDepotLocation: { select: HOME_DEPOT_SUMMARY_SELECT },
+        vehicleTypeRecord: true,
         trips: {
           where: tripFilter(user),
           take: 5,
@@ -51,18 +55,27 @@ export class VehiclesService {
       },
     });
     if (!result) throw new NotFoundException('Tài nguyên không tồn tại hoặc ngoài phạm vi được cấp');
-    return result;
+    return flattenVehicleType(result);
   }
 
   async getAvailable(user: Principal, branchId?: string) {
-    return this.prisma.vehicle.findMany({
+    const vehicles = await this.prisma.vehicle.findMany({
       where: {
         status: VehicleStatus.AVAILABLE,
         homeBranchId: branchFilter(user, 'vehicles.read', branchId),
       },
       include: {
         homeBranch: true,
+        vehicleTypeRecord: true,
       },
+    });
+    return vehicles.map(flattenVehicleType);
+  }
+
+  async findTypes() {
+    return this.prisma.vehicleType.findMany({
+      where: { active: true },
+      orderBy: [{ payloadCapacityKg: 'asc' }, { name: 'asc' }],
     });
   }
 
@@ -80,30 +93,24 @@ export class VehiclesService {
     }
 
     assertPermission(user, 'vehicles.manage', vehicle.homeBranchId);
+    if (dto.vehicleTypeId !== undefined) {
+      const type = await this.prisma.vehicleType.findFirst({
+        where: { id: dto.vehicleTypeId, active: true },
+        select: { id: true },
+      });
+      if (!type) {
+        throw new BadRequestException('Loại xe không tồn tại hoặc đã ngừng sử dụng');
+      }
+    }
     const targetDepotId = await this.resolveTargetHomeDepot(vehicle.homeDepotLocationId, vehicle.homeBranchId, dto.homeBranchId ?? vehicle.homeBranchId, dto.homeDepotLocationId);
-    return this.prisma.vehicle.update({
+    const updated = await this.prisma.vehicle.update({
       where: { id },
       data: {
         ...(dto.plateNumber ? { plateNumber: dto.plateNumber.trim() } : {}),
         ...(dto.model ? { model: dto.model.trim() } : {}),
-        ...(dto.vehicleType ? { vehicleType: dto.vehicleType.trim() } : {}),
+        ...(dto.vehicleTypeId ? { vehicleTypeId: dto.vehicleTypeId } : {}),
         ...(dto.homeBranchId ? { homeBranchId: dto.homeBranchId } : {}),
         homeDepotLocationId: targetDepotId,
-        ...(dto.payloadCapacityKg !== undefined
-          ? { payloadCapacityKg: dto.payloadCapacityKg }
-          : {}),
-        ...(dto.volumeCapacityM3 !== undefined
-          ? { volumeCapacityM3: dto.volumeCapacityM3 }
-          : {}),
-        ...(dto.lengthCm !== undefined ? { lengthCm: dto.lengthCm } : {}),
-        ...(dto.widthCm !== undefined ? { widthCm: dto.widthCm } : {}),
-        ...(dto.heightCm !== undefined ? { heightCm: dto.heightCm } : {}),
-        ...(dto.fuelConsumptionLitersPer100Km !== undefined
-          ? { fuelConsumptionLitersPer100Km: dto.fuelConsumptionLitersPer100Km }
-          : {}),
-        ...(dto.fixedOperatingCostPerTrip !== undefined
-          ? { fixedOperatingCostPerTrip: dto.fixedOperatingCostPerTrip }
-          : {}),
         ...(dto.status ? { status: dto.status } : {}),
       },
       include: {
@@ -111,8 +118,10 @@ export class VehiclesService {
           select: { id: true, code: true, name: true },
         },
         homeDepotLocation: { select: HOME_DEPOT_SUMMARY_SELECT },
+        vehicleTypeRecord: true,
       },
     });
+    return flattenVehicleType(updated);
   }
 
   /**

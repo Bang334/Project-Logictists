@@ -7,7 +7,7 @@ if (
   url.pathname !== "/tms_auth_test"
 )
   throw new Error("Local isolated test PostgreSQL required");
-url.pathname = "/tms_driver_test_20261007";
+url.pathname = "/tms_driver_test_20261011";
 const env = {
   ...process.env,
   ...config,

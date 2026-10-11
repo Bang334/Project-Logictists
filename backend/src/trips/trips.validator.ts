@@ -1,5 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
-import { Vehicle, Order, OrderStop, OrderItem, Package, StopType } from '@prisma/client';
+import { Vehicle, VehicleType, Order, OrderStop, OrderItem, Package, StopType } from '@prisma/client';
 import { packageTotals } from '../orders/package-measurements';
 import { assertPackageManifest } from '../orders/order-contract';
 
@@ -66,7 +66,9 @@ export class TripsValidator {
    * Tuyệt đối không để vượt tải tại bất kỳ chặng nào giữa 2 điểm dừng.
    */
   static calculateAndValidateLoad(
-    vehicle: Vehicle,
+    vehicle: Vehicle & {
+      vehicleTypeRecord: Pick<VehicleType, 'payloadCapacityKg' | 'volumeCapacityM3'>;
+    },
     orderedStops: StopWithItems[],
   ): ValidationResult {
     const loadProfile: LegLoadStatus[] = [];
@@ -75,6 +77,7 @@ export class TripsValidator {
     let maxWeight = 0;
     let maxVolume = 0;
     const errors: string[] = [];
+    const capacity = vehicle.vehicleTypeRecord;
 
     orderedStops.forEach((stop, index) => {
       const manifest = { ...stop.order, packageDataStatus: stop.order.packageDataStatus ?? 'LEGACY_REVIEW', items: stop.order.items.map(item => ({ ...item, packages: item.packages ?? [] })) };
@@ -98,21 +101,21 @@ export class TripsValidator {
       if (currentVolume > maxVolume) maxVolume = currentVolume;
 
       const weightUtilization =
-        Math.round((currentWeight / vehicle.payloadCapacityKg) * 1000) / 10;
+        Math.round((currentWeight / capacity.payloadCapacityKg) * 1000) / 10;
       const volumeUtilization =
-        Math.round((currentVolume / vehicle.volumeCapacityM3) * 1000) / 10;
+        Math.round((currentVolume / capacity.volumeCapacityM3) * 1000) / 10;
 
       // Kiểm tra vi phạm tải trọng
-      if (currentWeightG > BigInt(Math.floor(vehicle.payloadCapacityKg * 1000))) {
+      if (currentWeightG > BigInt(Math.floor(capacity.payloadCapacityKg * 1000))) {
         errors.push(
-          `Vi phạm tải trọng tại Điểm ${index + 1} (${stop.orderStop.address}): Tải trên xe đạt ${currentWeight} kg, vượt quá tải trọng cho phép của xe ${vehicle.plateNumber} (${vehicle.payloadCapacityKg} kg)!`,
+          `Vi phạm tải trọng tại Điểm ${index + 1} (${stop.orderStop.address}): Tải trên xe đạt ${currentWeight} kg, vượt quá tải trọng cho phép của xe ${vehicle.plateNumber} (${capacity.payloadCapacityKg} kg)!`,
         );
       }
 
       // Kiểm tra vi phạm thể tích
-      if (currentVolumeMm3 > BigInt(Math.floor(vehicle.volumeCapacityM3 * 1e9))) {
+      if (currentVolumeMm3 > BigInt(Math.floor(capacity.volumeCapacityM3 * 1e9))) {
         errors.push(
-          `Vi phạm thể tích tại Điểm ${index + 1} (${stop.orderStop.address}): Thể tích hàng ${currentVolume} m³, vượt quá dung tích thùng xe ${vehicle.plateNumber} (${vehicle.volumeCapacityM3} m³)!`,
+          `Vi phạm thể tích tại Điểm ${index + 1} (${stop.orderStop.address}): Thể tích hàng ${currentVolume} m³, vượt quá dung tích thùng xe ${vehicle.plateNumber} (${capacity.volumeCapacityM3} m³)!`,
         );
       }
 

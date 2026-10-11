@@ -27,7 +27,6 @@ beforeAll(() => {
     })),
   });
 });
-
 afterEach(() => {
   cleanup();
   authMocks.login.mockReset();
@@ -51,5 +50,36 @@ describe('LoginPage', () => {
     await waitFor(() => {
       expect(authMocks.login).toHaveBeenCalledWith('test-user', 'test-password');
     });
-  });
+  }, 10_000);
+
+  it('fills form fields when clicking fill button on demo account', async () => {
+    render(
+      <AntdApp>
+        <LoginPage />
+      </AntdApp>,
+    );
+
+    const fillButtons = screen.getAllByRole('button', { name: 'Điền' });
+    expect(fillButtons.length).toBeGreaterThan(0);
+    fireEvent.click(fillButtons[0]);
+
+    expect(screen.getByLabelText('Tên đăng nhập')).toHaveValue('admin');
+    expect(screen.getByLabelText('Mật khẩu')).toHaveValue('admin123');
+  }, 10_000);
+
+  it('submits login immediately when clicking quick login button on demo account', async () => {
+    render(
+      <AntdApp>
+        <LoginPage />
+      </AntdApp>,
+    );
+
+    const quickLoginButtons = screen.getAllByRole('button', { name: 'Đăng nhập nhanh' });
+    expect(quickLoginButtons.length).toBeGreaterThan(0);
+    fireEvent.click(quickLoginButtons[0]);
+
+    await waitFor(() => {
+      expect(authMocks.login).toHaveBeenCalledWith('admin', 'admin123');
+    });
+  }, 10_000);
 });

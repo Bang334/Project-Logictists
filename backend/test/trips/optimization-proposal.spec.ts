@@ -10,7 +10,7 @@ const proposal = (): OptimizationProposal => ({
   expiresAt: '2026-09-11T00:30:00.000Z',
   resources: {
     orders: [{ id: 'order-1', version: 2 }],
-    vehicles: [{ id: 'vehicle-1', updatedAt: '2026-09-10T00:00:00.000Z' }],
+    vehicles: [{ id: 'vehicle-1', updatedAt: '2026-09-10T00:00:00.000Z', vehicleTypeUpdatedAt: '2026-09-10T00:00:00.000Z' }],
     drivers: [{ id: 'driver-1', updatedAt: '2026-09-10T00:00:00.000Z' }],
   },
   result: {
