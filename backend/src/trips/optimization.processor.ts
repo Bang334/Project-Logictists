@@ -219,7 +219,7 @@ export class OptimizationProcessor extends WorkerHost {
               unassignedOrderCount: result.unassigned_orders.length,
             },
             diagnostics: {
-              source: 'PARALLEL_MULTI_START',
+              source: 'HYBRID_FIRST',
               messages: result.diagnostics,
             },
           };
@@ -239,7 +239,7 @@ export class OptimizationProcessor extends WorkerHost {
             completedAt: new Date(),
             leaseUntil: null,
             leaseOwner: null,
-            solverVersion: 'ortools-fastapi-v1',
+            solverVersion: 'hybrid-first-fastapi-v1',
           },
         });
         if (finalized.count !== 1) return false;

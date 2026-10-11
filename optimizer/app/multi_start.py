@@ -1,12 +1,10 @@
-"""Multi-start parallel OR-Tools optimization engine.
+"""Hybrid-first fleet optimization with a bounded OR-Tools fallback.
 
-Runs multiple independent OR-Tools searches using diverse first-solution
-strategies and metaheuristics across worker processes, then validates and
-ranks the solutions, retaining only distinct candidates that serve 100% of orders.
+Tiny problems use exhaustive search. Larger problems spend their selected
+budget on independent packing-aware Hybrid ALNS seeds, validate every result,
+and invoke one OR-Tools search only when Hybrid cannot produce any route.
 """
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import os
 import time
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -50,10 +48,8 @@ def _run_search_worker(
             routing_budget_share=routing_budget_share,
             validation_budget_share=validation_budget_share,
             consolidation_budget_share=consolidation_budget_share,
-            # Multi-start adds one independently audited Hybrid candidate after
-            # all OR-Tools workers finish. Running the same expensive fallback
-            # inside every worker multiplied spatial audits and could exceed
-            # the HTTP timeout by several minutes.
+            # This worker is the final OR-Tools fallback. It must not recursively
+            # invoke Hybrid again after the Hybrid-first phase has already failed.
             enable_hybrid_fallback=False,
         )
         plan, objective = solver.solve_with_objective()
@@ -233,7 +229,7 @@ def select_ranked_candidates(
 
 
 class MultiStartFleetOptimizer:
-    """Manages parallel OR-Tools multi-start searches and candidate collation."""
+    """Manages Hybrid seed runs, validation, ranking, and OR-Tools fallback."""
 
     def __init__(
         self,
@@ -261,8 +257,7 @@ class MultiStartFleetOptimizer:
         )
 
     def solve(self, max_candidates: int = 3) -> FleetOptimizationBatchResponse:
-        worker_time_budget_seconds = float(self.policy.time_budget_seconds)
-        active_strategies = self.strategies
+        search_budget_seconds = float(self.policy.time_budget_seconds)
         exhaustive_fallback_diagnostic: Optional[str] = None
         if self.use_exhaustive_search:
             exhaustive_started_at = time.monotonic()
@@ -309,97 +304,40 @@ class MultiStartFleetOptimizer:
                     candidates=candidates,
                     diagnostics=diagnostics,
                 )
-            worker_time_budget_seconds = max(
+            search_budget_seconds = max(
                 0.1,
                 self.policy.time_budget_seconds
                 - (time.monotonic() - exhaustive_started_at),
             )
-            active_strategies = self.strategies[:1]
             exhaustive_fallback_diagnostic = (
                 "Vét cạn chưa tìm được phương án giao đủ đơn; "
-                "chuyển sang 1 lượt OR-Tools trong phần ngân sách còn lại."
+                "chuyển sang Hybrid-first trong phần ngân sách còn lại."
             )
 
         request_dict = self.request.model_dump()
         all_order_ids = {order.id for order in self.request.orders}
-
-        cpu_avail = os.cpu_count() or 4
-        # Limit worker pool to avoid memory thrashing while taking advantage of cores
-        max_workers = max(1, min(len(active_strategies), cpu_avail - 1, 6))
-
         evaluated_runs: List[Tuple[SearchStrategy, FleetOptimizationResponse, int]] = []
-        worker_errors: List[str] = []
+        search_errors: List[str] = []
+        hybrid_seeds = (
+            (0, 1)
+            if search_budget_seconds >= 48.0 and len(self.request.orders) >= 8
+            else (0,)
+        )
+        hybrid_run_budget = search_budget_seconds / len(hybrid_seeds)
 
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            future_to_strategy = {
-                executor.submit(
-                    _run_search_worker,
-                    request_dict,
-                    strategy.key,
-                    worker_time_budget_seconds,
-                    self.policy.stagnation_seconds,
-                    self.policy.routing_budget_share,
-                    self.policy.validation_budget_share,
-                    self.policy.consolidation_budget_share,
-                ): strategy
-                for strategy in active_strategies
-            }
-
-            for future in as_completed(future_to_strategy):
-                strategy = future_to_strategy[future]
-                try:
-                    _, _, plan_dict, objective, err = future.result()
-                    if err is not None:
-                        worker_errors.append(f"{strategy.label}: {err}")
-                    elif plan_dict is not None:
-                        plan = FleetOptimizationResponse(**plan_dict)
-                        planning_objective = apply_planning_objective(
-                            self.objective_request, plan
-                        )
-                        evaluated_runs.append(
-                            (strategy, plan, planning_objective.selection_score_vnd)
-                        )
-                except Exception as exc:
-                    worker_errors.append(f"{strategy.label}: {str(exc)}")
-
-        if not evaluated_runs:
-            raise RuntimeError(
-                f"Tất cả {len(active_strategies)} lượt chạy OR-Tools đều thất bại: "
-                + "; ".join(worker_errors)
-            )
-
-        ortools_run_count = len(evaluated_runs)
-
-        # Add the benchmark-winning Hybrid ALNS as an independently validated
-        # candidate next to the OR-Tools multi-start results.
-        try:
-            hybrid_budget_seconds = min(
-                worker_time_budget_seconds,
-                max(6.0, worker_time_budget_seconds * 0.25),
-                20.0,
-            )
-            hybrid_seeds = (
-                (0, 1)
-                if hybrid_budget_seconds >= 12.0 and len(self.request.orders) >= 8
-                else (0,)
-            )
-            hybrid_run_budget = hybrid_budget_seconds / len(hybrid_seeds)
-            warm_start_plan = min(
-                evaluated_runs,
-                key=lambda item: (
-                    len(item[1].unassigned_orders),
-                    item[1].total_cost_vnd,
-                ),
-            )[1]
-            for seed in hybrid_seeds:
+        for seed in hybrid_seeds:
+            try:
                 hybrid = PackingAwareHybridALNSOptimizer(
                     self.request,
                     time_budget_seconds=hybrid_run_budget,
                     random_seed=seed,
-                    initial_plan=warm_start_plan,
+                    initial_plan=None,
                 )
                 hybrid_plan = hybrid.solve()
                 if not hybrid_plan.routes:
+                    search_errors.append(
+                        f"Packing-aware Hybrid ALNS (seed {seed}) không trả về tuyến."
+                    )
                     continue
                 planning_objective = apply_planning_objective(
                     self.objective_request, hybrid_plan
@@ -417,8 +355,46 @@ class MultiStartFleetOptimizer:
                         planning_objective.selection_score_vnd,
                     )
                 )
-        except Exception as exc:
-            worker_errors.append(f"Packing-aware Hybrid ALNS: {exc}")
+            except Exception as exc:
+                search_errors.append(
+                    f"Packing-aware Hybrid ALNS (seed {seed}): {exc}"
+                )
+
+        hybrid_success_count = len(evaluated_runs)
+        ortools_fallback_used = False
+        if not evaluated_runs:
+            fallback_strategy = (
+                self.strategies[0]
+                if self.strategies
+                else DEFAULT_SEARCH_STRATEGY
+            )
+            _, _, plan_dict, _, error = _run_search_worker(
+                request_dict,
+                fallback_strategy.key,
+                search_budget_seconds,
+                self.policy.stagnation_seconds,
+                self.policy.routing_budget_share,
+                self.policy.validation_budget_share,
+                self.policy.consolidation_budget_share,
+            )
+            if error is not None or plan_dict is None:
+                details = "; ".join(search_errors + ([error] if error else []))
+                raise RuntimeError(
+                    "Hybrid-first và OR-Tools fallback đều không trả được nghiệm: "
+                    + details
+                )
+            fallback_plan = FleetOptimizationResponse(**plan_dict)
+            fallback_objective = apply_planning_objective(
+                self.objective_request, fallback_plan
+            )
+            evaluated_runs.append(
+                (
+                    fallback_strategy,
+                    fallback_plan,
+                    fallback_objective.selection_score_vnd,
+                )
+            )
+            ortools_fallback_used = True
 
         candidates, fully_served_count, diagnostics = select_ranked_candidates(
             evaluated_runs,
@@ -427,19 +403,20 @@ class MultiStartFleetOptimizer:
         )
 
         batch_diagnostics = [
-            f"Đã thực hiện {ortools_run_count}/{len(active_strategies)} lượt chạy OR-Tools song song độc lập.",
             (
-                "Chính sách tìm kiếm thích ứng: "
+                "Hybrid-first: "
+                f"đã nhận {hybrid_success_count}/{len(hybrid_seeds)} "
+                "nghiệm Hybrid có tuyến; "
                 f"độ phức tạp {self.policy.complexity_score}, "
-                f"ngân sách {worker_time_budget_seconds:g} giây/lượt, "
-                f"dừng khi không cải thiện {self.policy.stagnation_seconds:g} giây "
-                "sau khi đã có nghiệm giao đủ đơn ở tầng routing; "
-                f"chia routing/validator/gom tuyến "
-                f"{self.policy.routing_budget_share * 100:g}/"
-                f"{self.policy.validation_budget_share * 100:g}/"
-                f"{self.policy.consolidation_budget_share * 100:g}%."
+                f"ngân sách tổng {search_budget_seconds:g} giây, "
+                f"{hybrid_run_budget:g} giây/seed."
             ),
         ]
+        if ortools_fallback_used:
+            batch_diagnostics.append(
+                "Hybrid không trả được tuyến; "
+                "đã chạy đúng 1 lượt OR-Tools fallback."
+            )
         if exhaustive_fallback_diagnostic:
             batch_diagnostics.append(exhaustive_fallback_diagnostic)
         if self.pruned_virtual_vehicle_count:
@@ -447,9 +424,10 @@ class MultiStartFleetOptimizer:
                 f"Đã loại sớm {self.pruned_virtual_vehicle_count} khung xe-ngày "
                 "không thể tự phục vụ bất kỳ đơn nào."
             )
-        if worker_errors:
+        if search_errors:
             batch_diagnostics.append(
-                f"Có {len(worker_errors)} lượt gặp lỗi: {'; '.join(worker_errors[:2])}"
+                f"Có {len(search_errors)} lượt Hybrid gặp lỗi: "
+                f"{'; '.join(search_errors[:2])}"
             )
         batch_diagnostics.extend(diagnostics)
 
