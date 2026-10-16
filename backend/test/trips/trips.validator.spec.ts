@@ -1,25 +1,22 @@
 import { TripsValidator, StopWithItems } from '../../src/trips/trips.validator';
-import { Vehicle, OrderStatus, StopType, VehicleStatus, Prisma } from '@prisma/client';
+import { Vehicle, VehicleType, OrderStatus, StopType, VehicleStatus } from '@prisma/client';
 import { BadRequestException } from '@nestjs/common';
 
 describe('TripsValidator - TMS Invariants', () => {
-  const mockVehicle: Vehicle = {
+  const mockVehicle: Vehicle & {
+    vehicleTypeRecord: Pick<VehicleType, 'payloadCapacityKg' | 'volumeCapacityM3'>;
+  } = {
     id: 'veh-1',
     plateNumber: '29H-842.15',
     model: 'Hino 500',
-    vehicleType: '5 tấn',
     homeBranchId: 'branch-1',
-    payloadCapacityKg: 5000,
-    volumeCapacityM3: 25,
-    lengthCm: 620,
-    widthCm: 215,
-    heightCm: 205,
-    fuelConsumptionLitersPer100Km: new Prisma.Decimal(18.5),
-    loadFuelSurchargePercentAtFullPayload: new Prisma.Decimal(0),
-    fixedOperatingCostPerTrip: new Prisma.Decimal(120000),
     status: VehicleStatus.AVAILABLE,
     homeDepotLocationId: null,
-    vehicleTypeId: null,
+    vehicleTypeId: 'type-1',
+    vehicleTypeRecord: {
+      payloadCapacityKg: 5000,
+      volumeCapacityM3: 25,
+    },
     currentLatitude: null,
     currentLongitude: null,
     lastLocationAt: null,

@@ -16,6 +16,9 @@ export class VehiclesController {
   @Get('available')
   available(@Req() req: AuthRequest, @Query('branchId') branchId?: string) { return this.service.getAvailable(req.user, branchId); }
   @RequirePermission('vehicles.read')
+  @Get('types')
+  types() { return this.service.findTypes(); }
+  @RequirePermission('vehicles.read')
   @Get(':id')
   findOne(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string) { return this.service.findOne(id, req.user); }
   @RequirePermission('vehicles.manage')

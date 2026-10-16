@@ -58,3 +58,25 @@ python benchmark.py --sizes 200 500 --time-limit 60 --wall-timeout 180
 Phép đo chạy trên Windows/Python 3.8 bằng test process mới; `pytest --durations=1` ghi nhận 0,36 giây cho phần call test sau khi import. Nhánh vét cạn đã duyệt 56 chuỗi tuyến trên 7 slot ngày và 77 phân công giao đủ đơn. Tầng routing đã duyệt hết, nhưng một số chuỗi không hợp lệ chạm giới hạn tìm bố trí; vì vậy kết quả không được tuyên bố tối ưu toàn cục. Đây là benchmark hồi quy cục bộ, không phải SLA production.
 
 Với snapshot miền Bắc 16 đơn, 297 kiện, 3 xe vật lý và 21 slot xe-ngày, policy tổng thể cho complexity `66,5` là 92 giây/lượt: routing 78%, validator 14%, gom tuyến 8% và stagnation 17,94 giây. Đây là policy được suy ra từ công thức chung, không phải ngoại lệ hardcode theo chi nhánh.
+
+## A/B Hybrid-first và OR-Tools warm-start — 2026-10-11
+
+Đo trực tiếp bốn fixture production trên Windows/Python 3.8. Pipeline cũ nhận preset 10 giây cho tầng OR-Tools và tối đa 6 giây cho Hybrid; nhánh Hybrid độc lập nhận 16 giây để giữ cùng ngân sách danh nghĩa đầu-cuối. Mỗi kết quả đều qua production `SpatialValidator`.
+
+| Dataset | Pipeline cũ: phục vụ, tuyến, chi phí, thời gian | Hybrid độc lập: phục vụ, tuyến, chi phí, thời gian | Kết quả |
+|---|---|---|---|
+| `scenario_2_heavy_cargo.json` | 12/12, 5, 4.896.140 VND, 23,882s | 12/12, 2, 3.739.059 VND, 21,321s | Hybrid giao đủ với ít tuyến và chi phí thấp hơn |
+| `scenario_4_tight_windows.json` | 5/18, 1, 560.374 VND, 25,590s | 18/18, 4, 2.578.084 VND, 26,138s | Hybrid phục vụ đủ; chi phí không so trực tiếp vì pipeline cũ bỏ 13 đơn |
+| `scenario_6_dynamic_reuse.json` | 14/14, 3, 2.375.090 VND, 15,898s | 14/14, 1, 1.840.073 VND, 14,478s | Hybrid giao đủ với ít tuyến và chi phí thấp hơn |
+| `scenario_8_dense_fragmentation.json` | 16/16, 4, 4.275.805 VND, 47,827s | 16/16, 3, 3.782.594 VND, 43,307s | Hybrid giao đủ với ít tuyến và chi phí thấp hơn |
+
+Trong pipeline cũ, candidate đứng đầu cả 4/4 case vẫn là Hybrid ALNS; không có candidate OR-Tools nào thắng. Kết quả này đủ để chuyển đường chạy production sang Hybrid-first, nhưng chưa chứng minh OR-Tools vô dụng trên mọi input. Vì vậy OR-Tools được giữ lại đúng một lượt fallback khi mọi seed Hybrid không tạo được tuyến.
+
+Sau thay đổi, chạy lại preset mặc định 30 giây:
+
+| Dataset | Trạng thái | Phục vụ | Validator | Tuyến | Chi phí | Thời gian | Solver run |
+|---|---|---:|---|---:|---:|---:|---:|
+| `scenario_4_tight_windows.json` | SUCCESS | 18/18 | PASS | 2 | 1.771.413 VND | 37,831s | 1 Hybrid |
+| `scenario_8_dense_fragmentation.json` | SUCCESS | 16/16 | PASS | 2 | 3.275.179 VND | 53,292s | 1 Hybrid |
+
+Đây là benchmark hồi quy trên fixture đã biết, không phải SLA hoặc bằng chứng tối ưu toàn cục. OR-Tools fallback chưa được kích hoạt trong hai lần chạy sau thay đổi vì Hybrid đã trả tuyến hợp lệ.

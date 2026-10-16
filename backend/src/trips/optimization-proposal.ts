@@ -6,7 +6,11 @@ import {
 
 export type OptimizationResourceVersions = {
   orders: Array<{ id: string; version: number }>;
-  vehicles: Array<{ id: string; updatedAt: string }>;
+  vehicles: Array<{
+    id: string;
+    updatedAt: string;
+    vehicleTypeUpdatedAt: string;
+  }>;
   drivers: Array<{ id: string; updatedAt: string }>;
 };
 
@@ -44,6 +48,11 @@ function assertVersionRows(
       }
     } else if (!isValidDateString(row.updatedAt)) {
       throw new Error(`Proposal có updatedAt của ${kind} không hợp lệ`);
+    } else if (
+      kind === 'vehicles' &&
+      !isValidDateString(row.vehicleTypeUpdatedAt)
+    ) {
+      throw new Error('Proposal có vehicleTypeUpdatedAt không hợp lệ');
     }
   }
 }

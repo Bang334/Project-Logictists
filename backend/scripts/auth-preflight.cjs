@@ -23,11 +23,12 @@ async function main() {
       return { name: row.migration_name, finished: !!row.finished_at, rolledBack: !!row.rolled_back_at, repositoryChecksumMatches: fs.existsSync(file) ? crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') === row.checksum : null };
     }));
   } else console.log('Migration history MISSING: do not run broad migrate deploy or mark old migrations applied.');
-  console.log('Driver employee link:', columns.some(c => c.table_name === 'drivers' && c.column_name === 'employeeId') ? 'PRESENT: reconcile Employee ownership before deployment' : 'absent; current Prisma uses Driver.homeBranchId');
+  console.log('Driver employee link:', columns.some(c => c.table_name === 'drivers' && c.column_name === 'employeeId') ? 'PRESENT: optional Employee/leave source available' : 'MISSING');
   if (!missing.includes('user_role_scopes')) {
     console.log('Scope shape violations:', await db.$queryRaw`SELECT count(*)::int AS count FROM user_role_scopes WHERE NOT (("scopeType" = 'COMPANY' AND "branchId" IS NULL) OR ("scopeType" = 'BRANCH' AND "branchId" IS NOT NULL))`);
     console.log('Duplicate scope groups:', await db.$queryRaw`SELECT count(*)::int AS count FROM (SELECT 1 FROM user_role_scopes GROUP BY "userId", "roleId", "scopeType", "branchId" HAVING count(*) > 1) duplicates`);
-    console.log('Users without active scope:', await db.$queryRaw`SELECT count(*)::int AS count FROM users u WHERE NOT EXISTS (SELECT 1 FROM user_role_scopes s JOIN roles r ON r.id=s."roleId" WHERE s."userId"=u.id AND s.active AND r.active)`);
+    // STAFF/CUSTOMER are intentionally allowed to authenticate without TMS grants.
+    console.log('TMS users without active scope:', await db.$queryRaw`SELECT count(*)::int AS count FROM users u WHERE u.role NOT IN ('STAFF', 'CUSTOMER') AND NOT EXISTS (SELECT 1 FROM user_role_scopes s JOIN roles r ON r.id=s."roleId" WHERE s."userId"=u.id AND s.active AND r.active)`);
   }
   console.log('Constraints:', await db.$queryRaw`SELECT c.conname, pg_get_constraintdef(c.oid) AS definition FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace WHERE n.nspname=${schema} AND t.relname IN ('user_role_scopes','role_permissions')`);
   console.log('Missing tables/columns:', missing);

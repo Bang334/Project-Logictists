@@ -234,14 +234,41 @@ async function main() {
   ];
 
   for (const v of vehiclesData) {
+    const {
+      vehicleType: typeName,
+      payloadCapacityKg,
+      volumeCapacityM3,
+      lengthCm,
+      widthCm,
+      heightCm,
+      fuelConsumptionLitersPer100Km,
+      loadFuelSurchargePercentAtFullPayload,
+      fixedOperatingCostPerTrip,
+      ...vehicleData
+    } = v;
+    const typeData = {
+      name: typeName,
+      payloadCapacityKg,
+      volumeCapacityM3,
+      lengthCm,
+      widthCm,
+      heightCm,
+      fuelConsumptionLitersPer100Km,
+      loadFuelSurchargePercentAtFullPayload,
+      fixedOperatingCostPerTrip,
+    };
+    const vehicleType = await prisma.vehicleType.upsert({
+      where: { code: `SEED-${v.plateNumber.replace(/[^A-Z0-9]/gi, '-')}` },
+      update: typeData,
+      create: {
+        code: `SEED-${v.plateNumber.replace(/[^A-Z0-9]/gi, '-')}`,
+        ...typeData,
+      },
+    });
     await prisma.vehicle.upsert({
       where: { plateNumber: v.plateNumber },
-      update: {
-        fuelConsumptionLitersPer100Km: v.fuelConsumptionLitersPer100Km,
-        loadFuelSurchargePercentAtFullPayload: v.loadFuelSurchargePercentAtFullPayload,
-        fixedOperatingCostPerTrip: v.fixedOperatingCostPerTrip,
-      },
-      create: v,
+      update: { vehicleTypeId: vehicleType.id },
+      create: { ...vehicleData, vehicleTypeId: vehicleType.id },
     });
   }
   console.log(`✅ Đã tạo ${vehiclesData.length} xe tải thực tế.`);

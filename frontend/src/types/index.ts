@@ -60,6 +60,8 @@ export interface Vehicle {
   plateNumber: string;
   model: string;
   vehicleType: string;
+  vehicleTypeId: string;
+  vehicleTypeRecord: VehicleType;
   homeBranchId: string;
   homeBranch?: Branch;
   payloadCapacityKg: number;
@@ -76,6 +78,23 @@ export interface Vehicle {
   currentLatitude?: number;
   currentLongitude?: number;
   lastLocationAt?: string;
+}
+
+export interface VehicleType {
+  id: string;
+  code: string;
+  name: string;
+  payloadCapacityKg: number;
+  volumeCapacityM3: number;
+  lengthCm: number;
+  widthCm: number;
+  heightCm: number;
+  fuelConsumptionLitersPer100Km: string;
+  loadFuelSurchargePercentAtFullPayload: string;
+  fixedOperatingCostPerTrip: string;
+  requiredLicenseCategory?: string | null;
+  handlingCapabilities?: unknown;
+  active: boolean;
 }
 
 export interface Driver {
@@ -407,7 +426,7 @@ export interface OptimizationProposalUI {
   expiresAt: string;
   resources: {
     orders: Array<{ id: string; version: number }>;
-    vehicles: Array<{ id: string; updatedAt: string }>;
+    vehicles: Array<{ id: string; updatedAt: string; vehicleTypeUpdatedAt: string }>;
     drivers: Array<{ id: string; updatedAt: string }>;
   };
   result: FleetOptimizationResultUI;

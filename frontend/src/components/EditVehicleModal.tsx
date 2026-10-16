@@ -3,7 +3,6 @@ import {
   Modal,
   Form,
   Input,
-  InputNumber,
   Select,
   Row,
   Col,
@@ -15,13 +14,12 @@ import {
   CarOutlined,
   EnvironmentOutlined,
   DashboardOutlined,
-  DollarOutlined,
   InboxOutlined,
   TagOutlined,
   HomeOutlined,
 } from '@ant-design/icons';
 import { vehiclesApi, locationsApi } from '../api/client';
-import { Vehicle, Branch, Location } from '../types';
+import { Vehicle, VehicleType, Branch, Location } from '../types';
 
 interface EditVehicleModalProps {
   open: boolean;
@@ -165,50 +163,38 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   const [depots, setDepots] = useState<Location[]>([]);
+  const [vehicleTypes, setVehicleTypes] = useState<VehicleType[]>([]);
   const watchedBranchId = Form.useWatch('homeBranchId', form);
+  const watchedVehicleTypeId = Form.useWatch('vehicleTypeId', form);
+  const selectedVehicleType = vehicleTypes.find((type) => type.id === watchedVehicleTypeId);
 
   useEffect(() => {
     if (open) {
-      locationsApi.getAll().then((res) => {
-        const warehouseList = (res.data || []).filter(
-          (loc) => loc.type === 'CENTRAL_WAREHOUSE',
-        );
-        setDepots(warehouseList);
-      }).catch((err) => {
-        console.error('Không thể tải danh sách kho trung tâm', err);
-      });
+      Promise.all([locationsApi.getAll(), vehiclesApi.getTypes()])
+        .then(([locationsResponse, typesResponse]) => {
+          setDepots((locationsResponse.data || []).filter(
+            (loc) => loc.type === 'CENTRAL_WAREHOUSE',
+          ));
+          setVehicleTypes(typesResponse.data || []);
+        })
+        .catch(() => {
+          message.error('Không thể tải kho trung tâm hoặc danh mục loại xe');
+        });
     }
-  }, [open]);
+  }, [open, message]);
 
   useEffect(() => {
     if (open && vehicle) {
       form.setFieldsValue({
         plateNumber: vehicle.plateNumber,
         model: vehicle.model,
-        vehicleType: vehicle.vehicleType,
+        vehicleTypeId: vehicle.vehicleTypeId,
         homeBranchId: vehicle.homeBranchId,
         homeDepotLocationId: vehicle.homeDepotLocationId || vehicle.homeDepotLocation?.id,
         status: vehicle.status,
-        payloadCapacityKg: vehicle.payloadCapacityKg,
-        lengthCm: vehicle.lengthCm,
-        widthCm: vehicle.widthCm,
-        heightCm: vehicle.heightCm,
-        volumeCapacityM3: vehicle.volumeCapacityM3,
-        fuelConsumptionLitersPer100Km: Number(vehicle.fuelConsumptionLitersPer100Km) || 15,
-        fixedOperatingCostPerTrip: Number(vehicle.fixedOperatingCostPerTrip) || 100000,
       });
     }
   }, [open, vehicle, form]);
-
-  const handleDimensionsChange = () => {
-    const l = form.getFieldValue('lengthCm') || 0;
-    const w = form.getFieldValue('widthCm') || 0;
-    const h = form.getFieldValue('heightCm') || 0;
-    if (l > 0 && w > 0 && h > 0) {
-      const vol = Math.round(((l * w * h) / 1_000_000) * 10) / 10;
-      form.setFieldsValue({ volumeCapacityM3: vol });
-    }
-  };
 
   const handleFinish = async (values: any) => {
     if (!vehicle) return;
@@ -217,17 +203,10 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
       await vehiclesApi.update(vehicle.id, {
         plateNumber: values.plateNumber,
         model: values.model,
-        vehicleType: values.vehicleType,
+        vehicleTypeId: values.vehicleTypeId,
         homeBranchId: values.homeBranchId,
         homeDepotLocationId: values.homeDepotLocationId,
         status: values.status,
-        payloadCapacityKg: values.payloadCapacityKg,
-        volumeCapacityM3: values.volumeCapacityM3,
-        lengthCm: values.lengthCm,
-        widthCm: values.widthCm,
-        heightCm: values.heightCm,
-        fuelConsumptionLitersPer100Km: values.fuelConsumptionLitersPer100Km,
-        fixedOperatingCostPerTrip: values.fixedOperatingCostPerTrip,
       });
       message.success(`Đã cập nhật thông tin xe tải [${values.plateNumber}] thành công!`);
       onSuccess();
@@ -324,11 +303,19 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
         <Row gutter={[16, 0]}>
           <Col span={12}>
             <Form.Item
-              name="vehicleType"
+              name="vehicleTypeId"
               label="Phân Loại Thùng & Tải Trọng"
-              rules={[{ required: true, message: 'Vui lòng nhập phân loại xe' }]}
+              rules={[{ required: true, message: 'Vui lòng chọn loại xe' }]}
             >
-              <Input placeholder="VD: Xe tải 5 tấn (Thùng kín)" />
+              <Select
+                showSearch
+                optionFilterProp="label"
+                placeholder="Chọn cấu hình loại xe"
+                options={vehicleTypes.map((type) => ({
+                  value: type.id,
+                  label: `${type.name} — ${type.payloadCapacityKg.toLocaleString()} kg / ${type.volumeCapacityM3} m³`,
+                }))}
+              />
             </Form.Item>
           </Col>
           <Col span={12}>
@@ -394,119 +381,18 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
           <VehicleStatusSelector />
         </Form.Item>
 
-        <SectionHeader icon={<InboxOutlined />} title="Kích Thước Thùng & Thông Số Tải Trọng" />
-
-        <Row gutter={[16, 0]}>
-          <Col span={12}>
-            <Form.Item
-              name="payloadCapacityKg"
-              label="Tải Trọng Chuyên Chở"
-              rules={[{ required: true, message: 'Nhập tải trọng tối đa' }]}
-            >
-              <InputNumber
-                style={{ width: '100%' }}
-                min={100}
-                step={100}
-                addonAfter="kg"
-                formatter={(value) => `${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-              />
-            </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item name="volumeCapacityM3" label="Thể Tích Thùng Xe">
-              <InputNumber
-                style={{ width: '100%' }}
-                min={1}
-                step={0.5}
-                precision={1}
-                addonAfter="m³"
-              />
-            </Form.Item>
-          </Col>
-        </Row>
-
-        <Row gutter={[16, 0]}>
-          <Col span={8}>
-            <Form.Item
-              name="lengthCm"
-              label="Chiều Dài (Dài)"
-              rules={[{ required: true, message: 'Bắt buộc' }]}
-            >
-              <InputNumber
-                style={{ width: '100%' }}
-                min={100}
-                step={10}
-                addonAfter="cm"
-                onChange={handleDimensionsChange}
-              />
-            </Form.Item>
-          </Col>
-          <Col span={8}>
-            <Form.Item
-              name="widthCm"
-              label="Chiều Rộng (Rộng)"
-              rules={[{ required: true, message: 'Bắt buộc' }]}
-            >
-              <InputNumber
-                style={{ width: '100%' }}
-                min={50}
-                step={5}
-                addonAfter="cm"
-                onChange={handleDimensionsChange}
-              />
-            </Form.Item>
-          </Col>
-          <Col span={8}>
-            <Form.Item
-              name="heightCm"
-              label="Chiều Cao (Cao)"
-              rules={[{ required: true, message: 'Bắt buộc' }]}
-            >
-              <InputNumber
-                style={{ width: '100%' }}
-                min={50}
-                step={5}
-                addonAfter="cm"
-                onChange={handleDimensionsChange}
-              />
-            </Form.Item>
-          </Col>
-        </Row>
-
-        <SectionHeader icon={<DollarOutlined />} title="Định Mức Nhiên Liệu & Chi Phí Chuyến" />
-
-        <Row gutter={[16, 0]}>
-          <Col span={12}>
-            <Form.Item
-              name="fuelConsumptionLitersPer100Km"
-              label="Định Mức Tiêu Hao"
-              rules={[{ required: true, message: 'Nhập mức tiêu hao' }]}
-            >
-              <InputNumber
-                style={{ width: '100%' }}
-                min={5}
-                step={0.5}
-                precision={1}
-                addonAfter="Lít / 100km"
-              />
-            </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item
-              name="fixedOperatingCostPerTrip"
-              label="Phí Vận Hành Cố Định"
-              rules={[{ required: true, message: 'Nhập phí cố định mỗi chuyến' }]}
-            >
-              <InputNumber
-                style={{ width: '100%' }}
-                min={0}
-                step={10000}
-                addonAfter="VNĐ / chuyến"
-                formatter={(value) => `${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-              />
-            </Form.Item>
-          </Col>
-        </Row>
+        <SectionHeader icon={<InboxOutlined />} title="Thông Số Theo Loại Xe" />
+        {selectedVehicleType && (
+          <Space wrap size={[8, 8]}>
+            <Tag color="blue">{selectedVehicleType.payloadCapacityKg.toLocaleString()} kg</Tag>
+            <Tag color="cyan">{selectedVehicleType.volumeCapacityM3} m³</Tag>
+            <Tag>{selectedVehicleType.lengthCm} × {selectedVehicleType.widthCm} × {selectedVehicleType.heightCm} cm</Tag>
+            <Tag color="green">{selectedVehicleType.fuelConsumptionLitersPer100Km} L/100km</Tag>
+            <Tag color="purple">+{selectedVehicleType.loadFuelSurchargePercentAtFullPayload}% khi đầy tải</Tag>
+            <Tag color="orange">{Number(selectedVehicleType.fixedOperatingCostPerTrip).toLocaleString('vi-VN')} VNĐ/chuyến</Tag>
+            <Tag color="gold">1 cửa sau</Tag>
+          </Space>
+        )}
       </Form>
     </Modal>
   );

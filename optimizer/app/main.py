@@ -40,7 +40,7 @@ def health():
     return {
         "status": "ok",
         "service": "optimizer",
-        "engine": "Google OR-Tools multi-start + Packing-aware Hybrid ALNS + Dynamic 2D Spatial Validator",
+        "engine": "Packing-aware Hybrid ALNS + bounded OR-Tools fallback + Dynamic 2D Spatial Validator",
     }
 
 @app.post("/validate-spatial", response_model=SpatialValidationResult)
@@ -72,7 +72,7 @@ def optimize_fleet(request: FleetOptimizationRequest):
 
 @app.post("/optimize-fleet/candidates", response_model=FleetOptimizationBatchResponse)
 def optimize_fleet_candidates(request: FleetOptimizationRequest):
-    """Chạy song song nhiều lượt OR-Tools độc lập và trả về tối đa 3 phương án tốt nhất giao đủ 100% đơn."""
+    """Chạy Hybrid-first, OR-Tools fallback và trả tối đa 3 phương án đã kiểm chứng."""
     return MultiStartFleetOptimizer(request).solve(max_candidates=3)
 
 if __name__ == "__main__":

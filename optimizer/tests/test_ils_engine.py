@@ -1,4 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -664,11 +663,55 @@ def _complete_plan(cost: int, route_id: str) -> FleetOptimizationResponse:
     )
 
 
-def test_multi_start_adds_hybrid_alns_and_ranks_it_with_the_same_rules(monkeypatch) -> None:
-    ortools_plan = _complete_plan(500_000, "ortools-route")
+def test_multi_start_uses_hybrid_first_without_ortools_when_hybrid_returns_routes(
+    monkeypatch,
+) -> None:
     hybrid_plan = _complete_plan(300_000, "hybrid-route")
+    captured = {}
 
-    def fake_worker(*_args):
+    def fail_worker(*_args):
+        raise AssertionError("OR-Tools must not run when Hybrid returns a route")
+
+    class FakeHybridALNS:
+        def __init__(self, *_args, **kwargs):
+            captured.update(kwargs)
+
+        def solve(self):
+            return hybrid_plan
+
+    monkeypatch.setattr(multi_start_module, "_run_search_worker", fail_worker)
+    monkeypatch.setattr(
+        multi_start_module, "PackingAwareHybridALNSOptimizer", FakeHybridALNS
+    )
+
+    batch = MultiStartFleetOptimizer(
+        _request(), strategies=[SEARCH_STRATEGIES[0]]
+    ).solve(max_candidates=3)
+
+    assert batch.solver_run_count == 1
+    assert batch.fully_served_candidate_count == 1
+    assert [candidate.search_strategy for candidate in batch.candidates] == [
+        "Packing-aware Hybrid ALNS (seed 0)",
+    ]
+    assert batch.candidates[0].result.total_cost_vnd == 300_000
+    assert captured["initial_plan"] is None
+    assert captured["time_budget_seconds"] == 2
+    assert any("Hybrid-first" in line for line in batch.diagnostics)
+
+
+def test_multi_start_runs_one_ortools_fallback_when_hybrid_returns_no_route(monkeypatch) -> None:
+    ortools_plan = _complete_plan(500_000, "ortools-route")
+    hybrid_plan = FleetOptimizationResponse(
+        job_id="fallback",
+        status="PARTIAL",
+        routes=[],
+        unassigned_orders=[],
+        total_cost_vnd=0,
+    )
+    worker_calls = []
+
+    def fake_worker(*args):
+        worker_calls.append(args)
         strategy = SEARCH_STRATEGIES[0]
         return (
             strategy.key,
@@ -678,32 +721,67 @@ def test_multi_start_adds_hybrid_alns_and_ranks_it_with_the_same_rules(monkeypat
             None,
         )
 
-    class FakeHybridALNS:
+    class EmptyHybridALNS:
         def __init__(self, *_args, **_kwargs):
             pass
 
         def solve(self):
             return hybrid_plan
 
-    monkeypatch.setattr(
-        multi_start_module, "ProcessPoolExecutor", ThreadPoolExecutor
-    )
     monkeypatch.setattr(multi_start_module, "_run_search_worker", fake_worker)
     monkeypatch.setattr(
-        multi_start_module, "PackingAwareHybridALNSOptimizer", FakeHybridALNS
+        multi_start_module, "PackingAwareHybridALNSOptimizer", EmptyHybridALNS
     )
 
     batch = MultiStartFleetOptimizer(
         _request(), strategies=[SEARCH_STRATEGIES[0]]
     ).solve(max_candidates=3)
 
+    assert len(worker_calls) == 1
+    assert batch.solver_run_count == 1
+    assert batch.candidates[0].search_strategy == SEARCH_STRATEGIES[0].label
+    assert any("fallback" in line.lower() for line in batch.diagnostics)
+
+
+def test_hybrid_first_splits_large_budget_across_two_seeds(monkeypatch) -> None:
+    request = _request()
+    source_order = request.orders[0]
+    request = request.model_copy(
+        update={
+            "orders": [
+                source_order.model_copy(
+                    update={
+                        "id": f"order-{index}",
+                        "order_number": f"ORD-{index}",
+                    }
+                )
+                for index in range(8)
+            ],
+            "max_time_seconds": 120,
+            "search_time_seconds": 48,
+        }
+    )
+    hybrid_plan = _complete_plan(300_000, "hybrid-route")
+    captured = []
+
+    class FakeHybridALNS:
+        def __init__(self, *_args, **kwargs):
+            captured.append(kwargs)
+
+        def solve(self):
+            return hybrid_plan
+
+    monkeypatch.setattr(
+        multi_start_module, "PackingAwareHybridALNSOptimizer", FakeHybridALNS
+    )
+
+    batch = MultiStartFleetOptimizer(
+        request, strategies=[SEARCH_STRATEGIES[0]]
+    ).solve(max_candidates=3)
+
     assert batch.solver_run_count == 2
-    assert batch.fully_served_candidate_count == 2
-    assert [candidate.search_strategy for candidate in batch.candidates] == [
-        "Packing-aware Hybrid ALNS (seed 0)",
-        SEARCH_STRATEGIES[0].label,
-    ]
-    assert batch.candidates[0].result.total_cost_vnd == 300_000
+    assert [entry["random_seed"] for entry in captured] == [0, 1]
+    assert [entry["time_budget_seconds"] for entry in captured] == [24, 24]
 
 
 def test_multi_start_worker_does_not_duplicate_hybrid_fallback(monkeypatch) -> None:
