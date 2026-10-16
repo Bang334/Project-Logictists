@@ -114,6 +114,7 @@ enum PaymentStatus {
 }
 
 model User {
+  driverPodFiles PodFile[] @relation("DriverPodOwner")
   locationScopes UserLocationScope[]
   id               String            @id @default(uuid())
   username         String            @unique
@@ -469,6 +470,7 @@ model Trip {
 }
 
 model TripStop {
+  driverPodFiles PodFile[]
   id                   String     @id @default(uuid())
   tripId               String
   trip                 Trip       @relation(fields: [tripId], references: [id], onDelete: Cascade)
@@ -524,6 +526,7 @@ model Allocation {
 }
 
 model StopTask {
+  deliveryState DriverDeliveryState?
   pickupResult PickupResult?
   loadPlanValidationSteps LoadPlanStep[] @relation("LoadPlanStepTasks")
   id              String     @id @default(uuid())
@@ -555,6 +558,10 @@ model StopTask {
 }
 
 model DriverAssignment {
+  actualEndTime DateTime? @db.Timestamptz(3)
+  completionEventId String? @unique
+  completionEvent ExecutionEvent? @relation("AssignmentCompletion", fields: [completionEventId], references: [id], onDelete: Restrict)
+  driverPodFiles PodFile[]
   id     String @id @default(uuid())
   tripId String
   trip   Trip   @relation(fields: [tripId], references: [id], onDelete: Cascade)
@@ -876,6 +883,9 @@ model DriverActivityEvent {
 }
 
 model ExecutionEvent {
+  completedAssignment DriverAssignment? @relation("AssignmentCompletion")
+  deliveryResults DeliveryResult[]
+  deliveryState DriverDeliveryState?
   pickupResult PickupResult?
   id         String    @id @default(uuid())
   tripId     String
@@ -904,6 +914,8 @@ model ExecutionEvent {
 }
 
 model TripExecutionSnapshot {
+  deliveryAttempts DeliveryAttempt[]
+  driverPodFiles PodFile[]
   id String @id @default(uuid())
   tripId String @unique
   trip Trip @relation(fields: [tripId], references: [id], onDelete: Restrict, onUpdate: NoAction)
@@ -963,6 +975,9 @@ model GpsEvent {
 }
 
 model DeliveryAttempt {
+  command ProcessedCommand @relation(fields: [commandId], references: [id], onDelete: Restrict)
+  sourceSnapshotId String?
+  sourceSnapshot TripExecutionSnapshot? @relation(fields: [sourceSnapshotId], references: [id], onDelete: Restrict)
   id         String   @id @default(uuid())
   tripStopId String
   tripStop   TripStop @relation(fields: [tripStopId], references: [id], onDelete: Restrict)
@@ -983,6 +998,8 @@ model DeliveryAttempt {
 }
 
 model DeliveryResult {
+  executionEventId String?
+  executionEvent ExecutionEvent? @relation(fields: [executionEventId], references: [id], onDelete: Restrict)
   id                String          @id @default(uuid())
   deliveryAttemptId String
   deliveryAttempt   DeliveryAttempt @relation(fields: [deliveryAttemptId], references: [id], onDelete: Restrict)
@@ -1001,8 +1018,19 @@ model DeliveryResult {
 
 model PodFile {
   id                String          @id @default(uuid())
-  deliveryAttemptId String
-  deliveryAttempt   DeliveryAttempt @relation(fields: [deliveryAttemptId], references: [id], onDelete: Restrict)
+  deliveryAttemptId String?
+  deliveryAttempt   DeliveryAttempt? @relation(fields: [deliveryAttemptId], references: [id], onDelete: Restrict)
+  ownerUserId String?
+  owner User? @relation("DriverPodOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  assignmentId String?
+  assignment DriverAssignment? @relation(fields: [assignmentId], references: [id], onDelete: Restrict)
+  tripStopId String?
+  tripStop TripStop? @relation(fields: [tripStopId], references: [id], onDelete: Restrict)
+  sourceSnapshotId String?
+  sourceSnapshot TripExecutionSnapshot? @relation(fields: [sourceSnapshotId], references: [id], onDelete: Restrict)
+  sizeBytes Int?
+  expiresAt DateTime? @db.Timestamptz(3)
+  discardedAt DateTime? @db.Timestamptz(3)
   storageKey        String          @unique
   checksum          String
   mediaType         String
@@ -1093,6 +1121,7 @@ model OutboxEvent {
 }
 
 model ProcessedCommand {
+  deliveryAttempts DeliveryAttempt[]
   executionEvents ExecutionEvent[]
   id             String   @id @default(uuid())
   actorUserId    String
@@ -2161,6 +2190,7 @@ model UserLocationScope {
 
 // Immutable per-physical-package outcome, tied to its command event and plan snapshot.
 model PickupResult {
+  deliveryStates DriverDeliveryState[]
   id String @id @default(uuid())
   stopTaskId String @unique
   stopTask StopTask @relation(fields: [stopTaskId], references: [id], onDelete: Restrict)
@@ -2174,4 +2204,15 @@ model PickupResult {
   reason String?
   @@index([packageId, outcome])
   @@map("pickup_results")
+}
+
+model DriverDeliveryState {
+  stopTaskId String @id
+  stopTask StopTask @relation(fields: [stopTaskId], references: [id], onDelete: Restrict)
+  pickupResultId String
+  pickupResult PickupResult @relation(fields: [pickupResultId], references: [id], onDelete: Restrict)
+  lastEventId String @unique
+  lastEvent ExecutionEvent @relation(fields: [lastEventId], references: [id], onDelete: Restrict)
+  state String
+  @@map("driver_delivery_states")
 }

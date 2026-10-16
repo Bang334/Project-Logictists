@@ -1,5 +1,7 @@
 # Mobile tài xế — QR, pickup từng kiện và kết thúc điểm
 
+> **Cập nhật 16/10/2026:** Theo yêu cầu người dùng, mã nguồn app mobile và API thực thi riêng của Người 3 đã được gỡ, gồm phần chưa commit. Nội dung mobile bên dưới là tài liệu lịch sử/yêu cầu, không mô tả chức năng hiện có. Schema và migration được giữ để bảo toàn lịch sử dữ liệu.
+
 Mốc 3, ngày 10/10/2026. Kế thừa mốc nhận chuyến và start/arrive. Quyết định người dùng đã chốt: mỗi kiện có QR riêng; mã lô dùng để gom kiện; quét và xác nhận đã xếp lên xe; được lấy thiếu nhưng phải khai báo chính xác từng kiện chưa lấy và lý do.
 
 ## Hành vi đã triển khai
@@ -55,7 +57,7 @@ LoadPlan hiện lưu trạng thái sau mỗi stop, chưa có thứ tự/đườn
 - Khóa advisory tài nguyên xe 4101 → tài xế 4102, tái kiểm tra session/scope; namespace 71009 cho actor/key. Khóa Assignment, Trip, Allocation, StopTask và Package theo thứ tự ổn định. Tranh chấp cùng package giữa các Trip được serialize bằng khóa Package và unique index.
 - ProcessedCommand namespace DRIVER_PICKUP: cùng key/nội dung trả kết quả cũ; đổi nội dung/đích/action trả 409. Danh sách missing được canonical theo taskId. Mobile giữ nguyên key/payload khi kết quả mạng chưa rõ, chống nhấn lặp; không có offline queue bền vững.
 - Migration mới `20261010090000_driver_pickup_results` tạo PickupResult, FK tới task/event/allocation/package, CHECK outcome/reason, unique task và package LOADED, trigger đối chiếu các quan hệ và cấm sửa/xóa lịch sử. Không backfill kết quả cho dữ liệu cũ, không sửa migration đã áp dụng.
-- Custody của kiện đã lấy được truy qua PickupResult → ExecutionEvent → snapshot Trip/vehicle, không suy từ Allocation tương lai. Unique LOADED hiện áp dụng suốt vòng đời kiện vì mốc này chưa có unload/reload/chuyển tải; phải nâng thành custody theo chặng có review trước khi mở nghiệp vụ đó.
+- Custody của kiện đã lấy được truy qua PickupResult → ExecutionEvent → snapshot Trip/vehicle, không suy từ Allocation tương lai. Bổ sung delivery ngày 12/10/2026: DriverDeliveryState tách dỡ/bàn giao/xếp lại; consumer pickup loại UNLOADED/DELIVERED khỏi tải/vật cản, giữ FAILED/ON_VEHICLE. Xếp lại chỉ về vị trí ban đầu trên cùng xe, không tạo PickupResult mới; unique LOADED suốt vòng đời vẫn giữ. Chuyển tải/pickup lại trên chuyến khác chưa hỗ trợ; cần custody theo chặng có review trước khi mở. Xem [MOBILE_DRIVER_DELIVERY_POD.md](MOBILE_DRIVER_DELIVERY_POD.md).
 - Cập nhật Package/Task/Trip/Stop, command, kết quả, audit và outbox trong cùng transaction. Lỗi bất kỳ bước nào rollback tất cả.
 - ExecutionEvent: PACKAGE_LOADED, PACKAGE_NOT_COLLECTED, PICKUP_STOP_COMPLETED; có sourceSnapshotId, commandId và eventSequence. Reason nằm trong PickupResult, không broadcast.
 - Outbox: `driver.package.loaded`, `driver.pickup.completed`; aggregate Trip/version. Payload chỉ ID, version, outcome để tải lại snapshot. Publisher dùng gateway Trip hiện hữu có scope. Không đổi quyền role khác.

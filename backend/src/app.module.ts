@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { DriverMobileModule } from './driver-mobile/driver-mobile.module';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
@@ -101,7 +100,6 @@ import { LocationsModule } from './locations/locations.module';
       },
     }),
     PrismaModule,
-    DriverMobileModule,
     CommonModule,
     CatalogModule,
     InventoryModule,

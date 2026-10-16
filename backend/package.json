@@ -38,16 +38,7 @@
     "start:orders-demo": "node scripts/with-merge-test-env.cjs dist/src/main.js",
     "test:orders": "node scripts/with-merge-test-env.cjs --optimizer --test tests/orders.integration.cjs",
     "test:orders:auth": "node scripts/with-merge-test-env.cjs --test tests/auth.integration.cjs",
-    "test:orders:mapbox": "node scripts/check-orders-mapbox.cjs",
-    "driver:demo:prepare": "node scripts/prepare-driver-test.cjs",
-    "driver:demo:seed": "node scripts/with-driver-test-env.cjs node_modules/ts-node/dist/bin.js prisma/seed-driver-mobile.ts",
-    "start:driver-demo": "node scripts/with-driver-test-env.cjs dist/src/main.js",
-    "test:driver": "node scripts/with-driver-test-env.cjs --test tests/driver-mobile.integration.cjs",
-    "test:driver:execution": "node scripts/with-driver-test-env.cjs --test tests/driver-execution.integration.cjs",
-    "test:driver:client": "node scripts/with-driver-test-env.cjs --test tests/driver-mobile-client.integration.cjs",
-    "driver:pickup:seed": "node scripts/with-driver-test-env.cjs node_modules/ts-node/dist/bin.js prisma/seed-driver-pickup.ts",
-    "test:driver:pickup": "node scripts/with-driver-test-env.cjs --test tests/driver-pickup.integration.cjs",
-    "driver:pickup:labels": "node scripts/with-driver-test-env.cjs scripts/driver-pickup-labels.cjs"
+    "test:orders:mapbox": "node scripts/check-orders-mapbox.cjs"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.5",
@@ -91,7 +82,6 @@
     "globals": "^17.12.0",
     "jest": "^29.7.0",
     "prisma": "^5.19.1",
-    "qrcode": "^1.5.4",
     "source-map-support": "^0.5.21",
     "supertest": "^7.0.0",
     "ts-jest": "^29.2.5",

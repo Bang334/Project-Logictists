@@ -1,5 +1,7 @@
 # KẾ HOẠCH XÂY DỰNG LOGISTICS / TRANSPORTATION MANAGEMENT SYSTEM
 
+> **Cập nhật 16/10/2026:** Theo yêu cầu người dùng, mã nguồn app mobile và API thực thi riêng của Người 3 đã được gỡ, gồm phần chưa commit. Nội dung mobile bên dưới là tài liệu lịch sử/yêu cầu, không mô tả chức năng hiện có. Schema và migration được giữ để bảo toàn lịch sử dữ liệu.
+
 Ngày lập: 09/09/2026 · Phiên bản: 0.3 · Trạng thái: Bản nháp để phản hồi; đã chốt Mapbox và quy tắc xếp/dỡ hàng động, không xếp chồng
 
 **Cập nhật thiết kế ngày 23/09/2026:** người dùng yêu cầu chốt cấu trúc database chung. [THIET_KE_DATABASE.md v0.2](THIET_KE_DATABASE.md) là nguồn chuẩn cho bảng/quan hệ, nguồn dữ liệu nhân sự–lương–bảo dưỡng–thanh toán và ràng buộc Order–Package–TripPlan–Reservation. Các mô tả schema khái niệm cũ bên dưới được đọc theo bản này khi có khác biệt. Công thức, định mức, quyền nghiệp vụ chi tiết và các mục POL01–POL08 vẫn cần chốt; không suy việc chốt thiết kế là cho phép viết code/chạy migration.
@@ -661,7 +663,7 @@ Nếu ưu tiên đồ án thể hiện thuật toán, có thể đẩy P3 lên t
 | D11 | Đã chốt nhiều hàng/xe, không chồng, xếp/dỡ không cản, tái sử dụng vùng trống; kiện chữ nhật được xoay trên mặt sàn theo bội số 90° nhưng không lật; optimizer phải xét tất cả | Còn chốt hình học không chữ nhật/khoảng hở/thiết bị; kiểm tra bố trí động bắt buộc trong P3, không để tới P5 |
 | D12 | Tự publish hay dispatcher duyệt | Dispatcher duyệt, mọi bản chỉnh phải validate |
 | D13 | GPS, thiết bị, tần suất và lưu trữ | Điện thoại trước, benchmark pin/nền/mạng |
-| D14 | POD bắt buộc và giao một phần | Policy theo loại đơn, có bằng chứng và phần hàng còn lại |
+| D14 | POD bắt buộc và giao một phần | Đã chốt cho delivery từng Package: tên người nhận + ít nhất một ảnh hàng/biên nhận, không chữ ký/OTP; chung POD trong cùng lần bàn giao. Cho kết thúc thiếu/không giao kèm lý do, giữ hàng trên xe chờ điều phối. Tách dỡ/bàn giao; còn hàng đã dỡ thì phải bàn giao hoặc xếp lại có kiểm chứng trước khi kết thúc. Chi tiết và giới hạn: [MOBILE_DRIVER_DELIVERY_POD.md](MOBILE_DRIVER_DELIVERY_POD.md). Không suy đã chốt policy khác theo loại đơn. |
 | D15 | Điểm cuối, tài xế về nhà và backhaul | Policy riêng cho xe/tài xế, tính cả thời gian và chi phí |
 | D16 | Trễ mềm/cứng và penalty | Tách cam kết vận hành, trọng số solver và phạt tài chính |
 | D17 | Thông báo khách và cổng khách | Chốt kênh/phạm vi; không tự thêm portal |

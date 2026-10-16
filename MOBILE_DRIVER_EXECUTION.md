@@ -1,5 +1,7 @@
 # Mobile tài xế — bắt đầu chuyến và đến điểm
 
+> **Cập nhật 16/10/2026:** Theo yêu cầu người dùng, mã nguồn app mobile và API thực thi riêng của Người 3 đã được gỡ, gồm phần chưa commit. Nội dung mobile bên dưới là tài liệu lịch sử/yêu cầu, không mô tả chức năng hiện có. Schema và migration được giữ để bảo toàn lịch sử dữ liệu.
+
 Mốc 2, ngày 09/10/2026. Kế thừa đăng nhập, nhận/từ chối và đọc phân công của mốc 1. Không triển khai pickup/delivery, hoàn tất stop/chuyến, GPS, POD hoặc offline queue.
 
 Phạm vi và kết quả dưới đây ghi lại mốc 2. Mốc 3 bổ sung QR/pickup/kết thúc điểm và snapshot v2 trong [MOBILE_DRIVER_PICKUP.md](MOBILE_DRIVER_PICKUP.md); các giới hạn “chưa có pickup” dưới đây không còn mô tả toàn bộ code hiện tại.

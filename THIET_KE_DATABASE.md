@@ -627,7 +627,7 @@ Journey, chuyển tải và nhóm HR mở rộng không tự mở theo bước 4
 | POL05 | Lương theo kỳ/chuyến/km/ca, phụ cấp, tăng ca, khấu trừ, chia đoạn và người duyệt | Tính/duyệt payroll; cấu trúc Employee độc lập vẫn dùng được |
 | POL06 | Giá cước, nguồn doanh thu, chia cước nhiều hóa đơn hay nguyên khoản, phân bổ chi phí, làm tròn, quy trình duyệt/thu chi và chứng từ | Tính tiền, issue invoice, thanh toán; không bịa lợi nhuận |
 | POL07 | Chu kỳ bảo dưỡng, theo ngày/km, điều kiện nghiệm thu/duyệt tiền | Tự nhắc bảo dưỡng và xác nhận nghĩa vụ phải trả |
-| POL08 | POD bắt buộc, lưu GPS/POD, xử lý offline, thiết bị, auth/session và dịch vụ lưu tệp | Mobile và quản lý phiên/tệp; không hứa tracking nền chưa kiểm chứng |
+| POL08 | POD bắt buộc, lưu GPS/POD, xử lý offline, thiết bị, auth/session và dịch vụ lưu tệp | Phần POD từng Package đã được người dùng chốt: tên người nhận + ảnh, tách dỡ/bàn giao, kết quả và custody còn lại theo [MOBILE_DRIVER_DELIVERY_POD.md](MOBILE_DRIVER_DELIVERY_POD.md). Các phần policy khác vẫn cần chốt; không hứa tracking nền chưa kiểm chứng. |
 
 Các bảng mở rộng ở mục 3.8 và 3.13 có cấu trúc tham khảo đầy đủ quan hệ nhưng vẫn cần quyết định bật nghiệp vụ. Một mục policy chưa trả lời không chặn phân tích/thiết kế hoặc phần triển khai độc lập đã được phép.
 

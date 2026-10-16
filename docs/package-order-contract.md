@@ -1,5 +1,16 @@
 # Hợp đồng Package / khung giờ sau merge
 
+> **Cập nhật 16/10/2026:** Theo yêu cầu người dùng, mã nguồn app mobile và API thực thi riêng của Người 3 đã được gỡ, gồm phần chưa commit. Nội dung mobile bên dưới là tài liệu lịch sử/yêu cầu, không mô tả chức năng hiện có. Schema và migration được giữ để bảo toàn lịch sử dữ liệu.
+
+## Bổ sung thực thi delivery ngày 12/10/2026
+
+- QR xác định một Package tại task UNLOAD của assignment/stop tài xế đang thực thi. Quét không ghi dỡ hoặc giao; không dùng mã Order để đánh dấu cả lô.
+- Tách PACKAGE_UNLOADED (tài xế giữ tại điểm), PACKAGE_RELOADED (xếp lại vị trí cố định trên cùng xe) và PACKAGE_DELIVERED (bàn giao người nhận có tên + ảnh POD đã xác minh). Không thêm PickupResult cho reload; không đổi LoadPlan.
+- Custody = PickupResult gắn snapshot/xe + DriverDeliveryState/ExecutionEvent. Package.status LOADED không chứng minh còn trên xe: phải loại UNLOADED/DELIVERED, giữ ON_VEHICLE/FAILED khi tính tải/vật cản. Consumer pickup đã áp dụng.
+- DeliveryResult DELIVERED/FAILED/NOT_COLLECTED riêng từng kiện. NOT_COLLECTED không phải giao thất bại. ActualQuantity UNLOAD=1 chỉ khi bàn giao, =0 khi kết thúc chưa giao/chưa pickup. Không tự đổi Order/Allocation/Assignment.status hoặc hoàn tất Trip.
+- Consumer UNLOAD gọi adapter `/validate-execution-path` của SpatialValidator dùng chung, tập kiện thực tế/vị trí cố định, context hash/version; chặn khi plan/custody đổi hoặc không có đường. Giới hạn cửa sau/hướng cố định/64 kiện; không chạy optimizer/replan.
+- Contract endpoint, POD private, migrations, policy đã chốt và giới hạn nghiệm thu: [MOBILE_DRIVER_DELIVERY_POD.md](../MOBILE_DRIVER_DELIVERY_POD.md). Người 1 review validator; Người 2 review schema/storage/auth/outbox. POD không dùng URL có hạn làm định danh bền vững.
+
 ## Nguồn dữ liệu
 
 Order là đơn B2B; OrderItem là dòng hàng; mỗi Package là một kiện vật lý có UUID ổn định. `items[].packages[]` là nguồn tải duy nhất cho đơn B2B có `packageDataStatus=COMPLETE`. `OrderItem.quantity` và tổng đơn là dữ liệu tổng hợp do server tính, không nhân thêm vào danh sách Package. Package bán lẻ dùng PackageItem là mô hình riêng, không tự chuyển thành kiện B2B.

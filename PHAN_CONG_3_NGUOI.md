@@ -1,5 +1,7 @@
 # PHÂN CÔNG XÂY DỰNG TMS — 3 NGƯỜI
 
+> **Cập nhật 16/10/2026:** Theo yêu cầu người dùng, mã nguồn app mobile và API thực thi riêng của Người 3 đã được gỡ, gồm phần chưa commit. Nội dung mobile bên dưới là tài liệu lịch sử/yêu cầu, không mô tả chức năng hiện có. Schema và migration được giữ để bảo toàn lịch sử dữ liệu.
+
 Phiên bản 1.0 · Cập nhật theo hiện trạng ngày 03/10/2026
 
 Đọc cùng [Kế hoạch TMS](KE_HOACH_TMS.md) và [quy tắc dự án](AGENTS.md). Tài liệu này phân công theo mã nguồn đang tồn tại; không tự chuyển các đề xuất chưa chốt trong kế hoạch thành yêu cầu đã duyệt.
