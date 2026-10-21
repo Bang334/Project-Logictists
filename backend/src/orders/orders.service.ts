@@ -6,7 +6,7 @@ import { ResourceAccess } from '../auth/resource-access.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { ConfirmOrderDto, UpdateOrderDto } from './dto/update-order.dto';
-import { assertDispatchableOrder, assertPackageManifest, orderFieldError, orderInclude, OrderRecord, serializeOrder, validateOrderInput } from './order-contract';
+import { assertDispatchableOrder, assertPackageManifest, newDispatchOrderWhere, packageHistory, orderFieldError, orderInclude, OrderRecord, serializeOrder, validateOrderInput } from './order-contract';
 import { packageTotals } from './package-measurements';
 
 function json(value: unknown): Prisma.InputJsonValue { return JSON.parse(JSON.stringify(value)); }
@@ -38,7 +38,7 @@ export class OrdersService {
   }
   async getAvailableForDispatch(user: Principal, branchId?: string) {
     const rows = await this.prisma.order.findMany({
-      where: { orderType: 'B2B_TRANSPORT', status: OrderStatus.CONFIRMED, packageDataStatus: 'COMPLETE', branchId: branchFilter(user, 'orders.read', branchId), items: { none: { allocations: { some: {} } } } },
+      where: { ...newDispatchOrderWhere, branchId: branchFilter(user, 'orders.read', branchId) },
       include: orderInclude, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: 501,
     });
     if (rows.length > 500) throw new BadRequestException({ code: 'DISPATCH_SELECTION_TOO_LARGE', message: 'Có hơn 500 đơn chờ; hãy thu hẹp chi nhánh trước khi lập kế hoạch' });
@@ -95,7 +95,7 @@ export class OrdersService {
       tx.allocation.findFirst({ where: { orderItem: { orderId: id } }, select: { id: true } }),
       tx.stopTask.findFirst({ where: { OR: [{ orderStop: { orderId: id } }, { orderId: id }] }, select: { id: true } }),
       tx.deliveryResult.findFirst({ where: { package: { orderItem: { orderId: id } } }, select: { id: true } }),
-      tx.package.findFirst({ where: { orderItem: { orderId: id }, OR: [{ events: { some: {} } }, { loadPlacements: { some: {} } }, { loadPlanSteps: { some: {} } }, { transferShipment: { isNot: null } }] }, select: { id: true } }),
+      tx.package.findFirst({ where: { orderItem: { orderId: id }, ...packageHistory }, select: { id: true } }),
     ]);
     if (allocation || task || delivery || history || order.items.some(i => i.packages.some(p => !['DRAFT', 'READY'].includes(p.status)))) throw new ConflictException({ code: 'ORDER_REFERENCED', message: 'Đơn/kiện có phân công hoặc lịch sử giao nhận; không thể sửa hay xóa' });
     return order;

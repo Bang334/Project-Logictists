@@ -1,4 +1,7 @@
 import { Module } from '@nestjs/common';
+import { DashboardModule } from './dashboard/dashboard.module';
+import { MonitoringModule } from './trip-monitoring/monitoring.module';
+import { FleetModule } from './fleet/fleet.module';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
@@ -116,10 +119,13 @@ import { LocationsModule } from './locations/locations.module';
     UsersModule,
     BranchesModule,
     VehiclesModule,
+    FleetModule,
     DriversModule,
     CustomersModule,
     OrdersModule,
     TripsModule,
+    MonitoringModule,
+    DashboardModule,
   ],
 })
 export class AppModule {}

@@ -114,6 +114,9 @@ enum PaymentStatus {
 }
 
 model User {
+  recordedShifts DriverShift[]
+  recordedLeaves EmployeeLeave[]
+  recordedVehicleUnavailability VehicleUnavailability[]
   driverPodFiles PodFile[] @relation("DriverPodOwner")
   locationScopes UserLocationScope[]
   id               String            @id @default(uuid())
@@ -165,6 +168,7 @@ model User {
 }
 
 model Branch {
+  customerBranches CustomerBranch[]
   locationScopes UserLocationScope[]
   id                            String          @id @default(uuid())
   code                          String          @unique
@@ -236,6 +240,7 @@ model Vehicle {
 }
 
 model Driver {
+  shifts DriverShift[]
   id            String   @id @default(uuid())
   userId        String?  @unique
   user          User?    @relation(fields: [userId], references: [id])
@@ -270,13 +275,16 @@ model Driver {
 }
 
 model Customer {
+  retailPhoneKey String? @unique
+  version       Int @default(1)
+  branches      CustomerBranch[]
   id            String            @id @default(uuid())
   code          String            @unique
   name          String
   taxCode       String?
   address       String?
   contactPerson String?
-  phone         String @unique
+  phone         String
   email         String?
   orders        Order[]
   contacts      CustomerContact[]
@@ -292,6 +300,18 @@ model Customer {
   addresses        CustomerAddress[]
   feedbackCases    FeedbackCase[]
   feedbackMessages FeedbackMessage[]
+}
+
+model CustomerBranch {
+  customerId String
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  branchId String
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@id([customerId, branchId])
+  @@index([branchId, customerId])
+  @@map("customer_branches")
 }
 
 model Order {
@@ -1662,6 +1682,9 @@ model AttendanceEntry {
 }
 
 model EmployeeLeave {
+  version Int @default(1)
+  recordedById String?
+  recordedBy User? @relation(fields: [recordedById], references: [id], onDelete: Restrict)
   id             String         @id @default(uuid())
   employeeId     String
   employee       Employee       @relation(fields: [employeeId], references: [id], onDelete: Restrict)
@@ -1907,6 +1930,10 @@ model ResourceReservation {
 }
 
 model VehicleUnavailability {
+  kind String @default("LEGACY")
+  version Int @default(1)
+  recordedById String?
+  recordedBy User? @relation(fields: [recordedById], references: [id], onDelete: Restrict)
   id        String    @id @default(uuid())
   vehicleId String
   vehicle   Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
@@ -1919,6 +1946,23 @@ model VehicleUnavailability {
 
   @@index([vehicleId, startsAt, endsAt])
   @@map("vehicle_unavailability")
+}
+
+model DriverShift {
+  id String @id @default(uuid())
+  driverId String
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  startsAt DateTime @db.Timestamptz(3)
+  endsAt DateTime @db.Timestamptz(3)
+  status String @default("ACTIVE")
+  reason String
+  version Int @default(1)
+  recordedById String
+  recordedBy User @relation(fields: [recordedById], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  @@index([driverId, startsAt, endsAt])
+  @@map("driver_shifts")
 }
 
 model CustomerAddress {

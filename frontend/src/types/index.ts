@@ -56,6 +56,7 @@ export interface Location {
 }
 
 export interface Vehicle {
+  updatedAt: string;
   id: string;
   plateNumber: string;
   model: string;
@@ -98,11 +99,12 @@ export interface VehicleType {
 }
 
 export interface Driver {
+  updatedAt: string;
   id: string;
   fullName: string;
-  citizenId: string;
+  citizenId?: string;
   phone: string;
-  licenseNumber: string;
+  licenseNumber?: string;
   licenseClass: string;
   licenseExpiry: string;
   homeBranchId: string;

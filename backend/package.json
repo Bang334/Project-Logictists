@@ -6,6 +6,10 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
+    "test:dashboard": "node scripts/with-dashboard-test-env.cjs --test tests/dashboard.integration.cjs",
+    "test:dashboard:prepare": "node scripts/with-dashboard-test-env.cjs scripts/prepare-dashboard-test.cjs",
+    "test:monitoring": "node scripts/with-monitor-test-env.cjs --test tests/monitoring.integration.cjs",
+    "test:monitoring:prepare": "node scripts/with-monitor-test-env.cjs scripts/prepare-monitor-test.cjs",
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\"",
     "start": "nest start",
@@ -38,7 +42,11 @@
     "start:orders-demo": "node scripts/with-merge-test-env.cjs dist/src/main.js",
     "test:orders": "node scripts/with-merge-test-env.cjs --optimizer --test tests/orders.integration.cjs",
     "test:orders:auth": "node scripts/with-merge-test-env.cjs --test tests/auth.integration.cjs",
-    "test:orders:mapbox": "node scripts/check-orders-mapbox.cjs"
+    "test:orders:mapbox": "node scripts/check-orders-mapbox.cjs",
+    "test:customers": "node scripts/with-customer-test-env.cjs --test tests/customers.integration.cjs",
+    "test:fleet-profiles": "node scripts/with-fleet-test-env.cjs --test tests/fleet-profiles.integration.cjs",
+    "test:order-acceptance": "node scripts/with-order-acceptance-env.cjs --test tests/order-acceptance.integration.cjs",
+    "test:order-acceptance:prepare": "node scripts/with-order-acceptance-env.cjs scripts/prepare-order-acceptance.cjs"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.5",

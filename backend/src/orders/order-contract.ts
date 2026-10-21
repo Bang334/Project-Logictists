@@ -11,6 +11,18 @@ export const orderInclude = {
 } satisfies Prisma.OrderInclude;
 export type OrderRecord = Prisma.OrderGetPayload<{ include: typeof orderInclude }>;
 
+// Keep profile editing and all new-dispatch consumers on the same history boundary.
+export const packageHistory: Prisma.PackageWhereInput = { OR: [
+  { allocations: { some: {} } }, { StopTask: { some: {} } },
+  { events: { some: {} } }, { pickupResults: { some: {} } }, { deliveryResults: { some: {} } },
+  { loadPlacements: { some: {} } }, { loadPlanSteps: { some: {} } }, { transferShipment: { isNot: null } },
+] };
+export const newDispatchOrderWhere: Prisma.OrderWhereInput = {
+  orderType: 'B2B_TRANSPORT', status: 'CONFIRMED', packageDataStatus: 'COMPLETE',
+  StopTask: { none: {} }, stops: { none: { tasks: { some: {} } } },
+  items: { none: { OR: [{ allocations: { some: {} } }, { packages: { some: packageHistory } }] } },
+};
+
 export function orderFieldError(field: string, message: string): never {
   throw new BadRequestException({ code: 'ORDER_VALIDATION', message, fieldErrors: [{ field, message }] });
 }

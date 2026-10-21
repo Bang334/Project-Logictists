@@ -108,7 +108,9 @@ const DriverStatusSelector: React.FC<{
       {DRIVER_STATUSES.map((item) => {
         const isSelected = value === item.value;
         return (
-          <div
+          <button
+            type="button"
+            aria-pressed={isSelected}
             key={item.value}
             onClick={() => onChange?.(item.value)}
             style={{
@@ -148,7 +150,7 @@ const DriverStatusSelector: React.FC<{
             >
               {item.label}
             </span>
-          </div>
+          </button>
         );
       })}
     </div>
@@ -177,24 +179,25 @@ export const EditDriverModal: React.FC<EditDriverModalProps> = ({
         licenseExpiry: driver.licenseExpiry ? dayjs(driver.licenseExpiry) : null,
         homeBranchId: driver.homeBranchId,
         status: driver.status,
-        fixedSalaryMonthly: Number(driver.fixedSalaryMonthly) || 12000000,
-        tripBasePay: Number(driver.tripBasePay) || 180000,
-        perKmPay: Number(driver.perKmPay) || 1200,
+        fixedSalaryMonthly: driver.fixedSalaryMonthly == null ? undefined : Number(driver.fixedSalaryMonthly),
+        tripBasePay: driver.tripBasePay == null ? undefined : Number(driver.tripBasePay),
+        perKmPay: driver.perKmPay == null ? undefined : Number(driver.perKmPay),
       });
     }
   }, [open, driver, form]);
 
   const handleFinish = async (values: any) => {
-    if (!driver) return;
+    if (!driver || submitting) return;
     try {
       setSubmitting(true);
       await driversApi.update(driver.id, {
+        expectedUpdatedAt: driver.updatedAt,
         fullName: values.fullName,
         phone: values.phone,
         citizenId: values.citizenId,
         licenseNumber: values.licenseNumber,
         licenseClass: values.licenseClass,
-        licenseExpiry: values.licenseExpiry ? values.licenseExpiry.toISOString() : undefined,
+        licenseExpiry: values.licenseExpiry ? values.licenseExpiry.format('YYYY-MM-DD') : undefined,
         homeBranchId: values.homeBranchId,
         status: values.status,
         fixedSalaryMonthly: values.fixedSalaryMonthly,
@@ -203,6 +206,7 @@ export const EditDriverModal: React.FC<EditDriverModalProps> = ({
       });
       message.success(`Đã cập nhật hồ sơ tài xế [${values.fullName}] thành công!`);
       onSuccess();
+      onCancel();
     } catch (err: any) {
       message.error(err.response?.data?.message || 'Có lỗi xảy ra khi cập nhật thông tin tài xế');
     } finally {
@@ -339,13 +343,7 @@ export const EditDriverModal: React.FC<EditDriverModalProps> = ({
               label="Hạng Bằng Lái"
               rules={[{ required: true, message: 'Chọn hạng bằng' }]}
             >
-              <Select placeholder="Chọn hạng bằng" style={{ width: '100%' }}>
-                <Select.Option value="B2">Hạng B2 (Xe dưới 3.5T)</Select.Option>
-                <Select.Option value="C">Hạng C (Xe tải từ 3.5T trở lên)</Select.Option>
-                <Select.Option value="D">Hạng D (Xe khách 10-30 chỗ)</Select.Option>
-                <Select.Option value="E">Hạng E (Xe khách trên 30 chỗ)</Select.Option>
-                <Select.Option value="FC">Hạng FC (Đầu kéo, Container)</Select.Option>
-              </Select>
+              <Input placeholder="Hạng ghi trên giấy phép" maxLength={30} />
             </Form.Item>
           </Col>
           <Col span={8}>

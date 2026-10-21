@@ -89,7 +89,13 @@ export class EventsGateway implements OnGatewayInit, OnModuleDestroy {
           await this.access.trip(user, trip.id, 'trips.read', db);
           client.emit('trip:updated', { id: trip.id, version: trip.version });
         });
-      } catch { await client.leave(`branch:${trip.managingBranchId}`); await this.revalidate(client); }
+      } catch {
+        await client.leave(`branch:${trip.managingBranchId}`);
+        // Revalidation cannot notify about a room after it has been removed.
+        // Clear protected HTTP/POD views when authorization fails during delivery.
+        client.emit('scope:revoked', { code: 'PERMISSION_DENIED' });
+        await this.revalidate(client);
+      }
     }
   }
   async emitLocationUpdate(data: { vehicleId: string; lat: number; lng: number; speed?: number }) {

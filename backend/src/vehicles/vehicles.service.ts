@@ -5,9 +5,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { VehicleStatus, LocationType } from '@prisma/client';
+import { VehicleStatus, LocationType, Prisma } from '@prisma/client';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
 import { flattenVehicleType } from './vehicle-capabilities';
+import { assertProfileVersion, assertStatusChangeAllowed, lockResourceProfile, nextProfileTimestamp } from './resource-profile';
 
 const HOME_DEPOT_SUMMARY_SELECT = {
   id: true,
@@ -84,44 +85,57 @@ export class VehiclesService {
     dto: UpdateVehicleDto,
     user: Principal,
   ) {
-    const vehicle = await this.prisma.vehicle.findUnique({
-      where: { id },
-    });
-
-    if (!vehicle) {
-      throw new NotFoundException(`Không tìm thấy xe tải với ID ${id}`);
-    }
-
-    assertPermission(user, 'vehicles.manage', vehicle.homeBranchId);
-    if (dto.vehicleTypeId !== undefined) {
-      const type = await this.prisma.vehicleType.findFirst({
-        where: { id: dto.vehicleTypeId, active: true },
-        select: { id: true },
+    assertPermission(user, 'vehicles.manage');
+    return this.prisma.$transaction(async tx => {
+      await lockResourceProfile(tx, 'vehicle', id);
+      const vehicle = await tx.vehicle.findUnique({
+        where: { id },
       });
-      if (!type) {
-        throw new BadRequestException('Loại xe không tồn tại hoặc đã ngừng sử dụng');
+
+      if (!vehicle) {
+        throw new NotFoundException(`Không tìm thấy xe tải với ID ${id}`);
       }
-    }
-    const targetDepotId = await this.resolveTargetHomeDepot(vehicle.homeDepotLocationId, vehicle.homeBranchId, dto.homeBranchId ?? vehicle.homeBranchId, dto.homeDepotLocationId);
-    const updated = await this.prisma.vehicle.update({
-      where: { id },
-      data: {
-        ...(dto.plateNumber ? { plateNumber: dto.plateNumber.trim() } : {}),
-        ...(dto.model ? { model: dto.model.trim() } : {}),
-        ...(dto.vehicleTypeId ? { vehicleTypeId: dto.vehicleTypeId } : {}),
-        ...(dto.homeBranchId ? { homeBranchId: dto.homeBranchId } : {}),
-        homeDepotLocationId: targetDepotId,
-        ...(dto.status ? { status: dto.status } : {}),
-      },
-      include: {
-        homeBranch: {
-          select: { id: true, code: true, name: true },
+
+      assertPermission(user, 'vehicles.manage', vehicle.homeBranchId);
+      assertProfileVersion(vehicle.updatedAt, dto.expectedUpdatedAt);
+      if (dto.homeBranchId !== undefined) {
+        if (dto.homeBranchId !== vehicle.homeBranchId) await assertStatusChangeAllowed(tx, 'vehicle', id);
+        assertPermission(user, 'vehicles.manage', dto.homeBranchId);
+        if (!await tx.branch.findFirst({ where: { id: dto.homeBranchId, active: true } })) throw new BadRequestException('Chi nhánh không tồn tại hoặc đã ngừng hoạt động');
+      }
+      if (dto.status !== undefined && dto.status !== vehicle.status) await assertStatusChangeAllowed(tx, 'vehicle', id);
+      if (dto.vehicleTypeId !== undefined) {
+        const type = await tx.vehicleType.findFirst({
+          where: { id: dto.vehicleTypeId, active: true },
+        });
+        if (!type || ![type.payloadCapacityKg, type.lengthCm, type.widthCm, type.heightCm, type.volumeCapacityM3].every(n => Number.isFinite(n) && n > 0)) {
+          throw new BadRequestException('Loại xe không tồn tại hoặc đã ngừng sử dụng');
+        }
+      }
+      const targetDepotId = await this.resolveTargetHomeDepot(vehicle.homeDepotLocationId, vehicle.homeBranchId, dto.homeBranchId ?? vehicle.homeBranchId, dto.homeDepotLocationId, tx);
+      const updated = await tx.vehicle.update({
+        where: { id },
+        data: {
+          updatedAt: nextProfileTimestamp(vehicle.updatedAt),
+          ...(dto.plateNumber ? { plateNumber: dto.plateNumber.trim().toUpperCase() } : {}),
+          ...(dto.model ? { model: dto.model.trim() } : {}),
+          ...(dto.vehicleTypeId ? { vehicleTypeId: dto.vehicleTypeId } : {}),
+          ...(dto.homeBranchId ? { homeBranchId: dto.homeBranchId } : {}),
+          homeDepotLocationId: targetDepotId,
+          ...(dto.status ? { status: dto.status } : {}),
         },
-        homeDepotLocation: { select: HOME_DEPOT_SUMMARY_SELECT },
-        vehicleTypeRecord: true,
-      },
+        include: {
+          homeBranch: {
+            select: { id: true, code: true, name: true },
+          },
+          homeDepotLocation: { select: HOME_DEPOT_SUMMARY_SELECT },
+          vehicleTypeRecord: true,
+        },
+      });
+      await tx.auditLog.create({ data: { entityType: 'Vehicle', entityId: id, action: 'UPDATE', performedBy: user.id, actorUserId: user.id,
+        changeSummary: { fields: Object.keys(dto).filter(key => key !== 'expectedUpdatedAt'), fromVersion: vehicle.updatedAt.toISOString(), toVersion: updated.updatedAt.toISOString() } } });
+      return flattenVehicleType(updated);
     });
-    return flattenVehicleType(updated);
   }
 
   /**
@@ -134,6 +148,7 @@ export class VehiclesService {
     currentBranchId: string,
     targetBranchId: string,
     requestedDepotId: string | undefined,
+    tx: Prisma.TransactionClient,
   ): Promise<string | null> {
     if (requestedDepotId === undefined) {
       if (targetBranchId !== currentBranchId && currentDepotId) {
@@ -144,7 +159,7 @@ export class VehiclesService {
       return currentDepotId;
     }
 
-    const depot = await this.prisma.location.findUnique({
+    const depot = await tx.location.findUnique({
       where: { id: requestedDepotId },
       select: { id: true, type: true, active: true, managingBranchId: true },
     });

@@ -45,6 +45,7 @@ import MapboxMap from '../components/MapboxMap';
 import FloorPackingVisualizer from '../components/FloorPackingVisualizer';
 import { MapLocationPickerModal } from '../components/MapLocationPickerModal';
 import { formatDecimal } from '../utils/format';
+import { ResourceAvailabilityNotice } from '../components/ResourceAvailabilityNotice';
 
 const { Title, Text } = Typography;
 
@@ -696,6 +697,7 @@ const DispatchPage: React.FC = () => {
               />
             </div>
 
+            <ResourceAvailabilityNotice vehicleId={selectedVehicleId} driverId={selectedDriverId} startsAt={plannedTimes[0].toISOString()} endsAt={plannedTimes[1].toISOString()} />
             <Row gutter={8} style={{ marginBottom: 16 }}>
               <Col span={12}>
                 <Button

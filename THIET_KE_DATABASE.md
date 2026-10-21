@@ -1,5 +1,9 @@
 # THIẾT KẾ DATABASE TMS — DANH MỤC BẢNG VÀ QUAN HỆ
 
+> **Chốt 17/10/2026 — lịch tài nguyên:** bổ sung `driver_shifts` (khoảng UTC, có thể qua đêm, không lặp, version, actor, ACTIVE/CANCELLED), thay quyết định chưa tạo ca riêng ngày 11/10. Tái sử dụng EmployeeLeave và VehicleUnavailability, bổ sung version/actor và loại khoảng xe; không đoán actor/lịch cho dữ liệu cũ. Nguồn tên/định danh/chi nhánh của tài xế mới là Employee được chọn có kiểm tra version, không tạo tài khoản. Chuẩn hóa so trùng biển số bằng unique expression index; khoảng cùng loại không chồng, tiếp giáp được phép. Reservation và lịch dùng khóa chung và kiểm tra database. Chi tiết quyết định, migration chưa áp dụng database thật và giới hạn: [hợp đồng đội xe](docs/WEB_ADMIN.md#doi-xe).
+
+> **Bổ sung đã chốt 17/10/2026:** Customer có quan hệ nhiều–nhiều với Branch qua `customer_branches`, version chống ghi đè và `retailPhoneKey` duy nhất riêng cho checkout. Điện thoại liên hệ vận tải không còn duy nhất. Backfill phạm vi từ đơn B2B; khách chưa có phạm vi chỉ ADMIN thấy. Xem [migration và tương thích dữ liệu](docs/WEB_ADMIN.md#khach-hang). Đã thử trên bản sao PostgreSQL và áp dụng lên database thật sau xác nhận riêng; xem [biên bản](docs/WEB_ADMIN.md#database-khach-hang).
+
 Phiên bản 0.2 · Ngày 23/09/2026 · PostgreSQL · Chốt cấu trúc logic và quan hệ làm chuẩn chung; chưa đồng bộ schema/migration, chưa kiểm chứng database thực.
 
 Tài liệu liên quan: [Kế hoạch TMS](KE_HOACH_TMS.md), [Rule AI](AGENTS.md), [Phân công 3 người](PHAN_CONG_3_NGUOI.md).

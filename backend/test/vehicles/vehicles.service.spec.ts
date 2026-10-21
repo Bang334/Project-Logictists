@@ -6,6 +6,9 @@ import { VehiclesService } from '../../src/vehicles/vehicles.service';
 
 describe('VehiclesService vehicle types', () => {
   const prisma = {
+    $transaction: jest.fn(),
+    $executeRaw: jest.fn(),
+    $queryRaw: jest.fn(),
     vehicle: {
       findMany: jest.fn(),
       findUnique: jest.fn(),
@@ -35,6 +38,7 @@ describe('VehiclesService vehicle types', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    prisma.$transaction.mockImplementation(callback => callback(prisma));
     const moduleRef = await Test.createTestingModule({
       providers: [
         VehiclesService,
@@ -93,11 +97,12 @@ describe('VehiclesService vehicle types', () => {
       id: 'vehicle-1',
       homeBranchId: 'branch-1',
       homeDepotLocationId: null,
+      updatedAt: new Date('2026-10-17T00:00:00Z'),
     });
     prisma.vehicleType.findFirst.mockResolvedValue(null);
 
     await expect(
-      service.update('vehicle-1', { vehicleTypeId: 'type-disabled' }, admin),
+      service.update('vehicle-1', { vehicleTypeId: 'type-disabled', expectedUpdatedAt: '2026-10-17T00:00:00Z' }, admin),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(prisma.vehicle.update).not.toHaveBeenCalled();
   });

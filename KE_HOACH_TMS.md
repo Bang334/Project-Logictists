@@ -1,5 +1,9 @@
 # KẾ HOẠCH XÂY DỰNG LOGISTICS / TRANSPORTATION MANAGEMENT SYSTEM
 
+> **Chốt 17/10/2026 — hồ sơ và lịch tài nguyên:** Người dùng cho phép triển khai và thay quyết định ca cố định 11/10 bằng ca riêng ngày–giờ, có thể qua đêm, không lặp. ADMIN quản lý, DISPATCHER đọc; tài xế mới chọn Employee có sẵn, User không bắt buộc; tài xế cũ liên kết thủ công. Khoảng [bắt đầu,kết thúc), tiếp giáp được phép, chồng cùng loại bị từ chối. Nghỉ/bảo dưỡng hiệu lực ngay và không được xung đột chuyến; hỏng xe thực tế vẫn lưu, hiện chuyến bị ảnh hưởng, không tự sửa chuyến. Không chuyển chi nhánh khi còn chuyến/reservation hiệu lực. Biển số so trùng bằng viết hoa/bỏ khoảng trắng, chấm, gạch ngang. Bằng có hiệu lực hết ngày hết hạn theo Asia/Ho_Chi_Minh; chưa chốt thêm quy tắc hạng bằng/giờ nghỉ. Xem [contract và kiểm chứng](docs/WEB_ADMIN.md#doi-xe). Chưa được phép áp dụng migration này lên database thật.
+
+> **Cập nhật 17/10/2026 — khách hàng vận tải:** Người dùng đã cho phép triển khai riêng chức năng này và chốt một hồ sơ được cấp nhiều chi nhánh, quyền ADMIN/DISPATCHER, backfill theo đơn vận tải cũ và cho phép trùng điện thoại. Xem [quyết định, API và kiểm chứng](docs/WEB_ADMIN.md#khach-hang). Quyền triển khai này không mở rộng sang các phần còn đề xuất trong kế hoạch. Migration đã áp dụng lên database thật sau xác nhận riêng; xem [biên bản](docs/WEB_ADMIN.md#database-khach-hang).
+
 > **Cập nhật 16/10/2026:** Theo yêu cầu người dùng, mã nguồn app mobile và API thực thi riêng của Người 3 đã được gỡ, gồm phần chưa commit. Nội dung mobile bên dưới là tài liệu lịch sử/yêu cầu, không mô tả chức năng hiện có. Schema và migration được giữ để bảo toàn lịch sử dữ liệu.
 
 Ngày lập: 09/09/2026 · Phiên bản: 0.3 · Trạng thái: Bản nháp để phản hồi; đã chốt Mapbox và quy tắc xếp/dỡ hàng động, không xếp chồng

@@ -4,6 +4,10 @@ import { canManageAccounts } from '../types/accounts';
 export function canOpenTab(user: User | null, tab: string, can: (permission: string) => boolean): boolean {
   if (!user) return false;
   if (tab === 'accounts') return canManageAccounts(user);
+  if (tab === 'customers') return can('customers.read');
+  if (tab === 'trips') return can('trips.read');
+  if (tab === 'dashboard') return ['orders.read', 'trips.read', 'vehicles.read', 'drivers.read'].some(can);
+  if (tab === 'fleet') return can('vehicles.read') || can('drivers.read');
   const tms: Record<string, string> = { dashboard: 'orders.read', orders: 'orders.read', fleet: 'vehicles.read', dispatch: 'trips.plan', 'dispatch-manual': 'trips.plan', 'dispatch-auto': 'trips.plan', 'tracking-demo': 'trips.plan' };
   if (tms[tab]) return can(tms[tab]);
   if (tab === 'customer-shop') return user.role === 'CUSTOMER';
@@ -12,5 +16,6 @@ export function canOpenTab(user: User | null, tab: string, can: (permission: str
   return false;
 }
 export function defaultTab(user: User): string {
+  if (!user.grants.some(g => g.permissions.includes('orders.read')) && user.grants.some(g => g.permissions.includes('trips.read'))) return 'trips';
   return user.role === 'CUSTOMER' ? 'customer-shop' : user.role === 'STAFF' && !user.grants.length ? 'sales-orders' : 'dashboard';
 }

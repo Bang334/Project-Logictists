@@ -926,19 +926,19 @@ const AutomaticDispatchPage: React.FC = () => {
           <Col span={12}>
             <div style={{ color: '#64748b', fontSize: 11 }}>Số GPLX:</div>
             <strong style={{ color: '#1e293b', fontFamily: 'monospace' }}>
-              {d?.licenseNumber || 'Đang cập nhật'}
+              Không hiển thị trong danh sách điều phối
             </strong>
           </Col>
           <Col span={12}>
             <div style={{ color: '#64748b', fontSize: 11 }}>Hạn GPLX:</div>
             <div>
-              {d?.licenseExpiry ? dayjs(d.licenseExpiry).format('DD/MM/YYYY') : 'Còn hiệu lực'}
+              {d?.licenseExpiry ? dayjs(d.licenseExpiry).format('DD/MM/YYYY') : 'Chưa có dữ liệu'}
             </div>
           </Col>
           <Col span={12}>
             <div style={{ color: '#64748b', fontSize: 11 }}>Số CCCD/CMND:</div>
             <div style={{ fontFamily: 'monospace', color: '#334155' }}>
-              {d?.citizenId || 'Đang cập nhật'}
+              Không hiển thị trong danh sách điều phối
             </div>
           </Col>
           <Col span={12}>
@@ -953,15 +953,15 @@ const AutomaticDispatchPage: React.FC = () => {
           </Col>
           <Col span={12}>
             <div style={{ color: '#64748b', fontSize: 11 }}>Thù lao mở chuyến:</div>
-            <strong>{currency.format(Number(d?.tripBasePay) || 180000)}</strong>
+            <strong>{d?.tripBasePay == null ? 'Chưa có dữ liệu' : currency.format(Number(d.tripBasePay))}</strong>
           </Col>
           <Col span={12}>
             <div style={{ color: '#64748b', fontSize: 11 }}>Phụ trội lăn bánh:</div>
-            <strong>{currency.format(Number(d?.perKmPay) || 1200)}/km</strong>
+            <strong>{d?.perKmPay == null ? 'Chưa có dữ liệu' : currency.format(Number(d.perKmPay))}/km</strong>
           </Col>
           <Col span={24}>
             <div style={{ color: '#64748b', fontSize: 11 }}>Lương cứng cơ bản:</div>
-            <div>{currency.format(Number(d?.fixedSalaryMonthly) || 12000000)} / tháng</div>
+            <div>{d?.fixedSalaryMonthly == null ? 'Chưa có dữ liệu' : currency.format(Number(d.fixedSalaryMonthly))} / tháng</div>
           </Col>
         </Row>
 
@@ -2155,6 +2155,7 @@ const AutomaticDispatchPage: React.FC = () => {
                       title: 'Số GPLX',
                       dataIndex: 'licenseNumber',
                       key: 'licenseNumber',
+                      render: () => 'Xem hồ sơ có quyền',
                     },
                     {
                       title: 'Lương cơ bản / chuyến',
@@ -2173,7 +2174,7 @@ const AutomaticDispatchPage: React.FC = () => {
                       dataIndex: 'status',
                       key: 'status',
                       width: 130,
-                      render: () => <Tag color="success">SẴN SÀNG</Tag>,
+                      render: () => <Tag color="blue">ỨNG VIÊN — CHƯA KIỂM TRA LỊCH</Tag>,
                     },
                     {
                       title: 'Thao tác',
@@ -2207,6 +2208,7 @@ const AutomaticDispatchPage: React.FC = () => {
 
   return (
     <main className="dispatch-page" aria-labelledby="automatic-dispatch-title">
+      <Alert type="info" showIcon message="Danh sách xe/tài xế là ứng viên theo hồ sơ. Ca riêng, lịch nghỉ và sự cố phải được đối chiếu khi áp dụng/phát hành; phương án tối ưu không phải ca làm hay vị trí thực tế." style={{ marginBottom: 12 }} />
       <div className="dispatch-page-header">
         <Space wrap align="end">
           <div>

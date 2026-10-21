@@ -2,6 +2,7 @@
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { assertPermission, PermissionCode, Principal, tripFilter } from './access';
+import { customerFilter } from './customer-access';
 
 @Injectable()
 export class ResourceAccess {
@@ -12,8 +13,10 @@ export class ResourceAccess {
   }
   async customer(user: Principal, id: string, branchId: string, db: Prisma.TransactionClient = this.prisma) {
     assertPermission(user, 'customers.read', branchId);
-    const company = user.grants.some(g => g.role === 'ADMIN' && g.scopeType === 'COMPANY' && g.permissions.includes('customers.read'));
-    const customer = await db.customer.findFirst({ where: { id, ...(company ? {} : { orders: { some: { branchId } } }) } });
+    // Membership changes take an exclusive customer lock; keep eligibility stable
+    // until the enclosing order transaction commits.
+    await db.$queryRaw`SELECT id FROM customers WHERE id = ${id} FOR SHARE`;
+    const customer = await db.customer.findFirst({ where: { id, ...customerFilter(user, branchId) }, select: { id: true } });
     if (!customer) throw new ForbiddenException('Khách hàng không nằm trong quan hệ chi nhánh được phép');
   }
   async trip(user: Principal, id: string, permission: PermissionCode, db: Prisma.TransactionClient = this.prisma) {

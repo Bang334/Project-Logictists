@@ -8,9 +8,9 @@ const branch = '00000000-0000-4000-8000-000000000001';
 const location = '00000000-0000-4000-8000-000000000002';
 describe('EventsGateway session and scope authorization', () => {
   const auth = { authenticateToken: jest.fn() };
-  const access = { branch: jest.fn() };
+  const access = { branch: jest.fn(), trip: jest.fn() };
   const tx = { $queryRaw: jest.fn().mockResolvedValue([{ active: true }]) };
-  const prisma = { $transaction: jest.fn(async callback => callback(tx)) };
+  const prisma = { $transaction: jest.fn(async callback => callback(tx)), trip: { findUnique: jest.fn() } };
   const gateway = new EventsGateway(auth as unknown as AuthService, access as unknown as ResourceAccess, prisma as unknown as PrismaService);
   const socket = () => ({ id: 'socket-1', connected: true, handshake: { auth: { token: 'test' } }, rooms: new Set<string>(), join: jest.fn(), leave: jest.fn(), emit: jest.fn(), disconnect: jest.fn() }) as unknown as Socket;
   beforeEach(() => {
@@ -48,5 +48,20 @@ describe('EventsGateway session and scope authorization', () => {
     auth.authenticateToken.mockResolvedValue({ id: 'user-1', grants: [] });
     await gateway.emitOptimizationJobUpdate(branch, { jobId: 'job-1', status: 'SUCCEEDED' });
     expect(client.emit).not.toHaveBeenCalled();
+  });
+  it('notifies protected views when failed trip authorization removes the room', async () => {
+    const client = socket();
+    client.rooms.add(`branch:${branch}`);
+    jest.mocked(client.leave).mockImplementation(room => { client.rooms.delete(room); });
+    auth.authenticateToken.mockResolvedValue({ id: 'user-1', grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: branch, permissions: ['trips.read'] }] });
+    await gateway.handleConnection(client);
+    gateway.server = { sockets: { sockets: new Map([[client.id, client]]) } } as unknown as Server;
+    prisma.trip.findUnique.mockResolvedValue({ id: 'trip-1', managingBranchId: branch, version: 2 });
+    access.trip.mockRejectedValueOnce(new Error('permission revoked'));
+    auth.authenticateToken.mockResolvedValue({ id: 'user-1', grants: [] });
+    await gateway.emitTripUpdate({ id: 'trip-1' });
+    expect(client.rooms.has(`branch:${branch}`)).toBe(false);
+    expect(client.emit).toHaveBeenCalledWith('scope:revoked', { code: 'PERMISSION_DENIED' });
+    expect(client.emit).not.toHaveBeenCalledWith('trip:updated', expect.anything());
   });
 });

@@ -9,7 +9,9 @@ import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const TripMonitoringPage = lazy(() => import('./pages/TripMonitoringPage'));
 const OrdersPage = lazy(() => import('./pages/OrdersPage'));
+const CustomersPage = lazy(() => import('./pages/CustomersPage'));
 const FleetPage = lazy(() => import('./pages/FleetPage'));
 const DispatchPage = lazy(() => import('./pages/DispatchPage'));
 const AutomaticDispatchPage = lazy(() => import('./pages/AutomaticDispatchPage'));
@@ -27,7 +29,7 @@ const { Content } = Layout;
 const MainLayout: React.FC = () => {
   const { user, token, loading, error, retry, logout, scopeVersion, can } = useAuth();
   const [currentTab, setTab] = useState(() => window.location.pathname.slice(1) || 'dashboard');
-  const setCurrentTab = (tab: string) => { setTab(tab); window.history.pushState(null, '', tab === 'dashboard' ? '/' : '/' + tab); };
+  const setCurrentTab = (tab: string) => { setTab(tab.split('?')[0]); window.history.pushState(null, '', tab === 'dashboard' ? '/' : '/' + tab); };
   useEffect(() => {
     const pop = () => setTab(window.location.pathname.slice(1) || 'dashboard');
     window.addEventListener('popstate', pop);
@@ -51,6 +53,8 @@ const MainLayout: React.FC = () => {
     if (currentTab === 'accounts') return canManageAccounts(user) ? <AccountsPage /> : <Result status="403" title="Không có quyền truy cập" subTitle="Bạn không được phép quản lý tài khoản." />;
     if (!canOpenTab(user, currentTab, can)) return <Result status="403" title="Không có quyền truy cập" />;
     switch (currentTab) {
+      case 'trips':
+        return <TripMonitoringPage />;
       case 'dashboard':
         return <DashboardPage onNavigate={setCurrentTab} />;
       case 'customer-shop':
@@ -69,6 +73,8 @@ const MainLayout: React.FC = () => {
         return <RetailAnalyticsPage />;
       case 'orders':
         return <OrdersPage />;
+      case 'customers':
+        return <CustomersPage />;
       case 'fleet':
         return <FleetPage />;
       case 'dispatch':

@@ -66,10 +66,17 @@ export class SalesOrdersService {
       const skuById = new Map(skus.map((sku) => [sku.id, sku]));
 
       const customer = await tx.customer.upsert({
-        where: { phone: dto.customerPhone },
-        update: { name: dto.customerName, userId: user.role === Role.CUSTOMER ? user.id : undefined },
-        create: { code: `CUS-${randomUUID().slice(0, 8).toUpperCase()}`, name: dto.customerName, phone: dto.customerPhone, userId: user.role === Role.CUSTOMER ? user.id : undefined },
+        where: { retailPhoneKey: dto.customerPhone },
+        update: {},
+        create: { code: `CUS-${randomUUID().toUpperCase()}`, name: dto.customerName, phone: dto.customerPhone, retailPhoneKey: dto.customerPhone, userId: user.role === Role.CUSTOMER ? user.id : undefined },
       });
+      // A retail checkout must not overwrite a branch-managed transport profile.
+      await tx.$queryRaw`SELECT id FROM customers WHERE id = ${customer.id} FOR UPDATE`;
+      const managedTransportProfile = await tx.customerBranch.count({ where: { customerId: customer.id } });
+      await tx.customer.update({ where: { id: customer.id }, data: {
+        ...(!managedTransportProfile ? { name: dto.customerName } : {}),
+        userId: user.role === Role.CUSTOMER ? user.id : undefined, version: { increment: 1 },
+      } });
 
       const deliveryLat = dto.deliveryLatitude || 21.0285;
       const deliveryLng = dto.deliveryLongitude || 105.8542;

@@ -8,7 +8,7 @@ export async function seedRetailPilotFlow(prisma: PrismaClient) {
   await prisma.user.updateMany({ where: { username: { in: ['admin', 'dispatcher_hn'] } }, data: { locationId: store.id } });
   await prisma.user.updateMany({ where: { username: 'dispatcher_sgn' }, data: { locationId: southernStore.id } });
   const pickup = await prisma.location.upsert({ where: { code: 'PICKUP-HN-01' }, update: {}, create: { code: 'PICKUP-HN-01', name: 'Điểm nhận Hà Nội', type: LocationType.PICKUP_POINT, managingBranchId: branch.id, address: 'Hoàn Kiếm, Hà Nội', latitude: 21.0285, longitude: 105.8542, capabilities: ['PICKUP'], totalHoldingSlots: 50, availableHoldingSlots: 49 } });
-  const customer = await prisma.customer.upsert({ where: { phone: '0900000001' }, update: {}, create: { code: 'CUS-DEMO-001', name: 'Khách hàng Demo VLXD', phone: '0900000001', address: 'Hà Nội' } });
+  const customer = await prisma.customer.upsert({ where: { retailPhoneKey: '0900000001' }, update: {}, create: { code: 'CUS-DEMO-001', name: 'Khách hàng Demo VLXD', phone: '0900000001', retailPhoneKey: '0900000001', address: 'Hà Nội' } });
   
   // Dùng SKU Thép Hòa Phát D16 thay cho gạo cũ
   const sku = await prisma.sku.findUniqueOrThrow({ where: { skuCode: 'THEP-HP-D16' } });

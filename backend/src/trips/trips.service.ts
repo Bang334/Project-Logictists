@@ -1,4 +1,6 @@
-import { assertDispatchableOrder } from '../orders/order-contract';
+import { licenseValidUntilExclusive, minimumLicenseDate } from '../fleet/availability';
+import { calendarSnapshot } from '../fleet/calendar-snapshot';
+import { assertDispatchableOrder, newDispatchOrderWhere } from '../orders/order-contract';
 import { Principal, tripFilter, requireBranch, assertPermission } from '../auth/access';
 import { ResourceAccess } from '../auth/resource-access.service';
 import {
@@ -337,7 +339,7 @@ export class TripsService {
     if (!driver) {
       throw new NotFoundException(`Không tìm thấy tài xế [${dto.driverId}]`);
     }
-    if (driver.licenseExpiry <= new Date()) {
+    if (licenseValidUntilExclusive(driver.licenseExpiry) <= new Date()) {
       throw new BadRequestException(
         `Bằng lái của tài xế ${driver.fullName} đã hết hạn!`,
       );
@@ -371,7 +373,7 @@ export class TripsService {
       where: {
         id: { in: dto.orderIds },
         branchId: vehicle.homeBranchId,
-        status: OrderStatus.CONFIRMED,
+        ...newDispatchOrderWhere,
       },
       include: {
         stops: { orderBy: { sequence: 'asc' } },
@@ -529,14 +531,14 @@ export class TripsService {
               id: dto.driverId,
               homeBranchId: vehicle.homeBranchId,
               status: DriverStatus.AVAILABLE,
-              licenseExpiry: { gt: new Date() },
+              licenseExpiry: { gte: minimumLicenseDate(new Date()) },
             },
           }),
           tx.order.findMany({
             where: {
               id: { in: dto.orderIds },
               branchId: vehicle.homeBranchId,
-              status: OrderStatus.CONFIRMED,
+              ...newDispatchOrderWhere,
             },
             select: { id: true, version: true },
           }),
@@ -817,7 +819,7 @@ export class TripsService {
           id: dto.driverId,
           homeBranchId: branchId,
           status: DriverStatus.AVAILABLE,
-          licenseExpiry: { gt: plannedEnd },
+          licenseExpiry: { gte: minimumLicenseDate(new Date(plannedEnd.getTime() - 1)) },
         },
       }),
       this.prisma.order.findMany({
@@ -894,7 +896,7 @@ export class TripsService {
             id: dto.driverId,
             homeBranchId: branchId,
             status: DriverStatus.AVAILABLE,
-            licenseExpiry: { gt: plannedEnd },
+            licenseExpiry: { gte: minimumLicenseDate(new Date(plannedEnd.getTime() - 1)) },
           },
         }),
         tx.order.findMany({
@@ -1145,7 +1147,7 @@ export class TripsService {
         trip.vehicle.status !== VehicleStatus.AVAILABLE ||
         !primaryAssignment ||
         primaryAssignment.driver.status !== DriverStatus.AVAILABLE ||
-        primaryAssignment.driver.licenseExpiry <= trip.plannedEndTime
+        licenseValidUntilExclusive(primaryAssignment.driver.licenseExpiry) < trip.plannedEndTime
       ) {
         throw new ConflictException(
           'Xe hoặc tài xế không còn khả dụng cho toàn bộ khoảng thời gian chuyến',
@@ -1216,7 +1218,7 @@ export class TripsService {
           planningSnapshot.vehicle.vehicleTypeUpdatedAt ||
         !currentDriver ||
         currentDriver.status !== DriverStatus.AVAILABLE ||
-        currentDriver.licenseExpiry <= trip.plannedEndTime ||
+        licenseValidUntilExclusive(currentDriver.licenseExpiry) < trip.plannedEndTime ||
         currentDriver.updatedAt.toISOString() !== planningSnapshot.driver.updatedAt
       ) {
         throw new ConflictException(
@@ -1370,7 +1372,7 @@ export class TripsService {
     const planningStart = resolveVehiclePlanningStart(vehicle);
 
     const orders = await this.prisma.order.findMany({
-      where: { id: { in: body.orderIds } },
+      where: { ...newDispatchOrderWhere, id: { in: body.orderIds } },
       include: {
         stops: { orderBy: { sequence: 'asc' } },
         items: { include: { packages: true } },
@@ -1479,12 +1481,12 @@ export class TripsService {
         where: {
           homeBranchId: branchId,
           status: 'AVAILABLE',
-          licenseExpiry: { gt: new Date() },
+          licenseExpiry: { gte: minimumLicenseDate(new Date()) },
         },
         orderBy: { fullName: 'asc' },
       }),
       this.prisma.order.findMany({
-        where: { branchId, status: OrderStatus.CONFIRMED },
+        where: { ...newDispatchOrderWhere, branchId },
         include: { stops: { orderBy: { sequence: "asc" } }, items: { include: { packages: true } } },
         orderBy: { orderedAt: "asc" },
       }),
@@ -1737,7 +1739,12 @@ export class TripsService {
     };
 
     if (persistedJobId) {
+      const calendar = await calendarSnapshot(this.prisma, candidateVehicles.map(v => v.id), drivers.map(d => d.id), serviceDays[0].startsAt, serviceDays[serviceDays.length - 1].endsAt);
+      if (calendar.drivers.some(d => drivers.find(original => original.id === d.id)?.updatedAt.getTime() !== d.updatedAt.getTime()) || calendar.vehicles.some(v => candidateVehicles.find(original => original.id === v.id)?.updatedAt.getTime() !== v.updatedAt.getTime())) {
+        throw new ConflictException('Lịch/hồ sơ tài nguyên thay đổi khi tạo snapshot; hãy chạy lại');
+      }
       const requestSnapshot = {
+        resourceCalendar: JSON.parse(JSON.stringify(calendar)) as Prisma.InputJsonValue,
         branchId,
         planningEpochIso: planningEpoch.toISOString(),
         scheduleMode: scheduleMode ?? null,
@@ -2066,7 +2073,7 @@ export class TripsService {
 
         const [orders, vehicles, drivers] = await Promise.all([
           tx.order.findMany({
-            where: { id: { in: orderIds }, branchId },
+            where: { ...newDispatchOrderWhere, id: { in: orderIds }, branchId },
             include: { stops: true, items: { include: { packages: true } } },
           }),
           tx.vehicle.findMany({
@@ -2445,7 +2452,7 @@ export class TripsService {
           `Tài xế ${driver.fullName} không còn AVAILABLE`,
         );
       }
-      if (driver.licenseExpiry.getTime() <= now.getTime()) {
+      if (licenseValidUntilExclusive(driver.licenseExpiry).getTime() <= now.getTime()) {
         throw new ConflictException(
           `Bằng lái của tài xế ${driver.fullName} đã hết hạn`,
         );

@@ -105,7 +105,9 @@ const VehicleStatusSelector: React.FC<{
       {VEHICLE_STATUSES.map((item) => {
         const isSelected = value === item.value;
         return (
-          <div
+          <button
+            type="button"
+            aria-pressed={isSelected}
             key={item.value}
             onClick={() => onChange?.(item.value)}
             style={{
@@ -145,7 +147,7 @@ const VehicleStatusSelector: React.FC<{
             >
               {item.label}
             </span>
-          </div>
+          </button>
         );
       })}
     </div>
@@ -197,10 +199,11 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
   }, [open, vehicle, form]);
 
   const handleFinish = async (values: any) => {
-    if (!vehicle) return;
+    if (!vehicle || submitting) return;
     try {
       setSubmitting(true);
       await vehiclesApi.update(vehicle.id, {
+        expectedUpdatedAt: vehicle.updatedAt,
         plateNumber: values.plateNumber,
         model: values.model,
         vehicleTypeId: values.vehicleTypeId,
@@ -210,6 +213,7 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
       });
       message.success(`Đã cập nhật thông tin xe tải [${values.plateNumber}] thành công!`);
       onSuccess();
+      onCancel();
     } catch (err: any) {
       message.error(err.response?.data?.message || 'Có lỗi xảy ra khi cập nhật xe tải');
     } finally {
@@ -356,7 +360,7 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
                 </Space>
               }
               rules={[{ required: true, message: 'Vui lòng chọn kho đỗ xuất phát của xe' }]}
-              extra="Khi lập lịch và tối ưu, xe luôn được coi là xuất phát từ kho này. Tọa độ GPS chỉ dùng cho giám sát hành trình."
+              extra="Điểm xuất phát mặc định của kế hoạch; không xác nhận vị trí thực tế hoặc khả năng đến nhận việc."
             >
               <Select placeholder="Chọn kho trung tâm trực thuộc làm điểm đỗ / xuất phát">
                 {depots

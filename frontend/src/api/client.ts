@@ -1,4 +1,5 @@
 import { OrderInput, OrderQuery, parseOrder, parseOrderPage } from '../types/orders';
+import { CustomerInput, CustomerQuery, parseCustomer, parseChoice, parsePage, parseCustomerOrder } from '../types/customers';
 import axios, { CanceledError, InternalAxiosRequestConfig } from 'axios';
 import { AccountQuery, CreateAccount, parseAccount, parseAccountList } from '../types/accounts';
 import {
@@ -84,6 +85,12 @@ export const branchesApi = {
 
 export const customersApi = {
   getAll: (branchId?: string) => client.get<Array<{ id: string; code: string; name: string }>>('/customers', { params: { branchId } }),
+  list: async (params: CustomerQuery) => parsePage((await client.get<unknown>('/customers/page', { params })).data, parseCustomer),
+  lookup: async (params: CustomerQuery) => parsePage((await client.get<unknown>('/customers/lookup', { params })).data, parseChoice),
+  getOne: async (id: string, branchId?: string) => parseCustomer((await client.get<unknown>(`/customers/${id}`, { params: { branchId } })).data),
+  orders: async (id: string, params: CustomerQuery) => parsePage((await client.get<unknown>(`/customers/${id}/orders`, { params })).data, parseCustomerOrder),
+  create: async (data: CustomerInput & { branchIds: string[] }, key: string) => parseCustomer((await client.post<unknown>('/customers', data, { headers: { 'Idempotency-Key': key }, timeout: 20000 })).data),
+  update: async (id: string, data: CustomerInput & { version: number }, key: string) => parseCustomer((await client.patch<unknown>(`/customers/${id}`, data, { headers: { 'Idempotency-Key': key }, timeout: 20000 })).data),
 };
 
 export const vehiclesApi = {
@@ -93,7 +100,7 @@ export const vehiclesApi = {
     apiClient.get<Vehicle[]>('/vehicles/available', { params: { branchId } }),
   getTypes: () => apiClient.get<VehicleType[]>('/vehicles/types'),
   getById: (id: string) => apiClient.get<Vehicle>(`/vehicles/${id}`),
-  update: (id: string, data: Partial<Vehicle>) =>
+  update: (id: string, data: Partial<Vehicle> & { expectedUpdatedAt: string }) =>
     apiClient.patch<Vehicle>(`/vehicles/${id}`, data),
 };
 
@@ -103,7 +110,7 @@ export const driversApi = {
   getAvailable: (branchId?: string) =>
     apiClient.get<Driver[]>('/drivers/available', { params: { branchId } }),
   getById: (id: string) => apiClient.get<Driver>(`/drivers/${id}`),
-  update: (id: string, data: Partial<Driver>) =>
+  update: (id: string, data: Partial<Driver> & { expectedUpdatedAt: string }) =>
     apiClient.patch<Driver>(`/drivers/${id}`, data),
 };
 

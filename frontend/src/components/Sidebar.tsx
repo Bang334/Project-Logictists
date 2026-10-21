@@ -27,6 +27,7 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
   const { can, user } = useAuth();
   const menuItems = [
+    { key: 'trips', icon: <CarOutlined />, label: 'Tra cứu chuyến' },
     { key: 'customer-shop', icon: <ShopOutlined />, label: 'Đặt hàng' },
     { key: 'catalog', icon: <AppstoreOutlined />, label: 'Danh mục hàng' },
     { key: 'inventory', icon: <DatabaseOutlined />, label: 'Tồn kho' },
@@ -35,6 +36,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
     { key: 'pickup-ops', icon: <ShopOutlined />, label: 'Điểm nhận hàng' },
     { key: 'retail-analytics', icon: <BarChartOutlined />, label: 'Báo cáo bán lẻ' },
     { key: 'accounts', icon: <UserOutlined aria-hidden="true" />, label: 'Quản lý tài khoản' },
+    { key: 'customers', icon: <UserOutlined aria-hidden="true" />, label: 'Khách hàng vận tải' },
     {
       key: 'dashboard',
       icon: <DashboardOutlined style={{ fontSize: '16px' }} />,

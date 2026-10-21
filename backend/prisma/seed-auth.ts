@@ -51,6 +51,7 @@ export async function seedAuth(prisma: PrismaClient) {
       const branch = branches[i];
       const label = i === 0 ? 'A' : 'B';
       const customer = await tx.customer.upsert({ where: { code: 'DEMO-AUTH-CUSTOMER-' + label }, update: {}, create: { code: 'DEMO-AUTH-CUSTOMER-' + label, name: '[DEMO AUTH] Khách ' + label, address: 'Địa chỉ demo', contactPerson: 'Demo', phone: '000000000' + i } });
+      await tx.customerBranch.upsert({ where: { customerId_branchId: { customerId: customer.id, branchId: branch.id } }, update: {}, create: { customerId: customer.id, branchId: branch.id } });
       const vehicleType = await tx.vehicleType.upsert({ where: { code: 'DEMO-AUTH' }, update: {}, create: { code: 'DEMO-AUTH', name: 'Demo', payloadCapacityKg: 1000, volumeCapacityM3: 10, lengthCm: 400, widthCm: 200, heightCm: 200 } });
       const vehicle = await tx.vehicle.upsert({ where: { plateNumber: 'DEMO-AUTH-' + label }, update: {}, create: { plateNumber: 'DEMO-AUTH-' + label, model: '[DEMO AUTH]', vehicleTypeId: vehicleType.id, homeBranchId: branch.id } });
       const driver = await tx.driver.upsert({ where: { citizenId: 'DEMO-AUTH-' + label }, update: {}, create: { citizenId: 'DEMO-AUTH-' + label, fullName: '[DEMO AUTH] Tài xế ' + label, phone: '0000000000', licenseNumber: 'DEMO-AUTH-' + label, licenseClass: 'C', licenseExpiry: new Date('2035-01-01'), homeBranchId: branch.id } });

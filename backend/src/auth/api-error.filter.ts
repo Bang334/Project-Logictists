@@ -1,17 +1,22 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException } from '@nestjs/common';
 import { Response } from 'express';
 import { Prisma } from '@prisma/client';
+import { isFleetDatabaseConflict } from '../fleet/fleet-command';
 
 @Catch()
 export class ApiErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost) {
     const response = host.switchToHttp().getResponse<Response>();
+    if (isFleetDatabaseConflict(error)) {
+      response.status(409).json({ statusCode: 409, code: 'RESOURCE_SCHEDULE_CONFLICT', message: 'Lịch tài nguyên xung đột hoặc chưa đủ điều kiện. Tải lại hồ sơ/lịch trước khi phân công.' });
+      return;
+    }
     if (error instanceof HttpException) {
       const body = error.getResponse();
       response.status(error.getStatus()).json({ statusCode: error.getStatus(), code: `HTTP_${error.getStatus()}`, ...(typeof body === 'string' ? { message: body } : body) });
       return;
     }
-    if (error instanceof Prisma.PrismaClientKnownRequestError && ['P2002', 'P2003', 'P2025'].includes(error.code)) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && ['P2002', 'P2003', 'P2004', 'P2025'].includes(error.code)) {
       response.status(409).json({ statusCode: 409, code: 'DATA_CONFLICT', message: 'Dữ liệu trùng, không tồn tại hoặc đã thay đổi. Vui lòng tải lại' });
       return;
     }

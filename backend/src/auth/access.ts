@@ -3,7 +3,7 @@ import { Prisma, Role } from '@prisma/client';
 
 export const PERMISSIONS = [
   'branches.read', 'branches.manage', 'vehicles.read', 'vehicles.manage',
-  'drivers.read', 'drivers.manage', 'customers.read', 'orders.read',
+  'drivers.read', 'drivers.manage', 'customers.read', 'customers.write', 'customers.manage', 'orders.read',
   'orders.write', 'trips.read', 'trips.plan', 'trips.publish',
   'users.read', 'users.create', 'users.lock',
 ] as const;

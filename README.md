@@ -10,6 +10,10 @@ Giữ API quản lý tài xế `/drivers`, auth/quyền, điều phối/optimiza
 
 Hệ thống TMS gồm NestJS/PostgreSQL/Redis, React/Ant Design và Optimization Engine FastAPI + OR-Tools.
 
+## Tài liệu Web Admin
+
+[Xem tài liệu Web Admin TMS](docs/WEB_ADMIN.md): khách hàng, đội xe/lịch, đơn–kiện, giám sát chuyến, Dashboard và các biên bản database liên quan.
+
 ## Chạy cục bộ
 
 Yêu cầu: Node.js 20+, Python 3.11+, PostgreSQL và Redis. `compose.yaml` hiện chỉ khởi tạo Redis; PostgreSQL phải được cung cấp qua `DATABASE_URL`.

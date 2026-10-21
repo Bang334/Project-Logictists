@@ -5,7 +5,8 @@ import axios from 'axios';
 import dayjs, { Dayjs } from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
-import { apiErrorMessage, branchesApi, customersApi, ordersApi } from '../api/client';
+import { apiErrorMessage, branchesApi, ordersApi } from '../api/client';
+import CustomerSelect from '../components/CustomerSelect';
 import { useAuth } from '../context/AuthContext';
 import type { Branch, Order } from '../types';
 import type { OrderInput, OrderLineInput, PackageInput, StopInput } from '../types/orders';
@@ -17,8 +18,9 @@ interface FormStop extends Omit<StopInput, 'windowStart' | 'windowEnd'> { window
 interface FormValues extends Omit<OrderInput, 'stops'> { stops: FormStop[] }
 const blankPackage = () => ({ lengthMm: undefined, widthMm: undefined, heightMm: undefined, weightG: undefined });
 const required = [{ required: true, message: 'Vui lòng nhập trường này' }];
-const dateValue = (value?: string | null) => value ? dayjs(dayjs(value).tz(TZ).format('YYYY-MM-DDTHH:mm:ss')) : null;
-const isoValue = (value?: Dayjs | null) => value ? dayjs.tz(value.format('YYYY-MM-DDTHH:mm:ss'), TZ).toISOString() : null;
+// Preserve the stored instant when editing unrelated fields, including milliseconds.
+const dateValue = (value?: string | null) => value ? dayjs(dayjs(value).tz(TZ).format('YYYY-MM-DDTHH:mm:ss.SSS')) : null;
+const isoValue = (value?: Dayjs | null) => value ? dayjs.tz(value.format('YYYY-MM-DDTHH:mm:ss.SSS'), TZ).toISOString() : null;
 function showFieldErrors(error: unknown, form: FormInstance<FormValues>) {
   if (!axios.isAxiosError(error)) return;
   const entries: unknown = error.response?.data?.fieldErrors;
@@ -74,15 +76,20 @@ const OrdersPage: React.FC = () => {
   const [search, setSearch] = useState(''), [status, setStatus] = useState<string>();
   const [loading, setLoading] = useState(false), [saving, setSaving] = useState(false);
   const [error, setError] = useState(''), [saveError, setSaveError] = useState('');
-  const [branches, setBranches] = useState<Branch[]>([]), [customers, setCustomers] = useState<Array<{ id: string; code: string; name: string }>>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [open, setOpen] = useState(false), [editing, setEditing] = useState<Order | null>(null), [detail, setDetail] = useState<Order | null>(null);
   const [mapStop, setMapStop] = useState<number | null>(null);
   const [form] = Form.useForm<FormValues>();
   const formBranch = Form.useWatch('branchId', form);
-  const [customersLoading, setCustomersLoading] = useState(false);
   const busy = useRef(false), request = useRef(0);
   const command = useRef<{ payload: string; key: string }>();
   const confirmCommand = useRef<{ id: string; version: number; key: string }>();
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('order');
+    let disposed = false;
+    if (id) void ordersApi.getOne(id).then(o => { if (!disposed) setDetail(o); }).catch(e => { if (!disposed) setError(apiErrorMessage(e)); });
+    return () => { disposed = true; };
+  }, [branchId]);
   const fetchRows = async () => {
     const seq = ++request.current; setLoading(true); setError('');
     try {
@@ -97,14 +104,6 @@ const OrdersPage: React.FC = () => {
     void branchesApi.getAll().then(b => { if (live) setBranches(b.data); }).catch(e => { if (live && !axios.isCancel(e)) setError(apiErrorMessage(e)); });
     return () => { live = false; };
   }, [branchId]);
-  useEffect(() => {
-    if (!open || !formBranch) { setCustomers([]); return; }
-    let live = true; setCustomersLoading(true); setCustomers([]);
-    void customersApi.getAll(formBranch).then(c => { if (live) setCustomers(c.data); })
-      .catch(e => { if (live && !axios.isCancel(e)) setSaveError(apiErrorMessage(e)); })
-      .finally(() => { if (live) setCustomersLoading(false); });
-    return () => { live = false; };
-  }, [open, formBranch]);
   const beginCreate = () => {
     setEditing(null); setSaveError(''); command.current = undefined; form.resetFields();
     form.setFieldsValue({ branchId: branchId ?? (branches.length === 1 ? branches[0].id : undefined), stops: [{ type: 'PICKUP', serviceDurationMinutes: 20 }, { type: 'DELIVERY', serviceDurationMinutes: 20 }], items: [{ description: '', packageType: 'CARTON', packages: [blankPackage()] }] });
@@ -170,7 +169,7 @@ const OrdersPage: React.FC = () => {
       {editing?.packageDataStatus === 'LEGACY_REVIEW' && <Alert type="warning" showIcon message="Đơn cũ cần đối soát: nhập số đo thực tế từng kiện; không tự chia tổng khối lượng" description={editing.items.map(i => `${i.description}: ${i.quantity} kiện, số cũ ${i.weightKg} kg, ${i.lengthCm} × ${i.widthCm} × ${i.heightCm} cm`).join('; ')} />}
       <Form<FormValues> form={form} layout="vertical" onFinish={values => void save(values)} disabled={saving} scrollToFirstError>
         <Row gutter={16}><Col xs={24} sm={12}><Form.Item name="branchId" label="Chi nhánh quản lý" rules={required}><Select disabled={!!editing} onChange={() => form.setFieldValue('customerId', undefined)} options={branches.map(b => ({ value: b.id, label: b.name }))} /></Form.Item></Col>
-          <Col xs={24} sm={12}><Form.Item name="customerId" label="Khách hàng" rules={required}><Select loading={customersLoading} disabled={!formBranch || customersLoading} showSearch optionFilterProp="label" options={customers.map(c => ({ value: c.id, label: `${c.code} — ${c.name}` }))} /></Form.Item></Col></Row>
+          <Col xs={24} sm={12}><Form.Item name="customerId" label="Khách hàng" rules={required}><CustomerSelect branchId={formBranch} disabled={saving} /></Form.Item></Col></Row>
         <Form.List name="stops">{fields => fields.map((field, i) => <Card key={field.key} title={i === 0 ? 'Điểm lấy hàng' : 'Điểm giao hàng'} style={{ marginBottom: 16 }}>
           <Form.Item name={[field.name, 'id']} hidden><Input /></Form.Item><Form.Item name={[field.name, 'type']} hidden><Input /></Form.Item>
           <Form.Item name={[field.name, 'address']} label="Địa chỉ" rules={required}><Input /></Form.Item>

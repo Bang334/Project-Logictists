@@ -1,5 +1,7 @@
 # Hợp đồng Package / khung giờ sau merge
 
+> **Nghiệm thu 18/10/2026:** form sửa giữ nguyên mili giây của khung giờ; đơn/kiện có tác vụ hoặc lịch sử (kể cả StopTask chỉ liên kết Package) bị chặn sửa và loại khỏi danh sách chờ điều phối mới. Không đổi response hay thêm policy hủy. Ma trận kiểm thử, hai lỗi tái hiện và giới hạn tích hợp: [Nghiệm thu đơn–kiện](WEB_ADMIN.md#don-kien).
+
 > **Cập nhật 16/10/2026:** Theo yêu cầu người dùng, mã nguồn app mobile và API thực thi riêng của Người 3 đã được gỡ, gồm phần chưa commit. Nội dung mobile bên dưới là tài liệu lịch sử/yêu cầu, không mô tả chức năng hiện có. Schema và migration được giữ để bảo toàn lịch sử dữ liệu.
 
 ## Bổ sung thực thi delivery ngày 12/10/2026

@@ -40,8 +40,8 @@ const Navbar: React.FC = () => {
         </div>
       </div>
 
-      <Space size="middle" wrap>
-        <Select aria-label="Chi nhánh làm việc" style={{ minWidth: 210 }} value={branchId || 'ALL'} onChange={value => setBranchId(value === 'ALL' ? undefined : value)} options={[{ value: 'ALL', label: user?.companyScope ? 'Toàn công ty' : 'Các chi nhánh được cấp' }, ...(user?.branches || []).map(b => ({ value: b.id, label: b.name }))]} />
+      <Space size="middle" wrap style={{ maxWidth: '100%' }}>
+        <Select aria-label="Chi nhánh làm việc" style={{ width: screens.sm ? 260 : 'calc(100vw - 32px)', maxWidth: '100%' }} value={branchId || 'ALL'} onChange={value => setBranchId(value === 'ALL' ? undefined : value)} options={[{ value: 'ALL', label: 'Tất cả chi nhánh được cấp' }, ...(user?.branches || []).map(b => ({ value: b.id, label: b.name }))]} />
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Tag color="geekblue" icon={<UserOutlined />}>

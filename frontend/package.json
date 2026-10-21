@@ -4,6 +4,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
+    "test:dashboard": "playwright test --config playwright.dashboard.config.ts",
+    "test:monitoring": "playwright test --config playwright.monitoring.config.ts",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
@@ -13,7 +15,10 @@
     "dev:orders-demo": "node scripts/start-orders-demo.cjs",
     "lint": "eslint src",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:customers": "playwright test --config playwright.customers.config.ts",
+    "test:fleet": "playwright test --config playwright.fleet.config.ts",
+    "test:order-acceptance": "playwright test --config playwright.order-acceptance.config.ts"
   },
   "dependencies": {
     "@ant-design/icons": "^5.4.0",
