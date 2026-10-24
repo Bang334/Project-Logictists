@@ -12,16 +12,17 @@ const Navbar: React.FC = () => {
 
   return (
     <Header
+      className="tms-navbar"
       style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '8px 16px',
+        padding: '0 20px',
         flexWrap: 'wrap',
         gap: 12,
-        background: '#001529',
-        borderBottom: '1px solid #1e293b',
-        height: 'auto',
+        background: '#ffffff',
+        borderBottom: '1px solid #e2e8f0',
+        boxShadow: '0 2px 8px rgba(15, 23, 42, 0.05)',
         minHeight: 64,
         position: 'sticky',
         top: 0,
@@ -29,25 +30,44 @@ const Navbar: React.FC = () => {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-        <CarOutlined aria-label="TMS Logistics" style={{ color: '#60a5fa', fontSize: '24px' }} />
+        <div
+          style={{
+            width: 38,
+            height: 38,
+            borderRadius: 10,
+            background: 'linear-gradient(135deg, #e0f2fe 0%, #bae6fd 100%)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: '0 2px 6px rgba(2, 132, 199, 0.15)',
+          }}
+        >
+          <CarOutlined aria-label="TMS Logistics" style={{ color: '#0284c7', fontSize: '20px' }} />
+        </div>
         <div>
-          <span style={{ color: '#ffffff', fontWeight: 700, fontSize: '18px', letterSpacing: '-0.02em' }}>
+          <span style={{ color: '#0f172a', fontWeight: 800, fontSize: '18px', letterSpacing: '-0.02em' }}>
             TMS LOGISTICS
-          </span>
-          <span style={{ color: '#94a3b8', fontSize: '12px', marginLeft: '8px' }}>
-            Phase 1: Core Dispatch
           </span>
         </div>
       </div>
 
       <Space size="middle" wrap>
-        <Select aria-label="Chi nhánh làm việc" style={{ minWidth: 210 }} value={branchId || 'ALL'} onChange={value => setBranchId(value === 'ALL' ? undefined : value)} options={[{ value: 'ALL', label: user?.companyScope ? 'Toàn công ty' : 'Các chi nhánh được cấp' }, ...(user?.branches || []).map(b => ({ value: b.id, label: b.name }))]} />
+        <Select
+          aria-label="Chi nhánh làm việc"
+          style={{ minWidth: 220 }}
+          value={branchId || 'ALL'}
+          onChange={(value) => setBranchId(value === 'ALL' ? undefined : value)}
+          options={[
+            { value: 'ALL', label: user?.companyScope ? 'Toàn công ty' : 'Các chi nhánh được cấp' },
+            ...(user?.branches || []).map((b) => ({ value: b.id, label: b.name })),
+          ]}
+        />
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Tag color="geekblue" icon={<UserOutlined />}>
-            {[...new Set(user?.grants.map(g => g.role))].join(', ') || user?.role}
+            {[...new Set(user?.grants.map((g) => g.role))].join(', ') || user?.role}
           </Tag>
-          <Text style={{ color: '#ffffff', fontWeight: 500 }}>
+          <Text style={{ color: '#1e293b', fontWeight: 600 }}>
             {user?.fullName || user?.username}
           </Text>
         </div>
@@ -67,3 +87,4 @@ const Navbar: React.FC = () => {
 };
 
 export default Navbar;
+

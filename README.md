@@ -24,6 +24,24 @@ Redis phải sẵn sàng trước khi tạo optimization job: `docker compose up
 
 Optimization job có idempotency key, outbox và worker lease. Trip Plan chỉ được publish sau khi backend kiểm tra lại version đơn, tài nguyên, reservation và load plan trong transaction. Socket.IO chỉ báo có thay đổi; client luôn tải lại snapshot từ API.
 
+## Làm mới lịch dữ liệu demo
+
+Script `backend/scripts/refresh-order-dates-today.cjs` dời đồng bộ `orderedAt` và
+các cửa sổ pickup/delivery của đơn seed demo chưa phân công theo nguyên số ngày,
+không làm thay đổi giờ trong ngày hoặc lịch sử chuyến đã phân công.
+
+```powershell
+cd backend
+npm run test-data:orders-today:preview
+$env:ALLOW_TEST_DATA_MUTATION='true'
+npm run test-data:orders-today
+Remove-Item Env:ALLOW_TEST_DATA_MUTATION
+```
+
+`preview` không ghi database. Biến xác nhận bổ sung chỉ cần khi `DATABASE_URL`
+trỏ tới database từ xa. Sau khi cập nhật, tạo optimization job mới vì snapshot
+của job cũ được giữ nguyên để truy vết.
+
 ## Biến môi trường quan trọng
 
 Backend cần `DATABASE_URL`, `JWT_SECRET`, `REDIS_URL`, `MAPBOX_ACCESS_TOKEN`; frontend cần `VITE_API_URL`, `VITE_SOCKET_URL`, `VITE_MAPBOX_TOKEN`. Xem các file `.env.example` để biết đầy đủ tên biến.

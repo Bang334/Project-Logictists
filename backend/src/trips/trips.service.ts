@@ -3170,7 +3170,7 @@ export class TripsService {
           `Đơn ${order.orderNumber} thiếu pickup hoặc delivery`,
         );
       }
-      if (!pickup.windowStart || !pickup.windowEnd || !delivery.windowStart || !delivery.windowEnd || pickup.windowBasis !== 'SERVICE_START' || delivery.windowBasis !== 'SERVICE_START') throw new BadRequestException('Thiếu khung giờ bắt đầu phục vụ đã xác nhận');
+      if (!delivery.windowStart || !delivery.windowEnd || delivery.windowBasis !== 'SERVICE_START') throw new BadRequestException('Thiếu khung giờ giao hàng đã xác nhận');
       let items;
       try {
         items = packagesToCargoUnits(order.items);
@@ -3193,16 +3193,24 @@ export class TripsService {
           longitude: delivery.longitude,
         },
         items,
-        pickup_window_start_sec: secondsFromEpoch(pickup.windowStart, 'start'),
-        pickup_window_end_sec: secondsFromEpoch(pickup.windowEnd, 'end'),
-        delivery_window_start_sec: secondsFromEpoch(delivery.windowStart, 'start'),
-        delivery_window_end_sec: secondsFromEpoch(delivery.windowEnd, 'end'),
+        // Điểm lấy hàng (Kho/Cửa hàng): Hàng sẵn sàng tại kho từ đầu ca (0s).
+        // Optimizer tự do xếp lịch giờ xe đến lấy hàng tối ưu nhất theo lộ trình.
+        pickup_window_start_sec: 0,
+        pickup_window_end_sec: 604800,
+        delivery_window_start_sec: Math.max(0, secondsFromEpoch(delivery.windowStart, 'start')),
+        delivery_window_end_sec: Math.max(
+          Math.max(0, secondsFromEpoch(delivery.windowStart, 'start')),
+          secondsFromEpoch(delivery.windowEnd, 'end'),
+        ),
         pickup_service_time_sec: pickup.serviceDurationMinutes * 60,
         delivery_service_time_sec: delivery.serviceDurationMinutes * 60,
         time_window_basis: 'SERVICE_START',
         package_contract_version: '1',
-        ordered_at_sec: Math.round(
-          (order.orderedAt.getTime() - planningEpoch.getTime()) / 1000,
+        ordered_at_sec: Math.max(
+          0,
+          Math.round(
+            (order.orderedAt.getTime() - planningEpoch.getTime()) / 1000,
+          ),
         ),
         order_value_vnd: Math.round(Number(order.totalAmount)),
         service_time_sec:

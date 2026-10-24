@@ -377,16 +377,34 @@ class HybridALNSSolver:
         """
         if limit <= 0:
             return []
-        pickup, delivery = self._make_stops(self.order_by_id[order_id])
+        order = self.order_by_id[order_id]
+        pickup, delivery = self._make_stops(order)
         quick_candidates: List[Tuple[int, float, int, List[ScheduledStop]]] = []
         for vehicle_index in vehicle_indices:
             if time.perf_counter() >= deadline:
                 break
+            vehicle = self.vehicles[vehicle_index]
+            if order.total_weight_kg > vehicle.payload_limit_kg + 0.01:
+                continue
+            if order.allowed_source_vehicle_ids:
+                src_id = vehicle.source_vehicle_id or vehicle.id
+                if src_id not in order.allowed_source_vehicle_ids and vehicle.id not in order.allowed_source_vehicle_ids:
+                    continue
+            if (
+                order.pickup_window_end_sec < vehicle.available_start_sec
+                or order.delivery_window_start_sec > vehicle.available_end_sec
+            ):
+                continue
             current = routes[vehicle_index]
             current_cost = self._route_cost(vehicle_index, current)
             for pickup_pos, delivery_pos in self._candidate_positions(len(current)):
                 if time.perf_counter() >= deadline:
                     break
+                if pickup_pos > 0 and current[pickup_pos - 1].departure_time_sec > order.pickup_window_end_sec:
+                    continue
+                pred_deliv_idx = delivery_pos - 2
+                if 0 <= pred_deliv_idx < len(current) and current[pred_deliv_idx].departure_time_sec > order.delivery_window_end_sec:
+                    continue
                 candidate = (
                     current[:pickup_pos]
                     + [pickup]
@@ -1502,6 +1520,96 @@ class HybridALNSSolver:
                 break
         return selected
 
+
+    def _solve_set_partitioning(
+        self,
+        elite_candidates: List[Tuple[int, List[List[ScheduledStop]], List[str]]],
+        time_limit_sec: float = 0.5,
+    ) -> Optional[Tuple[int, List[List[ScheduledStop]], List[str]]]:
+        """Combine elite routes from different iterations into a lower-cost plan using CP-SAT."""
+        try:
+            from ortools.sat.python import cp_model
+        except ImportError:
+            return None
+
+        all_order_ids = set(self.order_by_id.keys())
+        if not all_order_ids:
+            return None
+
+        seen_route_signatures = set()
+        unique_routes: List[Tuple[int, List[ScheduledStop], Set[str], int]] = []
+
+        for _, plan_routes, _ in elite_candidates:
+            for vehicle_index, stops in enumerate(plan_routes):
+                if not stops:
+                    continue
+                route_key = (vehicle_index, self._route_key(stops))
+                if route_key in seen_route_signatures:
+                    continue
+                seen_route_signatures.add(route_key)
+                orders_served = {
+                    stop.order_id
+                    for stop in stops
+                    if stop.stop_type == "PICKUP" and stop.order_id
+                }
+                if not orders_served:
+                    continue
+                cost = self._route_cost(vehicle_index, stops)
+                unique_routes.append((vehicle_index, stops, orders_served, cost))
+
+        if not unique_routes:
+            return None
+
+        order_to_routes: Dict[str, List[int]] = {order_id: [] for order_id in all_order_ids}
+        for route_idx, (_, _, orders_served, _) in enumerate(unique_routes):
+            for order_id in orders_served:
+                if order_id in order_to_routes:
+                    order_to_routes[order_id].append(route_idx)
+
+        if any(len(route_indices) == 0 for route_indices in order_to_routes.values()):
+            return None
+
+        model = cp_model.CpModel()
+        route_vars = [model.NewBoolVar(f"r_{i}") for i in range(len(unique_routes))]
+
+        for order_id, route_indices in order_to_routes.items():
+            model.Add(sum(route_vars[r_i] for r_i in route_indices) == 1)
+
+        vehicle_to_routes: Dict[int, List[int]] = {}
+        for route_idx, (v_idx, _, _, _) in enumerate(unique_routes):
+            vehicle_to_routes.setdefault(v_idx, []).append(route_idx)
+        for v_idx, route_indices in vehicle_to_routes.items():
+            if len(route_indices) > 1:
+                model.Add(sum(route_vars[r_i] for r_i in route_indices) <= 1)
+
+        day_plate_to_routes: Dict[Tuple[int, str], List[int]] = {}
+        for route_idx, (v_idx, _, _, _) in enumerate(unique_routes):
+            vehicle = self.vehicles[v_idx]
+            day_key = (vehicle.service_day_index, vehicle.source_vehicle_id or vehicle.plate_number or vehicle.id)
+            day_plate_to_routes.setdefault(day_key, []).append(route_idx)
+        for day_key, route_indices in day_plate_to_routes.items():
+            if len(route_indices) > 1:
+                model.Add(sum(route_vars[r_i] for r_i in route_indices) <= 1)
+
+        model.Minimize(sum(c_r * route_vars[r_i] for r_i, (_, _, _, c_r) in enumerate(unique_routes)))
+
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = time_limit_sec
+        solver.parameters.num_workers = 1
+        status = solver.Solve(model)
+
+        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            assembled_routes: List[List[ScheduledStop]] = [[] for _ in self.vehicles]
+            for route_idx, (v_idx, stops, _, _) in enumerate(unique_routes):
+                if solver.Value(route_vars[route_idx]) == 1:
+                    assembled_routes[v_idx] = copy.deepcopy(stops)
+            assigned_orders = set(self._assigned_order_ids(assembled_routes))
+            unassigned = [order_id for order_id in all_order_ids if order_id not in assigned_orders]
+            if not unassigned:
+                total_cost = self._plan_cost(assembled_routes, unassigned)
+                return (total_cost, assembled_routes, unassigned)
+        return None
+
     def solve(self) -> OptimizationSolution:
         started_at = time.perf_counter()
         deadline = started_at + self.time_limit_sec
@@ -2031,6 +2139,18 @@ class HybridALNSSolver:
                             list(best_unassigned),
                         )
                     )
+
+                # CP-SAT Set Partitioning over Route Pool to recombine optimal routes
+        if len(elite_candidates) >= 2:
+            sp_result = self._solve_set_partitioning(elite_candidates, time_limit_sec=0.5)
+            if sp_result is not None:
+                sp_cost, sp_routes, sp_unassigned = sp_result
+                if len(sp_unassigned) == 0:
+                    elite_candidates.insert(0, (sp_cost, sp_routes, sp_unassigned))
+                    if sp_cost < best_cost:
+                        best_cost = sp_cost
+                        best_routes = sp_routes
+                        best_unassigned = sp_unassigned
 
         # Lọc các ứng viên duy nhất trong elite candidates đã giao đủ 100% đơn
         unique_candidates: List[Tuple[int, List[List[ScheduledStop]], List[str]]] = []

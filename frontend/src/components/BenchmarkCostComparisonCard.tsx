@@ -22,16 +22,22 @@ import {
   SafetyCertificateOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
-import { BenchmarkComparisonUI, BenchmarkMetricUI } from '../types';
+import { BenchmarkComparisonUI, BenchmarkMetricUI, FleetOptimizationResultUI } from '../types';
 import { formatCurrency, formatDecimal } from '../utils/format';
 
 const { Text, Title, Paragraph } = Typography;
 
 interface Props {
   benchmarks?: BenchmarkComparisonUI | null;
+  optimizationStatus?: FleetOptimizationResultUI['status'];
+  unassignedOrderCount?: number;
 }
 
-export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => {
+export const BenchmarkCostComparisonCard: React.FC<Props> = ({
+  benchmarks,
+  optimizationStatus,
+  unassignedOrderCount = 0,
+}) => {
   const [showDetails, setShowDetails] = useState(false);
 
   if (!benchmarks) {
@@ -44,6 +50,16 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
     savings_vs_direct_vnd,
     savings_vs_direct_percent,
   } = benchmarks;
+  const isPartialOrTools =
+    optimizationStatus === 'PARTIAL' && !or_tools.is_feasible;
+  const canCompareSavings =
+    or_tools.is_feasible && direct_dedicated.is_feasible;
+  const comparableSavingsVnd = canCompareSavings
+    ? savings_vs_direct_vnd
+    : null;
+  const comparableSavingsPercent = canCompareSavings
+    ? savings_vs_direct_percent
+    : null;
 
   const methods = [
     { key: 'or_tools', metric: or_tools },
@@ -65,25 +81,37 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
     : 0;
   const orToolsRatio = ratioFor(or_tools);
 
-  const feasibilityTag = (metric: BenchmarkMetricUI, recommended = false) => metric.is_feasible ? (
+  const feasibilityTag = (
+    metric: BenchmarkMetricUI,
+    recommended = false,
+    partial = false,
+  ) => partial ? (
+    <Tag color="warning" icon={<WarningOutlined />}>
+      Phương án một phần (còn {unassignedOrderCount} đơn)
+    </Tag>
+  ) : metric.is_feasible ? (
     <Tag color={recommended ? 'success' : 'processing'} icon={<CheckCircleOutlined />}>
       {recommended ? 'Tốt nhất trong lần chạy này' : 'Nghiệm hợp lệ'}
     </Tag>
   ) : (
-    <Tooltip title={metric.violations.join('\n')}>
+    <Tooltip title={metric.violations.join('\n') || metric.description}>
       <Tag color="error" icon={<WarningOutlined />}>Không hợp lệ</Tag>
     </Tooltip>
   );
 
-  const feasibilityAlert = (metric: BenchmarkMetricUI) => !metric.is_feasible && (
+  const feasibilityAlert = (metric: BenchmarkMetricUI, partial = false) => !metric.is_feasible && (
     <Alert
       type="warning"
       showIcon
       style={{ marginTop: 12 }}
-      message="Không dùng để xếp hạng chi phí"
-      description={metric.violations.slice(0, 2).map((violation) => (
-        <div key={violation}>{violation}</div>
-      ))}
+      message={partial
+        ? 'Không so sánh chi phí khi còn đơn chưa xếp'
+        : 'Không dùng để xếp hạng chi phí'}
+      description={partial
+        ? `Optimizer còn ${unassignedOrderCount} đơn chưa xếp; chi phí hiện tại không đại diện cho toàn bộ tập đơn.`
+        : metric.violations.slice(0, 2).map((violation) => (
+          <div key={violation}>{violation}</div>
+        ))}
     />
   );
 
@@ -190,15 +218,17 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
           </Space>
         </Col>
         <Col>
-          {savings_vs_direct_percent !== null ? (
-            <Tag color={savings_vs_direct_percent >= 0 ? 'success' : 'warning'} icon={<SafetyCertificateOutlined />} style={{ padding: '4px 10px', fontSize: 13 }}>
-              {savings_vs_direct_percent >= 0
-                ? `Tiết kiệm ${formatDecimal(savings_vs_direct_percent)}% so với Direct hợp lệ`
-                : `Cao hơn ${formatDecimal(Math.abs(savings_vs_direct_percent))}% so với Direct hợp lệ`}
+          {comparableSavingsPercent !== null ? (
+            <Tag color={comparableSavingsPercent >= 0 ? 'success' : 'warning'} icon={<SafetyCertificateOutlined />} style={{ padding: '4px 10px', fontSize: 13 }}>
+              {comparableSavingsPercent >= 0
+                ? `Tiết kiệm ${formatDecimal(comparableSavingsPercent)}% so với Direct hợp lệ`
+                : `Cao hơn ${formatDecimal(Math.abs(comparableSavingsPercent))}% so với Direct hợp lệ`}
             </Tag>
           ) : (
             <Tag icon={<InfoCircleOutlined />} style={{ padding: '4px 10px', fontSize: 13 }}>
-              Chỉ so sánh các nghiệm hợp lệ
+              {isPartialOrTools
+                ? 'Chưa so sánh: phương án còn đơn chưa xếp'
+                : 'Chỉ so sánh các nghiệm hợp lệ'}
             </Tag>
           )}
         </Col>
@@ -225,7 +255,7 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
                 <ThunderboltOutlined style={{ marginRight: 6 }} />
                 Google OR-Tools (Tối Ưu Ghép Chuyến)
               </Text>
-              {feasibilityTag(or_tools, bestMethod?.key === 'or_tools')}
+              {feasibilityTag(or_tools, bestMethod?.key === 'or_tools', isPartialOrTools)}
             </div>
             <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12, minHeight: 32 }}>
               Nghiệm khả thi tốt nhất tìm thấy trong thời gian cho phép; không khẳng định tối ưu toàn cục
@@ -262,7 +292,7 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
               </div>
               <Progress percent={orToolsRatio} strokeColor="#10b981" showInfo={false} size="small" />
             </div>
-            {feasibilityAlert(or_tools)}
+            {feasibilityAlert(or_tools, isPartialOrTools)}
           </Card>
         </Col>
 
@@ -345,19 +375,21 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({ benchmarks }) => 
         }}
       >
         <Space size={16} wrap>
-          {savings_vs_direct_vnd !== null && savings_vs_direct_percent !== null ? (
+          {comparableSavingsVnd !== null && comparableSavingsPercent !== null ? (
             <div>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 So với phương án Chuyến đơn lẻ (Direct) hợp lệ:
               </Text>{' '}
-              <Text strong style={{ color: savings_vs_direct_vnd >= 0 ? '#047857' : '#b45309', fontSize: 14 }}>
-                {savings_vs_direct_vnd >= 0 ? 'Tiết kiệm ' : 'Cao hơn '}
-                {formatCurrency(Math.abs(savings_vs_direct_vnd))} ({formatDecimal(Math.abs(savings_vs_direct_percent))}%)
+              <Text strong style={{ color: comparableSavingsVnd >= 0 ? '#047857' : '#b45309', fontSize: 14 }}>
+                {comparableSavingsVnd >= 0 ? 'Tiết kiệm ' : 'Cao hơn '}
+                {formatCurrency(Math.abs(comparableSavingsVnd))} ({formatDecimal(Math.abs(comparableSavingsPercent))}%)
               </Text>
             </div>
           ) : (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              Chưa có baseline hợp lệ để tính mức tiết kiệm.
+              {isPartialOrTools
+                ? 'Không so sánh chi phí khi còn đơn chưa xếp.'
+                : 'Chưa có baseline hợp lệ để tính mức tiết kiệm.'}
             </Text>
           )}
         </Space>

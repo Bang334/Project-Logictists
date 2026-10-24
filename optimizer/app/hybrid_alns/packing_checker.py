@@ -146,7 +146,16 @@ class FastPackingChecker:
 
         for stop in stops:
             if stop.stop_type == "PICKUP":
-                for item_id in stop.items_loaded:
+                # LIFO-guided loading order: items with higher delivery rank (delivering later)
+                # are loaded first so they sit deeper inside the truck bed.
+                items_to_load = sorted(
+                    stop.items_loaded,
+                    key=lambda i_id: delivery_ranks.get(
+                        cargo_items_by_id[i_id].order_id if i_id in cargo_items_by_id else "", -1
+                    ),
+                    reverse=True,
+                )
+                for item_id in items_to_load:
                     item = cargo_items_by_id.get(item_id)
                     if not item:
                         return False, f"Không tìm thấy dữ liệu kiện {item_id}"

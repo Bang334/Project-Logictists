@@ -2678,7 +2678,13 @@ const AutomaticDispatchPage: React.FC = () => {
 
       {result ? (
         <>
-          {result.benchmarks && <BenchmarkCostComparisonCard benchmarks={result.benchmarks} />}
+          {result.benchmarks && (
+            <BenchmarkCostComparisonCard
+              benchmarks={result.benchmarks}
+              optimizationStatus={result.status}
+              unassignedOrderCount={result.unassigned_orders.length}
+            />
+          )}
           {optimization && optimization.candidates.length > 0 && (
             <Card
               title="Top phương án tối ưu giao đủ 100% đơn"
