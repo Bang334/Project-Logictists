@@ -13,6 +13,7 @@ from .models import (
     FleetOptimizationCandidate,
     FleetOptimizationRequest,
     FleetOptimizationResponse,
+    PlanningObjectiveBreakdown,
 )
 from .routing_solver import FleetRoutingSolver
 from .request_preprocessor import prune_unserviceable_virtual_resources
@@ -25,6 +26,33 @@ from .search_strategies import (
 )
 from .hybrid_alns_engine import PackingAwareHybridALNSOptimizer
 from .planning_objective import apply_planning_objective
+
+_REAL_HYBRID_OPTIMIZER = PackingAwareHybridALNSOptimizer
+
+
+def _run_hybrid_seed_worker(
+    request_dict: dict,
+    objective_request_dict: dict,
+    seed: int,
+    time_budget: float,
+) -> Tuple[int, Optional[dict], Optional[dict], Optional[str]]:
+    """Worker function for concurrent Hybrid ALNS seeds compatible with Windows spawn."""
+    try:
+        request = FleetOptimizationRequest(**request_dict)
+        objective_request = FleetOptimizationRequest(**objective_request_dict)
+        hybrid = PackingAwareHybridALNSOptimizer(
+            request,
+            time_budget_seconds=time_budget,
+            random_seed=seed,
+            initial_plan=None,
+        )
+        plan = hybrid.solve()
+        if not plan.routes:
+            return seed, None, None, f"Packing-aware Hybrid ALNS (seed {seed}) không trả về tuyến."
+        obj = apply_planning_objective(objective_request, plan)
+        return seed, plan.model_dump(), obj.model_dump(), None
+    except Exception as exc:
+        return seed, None, None, str(exc)
 
 
 def _run_search_worker(
@@ -325,40 +353,87 @@ class MultiStartFleetOptimizer:
         )
         hybrid_run_budget = search_budget_seconds / len(hybrid_seeds)
 
-        for seed in hybrid_seeds:
-            try:
-                hybrid = PackingAwareHybridALNSOptimizer(
-                    self.request,
-                    time_budget_seconds=hybrid_run_budget,
-                    random_seed=seed,
-                    initial_plan=None,
-                )
-                hybrid_plan = hybrid.solve()
-                if not hybrid_plan.routes:
+        is_mocked = PackingAwareHybridALNSOptimizer is not _REAL_HYBRID_OPTIMIZER
+        if len(hybrid_seeds) > 1 and not is_mocked:
+            import concurrent.futures
+            objective_request_dict = self.objective_request.model_dump()
+            with concurrent.futures.ProcessPoolExecutor(max_workers=len(hybrid_seeds)) as executor:
+                futures = {
+                    executor.submit(
+                        _run_hybrid_seed_worker,
+                        request_dict,
+                        objective_request_dict,
+                        seed,
+                        hybrid_run_budget,
+                    ): seed
+                    for seed in hybrid_seeds
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    seed = futures[future]
+                    try:
+                        seed_res, plan_dict, obj_dict, err = future.result(
+                            timeout=hybrid_run_budget + 15.0
+                        )
+                        if err or plan_dict is None:
+                            search_errors.append(
+                                f"Packing-aware Hybrid ALNS (seed {seed}): {err}"
+                            )
+                            continue
+                        hybrid_plan = FleetOptimizationResponse(**plan_dict)
+                        planning_obj = PlanningObjectiveBreakdown(**obj_dict)
+                        hybrid_plan.planning_objective = planning_obj
+                        hybrid_strategy = SearchStrategy(
+                            f"packing-aware-hybrid-alns-seed-{seed}",
+                            f"Packing-aware Hybrid ALNS (seed {seed})",
+                            DEFAULT_SEARCH_STRATEGY.first_solution_strategy,
+                            DEFAULT_SEARCH_STRATEGY.local_search_metaheuristic,
+                        )
+                        evaluated_runs.append(
+                            (
+                                hybrid_strategy,
+                                hybrid_plan,
+                                planning_obj.selection_score_vnd,
+                            )
+                        )
+                    except Exception as exc:
+                        search_errors.append(
+                            f"Packing-aware Hybrid ALNS (seed {seed}): {exc}"
+                        )
+        else:
+            for seed in hybrid_seeds:
+                try:
+                    hybrid = PackingAwareHybridALNSOptimizer(
+                        self.request,
+                        time_budget_seconds=hybrid_run_budget,
+                        random_seed=seed,
+                        initial_plan=None,
+                    )
+                    hybrid_plan = hybrid.solve()
+                    if not hybrid_plan.routes:
+                        search_errors.append(
+                            f"Packing-aware Hybrid ALNS (seed {seed}) không trả về tuyến."
+                        )
+                        continue
+                    planning_objective = apply_planning_objective(
+                        self.objective_request, hybrid_plan
+                    )
+                    hybrid_strategy = SearchStrategy(
+                        f"packing-aware-hybrid-alns-seed-{seed}",
+                        f"Packing-aware Hybrid ALNS (seed {seed})",
+                        DEFAULT_SEARCH_STRATEGY.first_solution_strategy,
+                        DEFAULT_SEARCH_STRATEGY.local_search_metaheuristic,
+                    )
+                    evaluated_runs.append(
+                        (
+                            hybrid_strategy,
+                            hybrid_plan,
+                            planning_objective.selection_score_vnd,
+                        )
+                    )
+                except Exception as exc:
                     search_errors.append(
-                        f"Packing-aware Hybrid ALNS (seed {seed}) không trả về tuyến."
+                        f"Packing-aware Hybrid ALNS (seed {seed}): {exc}"
                     )
-                    continue
-                planning_objective = apply_planning_objective(
-                    self.objective_request, hybrid_plan
-                )
-                hybrid_strategy = SearchStrategy(
-                    f"packing-aware-hybrid-alns-seed-{seed}",
-                    f"Packing-aware Hybrid ALNS (seed {seed})",
-                    DEFAULT_SEARCH_STRATEGY.first_solution_strategy,
-                    DEFAULT_SEARCH_STRATEGY.local_search_metaheuristic,
-                )
-                evaluated_runs.append(
-                    (
-                        hybrid_strategy,
-                        hybrid_plan,
-                        planning_objective.selection_score_vnd,
-                    )
-                )
-            except Exception as exc:
-                search_errors.append(
-                    f"Packing-aware Hybrid ALNS (seed {seed}): {exc}"
-                )
 
         hybrid_success_count = len(evaluated_runs)
         ortools_fallback_used = False

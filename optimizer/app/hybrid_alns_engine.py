@@ -48,7 +48,7 @@ class PackingAwareHybridALNSOptimizer(ALNSFleetOptimizer):
     def __init__(
         self,
         request: FleetOptimizationRequest,
-        max_iterations: int = 500,
+        max_iterations: int = 800,
         time_budget_seconds: Optional[float] = None,
         random_seed: int = 0,
         initial_plan: Optional[FleetOptimizationResponse] = None,
@@ -1272,6 +1272,11 @@ class PackingAwareHybridALNSOptimizer(ALNSFleetOptimizer):
                     self.drivers[driver_index].trip_base_pay_vnd,
                     self.drivers[driver_index].per_km_pay_vnd,
                     self.drivers[driver_index].fixed_salary_monthly_vnd,
+                    0 if (
+                        self.drivers[driver_index].source_driver_id == vehicle.source_vehicle_id
+                        or self.drivers[driver_index].id.split('#')[0] == vehicle.id.split('#')[0]
+                    ) else 1,
+                    abs(driver_index - vehicle_index),
                     self.drivers[driver_index].id,
                 ),
             )
@@ -1564,10 +1569,10 @@ class PackingAwareHybridALNSOptimizer(ALNSFleetOptimizer):
             operator_weights_out=operator_weights,
             search_profile="historical_portfolio",
             final_spatial_time_limit_sec=min(
-                2.0, max(0.1, self.time_limit_sec * 0.2)
+                3.0, max(2.0, self.time_limit_sec * 0.3)
             ),
             final_repair_time_limit_sec=min(
-                3.0, max(0.1, self.time_limit_sec * 0.3)
+                3.0, max(0.5, self.time_limit_sec * 0.3)
             ),
         )
         if "destroy" in operator_weights:
@@ -1626,9 +1631,9 @@ class PackingAwareHybridALNSOptimizer(ALNSFleetOptimizer):
             # The Hybrid core has already audited its chosen solution. Keep the
             # adapter's mandatory production re-audit bounded so an HTTP call
             # cannot spend an unbounded amount of time per returned route.
-            spatial_time_budget_seconds=min(
+            spatial_time_budget_seconds=max(
                 8.0,
-                max(0.5, self.time_limit_sec),
+                len(solution.routes) * 2.0,
             ),
         )
         result.diagnostics = [

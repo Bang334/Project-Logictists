@@ -98,6 +98,7 @@ class HybridALNSSolver:
         ] = []
         self._vehicle_guidance_vnd = 1_000_000
         self._allow_empty_insertion_competition = False
+        self._route_pool: List[Tuple[int, List[ScheduledStop]]] = []
 
         self.destroy_operators: Dict[
             str, Callable[[List[List[ScheduledStop]], int], Tuple[List[List[ScheduledStop]], List[str]]]
@@ -155,6 +156,10 @@ class HybridALNSSolver:
             }
         )
         profile = (
+            vehicle.service_day_index,
+            vehicle.available_start_sec,
+            vehicle.available_end_sec,
+            driver.service_day_index,
             vehicle.length_cm,
             vehicle.width_cm,
             vehicle.height_cm,
@@ -249,7 +254,7 @@ class HybridALNSSolver:
         return pickup, delivery
 
     def _candidate_positions(self, route_length: int) -> List[Tuple[int, int]]:
-        if route_length <= 12:
+        if route_length <= 20:
             return [
                 (pickup, delivery)
                 for pickup in range(route_length + 1)
@@ -280,14 +285,20 @@ class HybridALNSSolver:
         seen_profiles = set()
         empty_indices = sorted(
             (index for index, route in enumerate(routes) if not route),
-            key=lambda index: self.vehicles[index].payload_limit_kg,
-            reverse=True,
+            key=lambda index: (
+                self.vehicles[index].service_day_index,
+                -self.vehicles[index].payload_limit_kg,
+            ),
         )
         for index in empty_indices:
             vehicle = self.vehicles[index]
             driver = self.drivers[index]
             end_depot = vehicle.end_depot or vehicle.depot
             profile = (
+                vehicle.service_day_index,
+                vehicle.available_start_sec,
+                vehicle.available_end_sec,
+                driver.service_day_index,
                 vehicle.payload_limit_kg,
                 vehicle.length_cm,
                 vehicle.width_cm,
@@ -314,7 +325,7 @@ class HybridALNSSolver:
         order_id: str,
         routes: List[List[ScheduledStop]],
         deadline: float,
-        limit: int = 3,
+        limit: int = 5,
     ) -> List[_Insertion]:
         active_indices = [idx for idx, r in enumerate(routes) if r]
         options = self._insertions_on_vehicles(
@@ -415,9 +426,12 @@ class HybridALNSSolver:
                 quick = self._evaluate_route_without_packing(vehicle_index, candidate)
                 if not quick.feasible or quick.cost is None:
                     continue
+                delta_val = quick.cost.total_cost_vnd - current_cost
+                if not current:
+                    delta_val += self.vehicles[vehicle_index].service_day_index * 50_000
                 quick_candidates.append(
                     (
-                        quick.cost.total_cost_vnd - current_cost,
+                        delta_val,
                         quick.distance_km,
                         vehicle_index,
                         quick.stops,
@@ -433,13 +447,16 @@ class HybridALNSSolver:
             if not evaluation.feasible or evaluation.cost is None:
                 continue
             current_cost = self._route_cost(vehicle_index, routes[vehicle_index])
+            d_cost = evaluation.cost.total_cost_vnd - current_cost
+            if not routes[vehicle_index]:
+                d_cost += self.vehicles[vehicle_index].service_day_index * 50_000
             options.append(
                 _Insertion(
                     order_id=order_id,
                     vehicle_index=vehicle_index,
                     stops=evaluation.stops,
                     evaluation=evaluation,
-                    delta_cost=evaluation.cost.total_cost_vnd - current_cost,
+                    delta_cost=d_cost,
                 )
             )
             if len(options) >= limit:
@@ -675,10 +692,16 @@ class HybridALNSSolver:
         feasibility_guidance = (
             len(unassigned) * self.policy.unassigned_order_penalty_vnd * 2
         )
+        day_guidance = sum(
+            self.vehicles[index].service_day_index * 50_000
+            for index, route in enumerate(routes)
+            if route
+        )
         return (
             self._economic_plan_cost(routes, unassigned)
             + consolidation_guidance
             + feasibility_guidance
+            + day_guidance
         )
 
     def _weighted_choice(self, weights: Dict[str, float]) -> str:
@@ -757,13 +780,59 @@ class HybridALNSSolver:
         self,
         deadline: float,
     ) -> Optional[Tuple[int, List[List[ScheduledStop]], List[str]]]:
-        sequence = self._time_wave_order_sequence()
-        if not sequence or time.perf_counter() >= deadline:
-            return None
-        routes, unassigned = self._sequential_construction(sequence, deadline)
-        if unassigned:
-            return None
-        return self._plan_cost(routes, unassigned), routes, unassigned
+        candidate_sequences: List[List[str]] = []
+
+        orders_by_pickup_start: Dict[int, List[str]] = {}
+        for order in self.orders:
+            orders_by_pickup_start.setdefault(
+                order.pickup_window_start_sec,
+                [],
+            ).append(order.id)
+
+        by_deadline = [
+            order.id
+            for order in sorted(
+                self.orders,
+                key=lambda o: (o.delivery_window_end_sec, o.pickup_window_start_sec),
+            )
+        ]
+
+        wave_seq = self._time_wave_order_sequence()
+
+        # In a multi-shift relay problem (>= 3 distinct shifts), pickup wave sequence is primary
+        # In a backhaul / overlapping deadline problem, deadline sequence is primary
+        if len(orders_by_pickup_start) >= 3 and wave_seq:
+            candidate_sequences.append(wave_seq)
+            candidate_sequences.append(by_deadline)
+        else:
+            candidate_sequences.append(by_deadline)
+            if wave_seq:
+                candidate_sequences.append(wave_seq)
+
+        # 3. Pickup window sequence
+        by_pickup = [
+            order.id
+            for order in sorted(
+                self.orders,
+                key=lambda o: (o.pickup_window_start_sec, o.delivery_window_end_sec),
+            )
+        ]
+        candidate_sequences.append(by_pickup)
+
+        best_candidate: Optional[Tuple[int, List[List[ScheduledStop]], List[str]]] = None
+
+        for idx, seq in enumerate(candidate_sequences):
+            if idx >= 2 and best_candidate is not None and time.perf_counter() >= deadline:
+                break
+            routes, unassigned = self._sequential_construction(seq, deadline)
+            if unassigned:
+                continue
+            cand_cost = self._plan_cost(routes, unassigned)
+            if best_candidate is None or cand_cost < best_candidate[0]:
+                best_candidate = (cand_cost, routes, unassigned)
+
+        return best_candidate
+
 
     def _diversified_construction(
         self,
@@ -887,21 +956,40 @@ class HybridALNSSolver:
             randomized_sequences[index]
             for index in priority_indices
         ]
-        # In a multi-depot problem, deterministic input/deadline order tends to
-        # anchor the first depot and consumes the short-budget window before a
-        # genuinely different assignment is evaluated.  Keep both deterministic
-        # starts, but let diverse depot assignments compete first.
-        sequences = diversified_order + [list(order_ids), by_deadline]
+        by_pickup = [
+            order.id
+            for order in sorted(
+                self.orders,
+                key=lambda o: (o.pickup_window_start_sec, o.delivery_window_end_sec),
+            )
+        ]
+        # Evaluate structured starts first, then diverse depot assignments
+        sequences = [by_deadline, by_pickup, list(order_ids)] + diversified_order
 
         best_candidate = None
-        for sequence in sequences[:4]:
-            if time.perf_counter() >= deadline:
+        for sequence in sequences[:8]:
+            if best_candidate is not None and time.perf_counter() >= deadline:
                 break
             routes, unassigned = self._diversified_construction(
                 sequence, deadline
             )
             if unassigned:
                 continue
+
+            candidate_cost = self._plan_cost(routes, unassigned)
+            candidate = (candidate_cost, routes, unassigned)
+            if best_candidate is None or candidate_cost < best_candidate[0]:
+                best_candidate = candidate
+
+        if best_candidate is not None and time.perf_counter() < deadline:
+            cand_cost, routes, unassigned = best_candidate
+            for v_idx, r in enumerate(routes):
+                if r and time.perf_counter() < deadline:
+                    routes[v_idx] = self._best_intra_route_relocation(
+                        r, v_idx, deadline
+                    )
+            cand_cost = self._plan_cost(routes, unassigned)
+            best_candidate = (cand_cost, routes, unassigned)
             improved = self._best_relocation(
                 routes,
                 unassigned,
@@ -909,12 +997,8 @@ class HybridALNSSolver:
                 sample_limit=min(6, len(self.orders)),
             )
             if improved is not None:
-                candidate_cost, routes, unassigned = improved
-            else:
-                candidate_cost = self._plan_cost(routes, unassigned)
-            candidate = (candidate_cost, routes, unassigned)
-            if best_candidate is None or candidate_cost < best_candidate[0]:
-                best_candidate = candidate
+                best_candidate = improved
+
         return best_candidate
 
     def _construct_structured_solutions(
@@ -1539,23 +1623,29 @@ class HybridALNSSolver:
         seen_route_signatures = set()
         unique_routes: List[Tuple[int, List[ScheduledStop], Set[str], int]] = []
 
+        pool_sources: List[Tuple[int, List[ScheduledStop]]] = []
         for _, plan_routes, _ in elite_candidates:
             for vehicle_index, stops in enumerate(plan_routes):
-                if not stops:
-                    continue
-                route_key = (vehicle_index, self._route_key(stops))
-                if route_key in seen_route_signatures:
-                    continue
-                seen_route_signatures.add(route_key)
-                orders_served = {
-                    stop.order_id
-                    for stop in stops
-                    if stop.stop_type == "PICKUP" and stop.order_id
-                }
-                if not orders_served:
-                    continue
-                cost = self._route_cost(vehicle_index, stops)
-                unique_routes.append((vehicle_index, stops, orders_served, cost))
+                if stops:
+                    pool_sources.append((vehicle_index, stops))
+        pool_sources.extend(getattr(self, "_route_pool", []))
+
+        for vehicle_index, stops in pool_sources:
+            if not stops:
+                continue
+            route_key = (vehicle_index, self._route_key(stops))
+            if route_key in seen_route_signatures:
+                continue
+            seen_route_signatures.add(route_key)
+            orders_served = {
+                stop.order_id
+                for stop in stops
+                if stop.stop_type == "PICKUP" and stop.order_id
+            }
+            if not orders_served:
+                continue
+            cost = self._route_cost(vehicle_index, stops)
+            unique_routes.append((vehicle_index, stops, orders_served, cost))
 
         if not unique_routes:
             return None
@@ -1583,11 +1673,19 @@ class HybridALNSSolver:
                 model.Add(sum(route_vars[r_i] for r_i in route_indices) <= 1)
 
         day_plate_to_routes: Dict[Tuple[int, str], List[int]] = {}
+        day_driver_to_routes: Dict[Tuple[int, str], List[int]] = {}
         for route_idx, (v_idx, _, _, _) in enumerate(unique_routes):
             vehicle = self.vehicles[v_idx]
-            day_key = (vehicle.service_day_index, vehicle.source_vehicle_id or vehicle.plate_number or vehicle.id)
-            day_plate_to_routes.setdefault(day_key, []).append(route_idx)
+            plate_key = (vehicle.service_day_index, vehicle.source_vehicle_id or vehicle.plate_number or vehicle.id)
+            day_plate_to_routes.setdefault(plate_key, []).append(route_idx)
+            if v_idx < len(self.drivers):
+                driver = self.drivers[v_idx]
+                driver_key = (driver.service_day_index, driver.source_driver_id or driver.id)
+                day_driver_to_routes.setdefault(driver_key, []).append(route_idx)
         for day_key, route_indices in day_plate_to_routes.items():
+            if len(route_indices) > 1:
+                model.Add(sum(route_vars[r_i] for r_i in route_indices) <= 1)
+        for driver_key, route_indices in day_driver_to_routes.items():
             if len(route_indices) > 1:
                 model.Add(sum(route_vars[r_i] for r_i in route_indices) <= 1)
 
@@ -1667,12 +1765,12 @@ class HybridALNSSolver:
             not current_unassigned
             and len(depot_profiles) == 1
             and len(vehicle_profiles) == 1
-            and initial_active_route_count >= 4
-            and self.time_limit_sec >= 5.0
+            and initial_active_route_count >= 2
+            and self.time_limit_sec >= 2.0
         ):
             wave_deadline = min(
                 deadline,
-                started_at + min(2.5, self.time_limit_sec * 0.40),
+                time.perf_counter() + min(3.0, max(0.0, deadline - time.perf_counter()) * 0.70),
             )
             wave_start = self._build_time_wave_start(wave_deadline)
             if wave_start is not None:
@@ -1723,12 +1821,12 @@ class HybridALNSSolver:
             not current_unassigned
             and len(self.orders) >= 10
             and len(depot_profiles) > 1
-            and active_route_count >= 6
-            and self.time_limit_sec >= 8.0
+            and active_route_count >= 2
+            and self.time_limit_sec >= 2.0
         ):
             multi_depot_deadline = min(
                 deadline,
-                started_at + min(4.0, self.time_limit_sec * 0.35),
+                time.perf_counter() + min(2.5, max(0.0, deadline - time.perf_counter()) * 0.60),
             )
             multi_depot = self._build_multi_depot_start(
                 multi_depot_deadline
@@ -1752,8 +1850,8 @@ class HybridALNSSolver:
         if (
             not current_unassigned
             and len(self.orders) >= 10
-            and 4 <= active_route_count <= 5
-            and self.time_limit_sec >= 5.0
+            and active_route_count >= 2
+            and self.time_limit_sec >= 2.0
         ):
             diversified_cap = (
                 8.0
@@ -1764,8 +1862,8 @@ class HybridALNSSolver:
             )
             diversified_deadline = min(
                 deadline,
-                started_at
-                + min(diversified_cap, self.time_limit_sec * 0.35),
+                time.perf_counter()
+                + min(diversified_cap, max(0.0, deadline - time.perf_counter()) * 0.60),
             )
             diversified = self._build_diversified_start(diversified_deadline)
             if diversified is not None:
@@ -1813,7 +1911,7 @@ class HybridALNSSolver:
                 elite_candidates.append(
                     (current_cost, copy.deepcopy(current_routes), list(current_unassigned))
                 )
-        elif sum(bool(route) for route in current_routes) >= 6:
+        elif sum(bool(route) for route in current_routes) >= 2:
             consolidation_remaining = max(
                 0.0,
                 deadline - time.perf_counter(),
@@ -1898,7 +1996,7 @@ class HybridALNSSolver:
         # Greedy over-allocation. The ALNS phase then optimizes the reported
         # economic objective and may reopen an empty vehicle when that lowers
         # the real total cost.
-        if not used_diversified_start and initial_active_route_count < 6:
+        if not used_diversified_start and sum(bool(route) for route in current_routes) <= 2:
             self._vehicle_guidance_vnd = 0
             self._allow_empty_insertion_competition = True
             current_cost = self._plan_cost(current_routes, current_unassigned)
@@ -1970,13 +2068,16 @@ class HybridALNSSolver:
                 or initial_active_route_count >= 6
             )
         )
-        alns_deadline = (
-            max(time.perf_counter(), deadline - 3.0)
+        refine_reserve_sec = (
+            min(3.0, self.time_limit_sec * 0.25)
             if reserve_route_refinement
-            else max(time.perf_counter(), deadline - 2.0)
-            if reserve_local_refinement
-            else deadline
+            else (
+                min(2.0, self.time_limit_sec * 0.20)
+                if reserve_local_refinement
+                else 0.0
+            )
         )
+        alns_deadline = max(time.perf_counter(), deadline - refine_reserve_sec)
 
         while iteration < self.max_iterations and time.perf_counter() < alns_deadline:
             iteration += 1
@@ -2016,7 +2117,10 @@ class HybridALNSSolver:
             else:
                 destroy_name = self._weighted_choice(self.destroy_weights)
 
-            max_rem = min(4, max(1, int(assigned_count * 0.25)))
+            if iteration - last_improved_iteration >= 12:
+                max_rem = min(8, max(3, int(assigned_count * 0.45)))
+            else:
+                max_rem = min(6, max(2, int(assigned_count * 0.35)))
             remove_count = self.rng.randint(1, max_rem)
             repair_name = self._weighted_choice(self.repair_weights)
             destroyed, removed = self.destroy_operators[destroy_name](
@@ -2043,6 +2147,10 @@ class HybridALNSSolver:
                 score = 1.0
                 if delta < 0:
                     score = 3.0
+                    if len(self._route_pool) < 800:
+                        for v_i, r_stops in enumerate(candidate_routes):
+                            if r_stops:
+                                self._route_pool.append((v_i, copy.deepcopy(r_stops)))
                 if cand_nonempty < best_nonempty and len(candidate_unassigned) == 0:
                     score = 10.0
 
@@ -2142,7 +2250,8 @@ class HybridALNSSolver:
 
                 # CP-SAT Set Partitioning over Route Pool to recombine optimal routes
         if len(elite_candidates) >= 2:
-            sp_result = self._solve_set_partitioning(elite_candidates, time_limit_sec=0.5)
+            sp_time_limit = min(1.5, max(0.5, self.time_limit_sec * 0.25))
+            sp_result = self._solve_set_partitioning(elite_candidates, time_limit_sec=sp_time_limit)
             if sp_result is not None:
                 sp_cost, sp_routes, sp_unassigned = sp_result
                 if len(sp_unassigned) == 0:
@@ -2159,6 +2268,7 @@ class HybridALNSSolver:
             elite_candidates,
             key=lambda candidate: (
                 len(candidate[2]),
+                sum(bool(r) for r in candidate[1]),
                 self._economic_plan_cost(candidate[1], candidate[2]),
                 candidate[0],
             ),
@@ -2212,8 +2322,8 @@ class HybridALNSSolver:
             best_valid_solution = min(
                 valid_elite_solutions,
                 key=lambda solution: (
-                    solution.real_economic_cost_vnd,
                     len(solution.routes),
+                    solution.real_economic_cost_vnd,
                     solution.total_distance_km,
                 ),
             )
@@ -2423,11 +2533,7 @@ def solve_hybrid_alns(
             and 4 <= len(hybrid_initial.routes) <= 5
         )
         single_depot = len(depot_profiles) == 1
-        search_profile = (
-            "evolved"
-            if dense_cargo_seed or compact_trap_seed or single_depot
-            else "algo_lab_legacy_v1"
-        )
+        search_profile = "evolved" 
 
     if search_profile == "algo_lab_legacy_v1":
         legacy_solver = LegacyHybridALNSSolver(

@@ -50,6 +50,9 @@ def solve_greedy(
             current_stops = vehicle_routes[v_idx]
             if len(current_stops) == 0:
                 v_type = (
+                    vehicle.service_day_index,
+                    vehicle.available_start_sec,
+                    vehicle.available_end_sec,
                     vehicle.payload_limit_kg,
                     vehicle.length_cm,
                     vehicle.width_cm,
@@ -63,14 +66,6 @@ def solve_greedy(
             checker = FastPackingChecker(vehicle)
 
             depot_idx = node_id_to_index.get(vehicle.depot.id, 0)
-            base_dist = 0.0
-            if len(current_stops) > 0:
-                prev_n = depot_idx
-                for st in current_stops:
-                    cur_n = node_id_to_index.get(st.location_id, 0)
-                    base_dist += distance_matrix[prev_n][cur_n]
-                    prev_n = cur_n
-                base_dist += distance_matrix[prev_n][depot_idx]
 
             # Try inserting Pickup at pos i, Delivery at pos j (j > i)
             n = len(current_stops)
@@ -134,10 +129,12 @@ def solve_greedy(
                 if not valid_packing:
                     continue
 
-                inc_cost = eval_res.cost.total_cost_vnd if eval_res.cost else float("inf")
+                cand_cost = eval_res.cost.total_cost_vnd if eval_res.cost else float("inf")
+                if len(current_stops) == 0:
+                    cand_cost += vehicle.service_day_index * 50_000
 
-                if inc_cost < best_incremental_cost:
-                    best_incremental_cost = inc_cost
+                if cand_cost < best_incremental_cost:
+                    best_incremental_cost = cand_cost
                     best_vehicle_idx = v_idx
                     best_p_pos = i
                     best_d_pos = j

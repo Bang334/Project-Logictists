@@ -208,6 +208,10 @@ class LegacyHybridALNSSolver:
             driver = self.drivers[index]
             end_depot = vehicle.end_depot or vehicle.depot
             profile = (
+                vehicle.service_day_index,
+                vehicle.available_start_sec,
+                vehicle.available_end_sec,
+                driver.service_day_index,
                 vehicle.payload_limit_kg,
                 vehicle.length_cm,
                 vehicle.width_cm,

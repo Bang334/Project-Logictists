@@ -61,16 +61,29 @@ class FastPackingChecker:
 
         orientations = [(item.length_cm, item.width_cm)]
         if item.can_rotate and item.length_cm != item.width_cm:
-            orientations.append((item.width_cm, item.length_cm))
+            # Prefer orienting the longer dimension along vehicle length L to conserve width
+            if item.length_cm < item.width_cm:
+                orientations = [(item.width_cm, item.length_cm), (item.length_cm, item.width_cm)]
+            else:
+                orientations.append((item.width_cm, item.length_cm))
 
         candidate_points = {(0.0, 0.0)}
         for p in current_placed:
             if p.x + p.length_cm <= self.L:
                 candidate_points.add((p.x + p.length_cm, p.y))
                 candidate_points.add((p.x + p.length_cm, 0.0))
+                candidate_points.add((p.x + p.length_cm, p.y + p.width_cm))
             if p.y + p.width_cm <= self.W:
                 candidate_points.add((p.x, p.y + p.width_cm))
                 candidate_points.add((0.0, p.y + p.width_cm))
+
+        # Add wall-hugging anchor points along the far curb (y = W - w)
+        for _, w in orientations:
+            if w <= self.W:
+                candidate_points.add((0.0, self.W - w))
+                for p in current_placed:
+                    if p.x + p.length_cm <= self.L:
+                        candidate_points.add((p.x + p.length_cm, self.W - w))
 
         best_candidate: Optional[PlacedItem] = None
         best_score = float("inf")
@@ -150,8 +163,11 @@ class FastPackingChecker:
                 # are loaded first so they sit deeper inside the truck bed.
                 items_to_load = sorted(
                     stop.items_loaded,
-                    key=lambda i_id: delivery_ranks.get(
-                        cargo_items_by_id[i_id].order_id if i_id in cargo_items_by_id else "", -1
+                    key=lambda i_id: (
+                        delivery_ranks.get(
+                            cargo_items_by_id[i_id].order_id if i_id in cargo_items_by_id else "", -1
+                        ),
+                        cargo_items_by_id[i_id].length_cm * cargo_items_by_id[i_id].width_cm if i_id in cargo_items_by_id else 0,
                     ),
                     reverse=True,
                 )
