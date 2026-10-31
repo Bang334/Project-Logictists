@@ -16,6 +16,7 @@ from .models import (
 from .spatial_validator import SpatialValidator
 from .routing_solver import FleetRoutingSolver, OrToolsRoutingSolver
 from .multi_start import MultiStartFleetOptimizer
+from .demo import router as demo_router
 
 app = FastAPI(
     title="TMS Optimization & Spatial Packing Engine",
@@ -30,6 +31,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(demo_router)
+
 
 class ValidatePlanRequest(StrictContractModel):
     vehicle: VehicleFloor

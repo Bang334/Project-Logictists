@@ -3,8 +3,8 @@
 Algorithms evaluated:
 0. Production Packing-aware Hybrid ALNS (Optimized)
 1. Hybrid Genetic Search (HGS / Packing-aware Memetic)
-2. Route Pool Generation + CP-SAT Set Partitioning Matheuristic
-3. Logic-based Benders Decomposition (CP-SAT with Spatial Lazy Cuts)
+2. Guided Variable Neighborhood Search + CP-SAT Pool Matheuristic (GVNS-Pool)
+3. Calibrated Adaptive Simulated Annealing + Iterated Local Search (CASA-ILS)
 """
 
 from __future__ import annotations
@@ -133,16 +133,16 @@ def main():
         except Exception as exc:
             print(f"   Error: {exc}")
 
-        # 2. Set Partitioning Matheuristic
-        print("-> Running 2. Set Partitioning Matheuristic...")
+        # 2. Guided VNS + Pool Matheuristic (GVNS-Pool)
+        print("-> Running 2. Guided VNS + Pool Matheuristic (GVNS-Pool)...")
         try:
             m2 = SetPartitioningMatheuristic(request, time_limit_sec=args.time_limit).solve(case_file)
             results.append(m2)
         except Exception as exc:
             print(f"   Error: {exc}")
 
-        # 3. Logic-based Benders Decomposition
-        print("-> Running 3. Logic-based Benders Decomposition...")
+        # 3. Calibrated Adaptive SA + ILS (CASA-ILS)
+        print("-> Running 3. Calibrated Adaptive SA + ILS (CASA-ILS)...")
         try:
             m3 = LogicBasedBendersOptimizer(request, time_limit_sec=args.time_limit).solve(case_file)
             results.append(m3)

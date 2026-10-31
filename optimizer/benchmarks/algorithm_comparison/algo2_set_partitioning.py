@@ -1,28 +1,24 @@
-"""Algorithm 2: Route Pool Generation + CP-SAT Set Partitioning Matheuristic.
+"""Algorithm 2: Guided Variable Neighborhood Search + Pool Matheuristic (GVNS-Pool).
 
-Decouples route generation (sampling diverse feasible single-vehicle routes) from global
-solution assembly, using OR-Tools CP-SAT to solve the optimal set partitioning problem.
+Replaces the weak standalone Set Partitioning column generator with a strong
+packing-aware Guided Variable Neighborhood Search (GVNS) coupled with
+route-elimination consolidation and exact CP-SAT Set Partitioning recombination
+over the verified elite route pool.
 """
 
 from __future__ import annotations
 
 import copy
-import random
+import math
 import time
-from typing import Dict, List, Optional, Sequence, Set, Tuple
-from ortools.sat.python import cp_model
+from typing import List
 
 from app.models import FleetOptimizationRequest
-from app.hybrid_alns.models import (
-    CostPolicy,
-    DriverOption,
-    FleetVehicle,
-    OrderPair,
-    ScheduledStop,
+from app.hybrid_alns.models import OptimizationSolution
+from app.hybrid_alns.advanced_metaheuristics import (
+    PackingAwareVNSSolver,
+    PlanCandidate,
 )
-from app.hybrid_alns.packing_checker import FastPackingChecker
-from app.hybrid_alns.route_evaluator import schedule_and_evaluate_route
-from app.hybrid_alns.greedy_insertion import solve_greedy
 
 from .common import (
     BenchmarkMetric,
@@ -31,8 +27,257 @@ from .common import (
 )
 
 
-class SetPartitioningMatheuristic:
-    """Matheuristic that populates a route pool and solves exact Set Partitioning with CP-SAT."""
+class _GVNSPoolEngine(PackingAwareVNSSolver):
+    """Guided VNS with warm-start consolidation and CP-SAT Set Partitioning pool."""
+
+    def _best_relocation(
+        self,
+        routes,
+        unassigned,
+        deadline: float,
+        *,
+        sample_limit: int = 12,
+    ):
+        return self._best_relocation_candidate(
+            routes,
+            unassigned,
+            deadline,
+            sample_limit=sample_limit,
+            option_limit=6,
+        )
+
+    def solve(self) -> OptimizationSolution:
+        started_at = time.perf_counter()
+        deadline = started_at + self.time_limit_sec
+        routes, unassigned = self._initial_state()
+        current_cost = self._plan_cost(routes, unassigned)
+        fallback: PlanCandidate = (
+            current_cost,
+            copy.deepcopy(routes),
+            list(unassigned),
+        )
+        elite_candidates: List[PlanCandidate] = [fallback]
+
+        depot_profiles = {
+            (
+                round(v.depot.latitude, 6),
+                round(v.depot.longitude, 6),
+                round((v.end_depot or v.depot).latitude, 6),
+                round((v.end_depot or v.depot).longitude, 6),
+            )
+            for v in self.vehicles
+        }
+        vehicle_profiles = {
+            (
+                v.length_cm,
+                v.width_cm,
+                v.height_cm,
+                v.payload_limit_kg,
+                v.fixed_operating_cost_vnd,
+            )
+            for v in self.vehicles
+        }
+
+        if (
+            not unassigned
+            and len(depot_profiles) == 1
+            and len(vehicle_profiles) == 1
+            and self.time_limit_sec >= 2.0
+        ):
+            wave_cap = 3.0 if len(self.orders) >= 15 else 1.5
+            wave_frac = 0.65 if len(self.orders) >= 15 else 0.35
+            wave_deadline = min(
+                deadline,
+                time.perf_counter() + min(wave_cap, max(0.0, deadline - time.perf_counter()) * wave_frac),
+            )
+            wave_start = self._build_time_wave_start(wave_deadline)
+            if wave_start is not None:
+                w_cost, w_routes, w_unassigned = wave_start
+                elite_candidates.append((w_cost, copy.deepcopy(w_routes), list(w_unassigned)))
+                if w_cost < current_cost:
+                    current_cost = w_cost
+                    routes = copy.deepcopy(w_routes)
+                    unassigned = list(w_unassigned)
+
+        if (
+            not unassigned
+            and len(depot_profiles) > 1
+            and len(self.orders) >= 10
+            and self.time_limit_sec >= 2.0
+        ):
+            md_deadline = min(
+                deadline,
+                time.perf_counter() + min(3.5, max(0.0, deadline - time.perf_counter()) * 0.65),
+            )
+            md_start = self._build_multi_depot_start(md_deadline)
+            if md_start is not None:
+                m_cost, m_routes, m_unassigned = md_start
+                elite_candidates.append((m_cost, copy.deepcopy(m_routes), list(m_unassigned)))
+                if m_cost < current_cost:
+                    current_cost = m_cost
+                    routes = copy.deepcopy(m_routes)
+                    unassigned = list(m_unassigned)
+
+        if (
+            not unassigned
+            and len(depot_profiles) == 1
+            and len(self.orders) >= 10
+            and self.time_limit_sec >= 2.0
+        ):
+            div_deadline = min(
+                deadline,
+                time.perf_counter() + min(1.8, max(0.0, deadline - time.perf_counter()) * 0.35),
+            )
+            div_start = self._build_diversified_start(div_deadline)
+            if div_start is not None:
+                d_cost, d_routes, d_unassigned = div_start
+                elite_candidates.append((d_cost, copy.deepcopy(d_routes), list(d_unassigned)))
+                if d_cost < current_cost:
+                    current_cost = d_cost
+                    routes = copy.deepcopy(d_routes)
+                    unassigned = list(d_unassigned)
+
+        if not unassigned and sum(bool(r) for r in routes) >= 2:
+            elim_deadline = min(
+                deadline,
+                time.perf_counter() + min(3.0, max(0.0, deadline - time.perf_counter()) * 0.65),
+            )
+            elim_routes = self._eliminate_routes(routes, elim_deadline)
+            for path_routes in self._last_elimination_path[1:]:
+                p_cost = self._plan_cost(path_routes, unassigned)
+                elite_candidates.append((p_cost, copy.deepcopy(path_routes), list(unassigned)))
+            elim_cost = self._plan_cost(elim_routes, unassigned)
+            if elim_cost < current_cost:
+                current_cost = elim_cost
+                routes = copy.deepcopy(elim_routes)
+                elite_candidates.append((current_cost, copy.deepcopy(routes), list(unassigned)))
+
+        current_routes = copy.deepcopy(routes)
+        current_unassigned = list(unassigned)
+        best_routes = copy.deepcopy(routes)
+        best_unassigned = list(unassigned)
+        best_cost = current_cost
+
+        neighborhoods = (
+            ("route", "regret3"),
+            ("related", "regret2"),
+            ("string", "regret3"),
+            ("worst", "regret3"),
+            ("random", "greedy"),
+        )
+        neighborhood_index = 0
+        iteration = 0
+        shake_cycle = 0
+        temperature = max(1.0, current_cost * 0.015)
+
+        vns_deadline = max(time.perf_counter(), deadline - min(1.0, self.time_limit_sec * 0.15))
+        while iteration < self.max_iterations and time.perf_counter() < vns_deadline:
+            iteration += 1
+            assigned_count = len(self._assigned_order_ids(current_routes))
+            if assigned_count == 0:
+                break
+            destroy_name, repair_name = neighborhoods[neighborhood_index]
+            remove_count = min(
+                assigned_count,
+                1 + neighborhood_index + (1 if assigned_count >= 12 else 0),
+            )
+            destroyed, removed = self.destroy_operators[destroy_name](
+                copy.deepcopy(current_routes), remove_count
+            )
+            candidate_routes, candidate_unassigned = self._repair(
+                destroyed,
+                list(dict.fromkeys(current_unassigned + removed)),
+                repair_name,
+                vns_deadline,
+            )
+            candidate_cost = self._plan_cost(candidate_routes, candidate_unassigned)
+            delta = candidate_cost - current_cost
+            accepted = delta < 0 or self.rng.random() < math.exp(-delta / max(1.0, temperature))
+            temperature *= 0.994
+
+            if accepted:
+                current_routes = candidate_routes
+                current_unassigned = candidate_unassigned
+                current_cost = candidate_cost
+                if delta < 0:
+                    neighborhood_index = 0
+                    for v_i, r_stops in enumerate(candidate_routes):
+                        if r_stops and len(self._route_pool) < 600:
+                            self._route_pool.append((v_i, copy.deepcopy(r_stops)))
+                else:
+                    neighborhood_index = (neighborhood_index + 1) % len(neighborhoods)
+                if candidate_cost < best_cost and len(candidate_unassigned) <= len(best_unassigned):
+                    best_cost = candidate_cost
+                    best_routes = copy.deepcopy(candidate_routes)
+                    best_unassigned = list(candidate_unassigned)
+                    elite_candidates.append(
+                        (best_cost, copy.deepcopy(best_routes), list(best_unassigned))
+                    )
+                continue
+
+            neighborhood_index += 1
+            if neighborhood_index < len(neighborhoods):
+                continue
+
+            neighborhood_index = 0
+            relocated = self._best_relocation(best_routes, best_unassigned, vns_deadline)
+            if relocated is not None and relocated[0] < best_cost:
+                best_cost, best_routes, best_unassigned = relocated
+                current_cost, current_routes, current_unassigned = (
+                    best_cost,
+                    copy.deepcopy(best_routes),
+                    list(best_unassigned),
+                )
+                elite_candidates.append(
+                    (best_cost, copy.deepcopy(best_routes), list(best_unassigned))
+                )
+                shake_cycle = 0
+                continue
+
+            shake_cycle += 1
+            shake_count = min(
+                assigned_count,
+                max(2, round(assigned_count * min(0.35, 0.15 + 0.05 * shake_cycle))),
+            )
+            shaken, removed = self.destroy_operators["related" if shake_cycle % 2 else "random"](
+                copy.deepcopy(best_routes), shake_count
+            )
+            current_routes, current_unassigned = self._repair(
+                shaken,
+                list(dict.fromkeys(best_unassigned + removed)),
+                "regret3",
+                vns_deadline,
+            )
+            current_cost = self._plan_cost(current_routes, current_unassigned)
+            if current_cost < best_cost:
+                best_cost = current_cost
+                best_routes = copy.deepcopy(current_routes)
+                best_unassigned = list(current_unassigned)
+                elite_candidates.append(
+                    (best_cost, copy.deepcopy(best_routes), list(best_unassigned))
+                )
+
+        if len(elite_candidates) >= 2 and time.perf_counter() < deadline:
+            sp_result = self._solve_set_partitioning(
+                elite_candidates,
+                time_limit_sec=min(1.0, max(0.3, deadline - time.perf_counter())),
+            )
+            if sp_result is not None and not sp_result[2]:
+                elite_candidates.insert(0, sp_result)
+
+        return self._finalize_best_valid(
+            elite_candidates,
+            fallback,
+            started_at,
+            f"GVNS + Set-Partitioning Pool ({iteration} VNS iters)",
+            spatial_time_limit_sec=self.final_spatial_time_limit_sec,
+            repair_time_limit_sec=self.final_repair_time_limit_sec,
+            max_audit_candidates=self.max_elite_audit_candidates,
+        )
+
+
+class GuidedVNSPoolMatheuristic:
+    """Guided Variable Neighborhood Search + Set Partitioning Pool Recombination."""
 
     def __init__(
         self,
@@ -43,7 +288,6 @@ class SetPartitioningMatheuristic:
         self.request = request
         self.time_limit_sec = time_limit_sec
         self.random_seed = random_seed
-        self.rng = random.Random(random_seed)
 
         (
             self.vehicles,
@@ -55,66 +299,10 @@ class SetPartitioningMatheuristic:
             self.node_to_idx,
         ) = convert_request_to_hybrid(request)
 
-        self.order_by_id = {o.id: o for o in self.orders}
-        self.cargo_by_id = {it.id: it for o in self.orders for it in o.items}
+    def solve(self, case_name: str = "") -> BenchmarkMetric:
+        started_at = time.perf_counter()
 
-    def _make_stops(self, order: OrderPair) -> Tuple[ScheduledStop, ScheduledStop]:
-        pickup = ScheduledStop(
-            sequence=0,
-            stop_type="PICKUP",
-            location_id=order.pickup_location.id,
-            location_name=order.pickup_location.name,
-            order_id=order.id,
-            items_loaded=[item.id for item in order.items],
-        )
-        delivery = ScheduledStop(
-            sequence=0,
-            stop_type="DELIVERY",
-            location_id=order.delivery_location.id,
-            location_name=order.delivery_location.name,
-            order_id=order.id,
-            items_unloaded=[item.id for item in order.items],
-        )
-        return pickup, delivery
-
-    def _evaluate_route(self, vehicle_idx: int, stops: List[ScheduledStop]):
-        ev = schedule_and_evaluate_route(
-            self.vehicles[vehicle_idx],
-            self.drivers[vehicle_idx],
-            stops,
-            self.order_by_id,
-            self.cargo_by_id,
-            self.policy,
-            self.dist_matrix,
-            self.dur_matrix,
-            self.node_to_idx,
-        )
-        if not ev.feasible or ev.cost is None:
-            return None
-        # Packing check
-        checker = FastPackingChecker(self.vehicles[vehicle_idx])
-        valid, _ = checker.validate_route_stops(stops, self.cargo_by_id)
-        if not valid:
-            return None
-        return ev
-
-    def _generate_candidate_routes(self, deadline: float) -> List[Tuple[int, List[ScheduledStop], Set[str], int, float]]:
-        """Phase 1: Generate diverse packing-feasible single routes using randomized heuristics."""
-        pool: List[Tuple[int, List[ScheduledStop], Set[str], int, float]] = []
-        seen_keys: Set[Tuple[int, Tuple[str, ...]]] = set()
-
-        def add_to_pool(v_idx: int, stops: List[ScheduledStop], ev):
-            if not stops:
-                return
-            route_sig = (v_idx, tuple(s.order_id + s.stop_type for s in stops))
-            if route_sig in seen_keys:
-                return
-            seen_keys.add(route_sig)
-            served = {s.order_id for s in stops if s.stop_type == "PICKUP" and s.order_id}
-            pool.append((v_idx, stops, served, ev.cost.total_cost_vnd, ev.distance_km))
-
-        # 1. Warm start with deterministic greedy solution
-        initial = solve_greedy(
+        solver = _GVNSPoolEngine(
             self.vehicles,
             self.drivers,
             self.orders,
@@ -122,170 +310,52 @@ class SetPartitioningMatheuristic:
             self.dist_matrix,
             self.dur_matrix,
             self.node_to_idx,
+            time_limit_sec=self.time_limit_sec,
+            max_iterations=350,
+            random_seed=self.random_seed + 7,
+            final_spatial_time_limit_sec=min(3.0, max(2.0, self.time_limit_sec * 0.3)),
+            final_repair_time_limit_sec=min(4.0, max(2.5, self.time_limit_sec * 0.4)),
+            max_elite_audit_candidates=8,
         )
-        for r in initial.routes:
-            veh_idx = next((i for i, v in enumerate(self.vehicles) if v.id == r.vehicle.id), 0)
-            ev = self._evaluate_route(veh_idx, r.stops)
-            if ev:
-                add_to_pool(veh_idx, r.stops, ev)
 
-        # 2. Randomized construction runs with different vehicle-order seeds
-        order_ids = [o.id for o in self.orders]
-        sample_round = 0
-
-        while time.perf_counter() < deadline and sample_round < 60:
-            sample_round += 1
-            shuffled_orders = list(order_ids)
-            if sample_round % 3 == 0:
-                shuffled_orders.sort(key=lambda o_id: self.order_by_id[o_id].pickup_window_start_sec)
-            elif sample_round % 3 == 1:
-                shuffled_orders.sort(key=lambda o_id: self.order_by_id[o_id].total_weight_kg, reverse=True)
-            else:
-                self.rng.shuffle(shuffled_orders)
-
-            # Build sequential routes across vehicles
-            for v_idx in range(len(self.vehicles)):
-                if time.perf_counter() >= deadline:
-                    break
-                curr_stops: List[ScheduledStop] = []
-                for o_id in shuffled_orders:
-                    order = self.order_by_id[o_id]
-                    if order.total_weight_kg > self.vehicles[v_idx].payload_limit_kg:
-                        continue
-                    p_stop, d_stop = self._make_stops(order)
-
-                    best_c_stops = None
-                    best_ev = None
-                    best_delta = float("inf")
-
-                    # Try insertion positions
-                    for i in range(len(curr_stops) + 1):
-                        for j in range(i + 1, len(curr_stops) + 2):
-                            cand = curr_stops[:i] + [p_stop] + curr_stops[i : j - 1] + [d_stop] + curr_stops[j - 1 :]
-                            ev = self._evaluate_route(v_idx, cand)
-                            if ev is not None:
-                                delta = ev.cost.total_cost_vnd
-                                if delta < best_delta:
-                                    best_delta = delta
-                                    best_c_stops = cand
-                                    best_ev = ev
-                                break  # fast heuristic break
-
-                    if best_c_stops is not None and best_ev is not None:
-                        curr_stops = best_c_stops
-                        add_to_pool(v_idx, curr_stops, best_ev)
-
-        return pool
-
-    def solve(self, case_name: str = "") -> BenchmarkMetric:
-        started_at = time.perf_counter()
-        pool_budget = max(1.0, self.time_limit_sec * 0.70)
-        pool_deadline = started_at + pool_budget
-
-        # Phase 1: Route sampling
-        pool = self._generate_candidate_routes(pool_deadline)
-
-        # Phase 2: CP-SAT Set Partitioning
-        all_order_ids = {o.id for o in self.orders}
-        order_to_routes: Dict[str, List[int]] = {o_id: [] for o_id in all_order_ids}
-        for r_idx, (_, _, served, _, _) in enumerate(pool):
-            for o_id in served:
-                if o_id in order_to_routes:
-                    order_to_routes[o_id].append(r_idx)
-
-        # Build CP-SAT optimization model
-        model = cp_model.CpModel()
-        route_vars = [model.NewBoolVar(f"r_{i}") for i in range(len(pool))]
-        unassigned_vars = {o_id: model.NewBoolVar(f"un_{o_id}") for o_id in all_order_ids}
-
-        # Set covering with penalty for unassigned orders
-        for o_id, r_indices in order_to_routes.items():
-            model.Add(sum(route_vars[ri] for ri in r_indices) + unassigned_vars[o_id] == 1)
-
-        # Each vehicle runs at most 1 route
-        vehicle_to_routes: Dict[int, List[int]] = {}
-        for r_idx, (v_idx, _, _, _, _) in enumerate(pool):
-            vehicle_to_routes.setdefault(v_idx, []).append(r_idx)
-        for v_idx, r_indices in vehicle_to_routes.items():
-            model.Add(sum(route_vars[ri] for ri in r_indices) <= 1)
-
-        # Each physical vehicle and driver on same day runs at most 1 route
-        day_plate_routes: Dict[Tuple[int, str], List[int]] = {}
-        day_driver_routes: Dict[Tuple[int, str], List[int]] = {}
-        for r_idx, (v_idx, _, _, _, _) in enumerate(pool):
-            veh = self.vehicles[v_idx]
-            key = (veh.service_day_index, veh.source_vehicle_id or veh.plate_number or veh.id)
-            day_plate_routes.setdefault(key, []).append(r_idx)
-            if v_idx < len(self.drivers):
-                drv = self.drivers[v_idx]
-                d_key = (drv.service_day_index, drv.source_driver_id or drv.id)
-                day_driver_routes.setdefault(d_key, []).append(r_idx)
-        for key, r_indices in day_plate_routes.items():
-            if len(r_indices) > 1:
-                model.Add(sum(route_vars[ri] for ri in r_indices) <= 1)
-        for d_key, r_indices in day_driver_routes.items():
-            if len(r_indices) > 1:
-                model.Add(sum(route_vars[ri] for ri in r_indices) <= 1)
-
-        # Objective: minimize route costs + unassigned penalties
-        unassigned_penalty = int(self.policy.unassigned_order_penalty_vnd)
-        obj_terms = [cost * route_vars[ri] for ri, (_, _, _, cost, _) in enumerate(pool)]
-        obj_terms.extend([unassigned_penalty * unassigned_vars[o_id] for o_id in all_order_ids])
-        model.Minimize(sum(obj_terms))
-
-        sat_time_limit = max(0.5, self.time_limit_sec - (time.perf_counter() - started_at))
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = sat_time_limit
-        solver.parameters.num_workers = 2
-        status = solver.Solve(model)
-
+        solution = solver.solve()
         elapsed = round(time.perf_counter() - started_at, 3)
 
-        chosen_routes: List[Tuple[int, List[ScheduledStop], float, int]] = []
-        unassigned: List[str] = []
-
-        if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            for ri, (v_idx, stops, _, cost, dist) in enumerate(pool):
-                if solver.Value(route_vars[ri]) == 1:
-                    chosen_routes.append((v_idx, stops, dist, cost))
-            for o_id in all_order_ids:
-                if solver.Value(unassigned_vars[o_id]) == 1:
-                    unassigned.append(o_id)
-
-        # Phase 3: Spatial Validation on chosen routes
         prod_order_by_id = {o.id: o for o in self.request.orders}
         all_passed_spatial = True
         spatial_msg = "Pass"
 
-        for v_idx, stops, _, _ in chosen_routes:
-            veh = next((v for v in self.request.vehicles if v.id == self.vehicles[v_idx].id), None)
+        for route in solution.routes:
+            veh = next((v for v in self.request.vehicles if v.id == route.vehicle.id), None)
             if not veh:
                 continue
             passed, msg = audit_with_spatial_validator(
-                veh, stops, prod_order_by_id, max_time_seconds=2.0
+                veh, route.stops, prod_order_by_id, max_time_seconds=2.0
             )
             if not passed:
                 all_passed_spatial = False
                 spatial_msg = msg
                 break
 
-        served_count = len(self.orders) - len(unassigned)
+        served_count = len(self.orders) - len(solution.unassigned_orders)
         fulfillment = (served_count / max(1, len(self.orders))) * 100.0
-        total_cost = sum(c for _, _, _, c in chosen_routes) + len(unassigned) * unassigned_penalty
-        total_dist = sum(d for _, _, d, _ in chosen_routes)
 
         return BenchmarkMetric(
-            algorithm_name="2. Set Partitioning Matheuristic",
+            algorithm_name="2. Guided VNS + Pool Matheuristic (GVNS-Pool)",
             case_file=case_name,
-            status="SUCCESS" if not unassigned and all_passed_spatial else "PARTIAL",
+            status="SUCCESS" if solution.unassigned_orders == [] and all_passed_spatial else "PARTIAL",
             orders_served=served_count,
             total_orders=len(self.orders),
             fulfillment_rate_pct=round(fulfillment, 1),
-            vehicles_used=len(chosen_routes),
-            total_cost_vnd=int(total_cost),
-            selection_score_vnd=int(total_cost),
-            total_distance_km=round(total_dist, 2),
+            vehicles_used=len(solution.routes),
+            total_cost_vnd=solution.real_economic_cost_vnd,
+            selection_score_vnd=solution.real_economic_cost_vnd,
+            total_distance_km=round(solution.total_distance_km, 2),
             runtime_sec=elapsed,
             spatial_audit_pass=all_passed_spatial,
-            diagnostic=f"Pool size: {len(pool)} routes | CP-SAT: {solver.StatusName(status)} | Spatial: {spatial_msg}",
+            diagnostic=f"{solution.solver_name} | Spatial: {spatial_msg}",
         )
+
+
+# Backward-compatible export alias
+SetPartitioningMatheuristic = GuidedVNSPoolMatheuristic

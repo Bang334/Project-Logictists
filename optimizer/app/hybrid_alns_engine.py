@@ -1569,10 +1569,10 @@ class PackingAwareHybridALNSOptimizer(ALNSFleetOptimizer):
             operator_weights_out=operator_weights,
             search_profile="historical_portfolio",
             final_spatial_time_limit_sec=min(
-                3.0, max(2.0, self.time_limit_sec * 0.3)
+                3.5, max(2.0, self.time_limit_sec * 0.35)
             ),
             final_repair_time_limit_sec=min(
-                3.0, max(0.5, self.time_limit_sec * 0.3)
+                4.5, max(2.5, self.time_limit_sec * 0.45)
             ),
         )
         if "destroy" in operator_weights:

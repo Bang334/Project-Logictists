@@ -180,33 +180,35 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
 
   // Extract flat coordinates array for route profile
   const routeCoordinates = useMemo<[number, number][]>(() => {
-    if (!routeGeometry) {
-      return enableSimulation ? HANOI_SAMPLE_DEMO_ROUTE : [];
-    }
+    if (routeGeometry) {
+      if (routeGeometry.type === 'LineString' && Array.isArray(routeGeometry.coordinates) && routeGeometry.coordinates.length > 1) {
+        return routeGeometry.coordinates;
+      }
 
-    if (routeGeometry.type === 'LineString' && Array.isArray(routeGeometry.coordinates)) {
-      return routeGeometry.coordinates;
-    }
+      if (routeGeometry.type === 'Feature' && routeGeometry.geometry?.type === 'LineString' && Array.isArray(routeGeometry.geometry.coordinates) && routeGeometry.geometry.coordinates.length > 1) {
+        return routeGeometry.geometry.coordinates;
+      }
 
-    if (routeGeometry.type === 'Feature' && routeGeometry.geometry?.type === 'LineString') {
-      return routeGeometry.geometry.coordinates;
-    }
-
-    if (routeGeometry.type === 'FeatureCollection' && Array.isArray(routeGeometry.features)) {
-      // Ưu tiên Feature LineString có coordinates hợp lệ
-      const lineFeature = routeGeometry.features.find(
-        (f: any) =>
-          f.geometry?.type === 'LineString' &&
-          Array.isArray(f.geometry.coordinates) &&
-          f.geometry.coordinates.length > 1,
-      );
-      if (lineFeature) {
-        return lineFeature.geometry.coordinates;
+      if (routeGeometry.type === 'FeatureCollection' && Array.isArray(routeGeometry.features)) {
+        // Ưu tiên Feature LineString có coordinates hợp lệ
+        const lineFeature = routeGeometry.features.find(
+          (f: any) =>
+            f.geometry?.type === 'LineString' &&
+            Array.isArray(f.geometry.coordinates) &&
+            f.geometry.coordinates.length > 1,
+        );
+        if (lineFeature) {
+          return lineFeature.geometry.coordinates;
+        }
       }
     }
 
+    if (markers && markers.length >= 2) {
+      return markers.map((m) => [m.longitude, m.latitude] as [number, number]);
+    }
+
     return enableSimulation ? HANOI_SAMPLE_DEMO_ROUTE : [];
-  }, [routeGeometry, enableSimulation]);
+  }, [routeGeometry, enableSimulation, markers]);
 
   const allRouteCoordinates = useMemo<[number, number][]>(() => {
     if (routeGeometry?.type === 'FeatureCollection' && Array.isArray(routeGeometry.features)) {

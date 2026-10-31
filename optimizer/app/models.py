@@ -316,6 +316,7 @@ class OptimizedRoute(StrictContractModel):
     spatial_validation: SpatialValidationResult
     cost: Optional[RouteCostBreakdown] = None
     route_geometry: Optional[Dict] = None
+    depot: Optional[LocationPoint] = None
 
 
 class UnassignedOrder(StrictContractModel):

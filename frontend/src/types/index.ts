@@ -526,3 +526,30 @@ export interface ApplyOptimizationResponseUI {
     plannedEndTime: string;
   }>;
 }
+
+export interface DemoCaseSummaryUI {
+  id: string;
+  filename: string;
+  name: string;
+  category: 'NOVEL' | 'SCENARIO' | 'REAL_DATA';
+  category_name: string;
+  description: string;
+  orders_count: number;
+  vehicles_count: number;
+  drivers_count: number;
+  total_weight_kg: number;
+  total_volume_cbm: number;
+  suggested_time_limit_sec: number;
+}
+
+export interface RunDemoOptimizationPayloadUI {
+  caseId?: string;
+  timeBudgetSeconds?: number;
+  customRequest?: any;
+}
+
+export interface DemoOptimizationResponseUI extends AutomaticOptimizationResponseUI {
+  candidateResults?: Record<number, FleetOptimizationResultUI>;
+  isDemo?: boolean;
+}
+

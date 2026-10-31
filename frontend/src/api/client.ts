@@ -14,6 +14,9 @@ import {
   Trip,
   Vehicle,
   VehicleType,
+  DemoCaseSummaryUI,
+  DemoOptimizationResponseUI,
+  RunDemoOptimizationPayloadUI,
 } from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
@@ -191,6 +194,10 @@ export const tripsApi = {
       `/trips/automatic-optimization/jobs/${jobId}/apply`,
       { candidateNumber },
     ),
+  getDemoCases: () => apiClient.get<DemoCaseSummaryUI[]>('/trips/demo/cases'),
+  getDemoCasePayload: (caseId: string) => apiClient.get<any>(`/trips/demo/cases/${caseId}`),
+  runDemoOptimization: (data: RunDemoOptimizationPayloadUI) =>
+    apiClient.post<DemoOptimizationResponseUI>('/trips/demo/run', data),
 };
 
 export const locationsApi = {

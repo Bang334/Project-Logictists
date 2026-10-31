@@ -48,6 +48,7 @@ import {
   AutomaticDispatchScheduleMode,
   RunAutomaticOptimizationDto,
 } from './dto/run-automatic-optimization.dto';
+import { RunDemoOptimizationDto } from './dto/run-demo-optimization.dto';
 import {
   buildServiceDayWindows,
   getFullServiceDayPlanningEpoch,
@@ -3220,5 +3221,138 @@ export class TripsService {
           ) * 60,
       };
     });
+  }
+
+  async getDemoCases() {
+    try {
+      const res = await axios.get(`${this.optimizerUrl}/demo/cases`, { timeout: 10000 });
+      return res.data;
+    } catch (err: any) {
+      throw new ServiceUnavailableException(
+        `Không thể kết nối tới Optimizer Service để lấy danh sách demo: ${err.message}`,
+      );
+    }
+  }
+
+  async getDemoCasePayload(caseId: string) {
+    try {
+      const res = await axios.get(`${this.optimizerUrl}/demo/cases/${caseId}`, { timeout: 10000 });
+      return res.data;
+    } catch (err: any) {
+      throw new ServiceUnavailableException(
+        `Không thể nạp dữ liệu kịch bản demo ${caseId}: ${err.message}`,
+      );
+    }
+  }
+
+  async runDemoOptimization(dto: RunDemoOptimizationDto) {
+    if (!dto.caseId && !dto.customRequest) {
+      throw new BadRequestException('Cần cung cấp caseId hoặc customRequest để chạy demo');
+    }
+    const timeoutMs = Math.max(60000, ((dto.timeBudgetSeconds ?? 10) + 30) * 1000);
+    try {
+      const res = await axios.post(
+        `${this.optimizerUrl}/demo/run`,
+        {
+          case_id: dto.caseId,
+          time_budget_seconds: dto.timeBudgetSeconds,
+          custom_request: dto.customRequest,
+        },
+        { timeout: timeoutMs },
+      );
+      const batch = res.data;
+      assertFleetOptimizationBatchResult(batch);
+
+      // Thẩm định và sinh route_geometry thực tế (Mapbox Directions API) cho từng tuyến xe
+      for (const candidate of batch.candidates || []) {
+        if (!candidate.result?.routes) continue;
+        await Promise.all(
+          candidate.result.routes.map(async (route: any) => {
+            const waypoints: [number, number][] = [];
+            if (route.depot) {
+              waypoints.push([route.depot.longitude, route.depot.latitude]);
+            }
+            (route.stops || []).forEach((stop: any) => {
+              waypoints.push([stop.longitude, stop.latitude]);
+            });
+            if (route.depot) {
+              waypoints.push([route.depot.longitude, route.depot.latitude]);
+            }
+
+            if (waypoints.length >= 2) {
+              try {
+                if (waypoints.length <= 25 && process.env.MAPBOX_ACCESS_TOKEN) {
+                  const routeDetails = await this.mapboxService.getRoute(waypoints);
+                  if (routeDetails?.geometry) {
+                    route.route_geometry = routeDetails.geometry;
+                  }
+                }
+              } catch {
+                // Giữ nguyên baseline nối các waypoints nếu Mapbox trả lỗi
+              }
+              if (!route.route_geometry) {
+                route.route_geometry = {
+                  type: 'LineString',
+                  coordinates: waypoints,
+                };
+              }
+            }
+          }),
+        );
+      }
+
+      const candidates = (batch.candidates || []).map((c: any, index: number) => ({
+        candidateNumber: index + 1,
+        rank: c.rank ?? index + 1,
+        searchStrategy: c.search_strategy || `Phương án ${index + 1}`,
+        improvementSequence: index + 1,
+        solverObjective: c.solver_objective ?? 0,
+        planningSpanDays: 1,
+        driverCalendarSalaryVnd: 0,
+        driverIdleSalaryAllocationVnd: 0,
+        operationalLatePenaltyVnd: 0,
+        isBestFound: c.is_best_found ?? (index === 0),
+        feasibilityStatus: c.result?.status ?? 'SUCCESS',
+        totalCostVnd: c.result?.total_cost_vnd ?? 0,
+        totalDistanceKm: c.result?.total_distance_km ?? 0,
+        totalDurationMinutes: c.result?.total_duration_minutes ?? 0,
+        routeCount: c.result?.routes?.length ?? 0,
+        unassignedOrderCount: c.result?.unassigned_orders?.length ?? 0,
+      }));
+
+      const candidateResults: Record<number, any> = {};
+      (batch.candidates || []).forEach((c: any, idx: number) => {
+        candidateResults[idx + 1] = c.result;
+      });
+
+      const demoJobId = `demo-${dto.caseId || 'custom'}-${Date.now()}`;
+      const bestCandidate = batch.candidates?.[0]?.result ?? null;
+
+      return {
+        id: demoJobId,
+        branchId: 'demo-branch',
+        status: bestCandidate?.status === 'SUCCESS' ? 'SUCCEEDED' : (bestCandidate?.status || 'SUCCEEDED'),
+        schemaVersion: '1.0',
+        planningEpochIso: new Date().toISOString(),
+        scheduleMode: 'CURRENT_TIME',
+        searchBudgetSeconds: dto.timeBudgetSeconds ?? 6,
+        progress: null,
+        result: bestCandidate,
+        candidates,
+        candidateResults,
+        error: null,
+        attemptCount: 1,
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        isDemo: true,
+      };
+    } catch (err: any) {
+      if (err instanceof BadRequestException) throw err;
+      throw new ServiceUnavailableException(
+        `Không thể thực thi tối ưu demo: ${err.response?.data?.detail || err.message}`,
+      );
+    }
   }
 }
