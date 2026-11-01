@@ -1426,7 +1426,7 @@ const AutomaticDispatchPage: React.FC = () => {
                   >
                     Tổng dự toán tuyến xe
                   </div>
-                  <div style={{ fontSize: 11, color: '#16a34a' }}>Đã tối ưu đa mục tiêu (OR-Tools)</div>
+                  <div style={{ fontSize: 11, color: '#16a34a' }}>Đã tối ưu đa mục tiêu (Hybrid ALNS)</div>
                 </div>
                 <div style={{ fontSize: 17, fontWeight: 800, color: '#15803d' }}>
                   {currency.format(route.cost?.total_cost_vnd || 0)}
@@ -1765,7 +1765,7 @@ const AutomaticDispatchPage: React.FC = () => {
               </Tag>
             </div>
             <div style={{ fontSize: 13, color: '#475569' }}>
-              Kiểm tra danh sách đơn hàng (kèm kiện con), thông số xe tải và danh sách tài xế trực ca dưới đây trước khi kích hoạt thuật toán OR-Tools.
+              Kiểm tra danh sách đơn hàng (kèm kiện con), thông số xe tải và danh sách tài xế trực ca dưới đây trước khi kích hoạt thuật toán tối ưu Hybrid ALNS.
             </div>
           </div>
 
@@ -2952,6 +2952,42 @@ const AutomaticDispatchPage: React.FC = () => {
                     dataIndex: 'totalDurationMinutes',
                     render: (value: number) => `${value.toFixed(1)} phút`,
                   },
+                  {
+                    title: 'Gom đơn & Xe',
+                    key: 'grouping',
+                    render: (_, candidate) => {
+                      const extraTrips = candidate.extraOrderTrips ?? 0;
+                      const splitOrders = candidate.splitOrderCount ?? 0;
+                      const physicalVehicles =
+                        candidate.physicalVehicleCount ?? candidate.routeCount;
+                      const visits = candidate.deliveryVisitCount ?? 0;
+                      return (
+                        <Space size={4} wrap>
+                          {extraTrips === 0 ? (
+                            <Tag color="cyan" style={{ margin: 0 }}>
+                              Gom 1 chuyến/đơn
+                            </Tag>
+                          ) : (
+                            <Tooltip
+                              title={`${splitOrders} đơn phải tách chuyến (+${extraTrips} chuyến bổ sung)`}
+                            >
+                              <Tag color="purple" style={{ margin: 0 }}>
+                                {splitOrders} đơn tách (+{extraTrips} chuyến)
+                              </Tag>
+                            </Tooltip>
+                          )}
+                          <Tag color="blue" style={{ margin: 0 }}>
+                            {candidate.routeCount} chuyến / {physicalVehicles} xe
+                          </Tag>
+                          {visits > 0 && (
+                            <Tag color="default" style={{ margin: 0 }}>
+                              {visits} lần giao
+                            </Tag>
+                          )}
+                        </Space>
+                      );
+                    },
+                  },
                   { title: 'Lượt chuyến', dataIndex: 'routeCount' },
                   {
                     title: 'Đơn chưa xếp',
@@ -3199,7 +3235,7 @@ const AutomaticDispatchPage: React.FC = () => {
                       0 tuyến đường được tạo — Toàn bộ {result.unassigned_orders.length} đơn chưa thể xếp vào ca làm việc này
                     </Title>
                     <Paragraph type="secondary" style={{ marginBottom: 14, textAlign: 'center' }}>
-                      Tầng tối ưu Hybrid-first (ALNS + LIFO 3D + OR-Tools) không tìm thấy phương án ghép tuyến khả thi do ràng buộc khung giờ làm việc hoặc giới hạn tài nguyên.
+                      Tầng tối ưu Hybrid ALNS (Packing-aware ALNS + Dynamic 2D Spatial Validator) không tìm thấy phương án ghép tuyến khả thi do ràng buộc khung giờ làm việc hoặc giới hạn tài nguyên.
                     </Paragraph>
 
                     {result.diagnostics.length > 0 && (

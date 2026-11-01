@@ -131,7 +131,7 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
       render: (text: string) => <Text strong>{text}</Text>,
     },
     {
-      title: 'OR-Tools (Tối ưu)',
+      title: 'Hybrid ALNS (Tối ưu)',
       dataIndex: 'or_tools',
       key: 'or_tools',
       render: (val: number) => (
@@ -220,7 +220,7 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
                 Đối Chuẩn Hiệu Quả Chi Phí (Cost Benchmarking)
               </Title>
               <Text type="secondary" style={{ fontSize: 13 }}>
-                So sánh phương án tối ưu OR-Tools với phương án Chuyến đơn lẻ (Lưu tạm thời, không ghi DB)
+                So sánh phương án tối ưu Hybrid ALNS với phương án Chuyến đơn lẻ (Lưu tạm thời, không ghi DB)
               </Text>
             </div>
           </Space>
@@ -256,7 +256,7 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
 
       {/* 2 Phương pháp so sánh */}
       <Row gutter={[16, 16]}>
-        {/* CỘT 1: OR-TOOLS METAHEURISTIC */}
+        {/* CỘT 1: HYBRID ALNS METAHEURISTIC */}
         <Col xs={24} md={12}>
           <Card
             bordered={false}
@@ -273,7 +273,7 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
               <Text strong style={{ color: '#047857', fontSize: 15 }}>
                 <ThunderboltOutlined style={{ marginRight: 6 }} />
-                Google OR-Tools (Tối Ưu Ghép Chuyến)
+                Hybrid ALNS (Tối Ưu Ghép Chuyến)
               </Text>
               {feasibilityTag(or_tools, bestMethod?.key === 'or_tools', isPartialOrTools)}
             </div>

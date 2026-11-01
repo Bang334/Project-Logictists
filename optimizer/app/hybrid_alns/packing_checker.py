@@ -1,7 +1,40 @@
 """Fast conservative 2D packing pre-check ported from algo_lab."""
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple, Union
 from .models import CargoItem, FleetVehicle, PlacedItem, ScheduledStop
+from ..models import CargoItem as ProductionCargo, FleetVehicle as ProductionVehicle
+from ..models import ScheduledStop as ProductionStop, StopAction, VehicleFloor
+from ..spatial_validator import SpatialValidator
+
+
+def bounded_spatial_fallback(
+    vehicle: Union[FleetVehicle, ProductionVehicle],
+    stops: Sequence[Union[ScheduledStop, ProductionStop]],
+    cargo: Mapping[str, Union[CargoItem, ProductionCargo]],
+) -> bool:
+    """Recover small greedy false negatives without accepting an unchecked plan.
+
+    An orientation chosen for the first box can fragment the floor. A bounded
+    layout search tries alternatives; exhausting the budget still rejects it.
+    The size limit controls search overhead, not vehicle or customer policy.
+    """
+    ids = {cid for stop in stops for cid in stop.items_loaded}
+    if not ids or len(ids) > 12 or len(stops) > 24 or not ids.issubset(cargo):
+        return False
+    actions = [StopAction(stop_id=f"{i}:{stop.location_id}", sequence=i+1,
+        stop_type=stop.stop_type,
+        items_to_load=[ProductionCargo(id=cargo[cid].id, order_id=cargo[cid].order_id,
+            length_cm=cargo[cid].length_cm, width_cm=cargo[cid].width_cm,
+            height_cm=cargo[cid].height_cm, weight_kg=cargo[cid].weight_kg,
+            can_rotate=cargo[cid].can_rotate) for cid in stop.items_loaded],
+        items_to_unload=list(stop.items_unloaded)) for i,stop in enumerate(stops)]
+    floor = VehicleFloor(id=vehicle.id, plate_number=vehicle.plate_number,
+        length_cm=vehicle.length_cm, width_cm=vehicle.width_cm,
+        height_cm=vehicle.height_cm, payload_limit_kg=vehicle.payload_limit_kg,
+        door_position=vehicle.door_position,
+        door_width_cm=getattr(vehicle, "door_width_cm", None))
+    return SpatialValidator(floor, max_search_nodes=256,
+        max_time_seconds=0.01).validate_plan(actions).is_valid
 
 
 def is_box_overlap(
@@ -42,8 +75,9 @@ def is_path_to_door_clear(
 class FastPackingChecker:
     """Evaluates 2D packing feasibility for a sequence of stops on a vehicle."""
 
-    def __init__(self, vehicle: FleetVehicle):
+    def __init__(self, vehicle: FleetVehicle, *, allow_layout_search: bool = True):
         self.vehicle = vehicle
+        self.allow_layout_search = allow_layout_search
         self.L = vehicle.length_cm
         self.W = vehicle.width_cm
 
@@ -60,12 +94,8 @@ class FastPackingChecker:
             return None
 
         orientations = [(item.length_cm, item.width_cm)]
-        if item.can_rotate and item.length_cm != item.width_cm:
-            # Prefer orienting the longer dimension along vehicle length L to conserve width
-            if item.length_cm < item.width_cm:
-                orientations = [(item.width_cm, item.length_cm), (item.length_cm, item.width_cm)]
-            else:
-                orientations.append((item.width_cm, item.length_cm))
+        if item.can_rotate and abs(item.length_cm - item.width_cm) > 0.01:
+            orientations.append((item.width_cm, item.length_cm))
 
         candidate_points = {(0.0, 0.0)}
         for p in current_placed:
@@ -78,7 +108,7 @@ class FastPackingChecker:
                 candidate_points.add((0.0, p.y + p.width_cm))
 
         # Add wall-hugging anchor points along the far curb (y = W - w)
-        for _, w in orientations:
+        for l, w in orientations:
             if w <= self.W:
                 candidate_points.add((0.0, self.W - w))
                 for p in current_placed:
@@ -134,7 +164,9 @@ class FastPackingChecker:
                 if blocked_order:
                     continue
 
-                score = x * 1000 + y
+                # Evaluate corridor clearance to rear door: prefer wall-hugging positions
+                corridor_penalty = 150.0 if (y > 0.01 and y + w < self.W - 0.01) else 0.0
+                score = x * 1000 + y + corridor_penalty
                 if score < best_score:
                     best_score = score
                     best_candidate = cand
@@ -142,6 +174,119 @@ class FastPackingChecker:
         return best_candidate
 
     def validate_route_stops(
+        self, stops: List[ScheduledStop], cargo_items_by_id: Dict[str, CargoItem],
+    ) -> Tuple[bool, str]:
+        valid, reason = self._validate_greedy_route_stops(stops, cargo_items_by_id)
+        if valid:
+            return valid, reason
+        if len(stops) <= 12 or self.allow_layout_search:
+            valid_dyn, dyn_reason = self._validate_dynamic_lifo_route_stops(stops, cargo_items_by_id)
+            if valid_dyn:
+                return True, "Hợp lệ theo LIFO động"
+        if self.allow_layout_search and bounded_spatial_fallback(self.vehicle, stops, cargo_items_by_id):
+            return True, "Hợp lệ sau tìm kiếm bố trí có giới hạn"
+        return False, reason
+
+    def _validate_dynamic_lifo_route_stops(
+        self,
+        stops: List[ScheduledStop],
+        cargo_items_by_id: Dict[str, CargoItem],
+    ) -> Tuple[bool, str]:
+        placed_boxes: List[Dict] = []
+        onboard_weight = 0.0
+
+        for stop in stops:
+            if stop.stop_type == "PICKUP":
+                for item_id in stop.items_loaded:
+                    item = cargo_items_by_id.get(item_id)
+                    if not item:
+                        continue
+                    onboard_weight += item.weight_kg
+                    if onboard_weight > self.vehicle.payload_limit_kg + 0.01:
+                        return False, "Vượt tải trọng xe"
+                    if item.height_cm > self.vehicle.height_cm + 0.01:
+                        return False, "Vượt chiều cao thùng"
+
+                    box_placed = self._place_dynamic_box(item, placed_boxes)
+                    if box_placed is None:
+                        return False, "Không đủ diện tích sàn"
+                    placed_boxes.append(box_placed)
+
+            elif stop.stop_type == "DELIVERY":
+                target_boxes = [b for b in placed_boxes if b["id"] in stop.items_unloaded]
+                target_boxes.sort(key=lambda b: b["x"] + b["l"], reverse=True)
+                for target_box in target_boxes:
+                    for other in placed_boxes:
+                        if other["id"] == target_box["id"]:
+                            continue
+                        if other["x"] > target_box["x"] + 0.01:
+                            if not (other["y"] + other["w"] <= target_box["y"] + 0.01 or other["y"] >= target_box["y"] + target_box["w"] - 0.01):
+                                return False, "Bị hàng dỡ sau chặn lối ra cửa đuôi"
+                    placed_boxes = [b for b in placed_boxes if b["id"] != target_box["id"]]
+                    item = cargo_items_by_id.get(target_box["id"])
+                    if item:
+                        onboard_weight = max(0.0, onboard_weight - item.weight_kg)
+
+        if placed_boxes:
+            return False, "Còn hàng chưa dỡ"
+        return True, "Hợp lệ"
+
+    def _place_dynamic_box(self, item: CargoItem, placed_boxes: List[Dict]) -> Optional[Dict]:
+        total_used_area = sum(b["l"] * b["w"] for b in placed_boxes)
+        box_area = item.length_cm * item.width_cm
+        if total_used_area + box_area > self.L * self.W + 0.01:
+            return None
+
+        orientations = [(item.length_cm, item.width_cm)]
+        if item.can_rotate and abs(item.length_cm - item.width_cm) > 0.01:
+            orientations.append((item.width_cm, item.length_cm))
+
+        candidate_positions = {(0.0, 0.0)}
+        for b in placed_boxes:
+            if b["x"] + b["l"] <= self.L:
+                candidate_positions.add((b["x"] + b["l"], b["y"]))
+                candidate_positions.add((b["x"] + b["l"], 0.0))
+            if b["y"] + b["w"] <= self.W:
+                candidate_positions.add((b["x"], b["y"] + b["w"]))
+                candidate_positions.add((0.0, b["y"] + b["w"]))
+
+        for l_dim, w_dim in orientations:
+            if w_dim <= self.W:
+                candidate_positions.add((0.0, self.W - w_dim))
+                for b in placed_boxes:
+                    if b["x"] + b["l"] <= self.L:
+                        candidate_positions.add((b["x"] + b["l"], self.W - w_dim))
+
+        sorted_positions = sorted(candidate_positions, key=lambda p: (p[0], p[1]))
+
+        for l_dim, w_dim in orientations:
+            if l_dim > self.L + 0.01 or w_dim > self.W + 0.01:
+                continue
+            for x_cand, y_cand in sorted_positions:
+                if x_cand + l_dim <= self.L + 0.01 and y_cand + w_dim <= self.W + 0.01:
+                    overlap = any(
+                        is_box_overlap(x_cand, y_cand, l_dim, w_dim, other["x"], other["y"], other["l"], other["w"])
+                        for other in placed_boxes
+                    )
+                    if not overlap:
+                        clear, _ = is_path_to_door_clear(
+                            PlacedItem(item_id=item.id, order_id=item.order_id, x=x_cand, y=y_cand, length_cm=l_dim, width_cm=w_dim),
+                            self.L,
+                            [PlacedItem(item_id=b["id"], order_id=b["order_id"], x=b["x"], y=b["y"], length_cm=b["l"], width_cm=b["w"]) for b in placed_boxes]
+                            + [PlacedItem(item_id=item.id, order_id=item.order_id, x=x_cand, y=y_cand, length_cm=l_dim, width_cm=w_dim)]
+                        )
+                        if clear:
+                            return {
+                                "id": item.id,
+                                "order_id": item.order_id,
+                                "x": x_cand,
+                                "y": y_cand,
+                                "l": l_dim,
+                                "w": w_dim,
+                            }
+        return None
+
+    def _validate_greedy_route_stops(
         self,
         stops: List[ScheduledStop],
         cargo_items_by_id: Dict[str, CargoItem],

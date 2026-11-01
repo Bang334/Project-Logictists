@@ -140,6 +140,13 @@ export type FleetOptimizationResult = {
     driver_idle_salary_allocation_vnd: number;
     operational_late_penalty_vnd: number;
     selection_score_vnd: number;
+    extra_order_trips?: number;
+    split_order_count?: number;
+    max_trips_per_order?: number;
+    extra_request_trips?: number;
+    active_route_count?: number;
+    physical_vehicle_count?: number;
+    delivery_visit_count?: number;
   };
   benchmarks?: BenchmarkComparison;
   diagnostics: string[];
@@ -244,6 +251,25 @@ export function assertFleetOptimizationResult(
       expectedSelectionScore
     ) {
       throw new Error('Optimizer planning_objective có điểm xếp hạng không khớp');
+    }
+    for (const optionalField of [
+      'extra_order_trips',
+      'split_order_count',
+      'max_trips_per_order',
+      'extra_request_trips',
+      'active_route_count',
+      'physical_vehicle_count',
+      'delivery_visit_count',
+    ]) {
+      const optionalValue = value.planning_objective[optionalField];
+      if (
+        optionalValue !== undefined &&
+        (!Number.isInteger(optionalValue) || Number(optionalValue) < 0)
+      ) {
+        throw new Error(
+          `Optimizer planning_objective.${optionalField} không hợp lệ`,
+        );
+      }
     }
   }
   for (const route of value.routes) {
@@ -566,14 +592,40 @@ export function assertFleetOptimizationBatchResult(
     }
   }
 
-  // Candidate dùng objective chung: chi phí vận hành sau khi thay phân bổ
-  // lương hoạt động bằng lương lịch, cộng penalty vận hành cho đơn trễ.
+  // Sắp xếp theo thứ tự phân cấp (lexicographic):
+  // 1) extra_order_trips, 2) active_route_count, 3) solver_objective (selection_score_vnd).
   for (let index = 1; index < value.candidates.length; index += 1) {
-    if (
-      value.candidates[index].solver_objective <
-      value.candidates[index - 1].solver_objective
-    ) {
-      throw new Error('Danh sách phương án chưa được sắp xếp theo objective tăng dần');
+    const prev = value.candidates[index - 1];
+    const curr = value.candidates[index];
+    const prevObj = prev.result.planning_objective;
+    const currObj = curr.result.planning_objective;
+    const hasGroupingRanking =
+      prevObj?.extra_order_trips !== undefined &&
+      currObj?.extra_order_trips !== undefined;
+    if (hasGroupingRanking) {
+      const prevExtra = Number(prevObj.extra_order_trips);
+      const currExtra = Number(currObj.extra_order_trips);
+      const prevRoutes = Number(
+        prevObj.active_route_count ?? prev.result.routes.length,
+      );
+      const currRoutes = Number(
+        currObj.active_route_count ?? curr.result.routes.length,
+      );
+      const outOfOrder =
+        currExtra < prevExtra ||
+        (currExtra === prevExtra && currRoutes < prevRoutes) ||
+        (currExtra === prevExtra &&
+          currRoutes === prevRoutes &&
+          curr.solver_objective < prev.solver_objective);
+      if (outOfOrder) {
+        throw new Error(
+          'Danh sách phương án chưa được sắp xếp theo objective tăng dần',
+        );
+      }
+    } else if (curr.solver_objective < prev.solver_objective) {
+      throw new Error(
+        'Danh sách phương án chưa được sắp xếp theo objective tăng dần',
+      );
     }
   }
 }

@@ -1,0 +1,267 @@
+{
+  "reference": "Hybrid ALNS",
+  "trial_count": 90,
+  "failed_run_count": 0,
+  "challenges": [
+    {
+      "case": "day_novel_1_mekong_hub_spoke.json",
+      "seed": 0,
+      "budget": 2.0,
+      "reference": "Hybrid ALNS",
+      "challenger": "ILS",
+      "dimension": "operating_cost_vnd",
+      "reference_verified": true,
+      "reference_key": [
+        0,
+        3,
+        5663566
+      ],
+      "challenger_key": [
+        0,
+        3,
+        5439008
+      ],
+      "operating_cost_gap_vnd": 224558
+    },
+    {
+      "case": "day_novel_1_mekong_hub_spoke.json",
+      "seed": 1,
+      "budget": 2.0,
+      "reference": "Hybrid ALNS",
+      "challenger": "ILS",
+      "dimension": "operating_cost_vnd",
+      "reference_verified": true,
+      "reference_key": [
+        0,
+        3,
+        5664456
+      ],
+      "challenger_key": [
+        0,
+        3,
+        5439008
+      ],
+      "operating_cost_gap_vnd": 225448
+    },
+    {
+      "case": "day_novel_1_mekong_hub_spoke.json",
+      "seed": 2,
+      "budget": 2.0,
+      "reference": "Hybrid ALNS",
+      "challenger": "ILS",
+      "dimension": "operating_cost_vnd",
+      "reference_verified": true,
+      "reference_key": [
+        0,
+        3,
+        5663566
+      ],
+      "challenger_key": [
+        0,
+        3,
+        5439008
+      ],
+      "operating_cost_gap_vnd": 224558
+    },
+    {
+      "case": "day_novel_2_long_narrow_timber.json",
+      "seed": 0,
+      "budget": 2.0,
+      "reference": "Hybrid ALNS",
+      "challenger": "ILS",
+      "dimension": "operating_cost_vnd",
+      "reference_verified": true,
+      "reference_key": [
+        0,
+        2,
+        2306784
+      ],
+      "challenger_key": [
+        0,
+        2,
+        2142161
+      ],
+      "operating_cost_gap_vnd": 164623
+    },
+    {
+      "case": "day_novel_2_long_narrow_timber.json",
+      "seed": 1,
+      "budget": 2.0,
+      "reference": "Hybrid ALNS",
+      "challenger": "ILS",
+      "dimension": "operating_cost_vnd",
+      "reference_verified": true,
+      "reference_key": [
+        0,
+        2,
+        2306359
+      ],
+      "challenger_key": [
+        0,
+        2,
+        2142161
+      ],
+      "operating_cost_gap_vnd": 164198
+    },
+    {
+      "case": "day_novel_2_long_narrow_timber.json",
+      "seed": 2,
+      "budget": 2.0,
+      "reference": "Hybrid ALNS",
+      "challenger": "ILS",
+      "dimension": "operating_cost_vnd",
+      "reference_verified": true,
+      "reference_key": [
+        0,
+        2,
+        2306359
+      ],
+      "challenger_key": [
+        0,
+        2,
+        2142161
+      ],
+      "operating_cost_gap_vnd": 164198
+    },
+    {
+      "case": "day_novel_4_3tier_asymmetric_fleet.json",
+      "seed": 0,
+      "budget": 2.0,
+      "reference": "Hybrid ALNS",
+      "challenger": "ILS",
+      "dimension": "operating_cost_vnd",
+      "reference_verified": true,
+      "reference_key": [
+        0,
+        2,
+        2987275
+      ],
+      "challenger_key": [
+        0,
+        2,
+        2986644
+      ],
+      "operating_cost_gap_vnd": 631
+    },
+    {
+      "case": "day_novel_4_3tier_asymmetric_fleet.json",
+      "seed": 1,
+      "budget": 2.0,
+      "reference": "Hybrid ALNS",
+      "challenger": "ILS",
+      "dimension": "operating_cost_vnd",
+      "reference_verified": true,
+      "reference_key": [
+        0,
+        2,
+        2987275
+      ],
+      "challenger_key": [
+        0,
+        2,
+        2977772
+      ],
+      "operating_cost_gap_vnd": 9503
+    },
+    {
+      "case": "day_scenario_2_heavy_cargo.json",
+      "seed": 0,
+      "budget": 2.0,
+      "reference": "Hybrid ALNS",
+      "challenger": "ILS",
+      "dimension": "operating_cost_vnd",
+      "reference_verified": true,
+      "reference_key": [
+        0,
+        3,
+        4285455
+      ],
+      "challenger_key": [
+        0,
+        3,
+        4165926
+      ],
+      "operating_cost_gap_vnd": 119529
+    },
+    {
+      "case": "day_scenario_2_heavy_cargo.json",
+      "seed": 1,
+      "budget": 2.0,
+      "reference": "Hybrid ALNS",
+      "challenger": "CASA-ILS",
+      "dimension": "operating_cost_vnd",
+      "reference_verified": true,
+      "reference_key": [
+        0,
+        3,
+        4285455
+      ],
+      "challenger_key": [
+        0,
+        3,
+        4250689
+      ],
+      "operating_cost_gap_vnd": 34766
+    },
+    {
+      "case": "day_scenario_6_dynamic_reuse.json",
+      "seed": 0,
+      "budget": 2.0,
+      "reference": "Hybrid ALNS",
+      "challenger": "CASA-ILS",
+      "dimension": "operating_cost_vnd",
+      "reference_verified": true,
+      "reference_key": [
+        0,
+        2,
+        2209244
+      ],
+      "challenger_key": [
+        0,
+        2,
+        2192479
+      ],
+      "operating_cost_gap_vnd": 16765
+    },
+    {
+      "case": "day_scenario_8_dense_fragmentation.json",
+      "seed": 0,
+      "budget": 2.0,
+      "reference": "Hybrid ALNS",
+      "challenger": "ILS",
+      "dimension": "operating_cost_vnd",
+      "reference_verified": true,
+      "reference_key": [
+        0,
+        2,
+        3725081
+      ],
+      "challenger_key": [
+        0,
+        2,
+        3660325
+      ],
+      "operating_cost_gap_vnd": 64756
+    },
+    {
+      "case": "day_scenario_8_dense_fragmentation.json",
+      "seed": 1,
+      "budget": 2.0,
+      "reference": "Hybrid ALNS",
+      "challenger": "ILS",
+      "dimension": "operating_cost_vnd",
+      "reference_verified": true,
+      "reference_key": [
+        0,
+        2,
+        3725081
+      ],
+      "challenger_key": [
+        0,
+        2,
+        3660325
+      ],
+      "operating_cost_gap_vnd": 64756
+    }
+  ]
+}

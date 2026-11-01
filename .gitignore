@@ -38,3 +38,6 @@ frontend/playwright-report/
 
 # Local algorithm research/benchmarks (kept outside production source control)
 /algo_lab/
+graphify-out/
+scratch_*.py
+optimizer/scratch_*.py

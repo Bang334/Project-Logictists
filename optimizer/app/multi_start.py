@@ -16,7 +16,10 @@ from .models import (
     PlanningObjectiveBreakdown,
 )
 from .routing_solver import FleetRoutingSolver
-from .request_preprocessor import prune_unserviceable_virtual_resources
+from .request_preprocessor import (
+    prune_unserviceable_virtual_resources,
+    split_infeasible_orders_across_fleet,
+)
 from .search_policy import AdaptiveSearchPolicy, derive_search_policy
 from .search_strategies import (
     DEFAULT_SEARCH_STRATEGY,
@@ -25,7 +28,7 @@ from .search_strategies import (
     find_search_strategy,
 )
 from .hybrid_alns_engine import PackingAwareHybridALNSOptimizer
-from .planning_objective import apply_planning_objective
+from .planning_objective import apply_planning_objective, plan_lexicographic_key
 
 _REAL_HYBRID_OPTIMIZER = PackingAwareHybridALNSOptimizer
 
@@ -93,12 +96,61 @@ def _plan_signature(plan: FleetOptimizationResponse) -> Tuple:
             (
                 route.route_id or route.vehicle_id,
                 tuple(
-                    (stop.stop_type, stop.allocation_id or stop.order_id)
+                    (
+                        stop.stop_type,
+                        stop.allocation_id or stop.order_id,
+                        tuple(sorted(stop.items_loaded or stop.items_unloaded)),
+                    )
                     for stop in route.stops
                 ),
             )
             for route in plan.routes
         )
+    )
+
+
+def _candidate_lexicographic_key(
+    item: Tuple[SearchStrategy, FleetOptimizationResponse, int],
+) -> Tuple[int, int, int, int, int]:
+    _, plan, objective = item
+    breakdown = plan.planning_objective
+    if breakdown is not None:
+        extra_order_trips = breakdown.extra_order_trips
+        active_route_count = (
+            breakdown.active_route_count
+            if breakdown.active_route_count > 0 or not plan.routes
+            else len(plan.routes)
+        )
+        physical_vehicle_count = (
+            breakdown.physical_vehicle_count
+            if breakdown.physical_vehicle_count > 0 or not plan.routes
+            else len({r.vehicle_id for r in plan.routes if r.vehicle_id})
+        )
+    else:
+        trips_by_order: Dict[str, Set[str]] = {}
+        for idx, route in enumerate(plan.routes):
+            r_key = route.route_id or f"{route.vehicle_id}::{idx}"
+            for stop in route.stops:
+                oid = stop.order_id or (
+                    stop.allocation_id.split("::split:")[0]
+                    if stop.allocation_id
+                    else ""
+                )
+                if oid:
+                    trips_by_order.setdefault(oid, set()).add(r_key)
+        extra_order_trips = sum(
+            max(0, len(r_keys) - 1) for r_keys in trips_by_order.values()
+        )
+        active_route_count = len(plan.routes)
+        physical_vehicle_count = len(
+            {r.vehicle_id for r in plan.routes if r.vehicle_id}
+        )
+    return (
+        extra_order_trips,
+        active_route_count,
+        objective,
+        plan.total_cost_vnd,
+        physical_vehicle_count,
     )
 
 
@@ -118,8 +170,11 @@ def is_fully_served(
         return False
 
     served_order_ids: Set[str] = set()
+    global_loaded_items: Set[str] = set()
     for route in plan.routes:
         previous_departure_sec = route.start_time_sec
+        route_loaded_items: Set[str] = set()
+        route_unloaded_items: Set[str] = set()
         for stop in route.stops:
             time_breakdown = (
                 stop.travel_time_sec,
@@ -140,6 +195,19 @@ def is_fully_served(
             allocation_id = stop.allocation_id or stop.order_id
             if allocation_id:
                 served_order_ids.add(allocation_id)
+            if stop.stop_type == "PICKUP":
+                for item_id in stop.items_loaded:
+                    if item_id in global_loaded_items or item_id in route_loaded_items:
+                        return False
+                    route_loaded_items.add(item_id)
+                    global_loaded_items.add(item_id)
+            elif stop.stop_type == "DELIVERY":
+                for item_id in stop.items_unloaded:
+                    if item_id not in route_loaded_items or item_id in route_unloaded_items:
+                        return False
+                    route_unloaded_items.add(item_id)
+        if any(s.stop_type == "DELIVERY" for s in route.stops) and route_loaded_items != route_unloaded_items:
+            return False
 
         return_breakdown = (
             route.return_travel_time_sec,
@@ -194,12 +262,10 @@ def select_ranked_candidates(
     fully_served_count = len(fully_served_runs)
 
     if fully_served_runs:
-        # Rank by the shared planning objective. Operating cost is only the
-        # tie-breaker because it excludes paid idle salary and operational
-        # lateness when the financial penalty policy is disabled.
-        fully_served_runs.sort(
-            key=lambda item: (item[2], item[1].total_cost_vnd)
-        )
+        # Rank by the confirmed lexicographic hierarchy:
+        # 1) extra_order_trips, 2) active_route_count, 3) selection_score_vnd,
+        # 4) total_cost_vnd, 5) physical_vehicle_count.
+        fully_served_runs.sort(key=_candidate_lexicographic_key)
 
         distinct_candidates: List[Tuple[SearchStrategy, FleetOptimizationResponse, int]] = []
         seen_signatures: Set[Tuple] = set()
@@ -238,11 +304,8 @@ def select_ranked_candidates(
         "Hiển thị 1 phương án khả thi có tỷ lệ phục vụ cao nhất để hỗ trợ điều phối."
     )
     evaluated_runs.sort(
-        key=lambda item: (
-            len(item[1].unassigned_orders),
-            item[2],
-            item[1].total_cost_vnd,
-        )
+        key=lambda item: (len(item[1].unassigned_orders),)
+        + _candidate_lexicographic_key(item)
     )
     fallback_strategy, fallback_plan, fallback_obj = evaluated_runs[0]
     return [
@@ -264,9 +327,14 @@ class MultiStartFleetOptimizer:
         request: FleetOptimizationRequest,
         strategies: Optional[List[SearchStrategy]] = None,
     ):
-        self.objective_request = request
-        self.request, self.pruned_virtual_vehicle_count = (
+        pruned_request, self.pruned_virtual_vehicle_count = (
             prune_unserviceable_virtual_resources(request)
+        )
+        self.request, self.split_order_count = (
+            split_infeasible_orders_across_fleet(pruned_request)
+        )
+        self.objective_request = (
+            self.request if self.split_order_count else request
         )
         self.policy: AdaptiveSearchPolicy = derive_search_policy(self.request)
         physical_vehicle_ids = {
@@ -298,10 +366,7 @@ class MultiStartFleetOptimizer:
                     apply_planning_objective(self.objective_request, plan)
                 ranked_plans = sorted(
                     exhaustive.plans,
-                    key=lambda plan: (
-                        plan.planning_objective.selection_score_vnd,
-                        plan.total_cost_vnd,
-                    ),
+                    key=plan_lexicographic_key,
                 )
                 candidates = [
                     FleetOptimizationCandidate(

@@ -217,6 +217,17 @@ export class OptimizationProcessor extends WorkerHost {
               totalDurationMinutes: result.total_duration_minutes,
               routeCount: result.routes.length,
               unassignedOrderCount: result.unassigned_orders.length,
+              extraOrderTrips: planningObjective?.extra_order_trips ?? 0,
+              splitOrderCount: planningObjective?.split_order_count ?? 0,
+              maxTripsPerOrder: planningObjective?.max_trips_per_order ?? 0,
+              extraRequestTrips: planningObjective?.extra_request_trips ?? 0,
+              activeRouteCount:
+                planningObjective?.active_route_count ?? result.routes.length,
+              physicalVehicleCount:
+                planningObjective?.physical_vehicle_count ??
+                new Set(result.routes.map((route) => route.vehicle_id)).size,
+              deliveryVisitCount:
+                planningObjective?.delivery_visit_count ?? 0,
             },
             diagnostics: {
               source: 'HYBRID_FIRST',

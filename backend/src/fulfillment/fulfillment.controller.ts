@@ -10,6 +10,7 @@ import {
   QueryOrderPreparationDto,
   RecordPreparedItemDto,
 } from './dto/fulfillment.dto';
+import { PackAndMeasureGroupDto } from './dto/pack-group.dto';
 import { OrderProcessingService } from './fulfillment.service';
 
 @Controller('order-processing')
@@ -18,6 +19,35 @@ import { OrderProcessingService } from './fulfillment.service';
 export class OrderProcessingController {
   constructor(private readonly service: OrderProcessingService) {}
 
+  // ================= 1. MULTI-SOURCE FULFILLMENT GROUPS =================
+  @Get('groups')
+  getGroupQueue(
+    @Query('locationId') locationId: string | undefined,
+    @Req() req: { user: AuthenticatedUser },
+  ) {
+    const locId = resolveLocationScope(req.user, locationId);
+    return this.service.getGroupPreparationQueue(locId, req.user);
+  }
+
+  @Get('groups/:id')
+  getGroupDetail(@Param('id') id: string, @Req() req: { user: AuthenticatedUser }) {
+    return this.service.getGroupDetail(id, req.user);
+  }
+
+  @Post('groups/:id/start')
+  startGroup(@Param('id') id: string, @Req() req: { user: AuthenticatedUser }) {
+    return this.service.startGroupPreparation(id, req.user);
+  }
+
+  @Post('groups/pack-and-measure')
+  packAndMeasureGroup(
+    @Body() dto: PackAndMeasureGroupDto,
+    @Req() req: { user: AuthenticatedUser },
+  ) {
+    return this.service.packAndMeasureGroup(dto, req.user);
+  }
+
+  // ================= 2. LEGACY PREPARATION =================
   @Get('orders')
   getQueue(
     @Query() query: QueryOrderPreparationDto,
@@ -50,6 +80,7 @@ export class OrderProcessingController {
     return this.service.packOrder(dto, req.user);
   }
 
+  // ================= 3. HANDOVER =================
   @Post('handovers')
   handover(@Body() dto: CreateHandoverDto, @Req() req: { user: AuthenticatedUser }) {
     return this.service.createHandover(dto, req.user);

@@ -25,6 +25,7 @@ import {
   ReservationStatus,
   StopType,
   TaskAction,
+  TransportRequestStatus,
   TripStatus,
   VehicleStatus,
   Vehicle as VehicleRecord,
@@ -83,7 +84,11 @@ const LOCK_NAMESPACE_TRIP_COMMAND = 4105;
 
 type OrderWithStopsAndItems = Prisma.OrderGetPayload<{
   include: { stops: true; items: { include: { packages: true } } };
-}>;
+}> & {
+  packages?: any[];
+  transportRequests?: any[];
+  fulfillmentGroups?: any[];
+};
 
 type DispatchStopWithItems = {
   orderStop: OrderWithStopsAndItems['stops'][number];
@@ -823,7 +828,7 @@ export class TripsService {
       }),
       this.prisma.order.findMany({
         where: { id: { in: orderIds }, branchId, status: OrderStatus.ASSIGNED },
-        include: { stops: true, items: { include: { packages: true } } },
+        include: { stops: true, items: { include: { packages: true } }, packages: true },
       }),
     ]);
     if (!vehicle || !driver || fullOrders.length !== orderIds.length) {
@@ -1347,7 +1352,7 @@ export class TripsService {
   }
 
   /**
-   * Gọi Optimization Engine (Google OR-Tools + Dynamic 2D Spatial Packing)
+   * Gọi Optimization Engine (Packing-aware Hybrid ALNS + Dynamic 2D Spatial Packing)
    */
   async runOptimization(body: OptimizeTripDto, user: Principal) {
     const branchId = requireBranch(user, 'trips.plan', body.branchId);
@@ -1375,6 +1380,14 @@ export class TripsService {
       include: {
         stops: { orderBy: { sequence: 'asc' } },
         items: { include: { packages: true } },
+        packages: true,
+        transportRequests: {
+          include: {
+            pickupStop: true,
+            deliveryStop: true,
+            packages: { include: { package: true } },
+          },
+        },
       },
     });
     if (orders.length !== body.orderIds.length) {
@@ -1486,12 +1499,48 @@ export class TripsService {
       }),
       this.prisma.order.findMany({
         where: { branchId, status: OrderStatus.CONFIRMED },
-        include: { stops: { orderBy: { sequence: "asc" } }, items: { include: { packages: true } } },
+        include: {
+          stops: { orderBy: { sequence: 'asc' } },
+          items: { include: { packages: true } },
+          packages: true,
+          fulfillmentGroups: { include: { lines: true } },
+          transportRequests: {
+            include: {
+              pickupStop: true,
+              deliveryStop: true,
+              packages: { include: { package: true } },
+            },
+          },
+        },
         orderBy: { orderedAt: "asc" },
       }),
     ]);
 
-    const orders = candidateOrders.filter(order => order.orderType === 'B2B_TRANSPORT' && order.packageDataStatus === 'COMPLETE' && order.items.every(item => item.packages.length > 0 && item.packages.every(pkg => pkg.status === PackageStatus.READY)));
+    const orders = candidateOrders.filter((order) => {
+      if (!order.orderType || order.orderType === 'B2B_TRANSPORT') {
+        return (
+          order.packageDataStatus === 'COMPLETE' &&
+          order.items.every(
+            (item) =>
+              item.packages.length > 0 &&
+              item.packages.every((pkg) => pkg.status === PackageStatus.READY),
+          )
+        );
+      }
+      if (order.orderType === 'RETAIL_DELIVERY') {
+        const trs = (order as any).transportRequests || [];
+        return (
+          trs.length > 0 &&
+          trs.every(
+            (tr: any) =>
+              tr.status === TransportRequestStatus.READY_FOR_ROUTING &&
+              tr.packages.length > 0 &&
+              tr.packages.every((p: any) => p.package?.status === PackageStatus.READY),
+          )
+        );
+      }
+      return false;
+    });
 
     if (!branch)
       throw new NotFoundException('Không tìm thấy chi nhánh đang hoạt động');
@@ -2068,7 +2117,18 @@ export class TripsService {
         const [orders, vehicles, drivers] = await Promise.all([
           tx.order.findMany({
             where: { id: { in: orderIds }, branchId },
-            include: { stops: true, items: { include: { packages: true } } },
+            include: {
+              stops: true,
+              items: { include: { packages: true } },
+              packages: true,
+              transportRequests: {
+                include: {
+                  pickupStop: true,
+                  deliveryStop: true,
+                  packages: { include: { package: true } },
+                },
+              },
+            },
           }),
           tx.vehicle.findMany({
             where: { id: { in: vehicleIds }, homeBranchId: branchId },
@@ -2159,6 +2219,17 @@ export class TripsService {
           );
         }
 
+        await tx.transportRequest.updateMany({
+          where: {
+            packages: { some: { packageId: { in: packageIds } } },
+            status: TransportRequestStatus.READY_FOR_ROUTING,
+          },
+          data: {
+            status: TransportRequestStatus.ASSIGNED,
+            version: { increment: 1 },
+          },
+        });
+          
         const updatedOrders = await tx.order.updateMany({
           where: {
             id: { in: orderIds },
@@ -2295,10 +2366,21 @@ export class TripsService {
     const cargoByOrderId = new Map<string, ReturnType<typeof packagesToCargoUnits>>();
     for (const entry of stopsWithItems) {
       if (!cargoByOrderId.has(entry.order.id)) {
-        cargoByOrderId.set(
-          entry.order.id,
-          packagesToCargoUnits(entry.order.items),
-        );
+        const orderCargo =
+          entry.order.orderType === 'B2B_TRANSPORT'
+            ? packagesToCargoUnits(entry.order.items)
+            : (((entry.order as any).packages || []).map((pkg: any) => ({
+                id: pkg.id,
+                order_id: entry.order.id,
+                order_item_id: pkg.orderItemId || pkg.id,
+                description: pkg.sku || 'Retail Package',
+                length_cm: pkg.lengthMm / 10,
+                width_cm: pkg.widthMm / 10,
+                height_cm: pkg.heightMm / 10,
+                weight_kg: Number(pkg.weightG) / 1000,
+                can_rotate: true as const,
+              })));
+        cargoByOrderId.set(entry.order.id, orderCargo);
       }
     }
     const stops = stopsWithItems.map((entry, index) => {
@@ -2476,7 +2558,12 @@ export class TripsService {
     const expectedCargoByOrder = new Map(
       orders.map((order) => [
         order.id,
-        new Set(packagesToCargoUnits(order.items).map((item) => item.id)),
+        new Set(
+          order.orderType === 'B2B_TRANSPORT'
+            ? packagesToCargoUnits(order.items).map((item) => item.id)
+            : (order as any).packages?.map((pkg: any) => pkg.id) ||
+              packagesToCargoUnits(order.items).map((item) => item.id),
+        ),
       ]),
     );
 
@@ -2903,17 +2990,66 @@ export class TripsService {
 
     const orders = await tx.order.findMany({
       where: { id: { in: plannedTrip.orderIds } },
-      include: { stops: true, items: { include: { packages: true } } },
+      include: {
+        stops: true,
+        items: { include: { packages: true } },
+        packages: true,
+        transportRequests: {
+          include: {
+            packages: { include: { package: true } },
+          },
+        },
+      },
     });
     const allocationIdByPackageId = new Map<string, string>();
     for (const order of orders) {
       assertDispatchableOrder(order);
-      for (const item of order.items) for (const pkg of item.packages.filter(pkg => plannedTrip.cargoUnitIds.includes(pkg.id))) {
-        const allocation = await tx.allocation.create({ data: { tripId: trip.id, orderItemId: item.id, packageId: pkg.id, allocatedQuantity: 1, status: 'ACTIVE' } });
-        allocationIdByPackageId.set(pkg.id, allocation.id);
+      if (!order.orderType || order.orderType === 'B2B_TRANSPORT') {
+        for (const item of order.items) {
+          for (const pkg of item.packages.filter((pkg) => plannedTrip.cargoUnitIds.includes(pkg.id))) {
+            const allocation = await tx.allocation.create({
+              data: {
+                tripId: trip.id,
+                orderItemId: item.id,
+                packageId: pkg.id,
+                allocatedQuantity: 1,
+                status: 'ACTIVE',
+              },
+            });
+            allocationIdByPackageId.set(pkg.id, allocation.id);
+          }
+        }
+      } else {
+        const retailPackages = await tx.package.findMany({
+          where: { id: { in: plannedTrip.cargoUnitIds }, orderId: order.id },
+          include: { items: true },
+        });
+        for (const pkg of retailPackages) {
+          const orderItemId = pkg.orderItemId || pkg.items?.[0]?.orderItemId || order.items[0]?.id;
+          if (orderItemId) {
+            const allocation = await tx.allocation.create({
+              data: {
+                tripId: trip.id,
+                orderItemId,
+                packageId: pkg.id,
+                allocatedQuantity: 1,
+                status: 'ACTIVE',
+              },
+            });
+            allocationIdByPackageId.set(pkg.id, allocation.id);
+          }
+        }
+        const assignedTrIds = ((order as any).transportRequests || [])
+          .filter((tr: any) => tr.packages?.some((p: any) => plannedTrip.cargoUnitIds.includes(p.packageId)))
+          .map((tr: any) => tr.id);
+        if (assignedTrIds.length > 0) {
+          await tx.transportRequest.updateMany({
+            where: { id: { in: assignedTrIds } },
+            data: { status: TransportRequestStatus.ASSIGNED },
+          });
+        }
       }
     }
-
 
     const orderById = new Map(orders.map((order) => [order.id, order]));
     const orderStopIdByOptimizerStopId = new Map<string, string>();
@@ -3094,8 +3230,7 @@ export class TripsService {
               const physicalPackage = physicalPackageById.get(packageId);
               if (
                 !physicalPackage ||
-                physicalPackage.lengthMm !== this.cmToMm(placed.length_cm) ||
-                physicalPackage.widthMm !== this.cmToMm(placed.width_cm) ||
+                !((physicalPackage.lengthMm === this.cmToMm(placed.length_cm) && physicalPackage.widthMm === this.cmToMm(placed.width_cm)) || (physicalPackage.lengthMm === this.cmToMm(placed.width_cm) && physicalPackage.widthMm === this.cmToMm(placed.length_cm))) ||
                 physicalPackage.heightMm !== this.cmToMm(placed.height_cm) ||
                 physicalPackage.weightG !==
                   BigInt(Math.round(placed.weight_kg * 1000))
@@ -3126,14 +3261,27 @@ export class TripsService {
     orders: OrderWithStopsAndItems[],
   ): Promise<Map<string, string>> {
     const current = await tx.order.findMany({
-      where: { id: { in: orders.map(order => order.id) } },
-      include: { stops: true, items: { include: { packages: true } } },
+      where: { id: { in: orders.map((order) => order.id) } },
+      include: { stops: true, items: { include: { packages: true } }, packages: true },
     });
-    const requestedIds = new Set(orders.flatMap(order => order.items.flatMap(item => item.packages.map(pkg => pkg.id))));
+    const requestedIds = new Set(
+      orders.flatMap((order) => {
+        if (!order.orderType || order.orderType === 'B2B_TRANSPORT') {
+          return order.items.flatMap((item) => item.packages.map((pkg) => pkg.id));
+        }
+        return ((order as any).packages || []).map((pkg: any) => pkg.id);
+      }),
+    );
     const mapping = new Map<string, string>();
     for (const order of current) {
-      for (const cargo of packagesToCargoUnits(order.items)) {
-        if (requestedIds.has(cargo.id)) mapping.set(cargo.id, cargo.id);
+      if (!order.orderType || order.orderType === 'B2B_TRANSPORT') {
+        for (const cargo of packagesToCargoUnits(order.items)) {
+          if (requestedIds.has(cargo.id)) mapping.set(cargo.id, cargo.id);
+        }
+      } else {
+        for (const pkg of (order as any).packages || []) {
+          if (requestedIds.has(pkg.id)) mapping.set(pkg.id, pkg.id);
+        }
       }
     }
     return mapping;
@@ -3159,71 +3307,163 @@ export class TripsService {
       return boundary === 'start' ? Math.ceil(seconds) : Math.floor(seconds);
     };
 
-    return orders.map((order) => {
+    return orders.flatMap((order) => {
       assertDispatchableOrder(order);
       if (order.status !== 'CONFIRMED') throw new ConflictException('Chỉ tối ưu đơn đã xác nhận');
-      const pickup = order.stops.find((stop) => stop.type === StopType.PICKUP);
-      const delivery = order.stops.find(
-        (stop) => stop.type === StopType.DELIVERY,
-      );
-      if (!pickup || !delivery) {
+
+      if (!order.orderType || order.orderType === 'B2B_TRANSPORT') {
+        const pickup = order.stops.find((stop) => stop.type === StopType.PICKUP);
+        const delivery = order.stops.find(
+          (stop) => stop.type === StopType.DELIVERY,
+        );
+        if (!pickup || !delivery) {
+          throw new BadRequestException(
+            `Đơn ${order.orderNumber} thiếu pickup hoặc delivery`,
+          );
+        }
+        if (!delivery.windowStart || !delivery.windowEnd || delivery.windowBasis !== 'SERVICE_START') {
+          throw new BadRequestException('Thiếu khung giờ giao hàng đã xác nhận');
+        }
+        let items;
+        try {
+          items = packagesToCargoUnits(order.items);
+        } catch (error: any) {
+          throw new BadRequestException(error.message);
+        }
+        return [
+          {
+            id: order.id,
+            order_number: order.orderNumber,
+            pickup_location: {
+              id: pickup.id,
+              source_location_id: pickup.id,
+              name: pickup.address,
+              latitude: pickup.latitude,
+              longitude: pickup.longitude,
+            },
+            delivery_location: {
+              id: delivery.id,
+              source_location_id: delivery.id,
+              name: delivery.address,
+              latitude: delivery.latitude,
+              longitude: delivery.longitude,
+            },
+            items,
+            pickup_window_start_sec: 0,
+            pickup_window_end_sec: 604800,
+            delivery_window_start_sec: Math.max(0, secondsFromEpoch(delivery.windowStart, 'start')),
+            delivery_window_end_sec: Math.max(
+              Math.max(0, secondsFromEpoch(delivery.windowStart, 'start')),
+              secondsFromEpoch(delivery.windowEnd, 'end'),
+            ),
+            pickup_service_time_sec: pickup.serviceDurationMinutes * 60,
+            delivery_service_time_sec: delivery.serviceDurationMinutes * 60,
+            time_window_basis: 'SERVICE_START' as const,
+            package_contract_version: '1' as const,
+            ordered_at_sec: Math.max(
+              0,
+              Math.round(
+                (order.orderedAt.getTime() - planningEpoch.getTime()) / 1000,
+              ),
+            ),
+            order_value_vnd: Math.round(Number(order.totalAmount)),
+            service_time_sec:
+              Math.max(
+                pickup.serviceDurationMinutes,
+                delivery.serviceDurationMinutes,
+              ) * 60,
+          },
+        ];
+      }
+
+      const transportRequests = (order as any).transportRequests || [];
+      if (!transportRequests.length) {
         throw new BadRequestException(
-          `Đơn ${order.orderNumber} thiếu pickup hoặc delivery`,
+          `Đơn bán lẻ ${order.orderNumber} chưa có yêu cầu vận chuyển (TransportRequest)`,
         );
       }
-      if (!delivery.windowStart || !delivery.windowEnd || delivery.windowBasis !== 'SERVICE_START') throw new BadRequestException('Thiếu khung giờ giao hàng đã xác nhận');
-      let items;
-      try {
-        items = packagesToCargoUnits(order.items);
-      } catch (error) {
-        throw new BadRequestException(error.message);
-      }
-      return {
-        id: order.id,
-        order_number: order.orderNumber,
-        pickup_location: {
-          id: pickup.id,
-          name: pickup.address,
-          latitude: pickup.latitude,
-          longitude: pickup.longitude,
-        },
-        delivery_location: {
-          id: delivery.id,
-          name: delivery.address,
-          latitude: delivery.latitude,
-          longitude: delivery.longitude,
-        },
-        items,
-        // Điểm lấy hàng (Kho/Cửa hàng): Hàng sẵn sàng tại kho từ đầu ca (0s).
-        // Optimizer tự do xếp lịch giờ xe đến lấy hàng tối ưu nhất theo lộ trình.
-        pickup_window_start_sec: 0,
-        pickup_window_end_sec: 604800,
-        delivery_window_start_sec: Math.max(0, secondsFromEpoch(delivery.windowStart, 'start')),
-        delivery_window_end_sec: Math.max(
-          Math.max(0, secondsFromEpoch(delivery.windowStart, 'start')),
-          secondsFromEpoch(delivery.windowEnd, 'end'),
-        ),
-        pickup_service_time_sec: pickup.serviceDurationMinutes * 60,
-        delivery_service_time_sec: delivery.serviceDurationMinutes * 60,
-        time_window_basis: 'SERVICE_START',
-        package_contract_version: '1',
-        ordered_at_sec: Math.max(
-          0,
-          Math.round(
-            (order.orderedAt.getTime() - planningEpoch.getTime()) / 1000,
+      return transportRequests.map((tr: any) => {
+        const pickup = tr.pickupStop;
+        const delivery = tr.deliveryStop;
+        if (!pickup || !delivery) {
+          throw new BadRequestException(
+            `Yêu cầu vận chuyển ${tr.requestNumber} thiếu điểm dừng`,
+          );
+        }
+        const trPackages = (tr.packages || []).map((p: any) => p.package).filter(Boolean);
+        if (!trPackages.length) {
+          throw new BadRequestException(
+            `Yêu cầu vận chuyển ${tr.requestNumber} không có kiện hàng`,
+          );
+        }
+        const items = trPackages.map((p: any) => ({
+          id: p.id,
+          order_id: order.id,
+          order_item_id: p.orderItemId || p.id,
+          description: p.sku || 'Retail Package',
+          length_cm: p.lengthMm / 10,
+          width_cm: p.widthMm / 10,
+          height_cm: p.heightMm / 10,
+          weight_kg: Number(p.weightG) / 1000,
+          can_rotate: true as const,
+        }));
+
+        const deliveryWindowStart = delivery.windowStart || (order.stops.find((s: any) => s.type === StopType.DELIVERY)?.windowStart);
+        const deliveryWindowEnd = delivery.windowEnd || (order.stops.find((s: any) => s.type === StopType.DELIVERY)?.windowEnd);
+
+        return {
+          id: tr.id,
+          source_order_id: order.id,
+          source_order_number: order.orderNumber,
+          order_number: tr.requestNumber,
+          pickup_location: {
+            id: `${pickup.id}::tr:${tr.id}`,
+            source_location_id: pickup.id,
+            name: pickup.address,
+            latitude: pickup.latitude,
+            longitude: pickup.longitude,
+          },
+          delivery_location: {
+            id: `${delivery.id}::tr:${tr.id}`,
+            source_location_id: delivery.id,
+            name: delivery.address,
+            latitude: delivery.latitude,
+            longitude: delivery.longitude,
+          },
+          items,
+          pickup_window_start_sec: 0,
+          pickup_window_end_sec: 604800,
+          delivery_window_start_sec: deliveryWindowStart
+            ? Math.max(0, secondsFromEpoch(deliveryWindowStart, 'start'))
+            : 0,
+          delivery_window_end_sec: deliveryWindowEnd
+            ? Math.max(
+                deliveryWindowStart ? Math.max(0, secondsFromEpoch(deliveryWindowStart, 'start')) : 0,
+                secondsFromEpoch(deliveryWindowEnd, 'end'),
+              )
+            : 604800,
+          pickup_service_time_sec: (pickup.serviceDurationMinutes || 10) * 60,
+          delivery_service_time_sec: (delivery.serviceDurationMinutes || 15) * 60,
+          time_window_basis: 'SERVICE_START' as const,
+          package_contract_version: '1' as const,
+          ordered_at_sec: Math.max(
+            0,
+            Math.round(
+              (order.orderedAt.getTime() - planningEpoch.getTime()) / 1000,
+            ),
           ),
-        ),
-        order_value_vnd: Math.round(Number(order.totalAmount)),
-        service_time_sec:
-          Math.max(
-            pickup.serviceDurationMinutes,
-            delivery.serviceDurationMinutes,
-          ) * 60,
-      };
+          order_value_vnd: Math.round(Number(order.totalAmount)),
+          service_time_sec:
+            Math.max(
+              pickup.serviceDurationMinutes || 10,
+              delivery.serviceDurationMinutes || 15,
+            ) * 60,
+        };
+      });
     });
   }
 
-  async getDemoCases() {
+    async getDemoCases() {
     try {
       const res = await axios.get(`${this.optimizerUrl}/demo/cases`, { timeout: 10000 });
       return res.data;

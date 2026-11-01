@@ -1,0 +1,44 @@
+[
+  {
+    "vehicle": "veh-tw-1::day:0",
+    "strategy": "existing",
+    "valid": false,
+    "wall": 0.11065679999592248,
+    "violation": "PLACEMENT_SEARCH_LIMIT_REACHED"
+  },
+  {
+    "vehicle": "veh-tw-1::day:0",
+    "strategy": "deep",
+    "valid": true,
+    "wall": 0.037171500000113156,
+    "violation": null
+  },
+  {
+    "vehicle": "veh-tw-2::day:0",
+    "strategy": "existing",
+    "valid": true,
+    "wall": 0.006207200000062585,
+    "violation": null
+  },
+  {
+    "vehicle": "veh-tw-2::day:0",
+    "strategy": "deep",
+    "valid": true,
+    "wall": 0.006412399998225737,
+    "violation": null
+  },
+  {
+    "vehicle": "veh-tw-3::day:0",
+    "strategy": "existing",
+    "valid": true,
+    "wall": 0.002043499996943865,
+    "violation": null
+  },
+  {
+    "vehicle": "veh-tw-3::day:0",
+    "strategy": "deep",
+    "valid": true,
+    "wall": 0.0013365000049816445,
+    "violation": null
+  }
+]

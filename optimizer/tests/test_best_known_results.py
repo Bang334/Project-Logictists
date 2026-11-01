@@ -43,7 +43,7 @@ def test_best_known_manifest_has_one_valid_record_per_case() -> None:
     assert "service_day_index" in hanoi["comparison_note"]
 
 
-def test_production_hybrid_replays_small_preserved_case() -> None:
+def test_production_hybrid_uses_confirmed_objective_on_small_preserved_case() -> None:
     manifest_path = (
         Path(__file__).resolve().parents[1]
         / "benchmarks"
@@ -64,7 +64,12 @@ def test_production_hybrid_replays_small_preserved_case() -> None:
 
     assert result.production_valid is True
     assert result.served == result.orders
-    assert result.cost_vnd == result.reference_cost_vnd
+    # User decision 2026-11-01: production selection score is the objective;
+    # preserve the historical operating-cost ceiling as a visible tradeoff.
+    assert result.reference_cost_vnd == 535_486
+    assert result.cost_vnd == 543_480
+    assert result.selection_score_vnd == 1_198_453
+    assert result.cost_ratio > 1
 
 
 def test_benchmark_reuses_recorded_search_budget_not_historical_elapsed_time(

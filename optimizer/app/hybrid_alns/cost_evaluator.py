@@ -96,9 +96,7 @@ def calculate_route_cost(
         stops[0].arrival_time_sec - first_leg_dur,
     )
     route_end_sec = max(route_start_sec, stops[-1].departure_time_sec + return_dur)
-    scheduled_duration_seconds = route_end_sec - route_start_sec
-    total_duration_seconds = max(total_travel_seconds, scheduled_duration_seconds)
-    total_duration_minutes = round(total_duration_seconds / 60.0, 1)
+    total_duration_minutes = round((route_end_sec - route_start_sec) / 60.0, 1)
 
     salary_allocation = round(
         driver.fixed_salary_monthly_vnd

@@ -4,10 +4,27 @@ import { join } from 'path';
 describe('Merged retail and TMS database contract', () => {
   it('giữ model retail và các model TMS/auth/lịch sử đã duyệt sau khi đơn giản lịch/cửa xe', () => {
     const schema = readFileSync(join(process.cwd(), 'prisma', 'schema.prisma'), 'utf8');
-    for (const model of ['AuthSession', 'AuthLoginLimit', 'Allocation', 'Package', 'OrderStop', 'UserRoleScope', 'UserLocationScope', 'TrackingDevice', 'Invoice']) {
+    for (const model of [
+      'AuthSession',
+      'AuthLoginLimit',
+      'Allocation',
+      'Package',
+      'OrderStop',
+      'UserRoleScope',
+      'UserLocationScope',
+      'TrackingDevice',
+      'Invoice',
+      'ServiceZone',
+      'ServiceZoneProvince',
+      'StoreServiceZone',
+      'FulfillmentGroup',
+      'FulfillmentLine',
+      'TransportRequest',
+      'TransportRequestPackage',
+    ]) {
       expect(schema).toContain(`model ${model} {`);
     }
-    expect([...schema.matchAll(/^model\s+\w+\s*\{/gm)]).toHaveLength(83);
+    expect([...schema.matchAll(/^model\s+\w+\s*\{/gm)]).toHaveLength(90);
     expect(schema).not.toMatch(/^model\s+(DriverShift|DriverLeave|VehicleDoor)\s*\{/m);
   });
   it('không còn bảng ca và pick task riêng', () => {

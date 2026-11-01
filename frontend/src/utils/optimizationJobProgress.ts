@@ -74,7 +74,7 @@ export const buildOptimizationProgressView = ({
       return {
         currentStep: 2,
         title: 'Đang tìm và so sánh phương án',
-        message: `${metrics || 'Snapshot đã được khóa'} · OR-Tools đang đánh giá các cách ghép chuyến và thứ tự lấy–giao.`,
+        message: `${metrics || 'Snapshot đã được khóa'} · Hybrid ALNS đang đánh giá các cách ghép chuyến và thứ tự lấy–giao.`,
       };
     case 'BUILDING_ROUTE_GEOMETRY':
       return {

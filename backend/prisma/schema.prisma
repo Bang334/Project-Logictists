@@ -113,6 +113,23 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum FulfillmentGroupStatus {
+  PENDING
+  PREPARING
+  PACKED
+  HANDED_OVER
+  CANCELLED
+}
+
+enum TransportRequestStatus {
+  PENDING
+  READY_FOR_ROUTING
+  ASSIGNED
+  IN_TRANSIT
+  COMPLETED
+  CANCELLED
+}
+
 model User {
   locationScopes UserLocationScope[]
   id               String            @id @default(uuid())
@@ -161,6 +178,7 @@ model User {
   createdStockAdjustments StockAdjustment[]
   createdPayrollRuns      PayrollRun[]           @relation("PayrollCreator")
   approvedPayrollRuns     PayrollRun[]           @relation("PayrollApprover")
+  measuredPackages        Package[]              @relation("MeasuredPackages")
 }
 
 model Branch {
@@ -200,6 +218,7 @@ model Branch {
   optimizationJobs              OptimizationJob[]
   payrollPeriods                PayrollPeriod[]
   managedLocations              Location[]              @relation("ManagingBranchLocations")
+  fulfillmentGroups             FulfillmentGroup[]
 }
 
 model Vehicle {
@@ -339,6 +358,11 @@ model Order {
   collectionToken       CollectionToken?
   feedbackCases         FeedbackCase[]
   StopTask              StopTask[]
+  fulfillmentGroups     FulfillmentGroup[]
+  transportRequests     TransportRequest[]
+  maxSourcesAllowed     Int                    @default(2)
+  maxDistanceBetweenSourcesKm Float            @default(40.0)
+  serviceZoneSnapshotId String?
   @@index([branchId, orderedAt])
   @@index([selectedPickupPointId, status])
 }
@@ -359,6 +383,9 @@ model OrderStop {
   windowEnd              DateTime?  @db.Timestamptz(3)
   serviceDurationMinutes Int        @default(15)
   tasks                  StopTask[]
+  pickupTransportRequests   TransportRequest[] @relation("PickupTransportRequests")
+  deliveryTransportRequests TransportRequest[] @relation("DeliveryTransportRequests")
+  fulfillmentGroups         FulfillmentGroup[] @relation("GroupPickupStop")
   createdAt              DateTime   @default(now()) @db.Timestamptz(3)
 
   @@unique([orderId, sequence])
@@ -390,6 +417,7 @@ model OrderItem {
   lineTotal    Decimal            @default(0) @db.Decimal(20, 4)
   packageItems PackageItem[]
   invoiceLines SalesInvoiceLine[]
+  fulfillmentLines FulfillmentLine[]
   @@index([orderId])
   @@index([skuId])
 }
@@ -717,7 +745,13 @@ model Package {
   loadPlacements         LoadPlacement[]
   feedbackCases          FeedbackCase[]
   StopTask               StopTask[]
+  fulfillmentGroupId     String?
+  fulfillmentGroup       FulfillmentGroup?        @relation(fields: [fulfillmentGroupId], references: [id], onDelete: SetNull)
+  transportRequestPackages TransportRequestPackage[]
+  measuredByUserId       String?
+  measuredByUser         User?                    @relation("MeasuredPackages", fields: [measuredByUserId], references: [id], onDelete: SetNull)
   @@index([orderId, status])
+  @@index([fulfillmentGroupId, status])
 }
 
 model OrderEvent {
@@ -1320,6 +1354,10 @@ model Location {
   salesInvoices           SalesInvoice[]
   feedbackCases           FeedbackCase[]
   depotVehicles           Vehicle[]              @relation("VehicleHomeDepots")
+  maxDeliveryDistanceKm   Int?                   @default(100)
+  storeServiceZones       StoreServiceZone[]
+  fulfillmentGroups       FulfillmentGroup[]
+  transportRequests       TransportRequest[]
   createdAt               DateTime               @default(now()) @db.Timestamptz(3)
   updatedAt               DateTime               @updatedAt @db.Timestamptz(3)
 
@@ -1388,6 +1426,7 @@ model Sku {
   receiptLines     StockReceiptLine[]
   adjustmentLines  StockAdjustmentLine[]
   orderItems       OrderItem[]
+  fulfillmentLines FulfillmentLine[]
   createdAt        DateTime               @default(now()) @db.Timestamptz(3)
   updatedAt        DateTime               @updatedAt @db.Timestamptz(3)
 
@@ -1453,11 +1492,14 @@ model InventoryReservation {
   releasedAt        DateTime?         @db.Timestamptz(3)
   createdById       String?
   createdBy         User?             @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  fulfillmentLineId String?
+  fulfillmentLine   FulfillmentLine?  @relation(fields: [fulfillmentLineId], references: [id], onDelete: SetNull)
   createdAt         DateTime          @default(now()) @db.Timestamptz(3)
   updatedAt         DateTime          @updatedAt @db.Timestamptz(3)
 
   @@index([skuId, locationId, status])
   @@index([status, expiresAt])
+  @@index([fulfillmentLineId])
   @@map("inventory_reservations")
 }
 
@@ -2076,3 +2118,161 @@ model UserLocationScope {
   @@index([locationId, active])
   @@map("user_location_scopes")
 }
+
+model ServiceZone {
+  id                          String                @id @default(uuid())
+  code                        String                @unique
+  name                        String
+  description                 String?
+  active                      Boolean               @default(true)
+  version                     Int                   @default(1)
+  maxSourcesAllowed           Int                   @default(2)
+  maxDistanceBetweenSourcesKm Float                 @default(40.0)
+  provinces                   ServiceZoneProvince[]
+  storeZones                  StoreServiceZone[]
+  quotes                      RetailQuote[]
+  createdAt                   DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt                   DateTime              @updatedAt @db.Timestamptz(3)
+
+  @@map("service_zones")
+}
+
+model ServiceZoneProvince {
+  id           String      @id @default(uuid())
+  zoneId       String
+  zone         ServiceZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  provinceCode String
+  provinceName String
+  createdAt    DateTime    @default(now()) @db.Timestamptz(3)
+
+  @@unique([zoneId, provinceCode])
+  @@index([provinceCode])
+  @@map("service_zone_provinces")
+}
+
+model StoreServiceZone {
+  id                    String      @id @default(uuid())
+  locationId            String
+  location              Location    @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  zoneId                String
+  zone                  ServiceZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+  maxDeliveryDistanceKm Int?
+  createdAt             DateTime    @default(now()) @db.Timestamptz(3)
+
+  @@unique([locationId, zoneId])
+  @@map("store_service_zones")
+}
+
+model FulfillmentGroup {
+  id                String                 @id @default(uuid())
+  groupNumber       String                 @unique
+  orderId           String
+  order             Order                  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  sourceLocationId  String
+  sourceLocation    Location               @relation(fields: [sourceLocationId], references: [id], onDelete: Restrict)
+  sourceBranchId    String?
+  sourceBranch      Branch?                @relation(fields: [sourceBranchId], references: [id], onDelete: Restrict)
+  pickupStopId      String?
+  pickupStop        OrderStop?             @relation("GroupPickupStop", fields: [pickupStopId], references: [id], onDelete: SetNull)
+  status            FulfillmentGroupStatus @default(PENDING)
+  version           Int                    @default(1)
+  notes             String?
+  readyAt           DateTime?              @db.Timestamptz(3)
+  packedAt          DateTime?              @db.Timestamptz(3)
+  handedOverAt      DateTime?              @db.Timestamptz(3)
+  lines             FulfillmentLine[]
+  packages          Package[]
+  transportRequests TransportRequest[]
+  createdAt         DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime               @updatedAt @db.Timestamptz(3)
+
+  @@index([orderId, status])
+  @@index([sourceLocationId, status])
+  @@map("fulfillment_groups")
+}
+
+model FulfillmentLine {
+  id                 String                 @id @default(uuid())
+  fulfillmentGroupId String
+  fulfillmentGroup   FulfillmentGroup       @relation(fields: [fulfillmentGroupId], references: [id], onDelete: Cascade)
+  orderItemId        String
+  orderItem          OrderItem              @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
+  skuId              String
+  sku                Sku                    @relation(fields: [skuId], references: [id], onDelete: Restrict)
+  requestedQuantity  Int
+  reservedQuantity   Int                    @default(0)
+  packedQuantity     Int                    @default(0)
+  rejectedQuantity   Int                    @default(0)
+  reservations       InventoryReservation[]
+  createdAt          DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime               @updatedAt @db.Timestamptz(3)
+
+  @@index([fulfillmentGroupId])
+  @@index([orderItemId])
+  @@index([skuId])
+  @@map("fulfillment_lines")
+}
+
+model TransportRequest {
+  id                 String                    @id @default(uuid())
+  requestNumber      String                    @unique
+  orderId            String
+  order              Order                     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  fulfillmentGroupId String
+  fulfillmentGroup   FulfillmentGroup          @relation(fields: [fulfillmentGroupId], references: [id], onDelete: Cascade)
+  sourceLocationId   String
+  sourceLocation     Location                  @relation(fields: [sourceLocationId], references: [id], onDelete: Restrict)
+  pickupStopId       String?
+  pickupStop         OrderStop?                @relation("PickupTransportRequests", fields: [pickupStopId], references: [id], onDelete: SetNull)
+  deliveryStopId     String?
+  deliveryStop       OrderStop?                @relation("DeliveryTransportRequests", fields: [deliveryStopId], references: [id], onDelete: SetNull)
+  status             TransportRequestStatus    @default(PENDING)
+  version            Int                       @default(1)
+  packages           TransportRequestPackage[]
+  createdAt          DateTime                  @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime                  @updatedAt @db.Timestamptz(3)
+
+  @@index([orderId, status])
+  @@index([fulfillmentGroupId, status])
+  @@map("transport_requests")
+}
+
+model TransportRequestPackage {
+  id                 String           @id @default(uuid())
+  transportRequestId String
+  transportRequest   TransportRequest @relation(fields: [transportRequestId], references: [id], onDelete: Cascade)
+  packageId          String
+  package            Package          @relation(fields: [packageId], references: [id], onDelete: Restrict)
+  createdAt          DateTime         @default(now()) @db.Timestamptz(3)
+
+  @@unique([transportRequestId, packageId])
+  @@index([packageId])
+  @@map("transport_request_packages")
+}
+
+model RetailQuote {
+  id                          String       @id // e.g. QTE-...
+  quoteVersion                Int          @default(1)
+  serviceZoneId               String?
+  serviceZone                 ServiceZone? @relation(fields: [serviceZoneId], references: [id], onDelete: SetNull)
+  serviceZoneVersion          Int          @default(1)
+  provinceCode                String
+  deliveryAddress             String
+  deliveryLatitude            Float
+  deliveryLongitude           Float
+  deliveryWindowStart         DateTime?    @db.Timestamptz(3)
+  deliveryWindowEnd           DateTime?    @db.Timestamptz(3)
+  subtotal                    Decimal      @db.Decimal(20, 4)
+  shippingFee                 Decimal      @default(0) @db.Decimal(20, 4)
+  totalAmount                 Decimal      @db.Decimal(20, 4)
+  sourceStoreCount            Int
+  maxDistanceBetweenSourcesKm Float        @default(40.0)
+  payload                     Json
+  expiresAt                   DateTime     @db.Timestamptz(3)
+  createdAt                   DateTime     @default(now()) @db.Timestamptz(3)
+
+  @@index([expiresAt])
+  @@index([serviceZoneId])
+  @@map("retail_quotes")
+}
+

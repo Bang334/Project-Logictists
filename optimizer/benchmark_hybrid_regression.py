@@ -42,6 +42,7 @@ class HybridBenchmarkResult:
     reference_cost_vnd: int
     cost_ratio: Optional[float]
     meets_reference: Optional[bool]
+    selection_score_vnd: Optional[int] = None
 
 
 def load_manifest() -> Dict[str, object]:
@@ -93,6 +94,7 @@ def run_case(
         if cost_comparable
         else None
     )
+    planning_objective = getattr(response, "planning_objective", None)
     return HybridBenchmarkResult(
         file=str(reference["file"]),
         reference_algorithm=str(reference["algorithm"]),
@@ -111,6 +113,7 @@ def run_case(
         reference_cost_vnd=reference_cost,
         cost_ratio=round(cost_ratio, 6) if cost_ratio is not None else None,
         meets_reference=meets_reference,
+        selection_score_vnd=(planning_objective.selection_score_vnd if planning_objective is not None else None),
     )
 
 

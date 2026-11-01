@@ -1,0 +1,56 @@
+[
+  {
+    "case": "day_db_nhatrang_2_orders.json",
+    "algorithm": "Hybrid ALNS",
+    "seed": 0,
+    "budget": 0.2,
+    "service_days_available": 7,
+    "solve_wall_seconds": 0.49,
+    "served_requests": 2,
+    "total_requests": 2,
+    "delivered_packages": 9,
+    "total_packages": 9,
+    "complete_manifest": true,
+    "unique_balanced_manifest": true,
+    "spatial_valid": true,
+    "basic_schedule_valid": true,
+    "spatial_errors": [],
+    "schedule_errors": [],
+    "routes": 1,
+    "physical_vehicles": 1,
+    "service_days_used": [
+      0
+    ],
+    "extra_order_trips": 0,
+    "cost_vnd": 535486,
+    "reported_cost_vnd": 535486,
+    "distance_km": 22.13
+  },
+  {
+    "case": "day_db_nhatrang_2_orders.json",
+    "algorithm": "ILS",
+    "seed": 0,
+    "budget": 0.2,
+    "service_days_available": 7,
+    "solve_wall_seconds": 0.239,
+    "served_requests": 2,
+    "total_requests": 2,
+    "delivered_packages": 9,
+    "total_packages": 9,
+    "complete_manifest": true,
+    "unique_balanced_manifest": true,
+    "spatial_valid": true,
+    "basic_schedule_valid": true,
+    "spatial_errors": [],
+    "schedule_errors": [],
+    "routes": 1,
+    "physical_vehicles": 1,
+    "service_days_used": [
+      0
+    ],
+    "extra_order_trips": 0,
+    "cost_vnd": 535486,
+    "reported_cost_vnd": 535486,
+    "distance_km": 22.13
+  }
+]

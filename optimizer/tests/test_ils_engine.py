@@ -428,11 +428,14 @@ def test_compact_portfolio_preserves_specialist_95_stream(monkeypatch) -> None:
         fixed_operating_cost_vnd=100,
     )
     initial_solution = SimpleNamespace(
-        routes=[object(), object(), object(), object()],
+        routes=[SimpleNamespace(stops=[]) for _ in range(4)],
+        unassigned_orders=[],
+        total_distance_km=0,
         real_economic_cost_vnd=1000,
     )
     seed_solution = SimpleNamespace(
-        routes=[object()],
+        routes=[SimpleNamespace(stops=[])],
+        total_distance_km=0,
         unassigned_orders=[],
         real_economic_cost_vnd=500,
         solution_audited=True,
@@ -444,7 +447,8 @@ def test_compact_portfolio_preserves_specialist_95_stream(monkeypatch) -> None:
         random_seed=0,
         execution_time_sec=0.0,
     )
-    alns_solution = SimpleNamespace(real_economic_cost_vnd=600)
+    alns_solution = SimpleNamespace(real_economic_cost_vnd=600,
+        routes=[SimpleNamespace(stops=[])], unassigned_orders=[], total_distance_km=0)
     captured = {}
 
     def fake_sa(*_args, **kwargs):
@@ -472,7 +476,7 @@ def test_compact_portfolio_preserves_specialist_95_stream(monkeypatch) -> None:
     result = hybrid_solver_module.solve_hybrid_alns(
         [vehicle],
         [],
-        [SimpleNamespace(items=[])],
+        [SimpleNamespace(id="order", source_order_id=None, items=[])],
         object(),
         [],
         [],

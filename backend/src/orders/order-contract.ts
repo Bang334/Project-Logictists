@@ -61,10 +61,21 @@ export function assertPackageManifest(order: { packageDataStatus: string; items:
 
 /** Dispatch never repairs an incomplete/advanced manifest implicitly. */
 export function assertDispatchableOrder(order: {
+  orderType?: string;
   status: string; packageDataStatus: string;
   stops: Array<{ type: string; windowBasis: string | null; windowStart: Date | null; windowEnd: Date | null; serviceDurationMinutes: number }>;
   items: Array<{ quantity: number; packages: Array<{ status: string; lengthMm: number; widthMm: number; heightMm: number; weightG: bigint }> }>;
 }) {
+  if (order.orderType && order.orderType !== 'B2B_TRANSPORT') {
+    if (order.status !== 'CONFIRMED') {
+      throw new ConflictException({ code: 'ORDER_NOT_DISPATCHABLE', message: 'Đơn bán lẻ phải ở trạng thái CONFIRMED' });
+    }
+    const delivery = order.stops.find(s => s.type === 'DELIVERY');
+    if (!delivery) {
+      throw new ConflictException({ code: 'ORDER_WINDOWS_INVALID', message: 'Đơn bán lẻ cần có điểm giao hàng' });
+    }
+    return;
+  }
   assertPackageManifest(order);
   if (order.status !== 'CONFIRMED' || order.items.some(i => i.packages.some(p => p.status !== 'READY'))) {
     throw new ConflictException({ code: 'ORDER_NOT_DISPATCHABLE', message: 'Đơn phải được xác nhận và mọi kiện phải ở trạng thái READY' });

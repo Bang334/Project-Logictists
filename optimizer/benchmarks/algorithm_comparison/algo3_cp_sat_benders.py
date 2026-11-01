@@ -84,13 +84,35 @@ class _CASAILSEngine(AdaptivePackingAwareSimulatedAnnealingSolver):
 
         if (
             not unassigned
+            and len(depot_profiles) == 1
+            and len(vehicle_profiles) > 1
+            and self.time_limit_sec >= 2.0
+        ):
+            warm_deadline = min(
+                deadline,
+                time.perf_counter() + min(1.5, max(0.0, deadline - time.perf_counter()) * 0.35),
+            )
+            warm_routes, warm_unassigned = self._sequential_construction(
+                [order.id for order in self.orders],
+                warm_deadline,
+            )
+            if not warm_unassigned:
+                warm_cost = self._plan_cost(warm_routes, warm_unassigned)
+                elite_candidates.append((warm_cost, copy.deepcopy(warm_routes), []))
+                if warm_cost < initial_cost:
+                    initial_cost = warm_cost
+                    routes = copy.deepcopy(warm_routes)
+                    unassigned = []
+
+        if (
+            not unassigned
             and len(depot_profiles) > 1
             and len(self.orders) >= 10
             and self.time_limit_sec >= 2.0
         ):
             md_deadline = min(
                 deadline,
-                time.perf_counter() + min(3.5, max(0.0, deadline - time.perf_counter()) * 0.65),
+                time.perf_counter() + min(1.5, max(0.0, deadline - time.perf_counter()) * 0.35),
             )
             md_start = self._build_multi_depot_start(md_deadline)
             if md_start is not None:
@@ -137,7 +159,7 @@ class _CASAILSEngine(AdaptivePackingAwareSimulatedAnnealingSolver):
         best_unassigned = list(unassigned)
         best_cost = initial_cost
         search_started_at = time.perf_counter()
-        sa_deadline = max(search_started_at, deadline - min(1.2, self.time_limit_sec * 0.18))
+        sa_deadline = max(search_started_at, deadline - min(0.6, self.time_limit_sec * 0.20))
         search_duration = max(0.001, sa_deadline - search_started_at)
         initial_temperature = max(50_000.0, current_cost * 0.04)
         positive_deltas: List[int] = []
@@ -258,12 +280,26 @@ class _CASAILSEngine(AdaptivePackingAwareSimulatedAnnealingSolver):
                     current_cost = best_cost
                 stagnant = 0
 
-        # Final ILS intensification (inter-route relocation + reciprocal exchange)
-        while time.perf_counter() < deadline:
+        # CP-SAT Set Partitioning over Route Pool before final ILS
+        if len(elite_candidates) >= 2:
+            sp_time = min(0.3, max(0.1, self.time_limit_sec * 0.1))
+            sp_res = self._solve_set_partitioning(elite_candidates, time_limit_sec=sp_time)
+            if sp_res is not None:
+                sp_cost, sp_routes, sp_unassigned = sp_res
+                if not sp_unassigned:
+                    elite_candidates.insert(0, (sp_cost, sp_routes, sp_unassigned))
+                    if sp_cost < best_cost:
+                        best_cost = sp_cost
+                        best_routes = sp_routes
+                        best_unassigned = sp_unassigned
+
+        refine_deadline = max(deadline, time.perf_counter() + 0.15)
+        # Final ILS intensification (inter-route relocation + reciprocal exchange + vehicle reassignment)
+        while time.perf_counter() < refine_deadline:
             relocated = self._best_relocation_candidate(
                 best_routes,
                 best_unassigned,
-                deadline,
+                refine_deadline,
                 sample_limit=min(16, len(self.orders)),
                 option_limit=6,
             )
@@ -274,22 +310,29 @@ class _CASAILSEngine(AdaptivePackingAwareSimulatedAnnealingSolver):
                 (best_cost, copy.deepcopy(best_routes), list(best_unassigned))
             )
 
-        if time.perf_counter() < deadline:
+        if time.perf_counter() < refine_deadline:
             exchanged = self._best_order_exchange(
                 best_routes,
                 best_unassigned,
-                deadline,
+                refine_deadline,
             )
             if exchanged is not None and exchanged[0] < best_cost:
                 best_cost, best_routes, best_unassigned, affected = exchanged
                 refined = self._best_intra_route_relocation(
-                    best_routes, best_unassigned, affected, deadline
+                    best_routes, best_unassigned, affected, refine_deadline
                 )
                 if refined is not None and refined[0] < best_cost:
                     best_cost, best_routes, best_unassigned = refined
                 elite_candidates.append(
                     (best_cost, copy.deepcopy(best_routes), list(best_unassigned))
                 )
+
+        if elite_candidates:
+            leading = min(elite_candidates, key=lambda c: self._candidate_key(c[1], c[2]))
+            l_cost, l_routes, l_unassigned = leading
+            reassigned = self._best_vehicle_reassignment(l_routes, l_unassigned, refine_deadline)
+            if reassigned is not None and self._candidate_key(reassigned[1], reassigned[2]) < self._candidate_key(l_routes, l_unassigned):
+                elite_candidates.insert(0, (reassigned[0], copy.deepcopy(reassigned[1]), list(reassigned[2])))
 
         return self._finalize_best_valid(
             elite_candidates,

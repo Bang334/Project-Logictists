@@ -180,6 +180,10 @@ def convert_request_to_hybrid(
                 delivery_window_end_sec=int(order.delivery_window_end_sec),
                 order_value_vnd=int(order.order_value_vnd),
                 allowed_source_vehicle_ids=list(order.allowed_source_vehicle_ids),
+                source_order_id=order.source_order_id or order.id,
+                split_group_id=order.split_group_id,
+                pickup_service_time_sec=order.pickup_service_time_sec,
+                delivery_service_time_sec=order.delivery_service_time_sec,
             )
         )
         node_id_to_index[p_key] = len(request.vehicles) + 2 * order_idx
@@ -234,7 +238,7 @@ def audit_with_spatial_validator(
         items_to_load = []
         items_to_unload = []
         if stop.stop_type == "PICKUP" and order:
-            items_to_load = [item.model_copy() for item in order.items]
+            items_to_load = [item.model_copy(update={"can_rotate": True}) for item in order.items]
         elif stop.stop_type == "DELIVERY" and order:
             items_to_unload = [item.id for item in order.items]
 

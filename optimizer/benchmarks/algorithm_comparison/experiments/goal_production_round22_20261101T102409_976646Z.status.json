@@ -1,0 +1,6 @@
+{
+  "status": "intentionally_stopped",
+  "reason": "verified_production_route_count_loss_hanoi_seed1",
+  "saved_trials": 35,
+  "expected_trials": 425
+}

@@ -45,6 +45,7 @@ def schedule_and_evaluate_route(
     node_id_to_index: Dict[str, int],
     *,
     use_fast_packing: bool = True,
+    allow_layout_search: bool = True,
 ) -> RouteEvaluation:
     """Schedule a fixed stop sequence with waiting and enforce hard constraints."""
     if not stops:
@@ -80,6 +81,7 @@ def schedule_and_evaluate_route(
     onboard_weight = 0.0
     onboard_items = set()
     picked_orders = set()
+    delivered_split_groups = set()
 
     for sequence, stop in enumerate(scheduled, start=1):
         order = order_by_id.get(stop.order_id or "")
@@ -106,6 +108,9 @@ def schedule_and_evaluate_route(
 
         raw_arrival = current_time + transit
         if stop.stop_type == "PICKUP":
+            if order.split_group_id and order.split_group_id in delivered_split_groups:
+                return RouteEvaluation(False, scheduled,
+                    "Không lấy thêm phần của cùng yêu cầu sau khi đã bắt đầu giao")
             window_start = order.pickup_window_start_sec
             window_end = order.pickup_window_end_sec
             expected_items = {item.id for item in order.items}
@@ -136,6 +141,8 @@ def schedule_and_evaluate_route(
                 return RouteEvaluation(False, scheduled, f"Thiếu kiện khi giao đơn {order.order_number}")
             onboard_weight -= order.total_weight_kg
             onboard_items.difference_update(expected_items)
+            if order.split_group_id:
+                delivered_split_groups.add(order.split_group_id)
 
         arrival = max(raw_arrival, float(window_start))
         if arrival > window_end + 0.01:
@@ -154,7 +161,7 @@ def schedule_and_evaluate_route(
 
         stop.sequence = sequence
         stop.arrival_time_sec = int(round(arrival))
-        stop.departure_time_sec = stop.arrival_time_sec + order.service_time_sec
+        stop.departure_time_sec = stop.arrival_time_sec + order.service_seconds(stop.stop_type)
         if stop.departure_time_sec > vehicle.available_end_sec:
             return RouteEvaluation(
                 False,
@@ -181,7 +188,9 @@ def schedule_and_evaluate_route(
         )
 
     if use_fast_packing:
-        packing_ok, packing_reason = FastPackingChecker(vehicle).validate_route_stops(
+        packing_ok, packing_reason = FastPackingChecker(
+            vehicle, allow_layout_search=allow_layout_search
+        ).validate_route_stops(
             scheduled, cargo_by_id
         )
         if not packing_ok:

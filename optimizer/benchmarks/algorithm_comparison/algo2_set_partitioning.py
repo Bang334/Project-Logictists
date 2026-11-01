@@ -101,13 +101,35 @@ class _GVNSPoolEngine(PackingAwareVNSSolver):
 
         if (
             not unassigned
+            and len(depot_profiles) == 1
+            and len(vehicle_profiles) > 1
+            and self.time_limit_sec >= 2.0
+        ):
+            warm_deadline = min(
+                deadline,
+                time.perf_counter() + min(1.5, max(0.0, deadline - time.perf_counter()) * 0.35),
+            )
+            warm_routes, warm_unassigned = self._sequential_construction(
+                [order.id for order in self.orders],
+                warm_deadline,
+            )
+            if not warm_unassigned:
+                warm_cost = self._plan_cost(warm_routes, warm_unassigned)
+                elite_candidates.append((warm_cost, copy.deepcopy(warm_routes), []))
+                if warm_cost < current_cost:
+                    current_cost = warm_cost
+                    routes = copy.deepcopy(warm_routes)
+                    unassigned = []
+
+        if (
+            not unassigned
             and len(depot_profiles) > 1
             and len(self.orders) >= 10
             and self.time_limit_sec >= 2.0
         ):
             md_deadline = min(
                 deadline,
-                time.perf_counter() + min(3.5, max(0.0, deadline - time.perf_counter()) * 0.65),
+                time.perf_counter() + min(1.5, max(0.0, deadline - time.perf_counter()) * 0.35),
             )
             md_start = self._build_multi_depot_start(md_deadline)
             if md_start is not None:
@@ -170,7 +192,7 @@ class _GVNSPoolEngine(PackingAwareVNSSolver):
         shake_cycle = 0
         temperature = max(1.0, current_cost * 0.015)
 
-        vns_deadline = max(time.perf_counter(), deadline - min(1.0, self.time_limit_sec * 0.15))
+        vns_deadline = max(time.perf_counter(), deadline - min(0.6, self.time_limit_sec * 0.20))
         while iteration < self.max_iterations and time.perf_counter() < vns_deadline:
             iteration += 1
             assigned_count = len(self._assigned_order_ids(current_routes))
@@ -231,6 +253,46 @@ class _GVNSPoolEngine(PackingAwareVNSSolver):
                 elite_candidates.append(
                     (best_cost, copy.deepcopy(best_routes), list(best_unassigned))
                 )
+                for v_i, r_stops in enumerate(best_routes):
+                    if r_stops and len(self._route_pool) < 600:
+                        self._route_pool.append((v_i, copy.deepcopy(r_stops)))
+                shake_cycle = 0
+                continue
+
+            exchanged = self._best_order_exchange(best_routes, best_unassigned, vns_deadline)
+            if exchanged is not None and exchanged[0] < best_cost:
+                best_cost, best_routes, best_unassigned, affected = exchanged
+                refined = self._best_intra_route_relocation(best_routes, best_unassigned, affected, vns_deadline)
+                if refined is not None and refined[0] < best_cost:
+                    best_cost, best_routes, best_unassigned = refined
+                current_cost, current_routes, current_unassigned = (
+                    best_cost,
+                    copy.deepcopy(best_routes),
+                    list(best_unassigned),
+                )
+                elite_candidates.append(
+                    (best_cost, copy.deepcopy(best_routes), list(best_unassigned))
+                )
+                for v_i, r_stops in enumerate(best_routes):
+                    if r_stops and len(self._route_pool) < 600:
+                        self._route_pool.append((v_i, copy.deepcopy(r_stops)))
+                shake_cycle = 0
+                continue
+
+            reassigned = self._best_vehicle_reassignment(best_routes, best_unassigned, vns_deadline)
+            if reassigned is not None and reassigned[0] < best_cost:
+                best_cost, best_routes, best_unassigned = reassigned
+                current_cost, current_routes, current_unassigned = (
+                    best_cost,
+                    copy.deepcopy(best_routes),
+                    list(best_unassigned),
+                )
+                elite_candidates.append(
+                    (best_cost, copy.deepcopy(best_routes), list(best_unassigned))
+                )
+                for v_i, r_stops in enumerate(best_routes):
+                    if r_stops and len(self._route_pool) < 600:
+                        self._route_pool.append((v_i, copy.deepcopy(r_stops)))
                 shake_cycle = 0
                 continue
 
@@ -257,13 +319,21 @@ class _GVNSPoolEngine(PackingAwareVNSSolver):
                     (best_cost, copy.deepcopy(best_routes), list(best_unassigned))
                 )
 
-        if len(elite_candidates) >= 2 and time.perf_counter() < deadline:
+        refine_deadline = max(deadline, time.perf_counter() + 0.15)
+        if len(elite_candidates) >= 2:
             sp_result = self._solve_set_partitioning(
                 elite_candidates,
-                time_limit_sec=min(1.0, max(0.3, deadline - time.perf_counter())),
+                time_limit_sec=min(0.3, max(0.1, self.time_limit_sec * 0.1)),
             )
             if sp_result is not None and not sp_result[2]:
                 elite_candidates.insert(0, sp_result)
+
+        if elite_candidates:
+            leading = min(elite_candidates, key=lambda c: self._candidate_key(c[1], c[2]))
+            l_cost, l_routes, l_unassigned = leading
+            reassigned = self._best_vehicle_reassignment(l_routes, l_unassigned, refine_deadline)
+            if reassigned is not None and self._candidate_key(reassigned[1], reassigned[2]) < self._candidate_key(l_routes, l_unassigned):
+                elite_candidates.insert(0, (reassigned[0], copy.deepcopy(reassigned[1]), list(reassigned[2])))
 
         return self._finalize_best_valid(
             elite_candidates,

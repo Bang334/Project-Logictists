@@ -1,0 +1,614 @@
+--- baseline/app\hybrid_alns\solver.py
++++ current/app\hybrid_alns\solver.py
+@@ -33,6 +33,7 @@
+ from .greedy_insertion import solve_greedy
+ from .objective import solution_key
+ from .legacy_solver import LegacyHybridALNSSolver
++from .stop_moves import ranked_stop_moves
+ 
+ 
+ @dataclass
+@@ -1534,6 +1535,50 @@
+                                 best_exchange = (c_cost, ins, list(unassigned), (first_index, second_index))
+         return best_exchange
+ 
++    def _first_improving_stop_relocation(
++        self,
++        routes: List[List[ScheduledStop]],
++        unassigned: List[str],
++        deadline: float,
++    ) -> Optional[Tuple[int, List[List[ScheduledStop]], List[str]]]:
++        """Find a quick improving move with the full pickup/delivery manifest.
++
++        Pair reinsertion cannot reach every useful stop ordering in one move.
++        Schedule and price first; only improving moves pay for packing checks.
++        The original incumbent remains available if final spatial audit fails.
++        """
++        incumbent_costs: Dict[int, int] = {}
++        moves = ranked_stop_moves(
++            [[self.node_id_to_index[stop.location_id] for stop in route] for route in routes],
++            [[(stop.order_id or "", stop.stop_type) for stop in route] for route in routes],
++            [self.node_id_to_index[vehicle.depot.id] for vehicle in self.vehicles],
++            [self.node_id_to_index[(vehicle.end_depot or vehicle.depot).id] for vehicle in self.vehicles],
++            self.distance_matrix, deadline,
++        )
++        for _, vehicle_index, source, target in moves:
++            if time.perf_counter() >= deadline:
++                return None
++            route = routes[vehicle_index]
++            reduced = route[:source] + route[source + 1:]
++            moved = reduced[:target] + [route[source]] + reduced[target:]
++            quick = self._evaluate_route_without_packing(vehicle_index, moved)
++            if not quick.feasible or quick.cost is None:
++                continue
++            if vehicle_index not in incumbent_costs:
++                incumbent_costs[vehicle_index] = self._route_cost(vehicle_index, route)
++            saving = incumbent_costs[vehicle_index] - quick.cost.total_cost_vnd
++            if saving <= 0:
++                continue
++            checked = self._evaluate_route(vehicle_index, quick.stops, allow_layout_search=False)
++            if not checked.feasible:
++                continue
++            candidate = list(routes)
++            candidate[vehicle_index] = checked.stops
++            # Yield now so the caller can apply and re-probe the changed plan
++            # instead of spending the whole budget on one best-improvement scan.
++            return (self._plan_cost(candidate, unassigned), candidate, list(unassigned))
++        return None
++
+     def _best_intra_route_relocation(
+         self,
+         routes: List[List[ScheduledStop]],
+@@ -2124,7 +2169,9 @@
+         init_budget_pct = 0.35 if has_multi_depot else 0.25
+         init_deadline = started_at + min(self.time_limit_sec * init_budget_pct, max(0.05, self.time_limit_sec - 0.2))
+         elim_deadline = min(
+-            deadline - min(0.05, self.time_limit_sec * 0.15),
++            # Consolidation must leave useful time for cost refinement. Merely
++            # reserving 50 ms let the first neighborhood exhaust short runs.
++            deadline - min(0.75, self.time_limit_sec * 0.30),
+             started_at + max(self.time_limit_sec * 0.45, self.time_limit_sec - 0.1),
+         )
+         current_routes = self._polish_seed(
+@@ -2710,6 +2757,16 @@
+             improved_in_round = False
+             active_vehicles_now = [idx for idx, r in enumerate(best_routes) if r]
+ 
++            # Give cheap stop moves a bounded share before pair reinsertion.
++            stop_deadline = min(refine_deadline, time.perf_counter() + max(0.01, (refine_deadline - time.perf_counter()) * 0.5))
++            while time.perf_counter() < stop_deadline:
++                moved = self._first_improving_stop_relocation(best_routes, best_unassigned, stop_deadline)
++                if moved is None:
++                    break
++                best_cost, best_routes, best_unassigned = moved
++                elite_candidates.append((best_cost, copy.deepcopy(best_routes), list(best_unassigned)))
++                improved_in_round = True
++
+             # 2.1 Intra-route relocation for active routes (includes Adjacent Stop Swap & Pair Reinsertion)
+             if active_vehicles_now and time.perf_counter() < refine_deadline:
+                 refined_intra = self._best_intra_route_relocation(
+--- baseline/app\hybrid_alns_engine.py
++++ current/app\hybrid_alns_engine.py
+@@ -15,6 +15,7 @@
+ from typing import Dict, List, Optional, Sequence, Set, Tuple
+ 
+ from .alns_engine import ALNSFleetOptimizer
++from .driver_matcher import DriverMatcher
+ from .ils_engine import PackingAwareILSOptimizer
+ from .hybrid_alns.models import (
+     CargoItem as HybridCargoItem,
+@@ -29,16 +30,20 @@
+     ScheduledStop as HybridScheduledStop,
+ )
+ from .hybrid_alns.solver import solve_hybrid_alns
++from .hybrid_alns.stop_moves import ranked_stop_moves
+ from .models import (
+     FleetOptimizationRequest,
+     FleetOptimizationResponse,
+     OrderPair,
++    OptimizedRoute,
++    RouteCostBreakdown,
+     ScheduledStop,
+     SpatialValidationResult,
+     StopAction,
+     can_driver_drive_vehicle,
+ )
+ from .planning_objective import apply_planning_objective, plan_lexicographic_key
++from .route_costing import calculate_late_delivery_penalty, calculate_route_economic_metrics
+ Insertion = Tuple[float, int, List[ScheduledStop]]
+ SearchState = Tuple[int, List[List[ScheduledStop]], List[str]]
+ 
+@@ -53,14 +58,18 @@
+         time_budget_seconds: Optional[float] = None,
+         random_seed: int = 0,
+         initial_plan: Optional[FleetOptimizationResponse] = None,
++        include_benchmarks: bool = True,
+     ) -> None:
+         super().__init__(
+             request,
+             max_iterations=max_iterations,
+             time_budget_seconds=time_budget_seconds,
+             random_seed=random_seed,
++            include_benchmarks=include_benchmarks,
+         )
+         self.initial_plan = initial_plan
++        self._post_audit_budget_sec = min(0.2, self.time_limit_sec * 0.1)
++        self._has_warm_seed = False
+         self.destroy_weights: Dict[str, float] = {
+             "route": 2.0,
+             "small": 2.0,
+@@ -879,7 +888,8 @@
+     def _state_signature(routes: Sequence[Sequence[ScheduledStop]]) -> Tuple:
+         return tuple(
+             tuple(
+-                (stop.stop_type, stop.allocation_id or stop.order_id)
++                (stop.stop_type, stop.allocation_id or stop.order_id,
++                    tuple(stop.items_loaded), tuple(stop.items_unloaded))
+                 for stop in route
+             )
+             for route in routes
+@@ -1052,11 +1062,21 @@
+         candidates: Sequence[SearchState],
+         limit: int = 6,
+         max_per_route_count: int = 4,
++        fallback: Optional[SearchState] = None,
+     ) -> List[SearchState]:
++        if limit <= 0:
++            return []
+         selected: List[SearchState] = []
+         overflow: List[SearchState] = []
+         route_count_frequency: Dict[int, int] = {}
++        if fallback is not None:
++            selected.append(fallback)
++            route_count_frequency[sum(bool(route) for route in fallback[1])] = 1
++            if len(selected) >= limit:
++                return selected
+         for candidate in candidates:
++            if candidate is fallback:
++                continue
+             route_count = sum(bool(route) for route in candidate[1])
+             if route_count not in route_count_frequency:
+                 selected.append(candidate)
+@@ -1076,6 +1096,150 @@
+             if len(selected) >= limit:
+                 break
+         return selected
++
++    def _rank_candidate_for_audit(
++        self, routes: List[List[ScheduledStop]], unassigned: List[str],
++    ) -> Tuple[int, int, int, int, int, int]:
++        """Price tentative plans consistently before spending the audit budget.
++
++        The fast search surrogate assumes generic driver pay and holding time.
++        It must not evict a better real-cost candidate from the bounded audit.
++        These ranking-only routes explicitly remain spatially unverified.
++        """
++        nodes = [{"id": vehicle.depot.id} for vehicle in self.vehicles]
++        for order in self.orders:
++            nodes.extend([{"id": order.pickup_location.id}, {"id": order.delivery_location.id}])
++        costed_routes: List[OptimizedRoute] = []
++        invalid_key = (len(self.orders) + 1, 0, 0, 0, 0, 0)
++        for index, stops in enumerate(routes):
++            if not stops:
++                continue
++            scheduled = self._schedule_stops(index, stops)
++            if scheduled is None:
++                return invalid_key
++            scheduled_stops, route_end, return_travel = scheduled
++            weight = 0.0
++            for stop in scheduled_stops:
++                order = self.order_by_id[stop.allocation_id or stop.order_id]
++                weight += order.total_weight_kg * (1 if stop.stop_type == "PICKUP" else -1)
++                stop.current_weight_kg = max(0.0, weight)
++            vehicle = self.vehicles[index]
++            base, surcharge, holding, ton_km, ton_hours = calculate_route_economic_metrics(
++                self.request, nodes, self.order_by_id, vehicle, scheduled_stops,
++            )
++            late = sum(calculate_late_delivery_penalty(
++                self.order_by_id[stop.allocation_id or stop.order_id], stop.arrival_time_sec, self.policy,
++            ) for stop in scheduled_stops if stop.stop_type == "DELIVERY")
++            start = max(vehicle.available_start_sec,
++                scheduled_stops[0].arrival_time_sec - scheduled_stops[0].travel_time_sec)
++            costed_routes.append(OptimizedRoute(
++                route_id=vehicle.id, vehicle_id=vehicle.source_vehicle_id or vehicle.id,
++                service_day_index=vehicle.service_day_index, plate_number=vehicle.plate_number,
++                vehicle_length_cm=vehicle.length_cm, vehicle_width_cm=vehicle.width_cm,
++                start_time_sec=start, end_time_sec=route_end, return_travel_time_sec=return_travel,
++                total_distance_km=round(self._calc_route_distance_km(index, scheduled_stops), 2),
++                total_duration_minutes=round((route_end-start)/60.0, 1), stops=scheduled_stops,
++                spatial_validation=SpatialValidationResult(is_valid=False),
++                cost=RouteCostBreakdown(
++                    base_fuel_cost_vnd=base, load_fuel_surcharge_vnd=surcharge,
++                    fuel_cost_vnd=base+surcharge, cargo_holding_cost_vnd=holding,
++                    late_delivery_penalty_vnd=late, cargo_distance_ton_km=ton_km,
++                    cargo_time_ton_hours=ton_hours, vehicle_fixed_cost_vnd=vehicle.fixed_operating_cost_vnd,
++                    driver_fixed_salary_allocation_vnd=0, driver_trip_pay_vnd=0,
++                    total_cost_vnd=base+surcharge+holding+late+vehicle.fixed_operating_cost_vnd,
++                ),
++            ))
++        try:
++            DriverMatcher(self.request).assign_drivers_to_routes(costed_routes)
++        except ValueError:
++            # An impossible driver matching is a normal infeasible candidate.
++            return invalid_key
++        tentative = FleetOptimizationResponse(
++            job_id=self.request.job_id, status="PARTIAL", routes=costed_routes,
++            total_cost_vnd=sum(route.cost.total_cost_vnd for route in costed_routes if route.cost),
++        )
++        apply_planning_objective(self.objective_request, tentative)
++        return (len(set(unassigned)), *plan_lexicographic_key(tentative))
++
++    def _best_audited_response(
++        self, responses: Sequence[FleetOptimizationResponse],
++    ) -> FleetOptimizationResponse:
++        # Final builders return costed routes without a planning objective.
++        # Compute it for every repaired plan before selecting the winner.
++        for response in responses:
++            apply_planning_objective(self.objective_request, response)
++        return min(responses, key=lambda response: (
++            len({order.order_id for order in response.unassigned_orders}),
++            *plan_lexicographic_key(response),
++        ))
++
++    def _polish_audited_response(
++        self, response: FleetOptimizationResponse, deadline: float,
++    ) -> FleetOptimizationResponse:
++        """Improve the plan produced by repair, keeping its audited fallback.
++
++        Pre-audit local search cannot improve a stop order that repair has not
++        created yet. Re-price these moves with the production objective, and
++        audit again before accepting any of them.
++        """
++        if response.unassigned_orders or not response.routes:
++            return response
++        best = response
++        vehicle_indices = {vehicle.id: index for index, vehicle in enumerate(self.vehicles)}
++        while time.perf_counter() < deadline:
++            routes: List[List[ScheduledStop]] = [[] for _ in self.vehicles]
++            for route in best.routes:
++                index = vehicle_indices.get(route.route_id or route.vehicle_id)
++                if index is None:
++                    return best
++                routes[index] = [stop.model_copy(update={
++                    "order_id": stop.allocation_id or stop.order_id,
++                }) for stop in route.stops]
++            node_routes: List[List[int]] = []
++            for route in routes:
++                nodes = []
++                for stop in route:
++                    node = self._stop_node_index(stop)
++                    if node is None:
++                        return best
++                    nodes.append(node)
++                node_routes.append(nodes)
++            moves = ranked_stop_moves(
++                node_routes,
++                [[(stop.allocation_id or stop.order_id or "", stop.stop_type) for stop in route] for route in routes],
++                list(range(len(routes))), list(range(len(routes))),
++                self.request.distance_matrix_meters, deadline,
++            )
++            incumbent_key = (0, *plan_lexicographic_key(best))
++            improved = False
++            for _, vehicle_index, source, target in moves:
++                if time.perf_counter() >= deadline:
++                    return best
++                route = routes[vehicle_index]
++                reduced = route[:source] + route[source+1:]
++                changed = reduced[:target] + [route[source]] + reduced[target:]
++                # A cheap conservative check avoids spending the audit budget
++                # on price-only moves that cannot load/unload their cargo.
++                if not self.checkers[vehicle_index].validate_route_stops(changed, self.cargo_by_id)[0]:
++                    continue
++                candidate = list(routes)
++                candidate[vehicle_index] = changed
++                if self._rank_candidate_for_audit(candidate, []) >= incumbent_key:
++                    continue
++                remaining = deadline - time.perf_counter()
++                if remaining <= 0:
++                    return best
++                audited = self._build_final_response(
++                    candidate, [], include_benchmarks=False,
++                    spatial_time_budget_seconds=remaining,
++                )
++                if self._best_audited_response([best, audited]) is audited:
++                    best = audited
++                    improved = True
++                    break
++            if not improved:
++                break
++        return best
+ 
+     def _validate_exact_route(
+         self,
+@@ -1333,12 +1497,14 @@
+         delivery_key_by_order: Dict[str, str],
+     ) -> Optional[HybridOptimizationSolution]:
+         warm_state = self._warm_start_state()
++        self._has_warm_seed = warm_state is not None
+         solver_name = "OR-Tools production warm start"
+         self._ils_elite_routes_pool = []
+         if warm_state is not None:
+-            _, production_routes, _ = warm_state
++            _, production_routes, warm_unassigned = warm_state
+             self._ils_elite_routes_pool.append(
+-                (self._candidate_key(production_routes, []), copy.deepcopy(production_routes), [])
++                (self._candidate_key(production_routes, warm_unassigned),
++                    copy.deepcopy(production_routes), list(warm_unassigned))
+             )
+         else:
+             solver_name = "Fleet ALNS initial solution"
+@@ -1366,15 +1532,33 @@
+             self._ils_elite_routes_pool.append((best_key, copy.deepcopy(best_routes), list(best_unassigned)))
+ 
+             # Phân bổ ngân sách tìm kiếm thực sự sau khi greedy hoàn thành
+-            budget_p1 = max(1.5, (self.time_limit_sec or 2.0) * 0.65)
+-            deadline_p1 = time.perf_counter() + budget_p1
++            budget_p1 = max(1.5, (self.time_limit_sec or 2.0) * 0.65) - self._post_audit_budget_sec
++            search_started_at = time.perf_counter()
++            deadline_p1 = search_started_at + budget_p1
++
++            # Construction may stop with missing orders. Spend the fresh phase
++            # budget on coverage before moving already served orders for cost.
++            if cur_unassigned:
++                cur_routes, cur_unassigned = self._repair_greedy_insert(
++                    copy.deepcopy(cur_routes), list(cur_unassigned),
++                    start_time=search_started_at, deadline=deadline_p1, randomize=False,
++                )
++                cur_cost, _, _ = self._evaluate_plan_cost(cur_routes, cur_unassigned)
++                cur_key = self._candidate_key(cur_routes, cur_unassigned)
++                if cur_key < best_key:
++                    best_key, best_cost = cur_key, cur_cost
++                    best_routes = copy.deepcopy(cur_routes)
++                    best_unassigned = list(cur_unassigned)
++                    self._ils_elite_routes_pool.append(
++                        (best_key, copy.deepcopy(best_routes), list(best_unassigned))
++                    )
+ 
+             # Chạy chu trình tìm kiếm ILS/ALNS khám phá & gom xe
+             perturbation = 0
+             iteration = 0
+             while iteration < 200 and time.perf_counter() < deadline_p1:
+                 iteration += 1
+-                reloc = super()._best_relocation(cur_routes, cur_unassigned, t_start, deadline_p1)
++                reloc = super()._best_relocation(cur_routes, cur_unassigned, search_started_at, deadline_p1)
+                 if reloc is not None:
+                     cur_cost, cur_routes, cur_unassigned = reloc
+                     cur_key = self._candidate_key(cur_routes, cur_unassigned)
+@@ -1386,7 +1570,7 @@
+                         perturbation = 0
+                     continue
+ 
+-                elim = self._try_route_elimination(cur_routes, cur_unassigned, t_start, deadline_p1)
++                elim = self._try_route_elimination(cur_routes, cur_unassigned, search_started_at, deadline_p1)
+                 if elim is not None:
+                     cur_cost, cur_routes, cur_unassigned = elim
+                     cur_key = self._candidate_key(cur_routes, cur_unassigned)
+@@ -1398,7 +1582,7 @@
+                         perturbation = 0
+                     continue
+ 
+-                swapped = self._try_order_swap_1_1(cur_routes, cur_unassigned, t_start, deadline_p1)
++                swapped = self._try_order_swap_1_1(cur_routes, cur_unassigned, search_started_at, deadline_p1)
+                 if swapped is not None:
+                     cur_cost, cur_routes, cur_unassigned = swapped
+                     cur_key = self._candidate_key(cur_routes, cur_unassigned)
+@@ -1428,15 +1612,14 @@
+                 perturbation += 1
+                 removal_ratio = min(0.35, 0.15 + 0.05 * perturbation)
+                 remove_count = min(assigned_count, max(2, round(assigned_count * removal_ratio)))
+-                if perturbation % 3 == 0:
+-                    perturbed, removed = self._destroy_small_routes(copy.deepcopy(best_routes), remove_count)
+-                elif perturbation % 3 == 1:
+-                    perturbed, removed = self._destroy_route(copy.deepcopy(best_routes), remove_count)
+-                else:
+-                    perturbed, removed = self._destroy_random(copy.deepcopy(best_routes), remove_count)
++                # This seed stream complements ALNS's route/cluster removal.
++                # Scattered removals explore cross-route exchanges that whole
++                # route destruction can repeatedly reconstruct identically.
++                perturbed, removed = self._destroy_random(copy.deepcopy(best_routes), remove_count)
+ 
+                 cur_routes, failed = self._repair_greedy_insert(
+-                    perturbed, list(dict.fromkeys(best_unassigned + removed)), start_time=t_start
++                    perturbed, list(dict.fromkeys(best_unassigned + removed)),
++                    start_time=search_started_at, deadline=deadline_p1,
+                 )
+                 cur_unassigned = failed
+                 cur_cost, _, _ = self._evaluate_plan_cost(cur_routes, cur_unassigned)
+@@ -1528,7 +1711,7 @@
+             is_spatial_valid=True,
+             is_temporally_valid=True,
+             is_contract_valid=True,
+-            solution_audited=True,
++            solution_audited=False,
+             random_seed=self.random_seed,
+         )
+ 
+@@ -1538,6 +1721,7 @@
+             result = self._build_final_response(
+                 [[] for _ in self.vehicles],
+                 [order.id for order in self.orders],
++                include_benchmarks=self.include_benchmarks,
+             )
+             result.diagnostics.append(
+                 "Hybrid ALNS không có cặp xe–tài xế hợp lệ theo ngày và hạng bằng."
+@@ -1706,7 +1890,10 @@
+             self.request.distance_matrix_meters,
+             self.request.duration_matrix_seconds,
+             node_id_to_index,
+-            time_limit_sec=self.time_limit_sec,
++            time_limit_sec=(
++                self.time_limit_sec - self._post_audit_budget_sec
++                if self._has_warm_seed else self.time_limit_sec
++            ),
+             max_iterations=self.max_iterations,
+             random_seed=self.random_seed,
+             initial_solution=initial_solution,
+@@ -1785,18 +1972,26 @@
+ 
+         unique_plans = []
+         seen_signatures = set()
++        pool = getattr(self, "_ils_elite_routes_pool", [])
++        construction_signature = None
++        if pool:
++            _, seed_routes, seed_missing = pool[0]
++            if not seed_missing and set(self._assigned_order_ids(seed_routes)) == set(self.order_by_id):
++                construction_signature = self._state_signature(seed_routes)
++        construction_fallback = None
+         for c_routes, c_unassigned in all_candidate_plans:
+-            sig = tuple(
+-                tuple(getattr(st, "allocation_id", None) or getattr(st, "order_id", None) or str(st) for st in r)
+-                for r in c_routes
+-            )
++            route_signature = self._state_signature(c_routes)
++            sig = (route_signature, tuple(sorted(c_unassigned)))
+             if sig not in seen_signatures:
+                 seen_signatures.add(sig)
+-                unique_plans.append((self._candidate_key(c_routes, c_unassigned), c_routes, c_unassigned))
++                candidate = (self._rank_candidate_for_audit(c_routes, c_unassigned), c_routes, c_unassigned)
++                unique_plans.append(candidate)
++                if route_signature == construction_signature and not c_unassigned:
++                    construction_fallback = candidate
+ 
+         unique_plans.sort(key=lambda x: x[0])
+ 
+-        audit_candidates = self._select_audit_candidates(unique_plans, limit=6)
++        audit_candidates = self._select_audit_candidates(unique_plans, limit=6, fallback=construction_fallback)
+         valid_responses: List[FleetOptimizationResponse] = []
+         for _, c_routes_stops, unassigned_ids in audit_candidates:
+             reassigned = self._try_vehicle_reassignment(c_routes_stops, unassigned_ids)
+@@ -1815,15 +2010,12 @@
+             elif not valid_responses:
+                 valid_responses.append(cand_resp)
+ 
+-        result = min(
+-            valid_responses,
+-            key=lambda r: (
+-                len({getattr(o, "order_id", str(o)) for o in getattr(r, "unassigned_orders", [])}),
+-                *plan_lexicographic_key(r),
+-            ),
+-        )
+-
+-        if getattr(result, "benchmarks", None) is None:
++        result = self._best_audited_response(valid_responses)
++        result = self._polish_audited_response(
++            result, time.perf_counter() + self._post_audit_budget_sec,
++        )
++
++        if self.include_benchmarks and getattr(result, "benchmarks", None) is None:
+             try:
+                 from .baseline_calculator import BaselineCostCalculator
+                 nodes = []
+--- baseline/app\ils_engine.py
++++ current/app\ils_engine.py
+@@ -25,6 +25,7 @@
+         max_iterations: int = 150,
+         time_budget_seconds: Optional[float] = None,
+         random_seed: int = 0,
++        include_benchmarks: bool = True,
+     ) -> None:
+         super().__init__(
+             request,
+@@ -32,6 +33,7 @@
+             time_budget_seconds=time_budget_seconds,
+             random_seed=random_seed,
+         )
++        self.include_benchmarks = include_benchmarks
+ 
+     @staticmethod
+     def _assigned_order_ids(routes: List[List[ScheduledStop]]) -> List[str]:
+@@ -372,7 +374,7 @@
+                 return self._build_final_response(
+                     c_routes,
+                     c_unassigned,
+-                    include_benchmarks=include_benchmarks,
++                    include_benchmarks=include_benchmarks and getattr(self, "include_benchmarks", True),
+                     spatial_time_budget_seconds=spatial_budget,
+                 )
+             except TypeError:
+@@ -403,7 +405,7 @@
+                 ),
+             )
+ 
+-        if getattr(response, "benchmarks", None) is None and hasattr(self, "request") and getattr(self.request, "vehicles", None):
++        if getattr(self, "include_benchmarks", True) and getattr(response, "benchmarks", None) is None and hasattr(self, "request") and getattr(self.request, "vehicles", None):
+             try:
+                 nodes = []
+                 for v in getattr(self, "vehicles", []):
+--- baseline/benchmarks\algorithm_comparison\run_daytime_benchmark.py
++++ current/benchmarks\algorithm_comparison\run_daytime_benchmark.py
+@@ -48,9 +48,11 @@
+ 
+ def _solve(request: FleetOptimizationRequest, engine: str, budget: float, seed: int):
+     if engine == "Hybrid ALNS":
+-        return PackingAwareHybridALNSOptimizer(request, time_budget_seconds=budget, random_seed=seed).solve(), False
++        return PackingAwareHybridALNSOptimizer(request, time_budget_seconds=budget, random_seed=seed,
++            include_benchmarks=False).solve(), False
+     if engine == "ILS":
+-        return PackingAwareILSOptimizer(request, time_budget_seconds=budget, random_seed=seed).solve(), False
++        return PackingAwareILSOptimizer(request, time_budget_seconds=budget, random_seed=seed,
++            include_benchmarks=False).solve(), False
+ 
+     args = convert_request_to_hybrid(request)
+     spatial_limit = min(3.0, max(2.0, budget * 0.3))
+@@ -84,7 +86,7 @@
+     plan, is_raw_hybrid = _solve(request, engine, budget, seed)
+     solve_wall = round(time.perf_counter() - started, 3)
+     audit = audit_solution(request, plan, is_raw_hybrid, shift)
+-    return {"solve_wall_seconds": solve_wall, **audit}
++    return {"solve_wall_seconds": solve_wall, "includes_dedicated_baseline": False, **audit}
+ 
+ 
+ def _select_cases(filters: Sequence[str]) -> List[str]:
+--- /dev/null
++++ current/app\hybrid_alns\stop_moves.py
+@@ -0,0 +1,50 @@
++"""Index-only stop relocation probes shared by search and post-audit polish."""
++import time
++from typing import List, Sequence, Tuple
++
++StopMove = Tuple[float, int, int, int]
++
++
++def ranked_stop_moves(
++    node_routes: Sequence[Sequence[int]],
++    actions: Sequence[Sequence[Tuple[str, str]]],
++    depots: Sequence[int],
++    ends: Sequence[int],
++    distances: Sequence[Sequence[float]],
++    deadline: float,
++) -> List[StopMove]:
++    """Rank all routes together, preserving each pair's pickup precedence.
++
++    Distance is only a probe priority. Callers must schedule, price and check
++    geometry; no move here is declared feasible or financially improving.
++    """
++    moves: List[StopMove] = []
++    for vehicle_index, nodes in enumerate(node_routes):
++        if time.perf_counter() >= deadline:
++            break
++        if len(nodes) < 3:
++            continue
++        positions = {action: index for index, action in enumerate(actions[vehicle_index])}
++        for source, (order_id, kind) in enumerate(actions[vehicle_index]):
++            if time.perf_counter() >= deadline:
++                return sorted(moves)
++            counterpart = positions.get((order_id, "DELIVERY" if kind == "PICKUP" else "PICKUP"))
++            if counterpart is None:
++                continue
++            counterpart -= int(counterpart > source)
++            reduced = list(nodes[:source]) + list(nodes[source+1:])
++            previous = nodes[source-1] if source else depots[vehicle_index]
++            following = nodes[source+1] if source+1 < len(nodes) else ends[vehicle_index]
++            removed = (distances[previous][following] - distances[previous][nodes[source]]
++                - distances[nodes[source]][following])
++            for target in range(len(nodes)):
++                if source == target or (kind == "PICKUP" and target > counterpart) or (
++                    kind == "DELIVERY" and target <= counterpart
++                ):
++                    continue
++                previous = reduced[target-1] if target else depots[vehicle_index]
++                following = reduced[target] if target < len(reduced) else ends[vehicle_index]
++                delta = (removed + distances[previous][nodes[source]]
++                    + distances[nodes[source]][following] - distances[previous][following])
++                moves.append((delta, vehicle_index, source, target))
++    return sorted(moves)

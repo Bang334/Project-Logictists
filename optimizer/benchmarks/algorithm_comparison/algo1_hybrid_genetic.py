@@ -32,29 +32,153 @@ class _HGSEngine(PackingAwareMemeticSolver):
         started_at = time.perf_counter()
         deadline = started_at + self.time_limit_sec
         fallback_routes, fallback_unassigned = self._initial_state()
+        current_cost = self._plan_cost(fallback_routes, fallback_unassigned)
         fallback: PlanCandidate = (
-            self._plan_cost(fallback_routes, fallback_unassigned),
+            current_cost,
             copy.deepcopy(fallback_routes),
             list(fallback_unassigned),
         )
+        elite_candidates: List[PlanCandidate] = [fallback]
+        routes = copy.deepcopy(fallback_routes)
+        unassigned = list(fallback_unassigned)
+
+        depot_profiles = {
+            (
+                round(v.depot.latitude, 6),
+                round(v.depot.longitude, 6),
+                round((v.end_depot or v.depot).latitude, 6),
+                round((v.end_depot or v.depot).longitude, 6),
+            )
+            for v in self.vehicles
+        }
+        vehicle_profiles = {
+            (
+                v.length_cm,
+                v.width_cm,
+                v.height_cm,
+                v.payload_limit_kg,
+                v.fixed_operating_cost_vnd,
+            )
+            for v in self.vehicles
+        }
+
+        if (
+            not unassigned
+            and len(depot_profiles) == 1
+            and len(vehicle_profiles) == 1
+            and self.time_limit_sec >= 2.0
+        ):
+            wave_cap = 3.0 if len(self.orders) >= 15 else 1.5
+            wave_frac = 0.65 if len(self.orders) >= 15 else 0.35
+            wave_deadline = min(
+                deadline,
+                time.perf_counter() + min(wave_cap, max(0.0, deadline - time.perf_counter()) * wave_frac),
+            )
+            wave_start = self._build_time_wave_start(wave_deadline)
+            if wave_start is not None:
+                w_cost, w_routes, w_unassigned = wave_start
+                elite_candidates.append((w_cost, copy.deepcopy(w_routes), list(w_unassigned)))
+                if w_cost < current_cost:
+                    current_cost = w_cost
+                    routes = copy.deepcopy(w_routes)
+                    unassigned = list(w_unassigned)
+
+        if (
+            not unassigned
+            and len(depot_profiles) == 1
+            and len(vehicle_profiles) > 1
+            and self.time_limit_sec >= 2.0
+        ):
+            warm_deadline = min(
+                deadline,
+                time.perf_counter() + min(1.5, max(0.0, deadline - time.perf_counter()) * 0.35),
+            )
+            warm_routes, warm_unassigned = self._sequential_construction(
+                [order.id for order in self.orders],
+                warm_deadline,
+            )
+            if not warm_unassigned:
+                warm_cost = self._plan_cost(warm_routes, warm_unassigned)
+                elite_candidates.append((warm_cost, copy.deepcopy(warm_routes), []))
+                if warm_cost < current_cost:
+                    current_cost = warm_cost
+                    routes = copy.deepcopy(warm_routes)
+                    unassigned = []
+
+        if (
+            not unassigned
+            and len(depot_profiles) > 1
+            and len(self.orders) >= 10
+            and self.time_limit_sec >= 2.0
+        ):
+            md_deadline = min(
+                deadline,
+                time.perf_counter() + min(1.5, max(0.0, deadline - time.perf_counter()) * 0.35),
+            )
+            md_start = self._build_multi_depot_start(md_deadline)
+            if md_start is not None:
+                m_cost, m_routes, m_unassigned = md_start
+                elite_candidates.append((m_cost, copy.deepcopy(m_routes), list(m_unassigned)))
+                if m_cost < current_cost:
+                    current_cost = m_cost
+                    routes = copy.deepcopy(m_routes)
+                    unassigned = list(m_unassigned)
+
+        if (
+            not unassigned
+            and len(depot_profiles) == 1
+            and len(self.orders) >= 10
+            and self.time_limit_sec >= 2.0
+        ):
+            div_deadline = min(
+                deadline,
+                time.perf_counter() + min(1.8, max(0.0, deadline - time.perf_counter()) * 0.35),
+            )
+            div_start = self._build_diversified_start(div_deadline)
+            if div_start is not None:
+                d_cost, d_routes, d_unassigned = div_start
+                elite_candidates.append((d_cost, copy.deepcopy(d_routes), list(d_unassigned)))
+                if d_cost < current_cost:
+                    current_cost = d_cost
+                    routes = copy.deepcopy(d_routes)
+                    unassigned = list(d_unassigned)
+
+        if not unassigned and sum(bool(r) for r in routes) >= 2:
+            elim_deadline = min(
+                deadline,
+                time.perf_counter() + min(3.0, max(0.0, deadline - time.perf_counter()) * 0.65),
+            )
+            elim_routes = self._eliminate_routes(routes, elim_deadline)
+            for path_routes in self._last_elimination_path[1:]:
+                p_cost = self._plan_cost(path_routes, unassigned)
+                elite_candidates.append((p_cost, copy.deepcopy(path_routes), list(unassigned)))
+            elim_cost = self._plan_cost(elim_routes, unassigned)
+            if elim_cost < current_cost:
+                current_cost = elim_cost
+                routes = copy.deepcopy(elim_routes)
+                elite_candidates.append((current_cost, copy.deepcopy(routes), list(unassigned)))
+
         order_ids = [order.id for order in self.orders]
         population: List[List[str]] = [list(order_ids)]
+        consolidated_seq = self._assigned_order_ids(routes)
+        if len(consolidated_seq) == len(order_ids) and consolidated_seq not in population:
+            population.append(list(consolidated_seq))
         by_deadline = sorted(
             order_ids,
             key=lambda order_id: self.order_by_id[order_id].delivery_window_end_sec,
         )
-        population.append(by_deadline)
+        if by_deadline not in population:
+            population.append(by_deadline)
         while len(population) < self.population_size:
             chromosome = list(order_ids)
             self.rng.shuffle(chromosome)
             population.append(chromosome)
 
-        elite_candidates: List[PlanCandidate] = [fallback]
         wave_seq = self._time_wave_order_sequence()
         if wave_seq and time.perf_counter() < deadline:
             wave_routes, wave_unassigned = self._sequential_construction(
                 wave_seq,
-                min(deadline, started_at + min(1.5, self.time_limit_sec * 0.35)),
+                min(deadline, time.perf_counter() + min(1.5, max(0.0, deadline - time.perf_counter()) * 0.35)),
             )
             if not wave_unassigned:
                 wave_cost = self._plan_cost(wave_routes, wave_unassigned)
@@ -62,14 +186,15 @@ class _HGSEngine(PackingAwareMemeticSolver):
                     (wave_cost, copy.deepcopy(wave_routes), list(wave_unassigned))
                 )
 
+        search_deadline = deadline - min(0.6, self.time_limit_sec * 0.20)
         generation = 0
-        while generation < self.max_iterations and time.perf_counter() < deadline:
+        while generation < self.max_iterations and time.perf_counter() < search_deadline:
             generation += 1
             scored = []
             for chromosome in population:
-                if time.perf_counter() >= deadline:
+                if time.perf_counter() >= search_deadline:
                     break
-                candidate = self._evaluate_chromosome(chromosome, deadline)
+                candidate = self._evaluate_chromosome(chromosome, search_deadline)
                 scored.append((candidate[0], chromosome, candidate))
                 elite_candidates.append(
                     (
@@ -95,6 +220,30 @@ class _HGSEngine(PackingAwareMemeticSolver):
                     child = self._mutate(child)
                 next_population.append(child)
             population = next_population
+
+        if len(elite_candidates) >= 2:
+            sp_time = min(0.3, max(0.1, self.time_limit_sec * 0.1))
+            sp_res = self._solve_set_partitioning(elite_candidates, time_limit_sec=sp_time)
+            if sp_res is not None:
+                sp_cost, sp_routes, sp_unassigned = sp_res
+                if not sp_unassigned:
+                    elite_candidates.insert(0, (sp_cost, sp_routes, sp_unassigned))
+
+        refine_deadline = max(deadline, time.perf_counter() + 0.15)
+        if elite_candidates:
+            leading = min(elite_candidates, key=lambda c: self._candidate_key(c[1], c[2]))
+            l_cost, l_routes, l_unassigned = leading
+            reassigned = self._best_vehicle_reassignment(l_routes, l_unassigned, refine_deadline)
+            if reassigned is not None and self._candidate_key(reassigned[1], reassigned[2]) < self._candidate_key(l_routes, l_unassigned):
+                l_cost, l_routes, l_unassigned = reassigned
+                elite_candidates.insert(0, (l_cost, copy.deepcopy(l_routes), list(l_unassigned)))
+            ex = self._best_order_exchange(l_routes, l_unassigned, refine_deadline)
+            if ex is not None and ex[0] < l_cost:
+                l_cost, l_routes, l_unassigned, aff = ex
+                ref = self._best_intra_route_relocation(l_routes, l_unassigned, aff, refine_deadline)
+                if ref is not None and ref[0] < l_cost:
+                    l_cost, l_routes, l_unassigned = ref
+                elite_candidates.insert(0, (l_cost, copy.deepcopy(l_routes), list(l_unassigned)))
 
         return self._finalize_best_valid(
             elite_candidates,

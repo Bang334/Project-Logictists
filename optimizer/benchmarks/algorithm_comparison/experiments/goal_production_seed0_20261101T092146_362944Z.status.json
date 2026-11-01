@@ -1,0 +1,41 @@
+{
+  "status": "intentionally_stopped",
+  "reason": "verified_route_count_regression",
+  "saved_trials": 28,
+  "expected_trials": 85,
+  "complete_cases": 5,
+  "losses": [
+    {
+      "case": "day_db_danang_30_orders.json",
+      "seed": 0,
+      "outcome": "LOSS",
+      "hybrid_key": [
+        0,
+        0,
+        0,
+        15,
+        250113154,
+        31181956,
+        3
+      ],
+      "best_challenger": "ILS",
+      "challenger_key": [
+        0,
+        0,
+        0,
+        14,
+        253369258,
+        29796671,
+        3
+      ],
+      "cost_gap_vnd": 1385285,
+      "objective_profile": "production_v1",
+      "operating_outcome": "LOSS",
+      "best_operating_challenger": "ILS",
+      "operating_cost_gap_vnd": 1385285
+    }
+  ],
+  "source_changes_after_run": [
+    "tests\\test_hybrid_seed_deadline.py"
+  ]
+}

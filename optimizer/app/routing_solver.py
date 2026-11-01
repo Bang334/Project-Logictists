@@ -34,6 +34,7 @@ from .planning_objective import (
     apply_planning_objective,
     operational_late_daily_weight_vnd,
 )
+from .request_preprocessor import split_infeasible_orders_across_fleet
 from .route_draft import RouteDraft
 from .search_policy import SearchProgressTracker
 from .search_strategies import DEFAULT_SEARCH_STRATEGY, SearchStrategy
@@ -73,6 +74,8 @@ class FleetRoutingSolver:
         consolidation_budget_share: float = CONSOLIDATION_BUDGET_SHARE,
         enable_hybrid_fallback: bool = True,
     ):
+        self.objective_request = request
+        request, _ = split_infeasible_orders_across_fleet(request)
         self.request = request
         self.search_strategy = search_strategy
         self.uses_adaptive_total_budget = time_budget_seconds is not None
@@ -136,6 +139,22 @@ class FleetRoutingSolver:
     @staticmethod
     def _stop_allocation_id(stop: ScheduledStop) -> Optional[str]:
         return stop.allocation_id or stop.order_id
+
+    def _extra_order_trips_for_routes(self, routes: List[OptimizedRoute]) -> int:
+        trips_by_source: Dict[str, Set[str]] = {}
+        for idx, route in enumerate(routes):
+            r_key = route.route_id or f"{route.vehicle_id}::{idx}"
+            for stop in route.stops:
+                alloc_id = self._stop_allocation_id(stop)
+                order = self.order_by_id.get(alloc_id or "")
+                source_id = (
+                    self._source_order_id(order)
+                    if order is not None
+                    else (stop.order_id or "")
+                )
+                if source_id:
+                    trips_by_source.setdefault(source_id, set()).add(r_key)
+        return sum(max(0, len(r_set) - 1) for r_set in trips_by_source.values())
 
     @staticmethod
     def _order_allows_vehicle(order: OrderPair, vehicle: FleetVehicle) -> bool:
@@ -234,6 +253,13 @@ class FleetRoutingSolver:
         # early as possible even if the shared budget expires later.
         for subset_size in range(len(self.request.orders), 0, -1):
             for order_subset in itertools.combinations(self.request.orders, subset_size):
+                split_group_ids = [
+                    order.split_group_id
+                    for order in order_subset
+                    if order.split_group_id
+                ]
+                if len(split_group_ids) != len(set(split_group_ids)):
+                    continue
                 for vehicle_index, vehicle in enumerate(self.request.vehicles):
                     if time.monotonic() >= deadline:
                         routing_enumeration_completed = False
@@ -349,7 +375,11 @@ class FleetRoutingSolver:
                         (
                             route.route_id or route.vehicle_id,
                             tuple(
-                                (stop.stop_type, stop.order_id)
+                                (
+                                    stop.stop_type,
+                                    stop.allocation_id or stop.order_id,
+                                    tuple(sorted(stop.items_loaded or stop.items_unloaded)),
+                                )
                                 for stop in route.stops
                             ),
                         )
@@ -403,6 +433,8 @@ class FleetRoutingSolver:
         ranked_route_sets = sorted(
             distinct_assignments.values(),
             key=lambda routes: (
+                self._extra_order_trips_for_routes(routes),
+                len(routes),
                 sum(
                     route.cost.total_cost_vnd
                     for route in routes
@@ -666,7 +698,7 @@ class FleetRoutingSolver:
             except Exception as error:
                 plan.diagnostics.append(f"Packing-aware Hybrid ALNS fallback lỗi: {error}")
 
-        apply_planning_objective(self.request, plan)
+        apply_planning_objective(self.objective_request, plan)
         return plan, int(solution.ObjectiveValue())
 
     def _build_routing_model(
@@ -949,15 +981,35 @@ class FleetRoutingSolver:
                 )
 
         split_groups: Dict[str, List[int]] = {}
+        source_groups: Dict[str, List[int]] = {}
         for order_index, order in enumerate(self.request.orders):
             if order.split_group_id:
                 split_groups.setdefault(order.split_group_id, []).append(order_index)
+            elif order.source_order_id:
+                source_groups.setdefault(order.source_order_id, []).append(order_index)
         for order_indices in split_groups.values():
             first_pickup = manager.NodeToIndex(vehicle_count + 2 * order_indices[0])
             for order_index in order_indices[1:]:
                 pickup = manager.NodeToIndex(vehicle_count + 2 * order_index)
                 routing.solver().Add(
                     routing.ActiveVar(first_pickup) == routing.ActiveVar(pickup)
+                )
+            for idx_a, idx_b in itertools.combinations(order_indices, 2):
+                p_a = manager.NodeToIndex(vehicle_count + 2 * idx_a)
+                p_b = manager.NodeToIndex(vehicle_count + 2 * idx_b)
+                routing.solver().Add(
+                    (routing.VehicleVar(p_a) != routing.VehicleVar(p_b))
+                    + (routing.ActiveVar(p_a) == 0)
+                    >= 1
+                )
+        for source_indices in source_groups.values():
+            if len(source_indices) > 1:
+                pickup_indices = [
+                    manager.NodeToIndex(vehicle_count + 2 * idx)
+                    for idx in source_indices
+                ]
+                routing.AddSoftSameVehicleConstraint(
+                    pickup_indices, max(1, pair_penalty // 50)
                 )
 
         return manager, routing, time_dimension
@@ -1707,6 +1759,11 @@ class FleetRoutingSolver:
                     }.values()
                 )
                 if not combined_orders:
+                    continue
+                split_group_ids = [
+                    o.split_group_id for o in combined_orders if o.split_group_id
+                ]
+                if len(split_group_ids) != len(set(split_group_ids)):
                     continue
 
                 candidate_vehicle_ids = list(

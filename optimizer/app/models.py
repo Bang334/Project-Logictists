@@ -213,6 +213,10 @@ class OrderPair(StrictContractModel):
         duration = self.pickup_service_time_sec if stop_type == "PICKUP" else self.delivery_service_time_sec
         return self.service_time_sec if duration is None else duration
 
+    @property
+    def total_weight_kg(self) -> float:
+        return sum(it.weight_kg for it in self.items)
+
 
     @model_validator(mode="after")
     def validate_windows(self):
@@ -357,6 +361,13 @@ class PlanningObjectiveBreakdown(StrictContractModel):
     driver_idle_salary_allocation_vnd: int = Field(default=0, ge=0)
     operational_late_penalty_vnd: int = Field(default=0, ge=0)
     selection_score_vnd: int = Field(default=0, ge=0)
+    extra_order_trips: int = Field(default=0, ge=0)
+    split_order_count: int = Field(default=0, ge=0)
+    max_trips_per_order: int = Field(default=0, ge=0)
+    extra_request_trips: int = Field(default=0, ge=0)
+    active_route_count: int = Field(default=0, ge=0)
+    physical_vehicle_count: int = Field(default=0, ge=0)
+    delivery_visit_count: int = Field(default=0, ge=0)
 
 
 class FleetOptimizationResponse(StrictContractModel):

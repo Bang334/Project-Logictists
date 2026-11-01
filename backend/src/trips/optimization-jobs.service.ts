@@ -43,6 +43,13 @@ type CandidateSummary = {
   totalDurationMinutes: number;
   routeCount: number;
   unassignedOrderCount: number;
+  extraOrderTrips: number;
+  splitOrderCount: number;
+  maxTripsPerOrder: number;
+  extraRequestTrips: number;
+  activeRouteCount: number;
+  physicalVehicleCount: number;
+  deliveryVisitCount: number;
 };
 
 type ExportRoute = {
@@ -362,7 +369,7 @@ export class OptimizationJobsService {
 
     const note = comparison.addRow([]);
     note.getCell(1).value =
-      'Các phương án được trích xuất từ các lượt chạy OR-Tools độc lập song song. Hạng 1 là phương án tối ưu chi phí nhất giao đủ 100% đơn.';
+      'Các phương án được trích xuất từ các lượt chạy Hybrid ALNS độc lập song song. Hạng 1 là phương án tối ưu chi phí nhất giao đủ 100% đơn.';
     comparison.mergeCells(note.number, 1, note.number, 10);
     note.getCell(1).font = { italic: true, color: { argb: 'FF475569' } };
 
@@ -495,6 +502,17 @@ export class OptimizationJobsService {
       totalDurationMinutes: Number(objective.totalDurationMinutes ?? 0),
       routeCount: Number(objective.routeCount ?? 0),
       unassignedOrderCount: Number(objective.unassignedOrderCount ?? 0),
+      extraOrderTrips: Number(objective.extraOrderTrips ?? 0),
+      splitOrderCount: Number(objective.splitOrderCount ?? 0),
+      maxTripsPerOrder: Number(objective.maxTripsPerOrder ?? 0),
+      extraRequestTrips: Number(objective.extraRequestTrips ?? 0),
+      activeRouteCount: Number(
+        objective.activeRouteCount ?? objective.routeCount ?? 0,
+      ),
+      physicalVehicleCount: Number(
+        objective.physicalVehicleCount ?? objective.routeCount ?? 0,
+      ),
+      deliveryVisitCount: Number(objective.deliveryVisitCount ?? 0),
     };
   }
 }

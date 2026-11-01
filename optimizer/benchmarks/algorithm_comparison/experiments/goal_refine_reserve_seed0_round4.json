@@ -1,0 +1,83 @@
+[
+  {
+    "case": "day_novel_2_long_narrow_timber.json",
+    "algorithm": "Hybrid ALNS",
+    "seed": 0,
+    "budget": 2.0,
+    "service_days_available": 2,
+    "solve_wall_seconds": 5.121,
+    "served_requests": 12,
+    "total_requests": 12,
+    "delivered_packages": 24,
+    "total_packages": 24,
+    "complete_manifest": true,
+    "unique_balanced_manifest": true,
+    "spatial_valid": true,
+    "basic_schedule_valid": true,
+    "spatial_errors": [],
+    "schedule_errors": [],
+    "routes": 2,
+    "physical_vehicles": 2,
+    "service_days_used": [
+      0
+    ],
+    "extra_order_trips": 0,
+    "cost_vnd": 2105233,
+    "reported_cost_vnd": 2105233,
+    "distance_km": 201.26
+  },
+  {
+    "case": "day_novel_4_3tier_asymmetric_fleet.json",
+    "algorithm": "Hybrid ALNS",
+    "seed": 0,
+    "budget": 2.0,
+    "service_days_available": 2,
+    "solve_wall_seconds": 4.959,
+    "served_requests": 16,
+    "total_requests": 16,
+    "delivered_packages": 16,
+    "total_packages": 16,
+    "complete_manifest": true,
+    "unique_balanced_manifest": true,
+    "spatial_valid": true,
+    "basic_schedule_valid": true,
+    "spatial_errors": [],
+    "schedule_errors": [],
+    "routes": 2,
+    "physical_vehicles": 2,
+    "service_days_used": [
+      0
+    ],
+    "extra_order_trips": 0,
+    "cost_vnd": 2987424,
+    "reported_cost_vnd": 2987424,
+    "distance_km": 454.06
+  },
+  {
+    "case": "day_scenario_3_dispersed.json",
+    "algorithm": "Hybrid ALNS",
+    "seed": 0,
+    "budget": 2.0,
+    "service_days_available": 2,
+    "solve_wall_seconds": 4.635,
+    "served_requests": 14,
+    "total_requests": 14,
+    "delivered_packages": 57,
+    "total_packages": 57,
+    "complete_manifest": true,
+    "unique_balanced_manifest": true,
+    "spatial_valid": true,
+    "basic_schedule_valid": true,
+    "spatial_errors": [],
+    "schedule_errors": [],
+    "routes": 5,
+    "physical_vehicles": 5,
+    "service_days_used": [
+      0
+    ],
+    "extra_order_trips": 0,
+    "cost_vnd": 10473341,
+    "reported_cost_vnd": 10473341,
+    "distance_km": 1205.71
+  }
+]

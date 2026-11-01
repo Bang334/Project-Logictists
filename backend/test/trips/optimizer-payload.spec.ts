@@ -8,7 +8,7 @@ describe('persisted Package optimizer contract', () => {
   it('keeps database IDs and unequal weights, converting mm/g once', () => {
     const units = packagesToCargoUnits([line]);
     expect(units.map(u => u.id)).toEqual(['pkg-a', 'pkg-b']);
-    expect(units[0]).toMatchObject({ order_id: 'order-1', order_item_id: 'line-a', length_cm: 40.1, width_cm: 30.2, height_cm: 25.3, weight_kg: 10.001, can_rotate: false });
+    expect(units[0]).toMatchObject({ order_id: 'order-1', order_item_id: 'line-a', length_cm: 40.1, width_cm: 30.2, height_cm: 25.3, weight_kg: 10.001, can_rotate: true });
     expect(units.reduce((sum, u) => sum + u.weight_kg, 0)).toBeCloseTo(35.003);
     expect(units).toHaveLength(2);
   });
@@ -201,5 +201,25 @@ describe('splitOversizedOrdersAcrossFleet', () => {
     expect(result).toHaveLength(10);
     expect(result.every((part) => part.items.length === 10)).toBe(true);
     expect(result.flatMap((part) => part.items)).toHaveLength(100);
+  });
+
+  it('tách đơn khi tổng tải và diện tích đủ nhưng bố trí hình học mặt sàn 2D không vừa (GK05)', () => {
+    const squareFleet = ['truck-a', 'truck-b'].map((id) => ({
+      id,
+      length_cm: 100,
+      width_cm: 100,
+      height_cm: 120,
+      payload_limit_kg: 1000,
+    }));
+    const input = order([
+      { ...cargo('box-60-a', 100), length_cm: 60, width_cm: 60 },
+      { ...cargo('box-60-b', 100), length_cm: 60, width_cm: 60 },
+    ]);
+
+    const result = splitOversizedOrdersAcrossFleet([input], squareFleet);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].allowed_source_vehicle_ids).toEqual(['truck-a', 'truck-b']);
+    expect(result[1].allowed_source_vehicle_ids).toEqual(['truck-b', 'truck-a']);
   });
 });

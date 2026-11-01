@@ -12,6 +12,7 @@ import { AuthGuard } from '@nestjs/passport';
 import { Role } from '@prisma/client';
 import { SalesOrdersService } from './sales-orders.service';
 import { CheckoutOrderDto } from './dto/checkout-order.dto';
+import { CheckoutMultiSourceDto } from './dto/checkout-multi-source.dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { QuerySalesOrdersDto } from './dto/query-sales-orders.dto';
 import { Roles } from '../auth/roles.decorator';
@@ -23,7 +24,7 @@ import { AuthenticatedUser } from '../auth/branch-scope';
 export class SalesOrdersController {
   constructor(private readonly salesOrdersService: SalesOrdersService) {}
 
-  // ================= 1. CHECKOUT ORDER =================
+  // ================= 1. CHECKOUT ORDER (LEGACY / SINGLE-SOURCE) =================
   @Post('checkout')
   @Roles(Role.ADMIN, Role.STAFF, Role.CUSTOMER)
   checkout(
@@ -33,7 +34,17 @@ export class SalesOrdersController {
     return this.salesOrdersService.checkoutOrder(dto, req.user);
   }
 
-  // ================= 2. CANCEL ORDER =================
+  // ================= 2. CHECKOUT MULTI-SOURCE ORDER (NEW ATOMIC FLOW) =================
+  @Post('checkout-multi-source')
+  @Roles(Role.ADMIN, Role.STAFF, Role.CUSTOMER)
+  checkoutMultiSource(
+    @Body() dto: CheckoutMultiSourceDto,
+    @Req() req: { user: AuthenticatedUser },
+  ) {
+    return this.salesOrdersService.checkoutMultiSourceOrder(dto, req.user);
+  }
+
+  // ================= 3. CANCEL ORDER =================
   @Post(':id/cancel')
   @Roles(Role.ADMIN, Role.STAFF, Role.CUSTOMER)
   cancel(
@@ -44,7 +55,7 @@ export class SalesOrdersController {
     return this.salesOrdersService.cancelOrder(id, dto, req.user);
   }
 
-  // ================= 3. GET ORDER DETAILS =================
+  // ================= 4. GET ORDER DETAILS =================
   @Get(':id')
   @Roles(Role.ADMIN, Role.STAFF, Role.CUSTOMER)
   findOne(
@@ -54,7 +65,7 @@ export class SalesOrdersController {
     return this.salesOrdersService.findSalesOrderById(id, req.user);
   }
 
-  // ================= 4. QUERY ORDERS (STAFF & ADMIN) =================
+  // ================= 5. QUERY ORDERS (STAFF & ADMIN) =================
   @Get()
   @Roles(Role.ADMIN, Role.STAFF, Role.CUSTOMER)
   findAll(

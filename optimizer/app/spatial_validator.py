@@ -49,12 +49,14 @@ class _SearchContext:
     max_nodes: int
     visited_nodes: int = 0
     limit_reached: bool = False
+    branch_cap_reached: bool = False
     best_failure: Optional[_SearchFailure] = None
     max_time_seconds: float = 6.0
     start_time: float = field(default_factory=time.monotonic)
     # Packages with the same class are physically interchangeable for the rest
     # of the plan (same order, footprint, height, weight and unload step).
     item_class_by_id: Dict[str, Tuple[object, ...]] = field(default_factory=dict)
+    future_max_unload_by_stop: Tuple[Optional[int], ...] = field(default_factory=tuple)
 
     def consume_node(self) -> bool:
         if self.visited_nodes >= self.max_nodes:
@@ -472,6 +474,15 @@ class SpatialValidator:
     ) -> SpatialValidationResult:
         """Validate one continuous interval during which cargo is on board."""
         unload_step_by_item = self._build_unload_steps(stops)
+        future_max_unload: List[Optional[int]] = []
+        for idx in range(len(stops)):
+            future_steps = [
+                unload_step_by_item[it.id]
+                for s in stops[idx + 1 :]
+                for it in s.items_to_load
+                if it.id in unload_step_by_item
+            ]
+            future_max_unload.append(max(future_steps, default=None))
         context = _SearchContext(
             max_nodes=self.max_search_nodes,
             max_time_seconds=(
@@ -480,6 +491,7 @@ class SpatialValidator:
                 else max(0.0, max_time_seconds)
             ),
             item_class_by_id=self._build_item_classes(stops, unload_step_by_item),
+            future_max_unload_by_stop=tuple(future_max_unload),
         )
         failed_states: Set[Tuple[int, Tuple[Tuple[object, ...], ...]]] = set()
 
@@ -503,7 +515,7 @@ class SpatialValidator:
                 step_states=self._build_floor_states(stops, snapshots),
             )
 
-        if context.limit_reached:
+        if context.limit_reached or context.branch_cap_reached:
             failure = context.best_failure
             return SpatialValidationResult(
                 is_valid=False,
@@ -745,6 +757,8 @@ class SpatialValidator:
         )
 
         produced_layout = False
+        local_branch_capped = False
+        branch_cap_before = context.branch_cap_reached
         explored_layouts: Set[Tuple[Tuple[object, ...], ...]] = set()
         for loaded_items in self._search_load_placements(
             items=load_items,
@@ -767,9 +781,10 @@ class SpatialValidator:
                 continue
             explored_layouts.add(layout_key)
             if len(explored_layouts) > _MAX_LAYOUTS_PER_STOP:
-                # This local branch cap is a search budget just like the global
-                # node/time limits.  Exhausting it cannot prove infeasibility.
-                context.limit_reached = True
+                # This local branch cap bounds branching at the current stop
+                # without aborting backtracking at earlier stops.
+                local_branch_capped = True
+                context.branch_cap_reached = True
                 break
             current_weight = sum(item.weight_kg for item in loaded_items.values())
             occupied_area = sum(
@@ -815,7 +830,12 @@ class SpatialValidator:
                     max_weight,
                     max_area,
                 )
-        failed_states.add(state_key)
+        if (
+            not context.limit_reached
+            and not local_branch_capped
+            and context.branch_cap_reached == branch_cap_before
+        ):
+            failed_states.add(state_key)
         return None
 
     def _find_unload_sequence(
@@ -952,25 +972,28 @@ class SpatialValidator:
             return
 
         unload_step = unload_step_by_item.get(item.id)
-        max_unload_step = (
-            max(unload_step_by_item.values(), default=None)
-            if unload_step_by_item
+        max_future_unload_step = (
+            context.future_max_unload_by_stop[stop_index]
+            if stop_index < len(context.future_max_unload_by_stop)
             else None
         )
         early_items = [
-            it for it in items
-            if unload_step_by_item.get(it.id, 0) < (max_unload_step or 0)
+            it
+            for it in items
+            if max_future_unload_step is not None
+            and unload_step_by_item.get(it.id, 0) < max_future_unload_step
         ]
         early_area = sum(it.length_cm * it.width_cm for it in early_items)
         allow_door = (
-            len(early_items) <= 4
+            bool(early_items)
+            and len(early_items) <= 4
             and early_area <= self.total_floor_area * 0.35
         )
         candidates = self._candidate_placements(
             item,
             list(current_items.values()),
             unload_step=unload_step,
-            max_unload_step=max_unload_step,
+            max_unload_step=max_future_unload_step,
             allow_door_placement=allow_door,
         )
         if not candidates:
@@ -1185,7 +1208,16 @@ class SpatialValidator:
                     candidates.append((score, candidate))
 
         candidates.sort(key=lambda entry: entry[0])
-        return [candidate for _, candidate in candidates]
+        ordered = [candidate for _, candidate in candidates]
+        if ordered:
+            # Try one deep wall placement before compact/door preferences.
+            # Filling the narrow dimension first can strand a later pickup
+            # behind an early-delivery batch and exhaust the branch budget.
+            # All ingress, unload, overlap and payload checks still run below.
+            deep = min(ordered, key=lambda candidate: (candidate[0], candidate[1]))
+            ordered.remove(deep)
+            ordered.insert(0, deep)
+        return ordered
 
     def _is_placement_unload_safe(
         self,

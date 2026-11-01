@@ -24,7 +24,7 @@ export function packagesToCargoUnits(items: PhysicalPackageLine[]): OptimizerCar
       if (p.orderItemId !== item.id || seen.has(p.id)) throw new Error('ID kiện trùng hoặc sai dòng hàng');
       if (p.weightG > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Khối lượng vượt độ chính xác contract optimizer');
       seen.add(p.id);
-      return { id: p.id, order_id: item.orderId, order_item_id: item.id, description: item.description, length_cm: p.lengthMm / 10, width_cm: p.widthMm / 10, height_cm: p.heightMm / 10, weight_kg: Number(p.weightG) / 1000, can_rotate: false as const };
+      return { id: p.id, order_id: item.orderId, order_item_id: item.id, description: item.description, length_cm: p.lengthMm / 10, width_cm: p.widthMm / 10, height_cm: p.heightMm / 10, weight_kg: Number(p.weightG) / 1000, can_rotate: true as const };
     });
   });
 }
@@ -61,8 +61,6 @@ export type OptimizerOrder = {
   service_time_sec: number;
 };
 
-
-
 function cargoFitsVehicle(
   cargo: OptimizerCargoUnit,
   vehicle: OptimizerFleetVehicle,
@@ -81,7 +79,201 @@ function cargoFitsVehicle(
   );
 }
 
-function cargoSetFitsVehicle(
+const GEOMETRY_TOLERANCE_CM = 0.01;
+const MAX_FLOOR_PACK_SEARCH_NODES = 8_000;
+
+type FloorPlacedRect = {
+  x: number;
+  y: number;
+  length: number;
+  width: number;
+};
+
+function rectanglesOverlap(
+  x1: number,
+  y1: number,
+  l1: number,
+  w1: number,
+  x2: number,
+  y2: number,
+  l2: number,
+  w2: number,
+): boolean {
+  return !(
+    x1 + l1 <= x2 + GEOMETRY_TOLERANCE_CM ||
+    x2 + l2 <= x1 + GEOMETRY_TOLERANCE_CM ||
+    y1 + w1 <= y2 + GEOMETRY_TOLERANCE_CM ||
+    y2 + w2 <= y1 + GEOMETRY_TOLERANCE_CM
+  );
+}
+
+function hasStraightDoorAccess(
+  candidate: FloorPlacedRect,
+  placed: FloorPlacedRect[],
+  floorLength: number,
+): boolean {
+  const corridorLength = Math.max(0, floorLength - candidate.x);
+  for (const other of placed) {
+    if (
+      rectanglesOverlap(
+        candidate.x,
+        candidate.y,
+        corridorLength,
+        candidate.width,
+        other.x,
+        other.y,
+        other.length,
+        other.width,
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Kiểm tra tập kiện có thể đặt đồng thời trên mặt sàn 2D không chồng
+ * (cho phép xoay phẳng 90 độ khi can_rotate=true) và có lối xếp/dỡ qua cửa sau.
+ */
+export function canPackCargoOnVehicleFloor(
+  cargo: OptimizerCargoUnit[],
+  vehicle: OptimizerFleetVehicle,
+): boolean {
+  if (cargo.length === 0) return true;
+  if (cargo.length === 1) return cargoFitsVehicle(cargo[0], vehicle);
+
+  const sortedCargo = [...cargo].sort(
+    (left, right) =>
+      right.length_cm * right.width_cm - left.length_cm * left.width_cm ||
+      Math.max(right.length_cm, right.width_cm) -
+        Math.max(left.length_cm, left.width_cm) ||
+      left.id.localeCompare(right.id),
+  );
+
+  const placed: FloorPlacedRect[] = [];
+  let visitedNodes = 0;
+
+  const search = (index: number): boolean => {
+    if (index >= sortedCargo.length) return true;
+    visitedNodes += 1;
+    if (visitedNodes > MAX_FLOOR_PACK_SEARCH_NODES) return false;
+
+    const item = sortedCargo[index];
+    const orientations: Array<[number, number]> = [
+      [item.length_cm, item.width_cm],
+    ];
+    if (
+      item.can_rotate &&
+      Math.abs(item.length_cm - item.width_cm) > GEOMETRY_TOLERANCE_CM
+    ) {
+      orientations.push([item.width_cm, item.length_cm]);
+    }
+
+    let prevIdenticalRect: FloorPlacedRect | null = null;
+    if (index > 0) {
+      const prev = sortedCargo[index - 1];
+      if (
+        Math.abs(prev.length_cm - item.length_cm) <= GEOMETRY_TOLERANCE_CM &&
+        Math.abs(prev.width_cm - item.width_cm) <= GEOMETRY_TOLERANCE_CM &&
+        prev.can_rotate === item.can_rotate
+      ) {
+        prevIdenticalRect = placed[index - 1] ?? null;
+      }
+    }
+
+    const candidates: FloorPlacedRect[] = [];
+    const seen = new Set<string>();
+    for (const [length, width] of orientations) {
+      if (
+        length > vehicle.length_cm + GEOMETRY_TOLERANCE_CM ||
+        width > vehicle.width_cm + GEOMETRY_TOLERANCE_CM
+      ) {
+        continue;
+      }
+      const xCoords = new Set<number>([0]);
+      const yCoords = new Set<number>([0]);
+      for (const rect of placed) {
+        if (
+          rect.x + rect.length + length <=
+          vehicle.length_cm + GEOMETRY_TOLERANCE_CM
+        ) {
+          xCoords.add(Math.round((rect.x + rect.length) * 100) / 100);
+        }
+        if (
+          rect.y + rect.width + width <=
+          vehicle.width_cm + GEOMETRY_TOLERANCE_CM
+        ) {
+          yCoords.add(Math.round((rect.y + rect.width) * 100) / 100);
+        }
+      }
+      const sortedX = [...xCoords].sort((a, b) => a - b);
+      const sortedY = [...yCoords].sort((a, b) => a - b);
+      for (const x of sortedX) {
+        for (const y of sortedY) {
+          if (
+            x + length > vehicle.length_cm + GEOMETRY_TOLERANCE_CM ||
+            y + width > vehicle.width_cm + GEOMETRY_TOLERANCE_CM
+          ) {
+            continue;
+          }
+          const key = `${x}:${y}:${length}:${width}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          candidates.push({ x, y, length, width });
+        }
+      }
+    }
+
+    candidates.sort(
+      (a, b) =>
+        a.x - b.x ||
+        a.y - b.y ||
+        a.length - b.length ||
+        a.width - b.width,
+    );
+
+    for (const candidate of candidates) {
+      if (prevIdenticalRect) {
+        const cmp =
+          candidate.x - prevIdenticalRect.x ||
+          candidate.y - prevIdenticalRect.y ||
+          candidate.length - prevIdenticalRect.length ||
+          candidate.width - prevIdenticalRect.width;
+        if (cmp < -GEOMETRY_TOLERANCE_CM) continue;
+      }
+      if (
+        placed.some((other) =>
+          rectanglesOverlap(
+            candidate.x,
+            candidate.y,
+            candidate.length,
+            candidate.width,
+            other.x,
+            other.y,
+            other.length,
+            other.width,
+          ),
+        )
+      ) {
+        continue;
+      }
+      if (!hasStraightDoorAccess(candidate, placed, vehicle.length_cm)) {
+        continue;
+      }
+
+      placed.push(candidate);
+      if (search(index + 1)) return true;
+      placed.pop();
+    }
+
+    return false;
+  };
+
+  return search(0);
+}
+
+export function cargoSetFitsVehicle(
   cargo: OptimizerCargoUnit[],
   vehicle: OptimizerFleetVehicle,
 ): boolean {
@@ -90,7 +282,8 @@ function cargoSetFitsVehicle(
     cargo.reduce((total, item) => total + item.weight_kg, 0) <=
       vehicle.payload_limit_kg &&
     cargo.reduce((total, item) => total + item.length_cm * item.width_cm, 0) <=
-      vehicle.length_cm * vehicle.width_cm
+      vehicle.length_cm * vehicle.width_cm &&
+    canPackCargoOnVehicleFloor(cargo, vehicle)
   );
 }
 
@@ -254,6 +447,7 @@ function allocateCargoToPhysicalVehicles(
           bin.vehicle.height_cm,
           bin.vehicle.payload_limit_kg - usedWeight,
           bin.vehicle.length_cm * bin.vehicle.width_cm - usedArea,
+          ...bin.items.map((item) => `${item.length_cm}x${item.width_cm}`),
         ].join(':');
         if (triedEquivalentBins.has(signature)) continue;
         triedEquivalentBins.add(signature);
@@ -276,9 +470,8 @@ function allocateCargoToPhysicalVehicles(
 /**
  * Chia một đơn vượt sức chứa của mọi xe thành các phần theo kiện nguyên vẹn.
  *
- * Mỗi phần được gắn với một xe vật lý riêng. Đây là kiểm tra bảo thủ theo tải,
- * kích thước kiện và diện tích sàn; SpatialValidator vẫn là lớp quyết định cuối
- * cùng về bố trí và đường xếp/dỡ.
+ * Mỗi phần được kiểm tra theo tải, kích thước kiện, diện tích sàn và bố trí 2D
+ * không chồng; SpatialValidator vẫn là lớp quyết định cuối cùng về bố trí và đường xếp/dỡ.
  */
 export function splitOversizedOrdersAcrossFleet<T extends OptimizerOrder>(
   orders: T[],
@@ -329,15 +522,22 @@ export function splitOversizedOrdersAcrossFleet<T extends OptimizerOrder>(
     return usedBins.map((bin, index) => {
       const allocationId = `${order.id}::split:${index + 1}`;
       const share = bin.items.length / order.items.length;
+      const primaryVehicleId = bin.vehicle.source_vehicle_id ?? bin.vehicle.id;
+      const compatibleVehicleIds = Array.from(
+        new Set([
+          primaryVehicleId,
+          ...physicalVehicles
+            .filter((vehicle) => cargoSetFitsVehicle(bin.items, vehicle))
+            .map((vehicle) => vehicle.source_vehicle_id ?? vehicle.id),
+        ]),
+      );
       return {
         ...order,
         id: allocationId,
         source_order_id: order.source_order_id ?? order.id,
         source_order_number: order.source_order_number ?? order.order_number,
         split_group_id: order.source_order_id ?? order.id,
-        allowed_source_vehicle_ids: [
-          bin.vehicle.source_vehicle_id ?? bin.vehicle.id,
-        ],
+        allowed_source_vehicle_ids: compatibleVehicleIds,
         order_number: `${order.order_number} (${index + 1}/${usedBins.length})`,
         pickup_location: {
           ...order.pickup_location,
