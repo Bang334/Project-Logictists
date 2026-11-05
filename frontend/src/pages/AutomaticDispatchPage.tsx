@@ -5,6 +5,7 @@ import {
   Card,
   Col,
   Collapse,
+  Empty,
   Row,
   Select,
   Space,
@@ -48,6 +49,7 @@ import {
   EnvironmentOutlined,
   DeleteOutlined,
   ReloadOutlined,
+  ExperimentOutlined,
 } from '@ant-design/icons';
 import { branchesApi, driversApi, ordersApi, tripsApi, vehiclesApi } from '../api/client';
 import { getRealtimeSocket } from '../api/realtime';
@@ -59,9 +61,12 @@ import { EditVehicleModal } from '../components/EditVehicleModal';
 import { OrderDetailDrawer } from '../components/OrderDetailDrawer';
 import { ExpandableText } from '../components/ExpandableText';
 import { OptimizationJobProgressCard } from '../components/OptimizationJobProgressCard';
+import { DemoScenarioControlCard } from '../components/DemoScenarioControlCard';
 import {
   AutomaticDispatchScheduleModeUI,
   AutomaticOptimizationResponseUI,
+  DemoCaseSummaryUI,
+  RunDemoOptimizationPayloadUI,
   Branch,
   Driver,
   OptimizedRouteUI,
@@ -84,18 +89,9 @@ import {
   saveLastSelectedBranch,
 } from '../utils/autoDispatchStorage';
 import { buildDriverSchedule } from '../utils/driverSchedule';
-import {
-  DEFAULT_SEARCH_BUDGET_SECONDS,
-  getSearchBudgetDescription,
-  MAX_SEARCH_BUDGET_SECONDS,
-  MIN_SEARCH_BUDGET_SECONDS,
-  presetForSearchBudget,
-  resolveSearchBudgetSeconds,
-  SearchBudgetPreset,
-} from '../utils/optimizationSearchBudget';
 import { formatDecimal } from '../utils/format';
 
-const { Text } = Typography;
+const { Text, Title, Paragraph } = Typography;
 const currency = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' });
 const getRouteKey = (route: OptimizedRouteUI) => route.route_id;
 
@@ -126,15 +122,19 @@ const AutomaticDispatchPage: React.FC = () => {
   const [scheduleMode, setScheduleMode] = useState<AutomaticDispatchScheduleModeUI>('CURRENT_TIME');
   const [customStartTime, setCustomStartTime] = useState<dayjs.Dayjs | null>(null);
   const [useCustomTime, setUseCustomTime] = useState<boolean>(false);
-  const [searchBudgetPreset, setSearchBudgetPreset] =
-    useState<SearchBudgetPreset>(DEFAULT_SEARCH_BUDGET_SECONDS);
-  const [customSearchBudgetSeconds, setCustomSearchBudgetSeconds] =
-    useState<number>(60);
   const [isRestoredFromStorage, setIsRestoredFromStorage] = useState<boolean>(false);
-  const searchBudgetSeconds = resolveSearchBudgetSeconds(
-    searchBudgetPreset,
-    customSearchBudgetSeconds,
-  );
+
+  // Chế độ: Chi nhánh thực tế vs Demo Benchmark
+  const [pageMode, setPageMode] = useState<'BRANCH' | 'DEMO'>('BRANCH');
+  const [demoCases, setDemoCases] = useState<DemoCaseSummaryUI[]>([]);
+  const [loadingDemoCases, setLoadingDemoCases] = useState<boolean>(false);
+  const [selectedDemoCaseId, setSelectedDemoCaseId] = useState<string>('novel_1_mekong_hub_spoke');
+  const [demoTimeBudgetSeconds, setDemoTimeBudgetSeconds] = useState<number>(6);
+  const [demoCandidatesMap, setDemoCandidatesMap] = useState<Record<number, FleetOptimizationResultUI> | null>(null);
+  const [runningDemo, setRunningDemo] = useState<boolean>(false);
+  const [customDemoJson, setCustomDemoJson] = useState<any | null>(null);
+  const [isCustomDemoUpload, setIsCustomDemoUpload] = useState<boolean>(false);
+  const [customDemoFileName, setCustomDemoFileName] = useState<string>('');
 
   // Modal chỉnh sửa tài xế, xe và xem đơn hàng
   const [selectedDriverForEdit, setSelectedDriverForEdit] = useState<Driver | null>(null);
@@ -191,15 +191,6 @@ const AutomaticDispatchPage: React.FC = () => {
         }
         if (stored.customStartTimeStr) {
           setCustomStartTime(dayjs(stored.customStartTimeStr));
-        }
-        const restoredSearchBudget =
-          response.data.searchBudgetSeconds ?? stored.searchBudgetSeconds;
-        if (typeof restoredSearchBudget === 'number') {
-          const restoredPreset = presetForSearchBudget(restoredSearchBudget);
-          setSearchBudgetPreset(restoredPreset);
-          if (restoredPreset === 'CUSTOM') {
-            setCustomSearchBudgetSeconds(restoredSearchBudget);
-          }
         }
         if (stored.selectedVehicleForMap) {
           setSelectedVehicleForMap(stored.selectedVehicleForMap);
@@ -414,7 +405,6 @@ const AutomaticDispatchPage: React.FC = () => {
           scheduleMode === 'CURRENT_TIME' && useCustomTime && customStartTime
             ? customStartTime.toISOString()
             : undefined,
-        searchBudgetSeconds,
       };
       optimizationIdempotencyKeyRef.current = payload.idempotencyKey;
       const response = await tripsApi.runAutomaticOptimization(payload);
@@ -432,13 +422,12 @@ const AutomaticDispatchPage: React.FC = () => {
             ? customStartTime.toISOString()
             : null,
         useCustomTime,
-        searchBudgetSeconds,
         selectedVehicleForMap: 'ALL',
         savedAt: new Date().toISOString(),
       });
 
       message.success(
-        `Đã tạo job tối ưu với ngân sách tối đa ${searchBudgetSeconds} giây mỗi lượt tìm kiếm chính`,
+        'Đã bắt đầu tối ưu tự động (ngân sách thời gian thích ứng thông minh theo quy mô bài toán)',
       );
     } catch (error: any) {
       message.error(error.response?.data?.message || 'Không thể bắt đầu tối ưu tự động');
@@ -476,7 +465,6 @@ const AutomaticDispatchPage: React.FC = () => {
               ? customStartTime.toISOString()
               : null,
           useCustomTime,
-          searchBudgetSeconds,
           selectedVehicleForMap,
           savedAt: new Date().toISOString(),
         });
@@ -560,10 +548,89 @@ const AutomaticDispatchPage: React.FC = () => {
     saveLastSelectedBranch(branchId);
   };
 
-  const isOptimizationForCurrentBranch = Boolean(
-    optimization && selectedBranchId && optimization.branchId === selectedBranchId,
+  useEffect(() => {
+    if (pageMode !== 'DEMO' || demoCases.length > 0) return;
+    let active = true;
+    const loadCases = async () => {
+      try {
+        setLoadingDemoCases(true);
+        const res = await tripsApi.getDemoCases();
+        if (!active) return;
+        setDemoCases(res.data);
+        if (res.data.length > 0 && !selectedDemoCaseId) {
+          setSelectedDemoCaseId(res.data[0].id);
+          setDemoTimeBudgetSeconds(res.data[0].suggested_time_limit_sec || 6);
+        }
+      } catch (err: any) {
+        if (active) message.error('Không tải được danh sách kịch bản demo: ' + (err.message || ''));
+      } finally {
+        if (active) setLoadingDemoCases(false);
+      }
+    };
+    void loadCases();
+    return () => {
+      active = false;
+    };
+  }, [pageMode, demoCases.length, selectedDemoCaseId, message]);
+
+  const startDemoOptimization = async () => {
+    if (!isCustomDemoUpload && !selectedDemoCaseId) {
+      message.warning('Vui lòng chọn kịch bản demo');
+      return;
+    }
+    if (isCustomDemoUpload && !customDemoJson) {
+      message.warning('Vui lòng nạp file JSON kịch bản riêng');
+      return;
+    }
+    try {
+      setRunningDemo(true);
+      setStarting(true);
+      setSelectedCandidateResult(null);
+      setSelectedCandidateNumber(1);
+      setSelectedVehicleForMap('ALL');
+      setActiveStepIndex(0);
+      setEnableSim(false);
+
+      const payload: RunDemoOptimizationPayloadUI = {
+        caseId: isCustomDemoUpload ? undefined : selectedDemoCaseId,
+        customRequest: isCustomDemoUpload ? customDemoJson : undefined,
+        timeBudgetSeconds: demoTimeBudgetSeconds,
+      };
+
+      const res = await tripsApi.runDemoOptimization(payload);
+      setOptimization(res.data);
+      if (res.data.candidateResults) {
+        setDemoCandidatesMap(res.data.candidateResults);
+      }
+      const caseName = isCustomDemoUpload
+        ? customDemoFileName || 'JSON tùy chỉnh'
+        : (demoCases.find((c) => c.id === selectedDemoCaseId)?.name || selectedDemoCaseId);
+      message.success(`Đã tối ưu thành công kịch bản: ${caseName}`);
+    } catch (err: any) {
+      message.error(err.response?.data?.message || err.message || 'Không thể chạy tối ưu demo');
+    } finally {
+      setRunningDemo(false);
+      setStarting(false);
+    }
+  };
+
+  const clearDemoOptimization = () => {
+    setOptimization(null);
+    setSelectedCandidateNumber(1);
+    setSelectedCandidateResult(null);
+    setSelectedVehicleForMap('ALL');
+    setActiveStepIndex(0);
+    setEnableSim(false);
+    setDemoCandidatesMap(null);
+    message.success('Đã làm mới dữ liệu thử nghiệm Demo');
+  };
+
+  const isOptimizationValid = Boolean(
+    pageMode === 'DEMO'
+      ? Boolean(optimization && (optimization.branchId === 'demo-branch' || (optimization as any).isDemo))
+      : Boolean(optimization && selectedBranchId && optimization.branchId === selectedBranchId),
   );
-  const result = isOptimizationForCurrentBranch
+  const result = isOptimizationValid
     ? selectedCandidateResult ?? optimization?.result
     : null;
   const splitOrderRouteCounts = useMemo(() => {
@@ -586,6 +653,14 @@ const AutomaticDispatchPage: React.FC = () => {
 
   const selectCandidate = async (candidateNumber: number) => {
     if (!optimization || candidateNumber === selectedCandidateNumber) return;
+    if (pageMode === 'DEMO' && demoCandidatesMap && demoCandidatesMap[candidateNumber]) {
+      setSelectedCandidateNumber(candidateNumber);
+      setSelectedCandidateResult(demoCandidatesMap[candidateNumber]);
+      setSelectedVehicleForMap('ALL');
+      setActiveStepIndex(0);
+      setEnableSim(false);
+      return;
+    }
     try {
       setLoadingCandidate(true);
       const response = await tripsApi.getAutomaticOptimizationCandidate(
@@ -648,10 +723,41 @@ const AutomaticDispatchPage: React.FC = () => {
     [selectedRouteInfo, result],
   );
 
+  const resolveDepot = useCallback((route: OptimizedRouteUI) => {
+    if (route.depot) return route.depot;
+    const firstRouteCoordinate = route.route_geometry?.coordinates?.[0];
+    if (firstRouteCoordinate) {
+      return {
+        id: `fallback-${firstRouteCoordinate[0]}-${firstRouteCoordinate[1]}`,
+        name: 'Công ty / chi nhánh',
+        longitude: firstRouteCoordinate[0],
+        latitude: firstRouteCoordinate[1],
+      };
+    }
+    return null;
+  }, []);
+
+  const getRouteCoordinates = useCallback(
+    (route: OptimizedRouteUI): [number, number][] => {
+      if (route.route_geometry?.coordinates && route.route_geometry.coordinates.length >= 2) {
+        return route.route_geometry.coordinates;
+      }
+      const depot = resolveDepot(route);
+      const coords: [number, number][] = [];
+      if (depot) coords.push([depot.longitude, depot.latitude]);
+      (route.stops || []).forEach((s) => coords.push([s.longitude, s.latitude]));
+      if (depot && coords.length > 0) coords.push([depot.longitude, depot.latitude]);
+      return coords;
+    },
+    [resolveDepot],
+  );
+
   const routeProfileForSim = useMemo(() => {
-    if (!currentActiveRoute?.route_geometry?.coordinates) return null;
-    return buildRouteProfile(currentActiveRoute.route_geometry.coordinates);
-  }, [currentActiveRoute]);
+    if (!currentActiveRoute) return null;
+    const coords = getRouteCoordinates(currentActiveRoute);
+    if (coords.length < 2) return null;
+    return buildRouteProfile(coords);
+  }, [currentActiveRoute, getRouteCoordinates]);
 
   // Cột mốc cự ly (km) cho từng điểm dừng: đảm bảo chỉ khi xe thực sự chạm điểm dừng mới chất/dỡ hàng
   const stopMilestonesKm = useMemo(() => {
@@ -663,18 +769,6 @@ const AutomaticDispatchPage: React.FC = () => {
     const depotMarkers = new Map<string, MapMarker>();
     const stopMarkers: MapMarker[] = [];
     const depotRouteCounts = new Map<string, number>();
-
-    const resolveDepot = (route: OptimizedRouteUI) => {
-      if (route.depot) return route.depot;
-      const firstRouteCoordinate = route.route_geometry?.coordinates[0];
-      if (!firstRouteCoordinate) return null;
-      return {
-        id: `fallback-${firstRouteCoordinate[0]}-${firstRouteCoordinate[1]}`,
-        name: 'Công ty / chi nhánh',
-        longitude: firstRouteCoordinate[0],
-        latitude: firstRouteCoordinate[1],
-      };
-    };
 
     const getDepotKey = (depot: NonNullable<ReturnType<typeof resolveDepot>>) =>
       `${depot.id}-${depot.longitude}-${depot.latitude}`;
@@ -725,24 +819,29 @@ const AutomaticDispatchPage: React.FC = () => {
     });
 
     return [...depotMarkers.values(), ...stopMarkers];
-  }, [activeRoutesForMap, result]);
+  }, [activeRoutesForMap, result, resolveDepot]);
 
   const routeGeometry = useMemo(
     () => ({
       type: 'FeatureCollection' as const,
       features: activeRoutesForMap
-        .filter((route) => route.route_geometry)
         .map((route) => {
           const originalIndex =
             result?.routes.findIndex((item) => getRouteKey(item) === getRouteKey(route)) ?? 0;
+          const coords = getRouteCoordinates(route);
+          if (coords.length < 2) return null;
           return {
             type: 'Feature' as const,
             properties: { routeIndex: originalIndex },
-            geometry: route.route_geometry!,
+            geometry: {
+              type: 'LineString' as const,
+              coordinates: coords,
+            },
           };
-        }),
+        })
+        .filter((f): f is { type: 'Feature'; properties: { routeIndex: number }; geometry: { type: 'LineString'; coordinates: [number, number][] } } => f !== null),
     }),
-    [activeRoutesForMap, result],
+    [activeRoutesForMap, result, getRouteCoordinates],
   );
 
   const [routeViewMode, setRouteViewMode] = useState<Record<string, 'TIMELINE' | 'TABLE'>>({});
@@ -1327,7 +1426,7 @@ const AutomaticDispatchPage: React.FC = () => {
                   >
                     Tổng dự toán tuyến xe
                   </div>
-                  <div style={{ fontSize: 11, color: '#16a34a' }}>Đã tối ưu đa mục tiêu (OR-Tools)</div>
+                  <div style={{ fontSize: 11, color: '#16a34a' }}>Đã tối ưu đa mục tiêu (Hybrid ALNS)</div>
                 </div>
                 <div style={{ fontSize: 17, fontWeight: 800, color: '#15803d' }}>
                   {currency.format(route.cost?.total_cost_vnd || 0)}
@@ -1666,7 +1765,7 @@ const AutomaticDispatchPage: React.FC = () => {
               </Tag>
             </div>
             <div style={{ fontSize: 13, color: '#475569' }}>
-              Kiểm tra danh sách đơn hàng (kèm kiện con), thông số xe tải và danh sách tài xế trực ca dưới đây trước khi kích hoạt thuật toán OR-Tools.
+              Kiểm tra danh sách đơn hàng (kèm kiện con), thông số xe tải và danh sách tài xế trực ca dưới đây trước khi kích hoạt thuật toán tối ưu Hybrid ALNS.
             </div>
           </div>
 
@@ -2209,6 +2308,70 @@ const AutomaticDispatchPage: React.FC = () => {
   return (
     <main className="dispatch-page" aria-labelledby="automatic-dispatch-title">
       <Alert type="info" showIcon message="Danh sách xe/tài xế là ứng viên theo hồ sơ. Ca riêng, lịch nghỉ và sự cố phải được đối chiếu khi áp dụng/phát hành; phương án tối ưu không phải ca làm hay vị trí thực tế." style={{ marginBottom: 12 }} />
+
+      {/* Mode Switcher: Vận hành thực tế vs Demo Kịch bản mẫu */}
+      <div style={{ marginBottom: 18 }}>
+        <Segmented
+          size="large"
+          value={pageMode}
+          onChange={(val) => {
+            const mode = val as 'BRANCH' | 'DEMO';
+            setPageMode(mode);
+            setOptimization(null);
+            setSelectedCandidateResult(null);
+            setSelectedCandidateNumber(1);
+            setSelectedVehicleForMap('ALL');
+            setActiveStepIndex(0);
+            setEnableSim(false);
+          }}
+          options={[
+            {
+              value: 'BRANCH',
+              label: (
+                <Space size={8} style={{ padding: '4px 8px' }}>
+                  <BankOutlined style={{ fontSize: 16 }} />
+                  <span style={{ fontWeight: 600 }}>Vận hành thực tế (Theo chi nhánh)</span>
+                </Space>
+              ),
+            },
+            {
+              value: 'DEMO',
+              label: (
+                <Space size={8} style={{ padding: '4px 8px' }}>
+                  <ExperimentOutlined style={{ fontSize: 16, color: '#7c3aed' }} />
+                  <span style={{ fontWeight: 700, color: '#6d28d9' }}>Thử nghiệm Demo Kịch bản mẫu (Benchmarks)</span>
+                  <Tag color="purple" style={{ margin: 0, borderRadius: 10, fontWeight: 700 }}>
+                    17 kịch bản
+                  </Tag>
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </div>
+
+      {pageMode === 'DEMO' ? (
+        <DemoScenarioControlCard
+          cases={demoCases}
+          loadingCases={loadingDemoCases}
+          selectedCaseId={selectedDemoCaseId}
+          onSelectCaseId={setSelectedDemoCaseId}
+          timeBudgetSeconds={demoTimeBudgetSeconds}
+          onChangeTimeBudget={setDemoTimeBudgetSeconds}
+          running={runningDemo}
+          onRunDemo={startDemoOptimization}
+          onClearDemo={clearDemoOptimization}
+          hasResult={Boolean(result)}
+          isCustomUpload={isCustomDemoUpload}
+          onToggleCustomUpload={setIsCustomDemoUpload}
+          customFileName={customDemoFileName}
+          onCustomJsonLoaded={(json, fileName) => {
+            setCustomDemoJson(json);
+            setCustomDemoFileName(fileName);
+            message.success(`Đã nạp file: ${fileName}`);
+          }}
+        />
+      ) : (
       <div className="dispatch-page-header">
         <Space wrap align="end">
           <div>
@@ -2301,45 +2464,27 @@ const AutomaticDispatchPage: React.FC = () => {
           <div className="automatic-search-budget">
             <div className="automatic-search-budget-label">
               <Text type="secondary">Ngân sách tìm kiếm</Text>
-              <Tooltip title="Ngân sách áp dụng cho mỗi lượt tìm kiếm chính. Thời gian toàn job có thể dài hơn do chuẩn bị dữ liệu, kiểm tra hình học và lưu kết quả.">
-                <InfoCircleOutlined aria-label="Giải thích ngân sách tìm kiếm" />
+              <Tooltip title="Thời gian tìm kiếm được tự động tính toán thích ứng theo quy mô bài toán (số lượng đơn hàng, số xe và độ phức tạp địa lý). Bài toán nhỏ hoàn thành nhanh chóng trong vài giây, bài toán phức tạp sẽ tự động phân bổ đủ thời gian tìm kiếm sâu.">
+                <InfoCircleOutlined aria-label="Giải thích ngân sách tìm kiếm tự động" />
               </Tooltip>
             </div>
-            <Space align="center" wrap size={8}>
-              <Select<SearchBudgetPreset>
-                aria-label="Chọn mức thời gian tìm kiếm"
-                value={searchBudgetPreset}
-                disabled={starting || applying}
-                style={{ minWidth: 210 }}
-                onChange={setSearchBudgetPreset}
-                options={[
-                  { value: 5, label: 'Nhanh · 5 giây' },
-                  { value: 30, label: 'Cân bằng · 30 giây' },
-                  { value: 120, label: 'Tìm kỹ · 120 giây' },
-                  { value: 'CUSTOM', label: 'Tùy chỉnh' },
-                ]}
-              />
-              {searchBudgetPreset === 'CUSTOM' && (
-                <InputNumber
-                  aria-label="Số giây tìm kiếm cho mỗi lượt thuật toán"
-                  min={MIN_SEARCH_BUDGET_SECONDS}
-                  max={MAX_SEARCH_BUDGET_SECONDS}
-                  precision={0}
-                  value={customSearchBudgetSeconds}
-                  onChange={(value) => {
-                    if (typeof value === 'number') {
-                      setCustomSearchBudgetSeconds(value);
-                    }
-                  }}
-                  addonAfter="giây"
-                  disabled={starting || applying}
-                  style={{ width: 135 }}
-                />
-              )}
-            </Space>
-            <Text className="automatic-search-budget-help" type="secondary">
-              {getSearchBudgetDescription(searchBudgetSeconds)}
-            </Text>
+            <Tag
+              color="blue"
+              icon={<ThunderboltOutlined />}
+              style={{
+                margin: 0,
+                padding: '4px 10px',
+                fontSize: 13,
+                borderRadius: 6,
+                fontWeight: 500,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                width: 'fit-content',
+              }}
+            >
+              Tự động thích ứng
+            </Tag>
           </div>
           <Button
             type="primary"
@@ -2369,7 +2514,7 @@ const AutomaticDispatchPage: React.FC = () => {
             icon={<CheckCircleOutlined />}
             loading={applying}
             disabled={
-              !isOptimizationForCurrentBranch ||
+              !isOptimizationValid ||
               !optimization ||
               !result ||
               result.routes.length === 0 ||
@@ -2411,7 +2556,7 @@ const AutomaticDispatchPage: React.FC = () => {
               </Button>
             </>
           )}
-          {appliedTripCount === null && isOptimizationForCurrentBranch && optimization && (
+          {appliedTripCount === null && isOptimizationValid && optimization && pageMode === 'BRANCH' && (
             ['FAILED', 'TIMEOUT', 'CANCELLED', 'INFEASIBLE'].includes(optimization.status) ? (
               <Button
                 size="large"
@@ -2444,8 +2589,9 @@ const AutomaticDispatchPage: React.FC = () => {
           )}
         </Space>
       </div>
+      )}
 
-      {!loadingBranches && branches.length === 0 && (
+      {pageMode === 'BRANCH' && !loadingBranches && branches.length === 0 && (
         <Alert
           type="warning"
           showIcon
@@ -2454,24 +2600,39 @@ const AutomaticDispatchPage: React.FC = () => {
         />
       )}
 
-      {isOptimizationForCurrentBranch && optimization && !result && (
+      {isOptimizationValid && optimization && !result && (
         <OptimizationJobProgressCard job={optimization} />
       )}
 
-      {isOptimizationForCurrentBranch && result && ['INFEASIBLE', 'TIMEOUT'].includes(optimization?.status ?? '') && (
+      {isOptimizationValid && result && (['INFEASIBLE', 'TIMEOUT'].includes(optimization?.status ?? '') || result.routes.length === 0) && (
         <Alert
-          type="warning"
+          type={result.routes.length === 0 ? 'warning' : 'info'}
           showIcon
-          message={`Kết quả ${optimization?.status}`}
+          message={
+            result.routes.length === 0
+              ? 'Không thể tạo tuyến đường khả thi cho ca làm việc này'
+              : `Kết quả ${optimization?.status}`
+          }
           description={
-            result.diagnostics.join(' · ') ||
-            'Không có phương án khả thi để áp dụng.'
+            <div>
+              {result.diagnostics.length > 0 && (
+                <div style={{ marginBottom: 4 }}>
+                  <Text strong>Chẩn đoán tầng Hybrid-first:</Text> {result.diagnostics.join(' · ')}
+                </div>
+              )}
+              {result.routes.length === 0 && (
+                <Text type="secondary">
+                  Toàn bộ đơn hàng chưa thể ghép vào tuyến. Hãy chọn "Ngày tiếp theo (ca mai)" hoặc chỉnh thời gian xuất bến về 08:00 sáng để xe và tài xế có trọn vẹn ca làm việc.
+                </Text>
+              )}
+            </div>
           }
           style={{ marginBottom: 16 }}
         />
       )}
 
       {/* 4 Thẻ Thống Kê Nguồn Lực - Thiết Kế Hiện Đại Có Màu Sắc & Icon Badge */}
+      {pageMode === 'BRANCH' && (
       <Row gutter={[14, 14]} style={{ marginBottom: 20 }}>
         {/* Thẻ 1: Đơn sẵn sàng */}
         <Col xs={12} sm={12} lg={6}>
@@ -2677,10 +2838,17 @@ const AutomaticDispatchPage: React.FC = () => {
           </Card>
         </Col>
       </Row>
+      )}
 
       {result ? (
         <>
-          {result.benchmarks && <BenchmarkCostComparisonCard benchmarks={result.benchmarks} />}
+          {result.benchmarks && (
+            <BenchmarkCostComparisonCard
+              benchmarks={result.benchmarks}
+              optimizationStatus={result.status}
+              unassignedOrderCount={result.unassigned_orders.length}
+            />
+          )}
           {optimization && optimization.candidates.length > 0 && (
             <Card
               title="Top phương án tối ưu giao đủ 100% đơn"
@@ -2786,6 +2954,42 @@ const AutomaticDispatchPage: React.FC = () => {
                     title: 'Thời gian',
                     dataIndex: 'totalDurationMinutes',
                     render: (value: number) => `${value.toFixed(1)} phút`,
+                  },
+                  {
+                    title: 'Gom đơn & Xe',
+                    key: 'grouping',
+                    render: (_, candidate) => {
+                      const extraTrips = candidate.extraOrderTrips ?? 0;
+                      const splitOrders = candidate.splitOrderCount ?? 0;
+                      const physicalVehicles =
+                        candidate.physicalVehicleCount ?? candidate.routeCount;
+                      const visits = candidate.deliveryVisitCount ?? 0;
+                      return (
+                        <Space size={4} wrap>
+                          {extraTrips === 0 ? (
+                            <Tag color="cyan" style={{ margin: 0 }}>
+                              Gom 1 chuyến/đơn
+                            </Tag>
+                          ) : (
+                            <Tooltip
+                              title={`${splitOrders} đơn phải tách chuyến (+${extraTrips} chuyến bổ sung)`}
+                            >
+                              <Tag color="purple" style={{ margin: 0 }}>
+                                {splitOrders} đơn tách (+{extraTrips} chuyến)
+                              </Tag>
+                            </Tooltip>
+                          )}
+                          <Tag color="blue" style={{ margin: 0 }}>
+                            {candidate.routeCount} chuyến / {physicalVehicles} xe
+                          </Tag>
+                          {visits > 0 && (
+                            <Tag color="default" style={{ margin: 0 }}>
+                              {visits} lần giao
+                            </Tag>
+                          )}
+                        </Space>
+                      );
+                    },
                   },
                   { title: 'Lượt chuyến', dataIndex: 'routeCount' },
                   {
@@ -3016,24 +3220,108 @@ const AutomaticDispatchPage: React.FC = () => {
             </Col>
           </Row>
 
-          <Collapse
-            items={result.routes.map((route) => ({
-              key: getRouteKey(route),
-              label: `Ngày ${route.service_day_index + 1} · ${route.plate_number} · ${route.driver_name} (Hạng ${route.driver_license_class || 'C'}) · ${currency.format(route.cost?.total_cost_vnd || 0)}`,
-              children: renderRoute(route),
-            }))}
-            defaultActiveKey={result.routes[0] ? [getRouteKey(result.routes[0])] : []}
-          />
+          {result.routes.length === 0 ? (
+            <Card
+              style={{
+                marginTop: 16,
+                borderRadius: 12,
+                border: '1px solid #fed7aa',
+                background: 'linear-gradient(135deg, #fffbeb 0%, #fff7ed 100%)',
+              }}
+            >
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={
+                  <div style={{ maxWidth: 720, margin: '0 auto', textAlign: 'left' }}>
+                    <Title level={5} style={{ color: '#c2410c', textAlign: 'center', marginBottom: 12 }}>
+                      <ClockCircleOutlined style={{ marginRight: 8 }} />
+                      0 tuyến đường được tạo — Toàn bộ {result.unassigned_orders.length} đơn chưa thể xếp vào ca làm việc này
+                    </Title>
+                    <Paragraph type="secondary" style={{ marginBottom: 14, textAlign: 'center' }}>
+                      Tầng tối ưu Hybrid ALNS (Packing-aware ALNS + Dynamic 2D Spatial Validator) không tìm thấy phương án ghép tuyến khả thi do ràng buộc khung giờ làm việc hoặc giới hạn tài nguyên.
+                    </Paragraph>
+
+                    {result.diagnostics.length > 0 && (
+                      <div
+                        style={{
+                          background: '#ffffff',
+                          borderRadius: 8,
+                          padding: '12px 16px',
+                          border: '1px solid #fed7aa',
+                          marginBottom: 14,
+                        }}
+                      >
+                        <Text strong style={{ color: '#9a3412', display: 'block', marginBottom: 6 }}>
+                          🔍 Chẩn đoán từ tầng tối ưu Hybrid-first:
+                        </Text>
+                        <ul style={{ paddingLeft: 20, margin: 0, color: '#475569', fontSize: 13 }}>
+                          {result.diagnostics.map((diag, idx) => (
+                            <li key={idx} style={{ marginBottom: 3 }}>
+                              {diag}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="Gợi ý khắc phục cho điều phối viên:"
+                      description={
+                        <ul style={{ paddingLeft: 20, margin: '4px 0 0', fontSize: 13, lineHeight: '1.6' }}>
+                          <li>
+                            <strong>Hết ca làm việc hôm nay:</strong> Nếu bạn đang điều phối vào cuối buổi chiều (gần 17:00), xe và tài xế không còn đủ thời gian di chuyển. Hãy chọn <strong>"Ngày tiếp theo (ca mai)"</strong> hoặc bật <strong>"Chỉnh giờ cụ thể"</strong> về <strong>08:00 sáng</strong> trên thanh công cụ.
+                          </li>
+                          <li>
+                            <strong>Lệch ngày đơn hàng:</strong> Hãy đảm bảo ngày giao nhận của đơn hàng nằm trong hoặc sau thời điểm điều phối.
+                          </li>
+                        </ul>
+                      }
+                    />
+                  </div>
+                }
+              />
+            </Card>
+          ) : (
+            <Collapse
+              items={result.routes.map((route) => ({
+                key: getRouteKey(route),
+                label: `Ngày ${route.service_day_index + 1} · ${route.plate_number} · ${route.driver_name} (Hạng ${route.driver_license_class || 'C'}) · ${currency.format(route.cost?.total_cost_vnd || 0)}`,
+                children: renderRoute(route),
+              }))}
+              defaultActiveKey={result.routes[0] ? [getRouteKey(result.routes[0])] : []}
+            />
+          )}
 
           {result.unassigned_orders.length > 0 && (
             <Alert
               type="warning"
               showIcon
               style={{ marginTop: 16 }}
-              message={`${result.unassigned_orders.length} đơn chưa được xếp`}
-              description={result.unassigned_orders.map((order) => (
-                <div key={order.order_id}><Text strong>{order.order_number}</Text>: {order.reason_message}</div>
-              ))}
+              message={
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                  <Text strong>{result.unassigned_orders.length} đơn chưa được xếp tuyến</Text>
+                  <Tag color="orange">Chi tiết lý do từ chối</Tag>
+                </div>
+              }
+              description={
+                <div style={{ maxHeight: 240, overflowY: 'auto', marginTop: 8, paddingRight: 6 }}>
+                  {result.unassigned_orders.map((order) => (
+                    <div
+                      key={order.order_id}
+                      style={{
+                        padding: '4px 0',
+                        borderBottom: '1px dashed #fed7aa',
+                        fontSize: 13,
+                      }}
+                    >
+                      <Text strong>{order.order_number}</Text>:{' '}
+                      <Text type="secondary">{order.reason_message}</Text>
+                    </div>
+                  ))}
+                </div>
+              }
             />
           )}
         </>

@@ -1,0 +1,62 @@
+[
+  {
+    "algorithm_name": "0. Production Hybrid ALNS",
+    "case_file": "scenario_7_multi_depot_overnight.json",
+    "status": "SUCCESS",
+    "orders_served": 18,
+    "total_orders": 18,
+    "fulfillment_rate_pct": 100.0,
+    "vehicles_used": 3,
+    "total_cost_vnd": 10980501,
+    "selection_score_vnd": 10980501,
+    "total_distance_km": 1126.55,
+    "runtime_sec": 5.985,
+    "spatial_audit_pass": true,
+    "diagnostic": "Production Optimized Engine"
+  },
+  {
+    "algorithm_name": "1. Hybrid Genetic Search (HGS)",
+    "case_file": "scenario_7_multi_depot_overnight.json",
+    "status": "SUCCESS",
+    "orders_served": 18,
+    "total_orders": 18,
+    "fulfillment_rate_pct": 100.0,
+    "vehicles_used": 2,
+    "total_cost_vnd": 11968908,
+    "selection_score_vnd": 11968908,
+    "total_distance_km": 1125.22,
+    "runtime_sec": 4.046,
+    "spatial_audit_pass": true,
+    "diagnostic": "Packing-aware Memetic Search (1 generations), verified elite #1 | Spatial: Pass"
+  },
+  {
+    "algorithm_name": "2. Guided VNS + Pool Matheuristic (GVNS-Pool)",
+    "case_file": "scenario_7_multi_depot_overnight.json",
+    "status": "SUCCESS",
+    "orders_served": 18,
+    "total_orders": 18,
+    "fulfillment_rate_pct": 100.0,
+    "vehicles_used": 2,
+    "total_cost_vnd": 11968908,
+    "selection_score_vnd": 11968908,
+    "total_distance_km": 1125.22,
+    "runtime_sec": 3.604,
+    "spatial_audit_pass": true,
+    "diagnostic": "GVNS + Set-Partitioning Pool (0 VNS iters), verified elite #1 | Spatial: Pass"
+  },
+  {
+    "algorithm_name": "3. Calibrated Adaptive SA + ILS (CASA-ILS)",
+    "case_file": "scenario_7_multi_depot_overnight.json",
+    "status": "SUCCESS",
+    "orders_served": 18,
+    "total_orders": 18,
+    "fulfillment_rate_pct": 100.0,
+    "vehicles_used": 2,
+    "total_cost_vnd": 11968908,
+    "selection_score_vnd": 11968908,
+    "total_distance_km": 1125.22,
+    "runtime_sec": 4.039,
+    "spatial_audit_pass": true,
+    "diagnostic": "Calibrated Adaptive SA + ILS (0 SA iters), verified elite #1 | Spatial: Pass"
+  }
+]

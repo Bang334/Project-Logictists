@@ -398,6 +398,21 @@ export interface BenchmarkComparisonUI {
   savings_vs_direct_percent: number | null;
 }
 
+export interface PlanningObjectiveBreakdownUI {
+  planning_span_days: number;
+  driver_calendar_salary_vnd: number;
+  driver_idle_salary_allocation_vnd: number;
+  operational_late_penalty_vnd: number;
+  selection_score_vnd: number;
+  extra_order_trips?: number;
+  split_order_count?: number;
+  max_trips_per_order?: number;
+  extra_request_trips?: number;
+  active_route_count?: number;
+  physical_vehicle_count?: number;
+  delivery_visit_count?: number;
+}
+
 export interface FleetOptimizationResultUI {
   job_id: string;
   status: 'SUCCESS' | 'PARTIAL' | 'INFEASIBLE' | 'TIMEOUT' | 'ERROR';
@@ -411,6 +426,7 @@ export interface FleetOptimizationResultUI {
   total_distance_km: number;
   total_duration_minutes: number;
   total_cost_vnd: number;
+  planning_objective?: PlanningObjectiveBreakdownUI;
   benchmarks?: BenchmarkComparisonUI;
   diagnostics: string[];
 }
@@ -510,6 +526,13 @@ export interface OptimizationCandidateSummaryUI {
   totalDurationMinutes: number;
   routeCount: number;
   unassignedOrderCount: number;
+  extraOrderTrips?: number;
+  splitOrderCount?: number;
+  maxTripsPerOrder?: number;
+  extraRequestTrips?: number;
+  activeRouteCount?: number;
+  physicalVehicleCount?: number;
+  deliveryVisitCount?: number;
 }
 
 export interface OptimizationCandidateDetailUI {
@@ -532,3 +555,30 @@ export interface ApplyOptimizationResponseUI {
     plannedEndTime: string;
   }>;
 }
+
+export interface DemoCaseSummaryUI {
+  id: string;
+  filename: string;
+  name: string;
+  category: 'NOVEL' | 'SCENARIO' | 'REAL_DATA';
+  category_name: string;
+  description: string;
+  orders_count: number;
+  vehicles_count: number;
+  drivers_count: number;
+  total_weight_kg: number;
+  total_volume_cbm: number;
+  suggested_time_limit_sec: number;
+}
+
+export interface RunDemoOptimizationPayloadUI {
+  caseId?: string;
+  timeBudgetSeconds?: number;
+  customRequest?: any;
+}
+
+export interface DemoOptimizationResponseUI extends AutomaticOptimizationResponseUI {
+  candidateResults?: Record<number, FleetOptimizationResultUI>;
+  isDemo?: boolean;
+}
+

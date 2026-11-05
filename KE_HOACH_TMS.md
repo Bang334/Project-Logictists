@@ -18,6 +18,13 @@ Ngày lập: 09/09/2026 · Phiên bản: 0.3 · Trạng thái: Bản nháp để
 
 > Tài liệu này mô tả phương án nghiệp vụ và kỹ thuật đề xuất, chưa phải đặc tả đã được duyệt. Người dùng đã cho phép tạo file kế hoạch; chưa cho phép triển khai ứng dụng. Chỉ bắt đầu viết code, tạo database hoặc migration khi người dùng nói chính xác: **“OK, bắt đầu triển khai”**.
 
+## Cập nhật luồng bán hàng ngày 31/10/2026
+
+- **Đã chốt:** đơn giản hóa luồng bán hàng, chỉ dùng cửa hàng làm nguồn xuất; không đưa lựa chọn tổng kho và điểm nhận hàng vào luồng đặt hàng này. Luồng mục tiêu: cửa hàng → nhân viên chuẩn bị/đóng gói và xác nhận số đo, khối lượng từng kiện → điều phối vận tải → giao đến địa chỉ khách/công trình.
+- **Phạm vi:** quyết định này thay thế các lựa chọn tổng kho/điểm nhận trong luồng bán hàng; không mặc định xóa dữ liệu, lịch sử hoặc các loại địa điểm đang tồn tại trong database. Chi nhánh vẫn là đơn vị quản lý vận hành, khác địa điểm cửa hàng.
+- **Hướng lập kế hoạch mới theo yêu cầu người dùng:** khách mua từ danh mục chung theo nơi giao, không chọn chi nhánh/cửa hàng. Tìm hàng tại các cửa hàng trong phạm vi (100 km là ví dụ cần chốt); một đơn có thể lấy từ nhiều cửa hàng thuộc nhiều chi nhánh và được xe gom giao khách. Chi nhánh điều phối chủ trì khác các chi nhánh nguồn xuất; không gán toàn bộ đơn cho nguồn đầu tiên rồi dùng làm scope duy nhất. Xem [kế hoạch triển khai đa nguồn](KE_HOACH_DAT_HANG_DA_NGUON.md) cho thiết kế, các giai đoạn, policy còn mở và tiêu chí nghiệm thu; đây chưa phải phê duyệt schema hay quyền triển khai.
+- **Hiện trạng:** mới cập nhật quyết định trong tài liệu, chưa sửa ứng dụng theo luồng đơn giản hóa; không coi kiện tự sinh khi checkout là bằng chứng nhân viên đã đóng gói/đo thực tế. Phần khảo sát ban đầu và thiết kế cũ bên dưới cần được đọc cùng cập nhật này.
+
 ## 1. Hiện trạng và cách đọc tài liệu
 
 Thư mục `E:\HocTap\Project-Logictists` trống tại thời điểm khảo sát, chưa có mã nguồn, cấu hình, module, entity hoặc database để đánh giá. Kiến trúc bên dưới là đề xuất xây dựng, không phải kiến trúc đang tồn tại.

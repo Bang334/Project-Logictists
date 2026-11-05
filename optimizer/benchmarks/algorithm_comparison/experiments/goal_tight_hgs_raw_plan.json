@@ -1,0 +1,811 @@
+{
+  "solver_name": "Packing-aware Memetic Search (0 generations), verified fallback",
+  "execution_time_sec": 10.19,
+  "routes": [
+    {
+      "vehicle": {
+        "id": "veh-tw-1::day:0",
+        "plate_number": "TEST-TW-01",
+        "length_cm": 500.0,
+        "width_cm": 205.0,
+        "height_cm": 210.0,
+        "payload_limit_kg": 3500.0,
+        "depot": {
+          "id": "depot_veh-tw-1::day:0",
+          "name": "Hub n\u1ed9i \u0111\u00f4 time-window",
+          "latitude": 21.028,
+          "longitude": 105.854
+        },
+        "end_depot": null,
+        "door_position": "REAR",
+        "fuel_consumption_liters_per_100_km": 13.5,
+        "load_fuel_surcharge_percent_at_full_payload": 22.0,
+        "fixed_operating_cost_vnd": 95000,
+        "source_vehicle_id": "veh-tw-1",
+        "service_day_index": 0,
+        "available_start_sec": 28800,
+        "available_end_sec": 61200
+      },
+      "driver": {
+        "id": "driver-veh-tw-1::day:0",
+        "full_name": "T\u00e0i x\u1ebf chuy\u00ean nghi\u1ec7p 1",
+        "license_class": "C",
+        "fixed_salary_monthly_vnd": 12500000,
+        "trip_base_pay_vnd": 160000,
+        "per_km_pay_vnd": 1200,
+        "source_driver_id": "driver-veh-tw-1",
+        "service_day_index": 0
+      },
+      "stops": [
+        {
+          "sequence": 1,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-14",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 14",
+          "order_id": "order-tw-14",
+          "order_number": "ORD-TW-014",
+          "arrival_time_sec": 30600,
+          "departure_time_sec": 31020,
+          "current_weight_kg": 320.0,
+          "items_loaded": [
+            "item-tw-14-1",
+            "item-tw-14-2",
+            "item-tw-14-3",
+            "item-tw-14-4"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 2,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-3",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 3",
+          "order_id": "order-tw-3",
+          "order_number": "ORD-TW-003",
+          "arrival_time_sec": 32400,
+          "departure_time_sec": 32820,
+          "current_weight_kg": 640.0,
+          "items_loaded": [
+            "item-tw-3-1",
+            "item-tw-3-2",
+            "item-tw-3-3",
+            "item-tw-3-4"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 3,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-7",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 7",
+          "order_id": "order-tw-7",
+          "order_number": "ORD-TW-007",
+          "arrival_time_sec": 33548,
+          "departure_time_sec": 33968,
+          "current_weight_kg": 960.0,
+          "items_loaded": [
+            "item-tw-7-1",
+            "item-tw-7-2",
+            "item-tw-7-3",
+            "item-tw-7-4"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 4,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-9",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 9",
+          "order_id": "order-tw-9",
+          "order_number": "ORD-TW-009",
+          "arrival_time_sec": 34120,
+          "departure_time_sec": 34540,
+          "current_weight_kg": 1200.0,
+          "items_loaded": [
+            "item-tw-9-1",
+            "item-tw-9-2",
+            "item-tw-9-3"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 5,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-9",
+          "location_name": "\u0110i\u1ec3m giao tw 9",
+          "order_id": "order-tw-9",
+          "order_number": "ORD-TW-009",
+          "arrival_time_sec": 34845,
+          "departure_time_sec": 35265,
+          "current_weight_kg": 960.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-9-1",
+            "item-tw-9-2",
+            "item-tw-9-3"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 6,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-7",
+          "location_name": "\u0110i\u1ec3m giao tw 7",
+          "order_id": "order-tw-7",
+          "order_number": "ORD-TW-007",
+          "arrival_time_sec": 35670,
+          "departure_time_sec": 36090,
+          "current_weight_kg": 640.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-7-1",
+            "item-tw-7-2",
+            "item-tw-7-3",
+            "item-tw-7-4"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 7,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-3",
+          "location_name": "\u0110i\u1ec3m giao tw 3",
+          "order_id": "order-tw-3",
+          "order_number": "ORD-TW-003",
+          "arrival_time_sec": 37117,
+          "departure_time_sec": 37537,
+          "current_weight_kg": 320.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-3-1",
+            "item-tw-3-2",
+            "item-tw-3-3",
+            "item-tw-3-4"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 8,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-14",
+          "location_name": "\u0110i\u1ec3m giao tw 14",
+          "order_id": "order-tw-14",
+          "order_number": "ORD-TW-014",
+          "arrival_time_sec": 37972,
+          "departure_time_sec": 38392,
+          "current_weight_kg": 0.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-14-1",
+            "item-tw-14-2",
+            "item-tw-14-3",
+            "item-tw-14-4"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 9,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-5",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 5",
+          "order_id": "order-tw-5",
+          "order_number": "ORD-TW-005",
+          "arrival_time_sec": 38943,
+          "departure_time_sec": 39363,
+          "current_weight_kg": 240.0,
+          "items_loaded": [
+            "item-tw-5-1",
+            "item-tw-5-2",
+            "item-tw-5-3"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 10,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-17",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 17",
+          "order_id": "order-tw-17",
+          "order_number": "ORD-TW-017",
+          "arrival_time_sec": 39540,
+          "departure_time_sec": 39960,
+          "current_weight_kg": 560.0,
+          "items_loaded": [
+            "item-tw-17-1",
+            "item-tw-17-2",
+            "item-tw-17-3",
+            "item-tw-17-4"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 11,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-10",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 10",
+          "order_id": "order-tw-10",
+          "order_number": "ORD-TW-010",
+          "arrival_time_sec": 40362,
+          "departure_time_sec": 40782,
+          "current_weight_kg": 880.0,
+          "items_loaded": [
+            "item-tw-10-1",
+            "item-tw-10-2",
+            "item-tw-10-3",
+            "item-tw-10-4"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 12,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-10",
+          "location_name": "\u0110i\u1ec3m giao tw 10",
+          "order_id": "order-tw-10",
+          "order_number": "ORD-TW-010",
+          "arrival_time_sec": 41146,
+          "departure_time_sec": 41566,
+          "current_weight_kg": 560.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-10-1",
+            "item-tw-10-2",
+            "item-tw-10-3",
+            "item-tw-10-4"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 13,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-17",
+          "location_name": "\u0110i\u1ec3m giao tw 17",
+          "order_id": "order-tw-17",
+          "order_number": "ORD-TW-017",
+          "arrival_time_sec": 41732,
+          "departure_time_sec": 42152,
+          "current_weight_kg": 240.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-17-1",
+            "item-tw-17-2",
+            "item-tw-17-3",
+            "item-tw-17-4"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 14,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-18",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 18",
+          "order_id": "order-tw-18",
+          "order_number": "ORD-TW-018",
+          "arrival_time_sec": 42507,
+          "departure_time_sec": 42927,
+          "current_weight_kg": 560.0,
+          "items_loaded": [
+            "item-tw-18-1",
+            "item-tw-18-2",
+            "item-tw-18-3",
+            "item-tw-18-4"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 15,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-18",
+          "location_name": "\u0110i\u1ec3m giao tw 18",
+          "order_id": "order-tw-18",
+          "order_number": "ORD-TW-018",
+          "arrival_time_sec": 43700,
+          "departure_time_sec": 44120,
+          "current_weight_kg": 240.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-18-1",
+            "item-tw-18-2",
+            "item-tw-18-3",
+            "item-tw-18-4"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 16,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-5",
+          "location_name": "\u0110i\u1ec3m giao tw 5",
+          "order_id": "order-tw-5",
+          "order_number": "ORD-TW-005",
+          "arrival_time_sec": 44493,
+          "departure_time_sec": 44913,
+          "current_weight_kg": 0.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-5-1",
+            "item-tw-5-2",
+            "item-tw-5-3"
+          ],
+          "placed_items": []
+        }
+      ],
+      "total_distance_km": 89.17,
+      "total_duration_minutes": 257.4,
+      "cost_breakdown": {
+        "base_fuel_cost_vnd": 286516,
+        "load_fuel_surcharge_vnd": 8231,
+        "fuel_cost_vnd": 294747,
+        "fixed_vehicle_cost_vnd": 95000,
+        "driver_salary_allocation_vnd": 304687,
+        "driver_trip_pay_vnd": 267004,
+        "driver_total_pay_vnd": 571691,
+        "cargo_holding_cost_vnd": 26582,
+        "late_delivery_penalty_vnd": 0,
+        "total_cost_vnd": 988020
+      }
+    },
+    {
+      "vehicle": {
+        "id": "veh-tw-2::day:0",
+        "plate_number": "TEST-TW-02",
+        "length_cm": 500.0,
+        "width_cm": 205.0,
+        "height_cm": 210.0,
+        "payload_limit_kg": 3500.0,
+        "depot": {
+          "id": "depot_veh-tw-2::day:0",
+          "name": "Hub n\u1ed9i \u0111\u00f4 time-window",
+          "latitude": 21.028,
+          "longitude": 105.854
+        },
+        "end_depot": null,
+        "door_position": "REAR",
+        "fuel_consumption_liters_per_100_km": 13.5,
+        "load_fuel_surcharge_percent_at_full_payload": 22.0,
+        "fixed_operating_cost_vnd": 95000,
+        "source_vehicle_id": "veh-tw-2",
+        "service_day_index": 0,
+        "available_start_sec": 28800,
+        "available_end_sec": 61200
+      },
+      "driver": {
+        "id": "driver-veh-tw-2::day:0",
+        "full_name": "T\u00e0i x\u1ebf chuy\u00ean nghi\u1ec7p 2",
+        "license_class": "C",
+        "fixed_salary_monthly_vnd": 12500000,
+        "trip_base_pay_vnd": 160000,
+        "per_km_pay_vnd": 1200,
+        "source_driver_id": "driver-veh-tw-2",
+        "service_day_index": 0
+      },
+      "stops": [
+        {
+          "sequence": 1,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-1",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 1",
+          "order_id": "order-tw-1",
+          "order_number": "ORD-TW-001",
+          "arrival_time_sec": 29347,
+          "departure_time_sec": 29767,
+          "current_weight_kg": 80.0,
+          "items_loaded": [
+            "item-tw-1-1"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 2,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-1",
+          "location_name": "\u0110i\u1ec3m giao tw 1",
+          "order_id": "order-tw-1",
+          "order_number": "ORD-TW-001",
+          "arrival_time_sec": 30600,
+          "departure_time_sec": 31020,
+          "current_weight_kg": 0.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-1-1"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 3,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-13",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 13",
+          "order_id": "order-tw-13",
+          "order_number": "ORD-TW-013",
+          "arrival_time_sec": 31347,
+          "departure_time_sec": 31767,
+          "current_weight_kg": 240.0,
+          "items_loaded": [
+            "item-tw-13-1",
+            "item-tw-13-2",
+            "item-tw-13-3"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 4,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-13",
+          "location_name": "\u0110i\u1ec3m giao tw 13",
+          "order_id": "order-tw-13",
+          "order_number": "ORD-TW-013",
+          "arrival_time_sec": 32459,
+          "departure_time_sec": 32879,
+          "current_weight_kg": 0.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-13-1",
+            "item-tw-13-2",
+            "item-tw-13-3"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 5,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-8",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 8",
+          "order_id": "order-tw-8",
+          "order_number": "ORD-TW-008",
+          "arrival_time_sec": 33941,
+          "departure_time_sec": 34361,
+          "current_weight_kg": 160.0,
+          "items_loaded": [
+            "item-tw-8-1",
+            "item-tw-8-2"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 6,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-8",
+          "location_name": "\u0110i\u1ec3m giao tw 8",
+          "order_id": "order-tw-8",
+          "order_number": "ORD-TW-008",
+          "arrival_time_sec": 34554,
+          "departure_time_sec": 34974,
+          "current_weight_kg": 0.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-8-1",
+            "item-tw-8-2"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 7,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-4",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 4",
+          "order_id": "order-tw-4",
+          "order_number": "ORD-TW-004",
+          "arrival_time_sec": 35693,
+          "departure_time_sec": 36113,
+          "current_weight_kg": 160.0,
+          "items_loaded": [
+            "item-tw-4-1",
+            "item-tw-4-2"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 8,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-4",
+          "location_name": "\u0110i\u1ec3m giao tw 4",
+          "order_id": "order-tw-4",
+          "order_number": "ORD-TW-004",
+          "arrival_time_sec": 36845,
+          "departure_time_sec": 37265,
+          "current_weight_kg": 0.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-4-1",
+            "item-tw-4-2"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 9,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-16",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 16",
+          "order_id": "order-tw-16",
+          "order_number": "ORD-TW-016",
+          "arrival_time_sec": 37806,
+          "departure_time_sec": 38226,
+          "current_weight_kg": 160.0,
+          "items_loaded": [
+            "item-tw-16-1",
+            "item-tw-16-2"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 10,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-16",
+          "location_name": "\u0110i\u1ec3m giao tw 16",
+          "order_id": "order-tw-16",
+          "order_number": "ORD-TW-016",
+          "arrival_time_sec": 38720,
+          "departure_time_sec": 39140,
+          "current_weight_kg": 0.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-16-1",
+            "item-tw-16-2"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 11,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-11",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 11",
+          "order_id": "order-tw-11",
+          "order_number": "ORD-TW-011",
+          "arrival_time_sec": 40003,
+          "departure_time_sec": 40423,
+          "current_weight_kg": 240.0,
+          "items_loaded": [
+            "item-tw-11-1",
+            "item-tw-11-2",
+            "item-tw-11-3"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 12,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-11",
+          "location_name": "\u0110i\u1ec3m giao tw 11",
+          "order_id": "order-tw-11",
+          "order_number": "ORD-TW-011",
+          "arrival_time_sec": 40956,
+          "departure_time_sec": 41376,
+          "current_weight_kg": 0.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-11-1",
+            "item-tw-11-2",
+            "item-tw-11-3"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 13,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-12",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 12",
+          "order_id": "order-tw-12",
+          "order_number": "ORD-TW-012",
+          "arrival_time_sec": 41732,
+          "departure_time_sec": 42152,
+          "current_weight_kg": 80.0,
+          "items_loaded": [
+            "item-tw-12-1"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 14,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-12",
+          "location_name": "\u0110i\u1ec3m giao tw 12",
+          "order_id": "order-tw-12",
+          "order_number": "ORD-TW-012",
+          "arrival_time_sec": 42530,
+          "departure_time_sec": 42950,
+          "current_weight_kg": 0.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-12-1"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 15,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-6",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 6",
+          "order_id": "order-tw-6",
+          "order_number": "ORD-TW-006",
+          "arrival_time_sec": 44095,
+          "departure_time_sec": 44515,
+          "current_weight_kg": 160.0,
+          "items_loaded": [
+            "item-tw-6-1",
+            "item-tw-6-2"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 16,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-6",
+          "location_name": "\u0110i\u1ec3m giao tw 6",
+          "order_id": "order-tw-6",
+          "order_number": "ORD-TW-006",
+          "arrival_time_sec": 44984,
+          "departure_time_sec": 45404,
+          "current_weight_kg": 0.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-6-1",
+            "item-tw-6-2"
+          ],
+          "placed_items": []
+        }
+      ],
+      "total_distance_km": 105.76,
+      "total_duration_minutes": 278.7,
+      "cost_breakdown": {
+        "base_fuel_cost_vnd": 339793,
+        "load_fuel_surcharge_vnd": 1473,
+        "fuel_cost_vnd": 341266,
+        "fixed_vehicle_cost_vnd": 95000,
+        "driver_salary_allocation_vnd": 329901,
+        "driver_trip_pay_vnd": 286912,
+        "driver_total_pay_vnd": 616813,
+        "cargo_holding_cost_vnd": 2887,
+        "late_delivery_penalty_vnd": 0,
+        "total_cost_vnd": 1055966
+      }
+    },
+    {
+      "vehicle": {
+        "id": "veh-tw-3::day:0",
+        "plate_number": "TEST-TW-03",
+        "length_cm": 500.0,
+        "width_cm": 205.0,
+        "height_cm": 210.0,
+        "payload_limit_kg": 3500.0,
+        "depot": {
+          "id": "depot_veh-tw-3::day:0",
+          "name": "Hub n\u1ed9i \u0111\u00f4 time-window",
+          "latitude": 21.028,
+          "longitude": 105.854
+        },
+        "end_depot": null,
+        "door_position": "REAR",
+        "fuel_consumption_liters_per_100_km": 13.5,
+        "load_fuel_surcharge_percent_at_full_payload": 22.0,
+        "fixed_operating_cost_vnd": 95000,
+        "source_vehicle_id": "veh-tw-3",
+        "service_day_index": 0,
+        "available_start_sec": 28800,
+        "available_end_sec": 61200
+      },
+      "driver": {
+        "id": "driver-veh-tw-3::day:0",
+        "full_name": "T\u00e0i x\u1ebf chuy\u00ean nghi\u1ec7p 3",
+        "license_class": "C",
+        "fixed_salary_monthly_vnd": 12500000,
+        "trip_base_pay_vnd": 160000,
+        "per_km_pay_vnd": 1200,
+        "source_driver_id": "driver-veh-tw-3",
+        "service_day_index": 0
+      },
+      "stops": [
+        {
+          "sequence": 1,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-15",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 15",
+          "order_id": "order-tw-15",
+          "order_number": "ORD-TW-015",
+          "arrival_time_sec": 32400,
+          "departure_time_sec": 32820,
+          "current_weight_kg": 80.0,
+          "items_loaded": [
+            "item-tw-15-1"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 2,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-15",
+          "location_name": "\u0110i\u1ec3m giao tw 15",
+          "order_id": "order-tw-15",
+          "order_number": "ORD-TW-015",
+          "arrival_time_sec": 34200,
+          "departure_time_sec": 34620,
+          "current_weight_kg": 0.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-15-1"
+          ],
+          "placed_items": []
+        },
+        {
+          "sequence": 3,
+          "stop_type": "PICKUP",
+          "location_id": "p_order-tw-2",
+          "location_name": "\u0110i\u1ec3m l\u1ea5y tw 2",
+          "order_id": "order-tw-2",
+          "order_number": "ORD-TW-002",
+          "arrival_time_sec": 34857,
+          "departure_time_sec": 35277,
+          "current_weight_kg": 80.0,
+          "items_loaded": [
+            "item-tw-2-1"
+          ],
+          "items_unloaded": [],
+          "placed_items": []
+        },
+        {
+          "sequence": 4,
+          "stop_type": "DELIVERY",
+          "location_id": "d_order-tw-2",
+          "location_name": "\u0110i\u1ec3m giao tw 2",
+          "order_id": "order-tw-2",
+          "order_number": "ORD-TW-002",
+          "arrival_time_sec": 36075,
+          "departure_time_sec": 36495,
+          "current_weight_kg": 0.0,
+          "items_loaded": [],
+          "items_unloaded": [
+            "item-tw-2-1"
+          ],
+          "placed_items": []
+        }
+      ],
+      "total_distance_km": 33.32,
+      "total_duration_minutes": 88.2,
+      "cost_breakdown": {
+        "base_fuel_cost_vnd": 107050,
+        "load_fuel_surcharge_vnd": 281,
+        "fuel_cost_vnd": 107331,
+        "fixed_vehicle_cost_vnd": 95000,
+        "driver_salary_allocation_vnd": 104403,
+        "driver_trip_pay_vnd": 199984,
+        "driver_total_pay_vnd": 304387,
+        "cargo_holding_cost_vnd": 726,
+        "late_delivery_penalty_vnd": 0,
+        "total_cost_vnd": 507444
+      }
+    }
+  ],
+  "unassigned_orders": [],
+  "real_economic_cost_vnd": 2551430,
+  "penalized_objective_vnd": 2551430,
+  "total_distance_km": 228.25,
+  "fulfillment_rate": 100.0,
+  "is_spatial_valid": false,
+  "spatial_notes": "Kh\u00f4ng \u0111\u1ea1t validator \u0111\u1ed9c l\u1eadp",
+  "is_temporally_valid": true,
+  "is_contract_valid": true,
+  "validation_notes": [
+    "Xe TEST-TW-01: \u0110\u00e3 \u0111\u1ea1t gi\u1edbi h\u1ea1n t\u00ecm ki\u1ebfm b\u1ed1 tr\u00ed tr\u01b0\u1edbc khi x\u00e1c minh \u0111\u01b0\u1ee3c ph\u01b0\u01a1ng \u00e1n; kh\u00f4ng k\u1ebft lu\u1eadn chuy\u1ebfn b\u1ea5t kh\u1ea3 thi.",
+    "Xe TEST-TW-02: H\u1ebft ng\u00e2n s\u00e1ch ki\u1ec3m tra b\u1ed1 tr\u00ed cho to\u00e0n nghi\u1ec7m",
+    "Xe TEST-TW-03: H\u1ebft ng\u00e2n s\u00e1ch ki\u1ec3m tra b\u1ed1 tr\u00ed cho to\u00e0n nghi\u1ec7m"
+  ],
+  "random_seed": 0,
+  "solution_audited": true
+}

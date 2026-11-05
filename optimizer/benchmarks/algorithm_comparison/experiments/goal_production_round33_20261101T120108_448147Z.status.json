@@ -1,0 +1,7 @@
+{
+  "status": "intentionally_stopped",
+  "reason": "verified_parent_repair_deadline_regression_during_reallocated_phase",
+  "saved_trials": 120,
+  "expected_trials": 425,
+  "algorithm_source_fingerprint_unchanged": true
+}

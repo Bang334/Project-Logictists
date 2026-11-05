@@ -33,7 +33,7 @@ OrderStop có `type=PICKUP|DELIVERY`, `windowStart`, `windowEnd` ISO8601 có tim
 
 - `GET /orders/available-for-dispatch?branchId=...` chỉ trả đơn B2B đã xác nhận, số đo/khung giờ đầy đủ và trong quyền.
 - `GET /orders/:id` trả dòng và từng kiện. `POST /orders`, `PATCH /orders/:id`, `POST /orders/:id/confirm` dùng `Idempotency-Key`; sửa/xác nhận có `version`. Key cũ với payload khác hoặc version cũ trả 409.
-- `packagesToCargoUnits` đổi mm ÷ 10 → cm, gram ÷ 1000 → kg cho Python; `CargoItem.id = Package.id`, `order_id = Order.id`, không sinh ID ảo theo quantity. `can_rotate=false`; không thêm quyền xoay/xếp chồng.
+- `packagesToCargoUnits` đổi mm ÷ 10 → cm, gram ÷ 1000 → kg cho Python; `CargoItem.id = Package.id`, `order_id = Order.id`, không sinh ID ảo theo quantity. `can_rotate=true` (cho phép xoay phẳng 90° trên mặt sàn `0°/90°/180°/270°`, không lật chiều cao, không xếp chồng theo `KE_HOACH_TMS.md` mục 6.5).
 - Payload dùng `package_contract_version="1"`. Time window đổi thành giây từ `planningEpochIso` (UTC); đầu làm tròn lên, cuối làm tròn xuống nếu có millisecond, không mở rộng cửa sổ. `pickup_service_time_sec` và `delivery_service_time_sec` riêng.
 - Snapshot và kết quả trả `items_loaded/items_unloaded`, placement `item_id` bằng UUID Package thật. Backend kiểm tra ID/stop/version rồi tạo một Allocation quantity=1 và hai StopTask mỗi kiện. Không tạo lại Package trong thao tác apply.
 - `POST /trips/automatic-optimization` nhận branch + idempotencyKey, trả job. Poll `GET /trips/automatic-optimization/jobs/:id`, chọn phương án; `POST /trips/automatic-optimization/jobs/:id/apply` với `{ "candidateNumber": 1 }`. Apply dùng proposal đã ký lưu server và kiểm tra tài nguyên hiện tại trong transaction; không tự publish.

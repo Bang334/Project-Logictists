@@ -11,6 +11,7 @@ import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .greedy_insertion import solve_greedy
+from .objective import solution_key
 from .solver import HybridALNSSolver
 from .models import (
     CostPolicy,
@@ -49,6 +50,7 @@ class _AdvancedSearchBase(HybridALNSSolver):
         self.final_repair_time_limit_sec = final_repair_time_limit_sec
 
     def _initial_state(self) -> Tuple[List[List[ScheduledStop]], List[str]]:
+        started_at = time.perf_counter()
         greedy = self.initial_solution or solve_greedy(
             self.vehicles,
             self.drivers,
@@ -64,7 +66,11 @@ class _AdvancedSearchBase(HybridALNSSolver):
             routes[vehicle_index[route.vehicle.id]] = copy.deepcopy(route.stops)
         assigned = set(self._assigned_order_ids(routes))
         unassigned = [order.id for order in self.orders if order.id not in assigned]
-        return routes, unassigned
+        self._unpolished_seed = (self._plan_cost(routes, unassigned),
+                                 copy.deepcopy(routes), list(unassigned))
+        deadline = min(started_at + self.time_limit_sec,
+                       time.perf_counter() + min(0.3, self.time_limit_sec * 0.15))
+        return self._polish_seed(routes, unassigned, deadline), unassigned
 
     def _randomized_construction(
         self,
@@ -273,13 +279,16 @@ class _AdvancedSearchBase(HybridALNSSolver):
         """
         unique_candidates: List[PlanCandidate] = []
         seen = set()
-        for candidate in sorted(candidates, key=lambda row: row[0]):
+        original_seed = getattr(self, "_unpolished_seed", None)
+        candidate_pool = candidates + ([original_seed] if original_seed is not None else [])
+        for candidate in sorted(candidate_pool, key=lambda row: self._candidate_key(row[1], row[2])):
             signature = self._plan_signature(candidate[1], candidate[2])
             if signature in seen:
                 continue
             seen.add(signature)
             unique_candidates.append(candidate)
 
+        best_valid: Optional[OptimizationSolution] = None
         for rank, (_, routes, unassigned) in enumerate(
             unique_candidates[:max_audit_candidates], start=1
         ):
@@ -296,14 +305,13 @@ class _AdvancedSearchBase(HybridALNSSolver):
                 and solution.is_temporally_valid
                 and solution.is_spatial_valid
             ):
-                # Candidates are already ordered by the same penalized cost
-                # recomputed by the audit, so the first valid plan is the
-                # cheapest valid elite. Continuing would only repeat costly
-                # production geometry checks without changing the winner.
-                solution.execution_time_sec = round(
-                    time.perf_counter() - started_at, 3
-                )
-                return solution
+                if best_valid is None or solution_key(solution, self.orders) < solution_key(best_valid, self.orders):
+                    best_valid = solution
+                # Repair may remove requests. A valid partial plan does not
+                # justify discarding a complete elite or the original seed.
+                if not solution.unassigned_orders:
+                    solution.execution_time_sec = round(time.perf_counter() - started_at, 3)
+                    return solution
 
         if unique_candidates:
             # Preserve the elapsed search/audit time on the fallback path too.
@@ -318,6 +326,25 @@ class _AdvancedSearchBase(HybridALNSSolver):
             fallback_solution.execution_time_sec = round(
                 time.perf_counter() - started_at, 3
             )
+            original_seed = getattr(self, "_unpolished_seed", None)
+            if fallback_solution.unassigned_orders and original_seed is not None:
+                original_solution = self._finalize(
+                    copy.deepcopy(original_seed[1]), list(original_seed[2]), started_at,
+                    f"{solver_name}, original seed fallback",
+                    spatial_time_limit_sec=spatial_time_limit_sec,
+                    repair_time_limit_sec=repair_time_limit_sec,
+                )
+                if (original_solution.is_contract_valid and original_solution.is_temporally_valid
+                    and original_solution.is_spatial_valid
+                    and solution_key(original_solution, self.orders) < solution_key(fallback_solution, self.orders)):
+                    fallback_solution = original_solution
+            if best_valid is not None and (
+                not (fallback_solution.is_contract_valid and fallback_solution.is_temporally_valid
+                     and fallback_solution.is_spatial_valid)
+                or solution_key(best_valid, self.orders) < solution_key(fallback_solution, self.orders)
+            ):
+                best_valid.execution_time_sec = fallback_solution.execution_time_sec
+                return best_valid
             return fallback_solution
 
         raise RuntimeError("Không có candidate hoặc fallback để hoàn tất nghiệm")
@@ -1070,7 +1097,7 @@ class AdaptivePackingAwareSimulatedAnnealingSolver(
         extra_elites: List[PlanCandidate] = []
         total_items = sum(len(order.items) for order in self.orders)
         if (
-            self.time_limit_sec < 2.5
+            self.time_limit_sec < 1.5
             or self.construction_fraction == 0.0
             or total_items > self.construction_item_limit
         ):
@@ -1078,7 +1105,7 @@ class AdaptivePackingAwareSimulatedAnnealingSolver(
 
         construction_budget = min(
             4.5,
-            max(2.5, self.time_limit_sec * self.construction_fraction),
+            max(0.4, self.time_limit_sec * min(0.25, self.construction_fraction)),
         )
         construction_deadline = min(deadline, started_at + construction_budget)
 

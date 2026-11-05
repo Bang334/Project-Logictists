@@ -1,0 +1,26 @@
+{
+  "replay_directory": "C:\\Users\\BANG\\AppData\\Local\\Temp\\hybrid-alns-baseline-sl7we4lm",
+  "original_snapshot": "E:\\Projects\\Coursework\\Project-Logictists\\optimizer\\benchmarks\\algorithm_comparison\\experiments\\goal_baseline_20261101T074747_529895Z.zip",
+  "original_snapshot_sha256": "1580e4e3644fb7c9cc7ca4eaa67ddede2f50abfa183a248bb7cd4e37c4034d03",
+  "unchanged_solver_and_fixture_files": 50,
+  "current_independent_auditor_spatial_sha256": "5efae2860850d78affdbbbb69ce9ced3ba5fea00fd59cff64b87e93959bea63c",
+  "measurement_modules_sha256": {
+    "algo1_hybrid_genetic.py": "923dad397408dfba67eb16db8b8064a5754fb0f271a94dd68955ac5376456744",
+    "algo2_set_partitioning.py": "bf667b8a67e1433e9fdbb2afb68172a8e1e515da9938965826acaf751a9a7d03",
+    "algo3_cp_sat_benders.py": "7cbb7e67aa8c496ac911b4d522c67b6f1d2509a93d91ade045af0b25677e08de",
+    "benchmark_objective.py": "f5d59a1bb9cc8c676dda1333f3abd53f726a387ccfec3d16c28b7cd427d075bf",
+    "benchmark_selection.py": "fe6a8ab801e32445c74b86b8171b173d10c5ee8f2550f0cfdf426897555457d9",
+    "challenge.py": "a71e208fa590892396dc27506e2531aa97ee765796efbdcabbc25c187ea32363",
+    "common.py": "ad758cc9d117edf372852f2fe45078d69d7d029132c96564851f61e1bc923125",
+    "daytime_cases.py": "570fbcc2ef38f3585dc39f6883e6739e52491e4189945f00be4b014e53db49fc",
+    "layout_certificate.py": "3738da9459c621b455fd796b4f2b7e9b89b35f182c64413adfa514728d9bad0b",
+    "measurement_spatial.py": "5efae2860850d78affdbbbb69ce9ced3ba5fea00fd59cff64b87e93959bea63c",
+    "measure_baseline_snapshot.py": "deeb906793cf0ce1f830e34037134c630b76e6f7b06710ac2bdfaa942a696bc7",
+    "run_comparison.py": "8fd2e3245d6f13f9a89444fc04ee6736bc04c043a45a4a273c0d834cb7b242e9",
+    "run_daytime_benchmark.py": "ea974fc8534f93428a130f59706edde9178d79fdb1b9b87f6e5924f592d2bd7d",
+    "summarize_daytime.py": "7353479d798a088dd323c9d6420f2b2480f5ca951278ed353adf8beb1b1844d1",
+    "unified_audit.py": "9515584f13730ddefc12d75d53267d9b1993032c0254d3dfd9bda17a70162448",
+    "__init__.py": "44971dc16ee5fe5433c9fc9013e147be2e3ce932e21e5bc5db382643c7412412"
+  },
+  "production_objective_functions_identical": true
+}

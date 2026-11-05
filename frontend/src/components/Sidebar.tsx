@@ -29,14 +29,6 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
   const menuItems = [
     { key: 'audit-logs', icon: <DatabaseOutlined />, label: 'Nhật ký thao tác' },
     { key: 'trips', icon: <CarOutlined />, label: 'Tra cứu chuyến' },
-    { key: 'customer-shop', icon: <ShopOutlined />, label: 'Đặt hàng' },
-    { key: 'catalog', icon: <AppstoreOutlined />, label: 'Danh mục hàng' },
-    { key: 'inventory', icon: <DatabaseOutlined />, label: 'Tồn kho' },
-    { key: 'sales-orders', icon: <ShoppingOutlined />, label: 'Đơn bán lẻ' },
-    { key: 'order-processing', icon: <InboxOutlined />, label: 'Xử lý đơn bán lẻ' },
-    { key: 'pickup-ops', icon: <ShopOutlined />, label: 'Điểm nhận hàng' },
-    { key: 'retail-analytics', icon: <BarChartOutlined />, label: 'Báo cáo bán lẻ' },
-    { key: 'accounts', icon: <UserOutlined aria-hidden="true" />, label: 'Quản lý tài khoản' },
     { key: 'customers', icon: <UserOutlined aria-hidden="true" />, label: 'Khách hàng vận tải' },
     {
       key: 'dashboard',
@@ -63,11 +55,21 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
       icon: <CarOutlined style={{ fontSize: '16px' }} />,
       label: 'Đội Xe & Tài Xế',
     },
+    { key: 'catalog', icon: <AppstoreOutlined />, label: 'Danh mục hàng' },
+    { key: 'inventory', icon: <DatabaseOutlined />, label: 'Tồn kho' },
+    { key: 'sales-orders', icon: <ShoppingOutlined />, label: 'Đơn bán lẻ' },
+    { key: 'order-processing', icon: <InboxOutlined />, label: 'Xử lý đơn bán lẻ' },
+    { key: 'pickup-ops', icon: <ShopOutlined />, label: 'Điểm nhận hàng' },
+    { key: 'retail-analytics', icon: <BarChartOutlined />, label: 'Báo cáo bán lẻ' },
+    { key: 'customer-shop', icon: <ShopOutlined />, label: 'Đặt hàng' },
+    { key: 'accounts', icon: <UserOutlined aria-hidden="true" />, label: 'Quản lý tài khoản' },
   ];
+
 
 
   return (
     <Sider
+      className="tms-sidebar"
       width={240}
       breakpoint="lg"
       collapsedWidth={0}
@@ -77,13 +79,29 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
         minHeight: 'calc(100vh - 64px)',
       }}
     >
-      <Menu
-        mode="inline"
-        selectedKeys={[currentTab]}
-        onClick={({ key }) => onSelectTab(key)}
-        style={{ borderRight: 0, paddingTop: '12px' }}
-        items={menuItems.filter(item => canOpenTab(user, item.key, can))}
-      />
+      <div className="tms-sidebar-inner">
+        <div className="tms-sidebar-label">Danh mục chức năng</div>
+        <Menu
+          className="tms-sidebar-menu"
+          mode="inline"
+          selectedKeys={[currentTab]}
+          onClick={({ key }) => onSelectTab(key)}
+          items={menuItems.filter((item) => canOpenTab(user, item.key, can))}
+        />
+        <div className="tms-sidebar-footer">
+          <span
+            style={{
+              display: 'inline-block',
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              background: '#22c55e',
+              boxShadow: '0 0 6px rgba(34, 197, 94, 0.6)',
+            }}
+          />
+          <span style={{ fontWeight: 500, color: '#475569' }}>Hệ thống trực tuyến</span>
+        </div>
+      </div>
     </Sider>
   );
 };

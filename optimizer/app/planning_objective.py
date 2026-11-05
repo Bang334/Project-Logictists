@@ -1,12 +1,15 @@
 """Shared candidate-ranking objective for every fleet search engine.
 
 The reported route cost remains an operating-cost estimate. Candidate ranking
-also accounts for fixed monthly salaries paid while the plan is still open and
-for operational lateness when no financial late-fee policy is configured.
+follows the confirmed lexicographic hierarchy:
+1. Serve all required orders/packages under hard constraints.
+2. Minimize extra order trips: sum(max(0, distinct_trip_count(order) - 1)).
+3. Minimize active route count (trips), tracking physical vehicles separately.
+4. Minimize selection_score_vnd (operating cost + idle calendar salary + late penalty).
 """
 
 from collections import defaultdict
-from typing import Dict
+from typing import Dict, Set, Tuple
 
 from .models import (
     FleetOptimizationRequest,
@@ -77,6 +80,16 @@ def _calendar_salary_vnd(
     return max(active_salary_vnd, salary_vnd)
 
 
+def calendar_salary_for_span(request: FleetOptimizationRequest, planning_span_days: int) -> int:
+    """Snapshot calendar payroll used to price a search horizon extension.
+
+    Final objective calculation still applies its active-salary lower bound.
+    Single-day legacy snapshots without daily resource slots add no calendar
+    payroll beyond their existing active route allocation.
+    """
+    return _calendar_salary_vnd(request, planning_span_days, 0)
+
+
 def _operational_late_penalty_vnd(
     request: FleetOptimizationRequest,
     plan: FleetOptimizationResponse,
@@ -118,6 +131,137 @@ def _operational_late_penalty_vnd(
     return total
 
 
+def compute_grouping_metrics(
+    request: FleetOptimizationRequest,
+    plan: FleetOptimizationResponse,
+) -> Dict[str, int]:
+    """Compute order-grouping and fleet-usage metrics for a candidate plan."""
+    order_by_id = {order.id: order for order in request.orders}
+    source_by_order_id: Dict[str, str] = {}
+    for order in request.orders:
+        source_id = order.source_order_id or order.id
+        source_by_order_id[order.id] = source_id
+        source_by_order_id.setdefault(source_id, source_id)
+
+    trips_by_source_order: Dict[str, Set[str]] = defaultdict(set)
+    trips_by_request: Dict[str, Set[str]] = defaultdict(set)
+    delivery_visits_by_source_order: Dict[str, Set[str]] = defaultdict(set)
+
+    for route_index, route in enumerate(plan.routes):
+        route_key = route.route_id or f"{route.vehicle_id}::{route_index}"
+        for stop in route.stops:
+            allocation_or_order = stop.allocation_id or stop.order_id or ""
+            matched_order = order_by_id.get(allocation_or_order) or order_by_id.get(
+                stop.order_id or ""
+            )
+            if matched_order is not None:
+                source_order_id = matched_order.source_order_id or matched_order.id
+                base_request_id = matched_order.id.split("::split:")[0]
+            else:
+                raw_id = stop.order_id or allocation_or_order.split("::split:")[0]
+                if not raw_id:
+                    continue
+                source_order_id = source_by_order_id.get(raw_id, raw_id)
+                base_request_id = (
+                    allocation_or_order.split("::split:")[0] or raw_id
+                )
+
+            trips_by_source_order[source_order_id].add(route_key)
+            trips_by_request[base_request_id].add(route_key)
+            if stop.stop_type == "DELIVERY":
+                delivery_visits_by_source_order[source_order_id].add(route_key)
+
+    extra_order_trips = sum(
+        max(0, len(route_keys) - 1)
+        for route_keys in trips_by_source_order.values()
+    )
+    split_order_count = sum(
+        1 for route_keys in trips_by_source_order.values() if len(route_keys) > 1
+    )
+    max_trips_per_order = max(
+        (len(route_keys) for route_keys in trips_by_source_order.values()),
+        default=0,
+    )
+    extra_request_trips = sum(
+        max(0, len(route_keys) - 1)
+        for route_keys in trips_by_request.values()
+    )
+    active_route_count = len(plan.routes)
+    physical_vehicle_count = len(
+        {route.vehicle_id for route in plan.routes if route.vehicle_id}
+    )
+    delivery_visit_count = sum(
+        len(route_keys)
+        for route_keys in delivery_visits_by_source_order.values()
+    )
+
+    return {
+        "extra_order_trips": extra_order_trips,
+        "split_order_count": split_order_count,
+        "max_trips_per_order": max_trips_per_order,
+        "extra_request_trips": extra_request_trips,
+        "active_route_count": active_route_count,
+        "physical_vehicle_count": physical_vehicle_count,
+        "delivery_visit_count": delivery_visit_count,
+    }
+
+
+def plan_lexicographic_key(
+    plan: FleetOptimizationResponse,
+) -> Tuple[int, int, int, int, int]:
+    """Return the confirmed lexicographic comparison tuple for two plans.
+
+    Ordering:
+    1. extra_order_trips: sum(max(0, distinct_trip_count(order) - 1))
+    2. active_route_count: total active trips
+    3. selection_score_vnd: financial + calendar + operational lateness score
+    4. total_cost_vnd: direct operating cost tie-breaker
+    5. physical_vehicle_count: distinct physical vehicles tie-breaker
+    """
+    breakdown = plan.planning_objective
+    if breakdown is not None:
+        extra_order_trips = breakdown.extra_order_trips
+        active_route_count = (
+            breakdown.active_route_count
+            if breakdown.active_route_count > 0 or not plan.routes
+            else len(plan.routes)
+        )
+        selection_score_vnd = breakdown.selection_score_vnd
+        physical_vehicle_count = (
+            breakdown.physical_vehicle_count
+            if breakdown.physical_vehicle_count > 0 or not plan.routes
+            else len({route.vehicle_id for route in plan.routes if route.vehicle_id})
+        )
+    else:
+        trips_by_order: Dict[str, Set[str]] = defaultdict(set)
+        for idx, route in enumerate(plan.routes):
+            r_key = route.route_id or f"{route.vehicle_id}::{idx}"
+            for stop in route.stops:
+                oid = stop.order_id or (
+                    stop.allocation_id.split("::split:")[0]
+                    if stop.allocation_id
+                    else ""
+                )
+                if oid:
+                    trips_by_order[oid].add(r_key)
+        extra_order_trips = sum(
+            max(0, len(r_keys) - 1) for r_keys in trips_by_order.values()
+        )
+        active_route_count = len(plan.routes)
+        selection_score_vnd = plan.total_cost_vnd
+        physical_vehicle_count = len(
+            {route.vehicle_id for route in plan.routes if route.vehicle_id}
+        )
+
+    return (
+        extra_order_trips,
+        active_route_count,
+        selection_score_vnd,
+        plan.total_cost_vnd,
+        physical_vehicle_count,
+    )
+
+
 def apply_planning_objective(
     request: FleetOptimizationRequest,
     plan: FleetOptimizationResponse,
@@ -145,6 +289,7 @@ def apply_planning_objective(
         + calendar_salary_vnd
         + operational_late_penalty_vnd
     )
+    grouping = compute_grouping_metrics(request, plan)
     breakdown = PlanningObjectiveBreakdown(
         planning_span_days=planning_span_days,
         operating_cost_vnd=plan.total_cost_vnd,
@@ -153,6 +298,7 @@ def apply_planning_objective(
         driver_idle_salary_allocation_vnd=idle_salary_vnd,
         operational_late_penalty_vnd=operational_late_penalty_vnd,
         selection_score_vnd=max(0, selection_score_vnd),
+        **grouping,
     )
     plan.planning_objective = breakdown
     return breakdown

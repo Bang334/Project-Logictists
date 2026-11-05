@@ -45,11 +45,27 @@ def solve_greedy(
         best_d_pos: Optional[int] = None
         best_incremental_cost = float("inf")
         checked_empty_types = set()
+        has_empty_vehicles = any(len(r) == 0 for r in vehicle_routes)
 
         for v_idx, vehicle in enumerate(vehicles):
             current_stops = vehicle_routes[v_idx]
+            if len(current_stops) > 0 and has_empty_vehicles:
+                cur_orders = len({s.order_id for s in current_stops if s.order_id})
+                cur_items = sum(
+                    len(order_by_id[s.order_id].items)
+                    for s in current_stops
+                    if s.order_id and s.stop_type == "PICKUP" and s.order_id in order_by_id
+                )
+                order_items = len(order.items)
+                max_safe_items = 25 if vehicle.payload_limit_kg < 3000 else 38
+                max_safe_orders = 12 if vehicle.payload_limit_kg > 5000 else 8
+                if (cur_items + order_items > max_safe_items) or (cur_orders >= max_safe_orders):
+                    continue
             if len(current_stops) == 0:
                 v_type = (
+                    vehicle.service_day_index,
+                    vehicle.available_start_sec,
+                    vehicle.available_end_sec,
                     vehicle.payload_limit_kg,
                     vehicle.length_cm,
                     vehicle.width_cm,
@@ -59,31 +75,57 @@ def solve_greedy(
                 if v_type in checked_empty_types:
                     continue
                 checked_empty_types.add(v_type)
+                base_route_cost = 0
+                shares_source_order = False
+            else:
+                base_eval = schedule_and_evaluate_route(
+                    vehicle,
+                    drivers[v_idx],
+                    current_stops,
+                    order_by_id,
+                    cargo_by_id,
+                    policy,
+                    distance_matrix,
+                    duration_matrix,
+                    node_id_to_index,
+                    use_fast_packing=False,
+                )
+                base_route_cost = (
+                    base_eval.cost.total_cost_vnd
+                    if base_eval.feasible and base_eval.cost is not None
+                    else 0
+                )
+                target_source = order.source_order_id or order.id
+                shares_source_order = (
+                    any(
+                        (order_by_id[s.order_id].source_order_id or s.order_id) == target_source
+                        for s in current_stops
+                        if s.order_id and s.order_id in order_by_id
+                    )
+                )
 
-            checker = FastPackingChecker(vehicle)
+            # Keep a cheap conservative seed; layout search remains available
+            # in the improvement neighborhoods without replacing this fallback.
+            checker = FastPackingChecker(vehicle, allow_layout_search=False)
 
             depot_idx = node_id_to_index.get(vehicle.depot.id, 0)
-            base_dist = 0.0
-            if len(current_stops) > 0:
-                prev_n = depot_idx
-                for st in current_stops:
-                    cur_n = node_id_to_index.get(st.location_id, 0)
-                    base_dist += distance_matrix[prev_n][cur_n]
-                    prev_n = cur_n
-                base_dist += distance_matrix[prev_n][depot_idx]
 
             # Try inserting Pickup at pos i, Delivery at pos j (j > i)
             n = len(current_stops)
-            if n <= 6:
+            if n <= 12:
                 positions = [(i, j) for i in range(n + 1) for j in range(i + 1, n + 2)]
             else:
-                positions = [
-                    (n, n + 1),
-                    (0, n + 1),
-                    (max(0, n - 2), n + 1),
-                    (n // 2, n + 1),
-                ]
-            for i, j in positions:
+                anchor_indices = sorted({0, n // 4, n // 2, (3 * n) // 4, max(0, n - 2), n})
+                pos_set = set()
+                for i in anchor_indices:
+                    for j in [i + 1, (i + 1 + n) // 2, n + 1]:
+                        if j > i and j <= n + 1:
+                            pos_set.add((i, j))
+                pos_set.add((n, n + 1))
+                pos_set.add((0, n + 1))
+                positions = sorted(pos_set)
+            temporal_candidates = []
+            for pos_idx, (i, j) in enumerate(positions):
                 pickup_stop = ScheduledStop(
                     sequence=0,
                     stop_type="PICKUP",
@@ -128,19 +170,34 @@ def solve_greedy(
                 if not eval_res.feasible:
                     continue
 
+                cand_cost = (
+                    (eval_res.cost.total_cost_vnd - base_route_cost)
+                    if eval_res.cost
+                    else float("inf")
+                )
+                if len(current_stops) == 0:
+                    cand_cost += 1_000_000 + vehicle.service_day_index * 50_000
+                elif shares_source_order:
+                    cand_cost -= 2_000_000
+
+                if cand_cost < best_incremental_cost:
+                    temporal_candidates.append(
+                        (cand_cost, pos_idx, i, j, candidate_stops)
+                    )
+
+            temporal_candidates.sort(key=lambda item: (item[0], item[1]))
+            for cand_cost, _, i, j, candidate_stops in temporal_candidates:
+                if cand_cost >= best_incremental_cost:
+                    break
                 valid_packing, _ = checker.validate_route_stops(
                     candidate_stops, cargo_by_id
                 )
-                if not valid_packing:
-                    continue
-
-                inc_cost = eval_res.cost.total_cost_vnd if eval_res.cost else float("inf")
-
-                if inc_cost < best_incremental_cost:
-                    best_incremental_cost = inc_cost
+                if valid_packing:
+                    best_incremental_cost = cand_cost
                     best_vehicle_idx = v_idx
                     best_p_pos = i
                     best_d_pos = j
+                    break
 
         if best_vehicle_idx is not None:
             current_stops = vehicle_routes[best_vehicle_idx]

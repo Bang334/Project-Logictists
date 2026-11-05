@@ -302,7 +302,7 @@ const DispatchPage: React.FC = () => {
       if (res.data.status === 'SUCCESS') {
         setOrderedStopIds(res.data.stops.map((stop) => stop.location_id));
         message.success(
-          `Google OR-Tools đã tối ưu thành công! Cự ly: ${formatDecimal(res.data.total_distance_km)} km, thời gian: ${formatDecimal(res.data.total_duration_minutes)} phút, xếp dỡ 2D hợp lệ.`
+          `Thuật toán tối ưu đã lập tuyến thành công! Cự ly: ${formatDecimal(res.data.total_distance_km)} km, thời gian: ${formatDecimal(res.data.total_duration_minutes)} phút, xếp dỡ 2D hợp lệ.`
         );
       } else {
         message.warning(`Kết quả tối ưu: ${res.data.status}`);
@@ -1013,7 +1013,7 @@ const DispatchPage: React.FC = () => {
             />
           </Card>
 
-          {/* KẾT QUẢ TỐI ƯU TUYẾN & MÔ PHỎNG XẾP DỠ MẶT SÀN 2D (OR-TOOLS / NGƯỜI 3) */}
+          {/* KẾT QUẢ TỐI ƯU TUYẾN & MÔ PHỎNG XẾP DỠ MẶT SÀN 2D (HYBRID ALNS / DYNAMIC 2D SPATIAL VALIDATOR) */}
           {optimizationResult && (
             <div style={{ marginBottom: '20px' }}>
               <FloorPackingVisualizer

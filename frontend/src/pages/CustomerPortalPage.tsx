@@ -17,76 +17,126 @@ import {
   Typography,
   App as AntdApp,
   Divider,
+  Modal,
+  Checkbox,
+  Tabs,
+  Badge,
 } from 'antd';
 import {
   EnvironmentOutlined,
   CompassOutlined,
   ReloadOutlined,
   ShoppingCartOutlined,
-  CarOutlined,
   CheckCircleOutlined,
   AimOutlined,
+  DeleteOutlined,
   ShopOutlined,
+  FileTextOutlined,
+  WarningOutlined,
 } from '@ant-design/icons';
 import { apiClient } from '../api/client';
 import { useAuth } from '../context/AuthContext';
 import { getProductImage } from '../utils/demoAssets';
 import { MapLocationPickerModal } from '../components/MapLocationPickerModal';
 
-const { Title, Text } = Typography;
+const { Title, Text, Paragraph } = Typography;
 
-interface CatalogSku {
-  id: string;
+interface ServiceProvince {
+  provinceCode: string;
+  provinceName: string;
+  zoneId: string;
+  zoneCode: string;
+  zoneName: string;
+  activeStoreCount: number;
+}
+
+interface SkuAvailability {
+  skuId: string;
   skuCode: string;
   name: string;
   uom: string;
-  storageCondition: string;
-  salePrice: number | string;
-  weightGrams?: number;
-  lengthMm?: number;
-  widthMm?: number;
-  heightMm?: number;
-  isSellable: boolean;
+  salePrice: number;
+  imageUrl?: string | null;
+  productName: string;
+  categoryName?: string;
+  maxOrderableQuantity: number;
+  fulfillmentLabel: 'SINGLE_STORE' | 'MULTI_STORE' | 'UNAVAILABLE';
+  canAddToCart: boolean;
 }
 
-interface CatalogProduct {
-  id: string;
-  code: string;
+interface CartItem {
+  skuId: string;
+  skuCode: string;
   name: string;
-  brand?: string;
-  imageUrl?: string;
-  category?: {
-    id: string;
-    code: string;
+  uom: string;
+  unitPrice: number;
+  quantity: number;
+  imageUrl?: string | null;
+}
+
+interface CartCheckResult {
+  isFeasible: boolean;
+  sourceCount: number;
+  sources: Array<{ id: string; name: string; address: string }>;
+  warnings: string[];
+  suggestedActions?: string[];
+}
+
+interface QuoteDetails {
+  quoteId: string;
+  quoteVersion: number;
+  createdAt: string;
+  expiresAt: string;
+  provinceCode: string;
+  deliveryAddress: string;
+  deliveryLatitude: number;
+  deliveryLongitude: number;
+  items: Array<{
+    skuId: string;
+    skuCode: string;
     name: string;
-  };
-  skus: CatalogSku[];
-}
-
-interface FulfillmentLocation {
-  id: string;
-  code: string;
-  name: string;
-  type: string;
-  address: string;
-}
-
-interface OrderStop {
-  id: string;
-  type: 'PICKUP' | 'DELIVERY';
-  address: string;
-  latitude?: number;
-  longitude?: number;
+    quantity: number;
+    unitPrice: number;
+    lineTotal: number;
+    sourceAllocations: Array<{ locationId: string; locationName: string; quantity: number }>;
+  }>;
+  subtotal: number;
+  shippingFee: number;
+  shippingFeeStatus: 'ESTIMATED_PENDING_MEASUREMENT' | 'FIXED';
+  totalAmount: number;
+  sourceStores: Array<{
+    id: string;
+    name: string;
+    address: string;
+    distanceToDeliveryKm: number;
+  }>;
+  maxDistanceBetweenSourcesKm: number;
+  conditionsToAccept: string[];
 }
 
 interface CustomerOrder {
   id: string;
   orderNumber: string;
   status: string;
+  subtotal?: number | string;
   totalAmount?: number | string;
-  grandTotal?: number | string;
   createdAt: string;
-  stops?: OrderStop[];
+  stops?: Array<{
+    id: string;
+    type: 'PICKUP' | 'DELIVERY';
+    address: string;
+  }>;
+  fulfillmentGroups?: Array<{
+    id: string;
+    groupNumber: string;
+    status: string;
+    sourceLocation?: { name: string; address: string };
+    lines?: Array<{
+      id: string;
+      requestedQuantity: number;
+      sku?: { name: string; uom: string };
+    }>;
+  }>;
   items?: Array<{
     id: string;
     sku: string;
@@ -97,113 +147,200 @@ interface CustomerOrder {
   }>;
 }
 
-interface CheckoutFormValues {
-  customerName: string;
-  customerPhone: string;
-  deliveryAddress: string;
-  deliveryLatitude?: number;
-  deliveryLongitude?: number;
-  fulfillmentSourceId?: string;
-  skuId: string;
-  quantity: number;
-}
-
 const money = (value: number | string | undefined) =>
   new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(Number(value || 0));
 
 export const CustomerPortalPage: React.FC = () => {
   const { message } = AntdApp.useApp();
   const { user } = useAuth();
-  const [form] = Form.useForm<CheckoutFormValues>();
+  const [form] = Form.useForm();
 
-  const [products, setProducts] = useState<CatalogProduct[]>([]);
-  const [locations, setLocations] = useState<FulfillmentLocation[]>([]);
-  const [orders, setOrders] = useState<CustomerOrder[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [loadError, setLoadError] = useState<string>();
+  // 1. Quản lý vùng / Tỉnh thành
+  const [provinces, setProvinces] = useState<ServiceProvince[]>([]);
+  const [selectedProvince, setSelectedProvince] = useState<string>(() => {
+    return localStorage.getItem('tms_customer_province') || 'HN';
+  });
 
-  // Bản đồ & tọa độ giao hàng
+  // 2. Danh mục sản phẩm theo vùng
+  const [catalogItems, setCatalogItems] = useState<SkuAvailability[]>([]);
+  const [loadingCatalog, setLoadingCatalog] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showUnavailable, setShowUnavailable] = useState(false);
+
+  // 3. Giỏ hàng nhiều SKU
+  const [cart, setCart] = useState<CartItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('tms_customer_cart');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  // 4. Kiểm tra tính khả thi giỏ hàng (Check Cart)
+  const [cartCheck, setCartCheck] = useState<CartCheckResult | null>(null);
+  const [checkingCart, setCheckingCart] = useState(false);
+
+  // 5. Báo giá & Thanh toán
   const [isMapOpen, setIsMapOpen] = useState(false);
   const [deliveryCoord, setDeliveryCoord] = useState<{ lat: number; lng: number } | null>(null);
+  const [quoteModalOpen, setQuoteModalOpen] = useState(false);
+  const [quote, setQuote] = useState<QuoteDetails | null>(null);
+  const [creatingQuote, setCreatingQuote] = useState(false);
+  const [acceptedConditions, setAcceptedConditions] = useState(false);
+  const [submittingCheckout, setSubmittingCheckout] = useState(false);
 
-  // Tính toán tải trọng theo thời gian thực
-  const selectedSkuId = Form.useWatch('skuId', form);
-  const selectedQuantity = Form.useWatch('quantity', form) || 1;
+  // 6. Đơn hàng đã đặt
+  const [orders, setOrders] = useState<CustomerOrder[]>([]);
+  const [loadingOrders, setLoadingOrders] = useState(false);
 
-  const idempotencyKey = useRef(`checkout_${crypto.randomUUID()}`);
+  // Lưu giỏ hàng vào localStorage khi thay đổi
+  useEffect(() => {
+    localStorage.setItem('tms_customer_cart', JSON.stringify(cart));
+  }, [cart]);
 
-  const loadPage = useCallback(async () => {
-    setLoading(true);
-    setLoadError(undefined);
+  // Lưu tỉnh thành được chọn
+  useEffect(() => {
+    localStorage.setItem('tms_customer_province', selectedProvince);
+  }, [selectedProvince]);
+
+  // Tải danh sách tỉnh/thành được phục vụ
+  useEffect(() => {
+    const loadServiceAreas = async () => {
+      try {
+        const res = await apiClient.get('/shopping/service-areas');
+        const provs: ServiceProvince[] = res.data?.provinces || [];
+        setProvinces(provs);
+        if (provs.length > 0 && !provs.some((p) => p.provinceCode === selectedProvince)) {
+          setSelectedProvince(provs[0].provinceCode);
+        }
+      } catch (err: any) {
+        message.error('Không thể tải danh sách vùng phục vụ');
+      }
+    };
+    loadServiceAreas();
+  }, [message, selectedProvince]);
+
+  // Tải danh mục sản phẩm theo vị trí
+  const loadCatalog = useCallback(async () => {
+    if (!selectedProvince) return;
+    setLoadingCatalog(true);
     try {
-      const [catalogRes, locationsRes, ordersRes] = await Promise.all([
-        apiClient.get('/catalog/products', { params: { limit: 100 } }),
-        apiClient.get('/locations'),
-        apiClient.get('/sales-orders', { params: { limit: 20 } }),
-      ]);
-
-      setProducts(catalogRes.data?.data ?? []);
-      setLocations(locationsRes.data ?? []);
-      setOrders(ordersRes.data?.data ?? []);
-    } catch (error: any) {
-      setLoadError(error.response?.data?.message || 'Không thể tải dữ liệu mua hàng và kho bãi.');
+      const res = await apiClient.post('/shopping/availability/search', {
+        provinceCode: selectedProvince,
+        search: searchTerm.trim() || undefined,
+        showUnavailable,
+        limit: 100,
+      });
+      setCatalogItems(res.data?.data || []);
+    } catch (err: any) {
+      message.error(err.response?.data?.message || 'Không thể tải danh mục sản phẩm trong khu vực');
     } finally {
-      setLoading(false);
+      setLoadingCatalog(false);
+    }
+  }, [selectedProvince, searchTerm, showUnavailable, message]);
+
+  useEffect(() => {
+    loadCatalog();
+  }, [loadCatalog]);
+
+  // Kiểm tra giỏ hàng nhanh (check-cart)
+  const verifyCart = useCallback(async () => {
+    if (cart.length === 0 || !selectedProvince) {
+      setCartCheck(null);
+      return;
+    }
+    setCheckingCart(true);
+    try {
+      const res = await apiClient.post<CartCheckResult>('/shopping/cart/check', {
+        provinceCode: selectedProvince,
+        latitude: deliveryCoord?.lat,
+        longitude: deliveryCoord?.lng,
+        items: cart.map((c) => ({ skuId: c.skuId, quantity: c.quantity })),
+      });
+      setCartCheck(res.data);
+    } catch (err: any) {
+      setCartCheck({
+        isFeasible: false,
+        sourceCount: 0,
+        sources: [],
+        warnings: [err.response?.data?.message || 'Không thể kiểm tra giỏ hàng'],
+      });
+    } finally {
+      setCheckingCart(false);
+    }
+  }, [cart, selectedProvince, deliveryCoord]);
+
+  useEffect(() => {
+    verifyCart();
+  }, [verifyCart]);
+
+  // Tải danh sách đơn hàng đã đặt
+  const loadOrders = useCallback(async () => {
+    setLoadingOrders(true);
+    try {
+      const res = await apiClient.get('/sales-orders', { params: { limit: 20 } });
+      setOrders(res.data?.data || []);
+    } catch (err: any) {
+      // Có thể là guest chưa đăng nhập
+    } finally {
+      setLoadingOrders(false);
     }
   }, []);
 
   useEffect(() => {
-    loadPage();
-  }, [loadPage]);
-
-  const skuToImageMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const p of products) {
-      if (p.imageUrl) {
-        map.set(p.code, p.imageUrl);
-        for (const s of p.skus || []) {
-          map.set(s.skuCode, p.imageUrl);
-          map.set(s.id, p.imageUrl);
-        }
-      }
+    if (user) {
+      loadOrders();
     }
-    return map;
-  }, [products]);
+  }, [user, loadOrders]);
 
-  // Gom danh sách SKU VLXD (không hiển thị kích thước, tải trọng kỹ thuật cho khách hàng)
-  const skuOptions = useMemo(() => {
-    return products.flatMap((product) =>
-      product.skus
-        .filter((sku) => sku.isSellable)
-        .map((sku) => ({
-          value: sku.id,
-          label: `[${product.category?.name || 'VLXD'}] ${sku.name} — ${money(sku.salePrice)} / ${sku.uom}`,
-          productName: product.name,
-          categoryName: product.category?.name || 'Vật liệu xây dựng',
-          skuCode: sku.skuCode,
-          skuName: sku.name,
-          price: sku.salePrice,
-          uom: sku.uom,
-          imageUrl: getProductImage(product.code, product.imageUrl),
-        })),
+  // Thêm vào giỏ
+  const addToCart = (item: SkuAvailability) => {
+    setCart((prev) => {
+      const existing = prev.find((p) => p.skuId === item.skuId);
+      if (existing) {
+        return prev.map((p) =>
+          p.skuId === item.skuId ? { ...p, quantity: p.quantity + 1 } : p,
+        );
+      }
+      return [
+        ...prev,
+        {
+          skuId: item.skuId,
+          skuCode: item.skuCode,
+          name: item.name,
+          uom: item.uom,
+          unitPrice: item.salePrice,
+          quantity: 1,
+          imageUrl: item.imageUrl,
+        },
+      ];
+    });
+    message.success(`Đã thêm ${item.name} vào giỏ hàng`);
+  };
+
+  // Cập nhật số lượng trong giỏ
+  const updateCartQuantity = (skuId: string, quantity: number) => {
+    if (quantity <= 0) {
+      removeFromCart(skuId);
+      return;
+    }
+    setCart((prev) =>
+      prev.map((p) => (p.skuId === skuId ? { ...p, quantity } : p)),
     );
-  }, [products]);
+  };
 
-  // Tìm SKU đang được người dùng chọn
-  const currentSku = useMemo(() => {
-    return skuOptions.find((item) => item.value === selectedSkuId);
-  }, [skuOptions, selectedSkuId]);
+  // Xóa khỏi giỏ
+  const removeFromCart = (skuId: string) => {
+    setCart((prev) => prev.filter((p) => p.skuId !== skuId));
+  };
 
-  const orderSummary = useMemo(() => {
-    if (!currentSku) return null;
-    const qty = Number(selectedQuantity) || 1;
-    return {
-      totalPrice: Number(currentSku.price) * qty,
-    };
-  }, [currentSku, selectedQuantity]);
+  // Tổng tiền tạm tính của giỏ
+  const cartSubtotal = useMemo(() => {
+    return cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+  }, [cart]);
 
-  // Khi người dùng chọn và xác nhận tọa độ từ MapLocationPickerModal
+  // Chọn vị trí trên bản đồ
   const handleSelectMapLocation = (loc: { address: string; latitude: number; longitude: number }) => {
     setDeliveryCoord({ lat: loc.latitude, lng: loc.longitude });
     form.setFieldsValue({
@@ -211,431 +348,602 @@ export const CustomerPortalPage: React.FC = () => {
       deliveryLatitude: loc.latitude,
       deliveryLongitude: loc.longitude,
     });
-    message.success('Đã cập nhật địa chỉ và tọa độ ghim trên bản đồ!');
+    setIsMapOpen(false);
+    message.success('Đã cập nhật vị trí và tọa độ ghim trên bản đồ!');
   };
 
-  const submitOrder = async (values: CheckoutFormValues) => {
-    setSubmitting(true);
+  // Lấy báo giá chính xác (Request Quote)
+  const handleRequestQuote = async () => {
     try {
-      const response = await apiClient.post<CustomerOrder>('/sales-orders/checkout', {
-        customerName: values.customerName,
-        customerPhone: values.customerPhone,
+      const values = await form.validateFields();
+      if (cart.length === 0) {
+        message.warning('Giỏ hàng đang trống!');
+        return;
+      }
+      if (!deliveryCoord) {
+        message.warning('Vui lòng ghim vị trí giao hàng chính xác trên bản đồ để tính lộ trình');
+        return;
+      }
+
+      setCreatingQuote(true);
+      const res = await apiClient.post<QuoteDetails>('/shopping/quotes', {
+        provinceCode: selectedProvince,
         deliveryAddress: values.deliveryAddress,
-        deliveryLatitude: deliveryCoord?.lat || values.deliveryLatitude,
-        deliveryLongitude: deliveryCoord?.lng || values.deliveryLongitude,
-        fulfillmentSourceId: values.fulfillmentSourceId || undefined,
-        paymentMethod: 'MANUAL_PENDING',
-        idempotencyKey: idempotencyKey.current,
-        items: [{ skuId: values.skuId, quantity: values.quantity }],
+        deliveryLatitude: deliveryCoord.lat,
+        deliveryLongitude: deliveryCoord.lng,
+        items: cart.map((c) => ({ skuId: c.skuId, quantity: c.quantity })),
       });
 
-      message.success(`Đã tạo thành công đơn hàng ${response.data.orderNumber} giao tận chân công trình!`);
-      idempotencyKey.current = `checkout_${crypto.randomUUID()}`;
-      form.resetFields(['skuId', 'quantity']);
-      await loadPage();
-    } catch (error: any) {
-      message.error(error.response?.data?.message || 'Không thể đặt hàng. Dữ liệu trong biểu mẫu vẫn được giữ nguyên.');
+      setQuote(res.data);
+      setAcceptedConditions(false);
+      setQuoteModalOpen(true);
+    } catch (err: any) {
+      message.error(err.response?.data?.message || 'Không thể tạo báo giá. Vui lòng kiểm tra lại thông tin.');
     } finally {
-      setSubmitting(false);
+      setCreatingQuote(false);
     }
   };
 
-  if (loading) {
-    return (
-      <div style={{ padding: 24 }} role="status" aria-live="polite">
-        <Skeleton active paragraph={{ rows: 10 }} />
-      </div>
-    );
-  }
+  // Xác nhận đặt hàng từ báo giá
+  const handleConfirmCheckout = async () => {
+    if (!quote) return;
+    if (!acceptedConditions) {
+      message.warning('Bạn cần tích chọn chấp thuận điều kiện đóng gói và đo thực tế');
+      return;
+    }
+
+    const values = form.getFieldsValue();
+    setSubmittingCheckout(true);
+    try {
+      const res = await apiClient.post<CustomerOrder>('/sales-orders/checkout-multi-source', {
+        quoteId: quote.quoteId,
+        customerName: values.customerName,
+        customerPhone: values.customerPhone,
+        notes: values.notes,
+        idempotencyKey: `checkout_${quote.quoteId}`,
+        acceptedConditions: true,
+      });
+
+      message.success(`Đặt hàng thành công! Mã đơn: ${res.data.orderNumber}`);
+      setCart([]);
+      setQuoteModalOpen(false);
+      form.resetFields();
+      setDeliveryCoord(null);
+      await loadOrders();
+    } catch (err: any) {
+      message.error(err.response?.data?.message || 'Không thể hoàn tất đặt hàng');
+    } finally {
+      setSubmittingCheckout(false);
+    }
+  };
 
   return (
-    <main className="tms-page" style={{ maxWidth: 1240 }}>
-      {/* Header trang */}
-      <Space direction="vertical" size={4} style={{ marginBottom: 20 }}>
-        <Title level={2} style={{ margin: 0 }}>
-          <ShoppingCartOutlined style={{ color: '#16a34a', marginRight: 8 }} />
-          Đặt Mua Vật Liệu Xây Dựng & Giao Tận Chân Công Trình
-        </Title>
-        <Text type="secondary" style={{ fontSize: 14 }}>
-          Cung cấp sắt thép, gạch ốp lát, cửa cuốn, sơn, xi măng. Nhập địa chỉ hoặc di chuyển ghim trên bản đồ để nhận hàng trực tiếp tại địa chỉ công trình.
-        </Text>
-      </Space>
-
-      {loadError && (
-        <Alert
-          type="error"
-          showIcon
-          message="Không tải được dữ liệu hệ thống"
-          description={loadError}
-          action={<Button icon={<ReloadOutlined />} onClick={loadPage}>Thử lại</Button>}
-          style={{ marginBottom: 20 }}
-        />
-      )}
-
-      <Row gutter={[24, 24]}>
-        {/* Cột trái: Form Đặt hàng & Bản đồ */}
-        <Col xs={24} lg={12}>
-          <Card
-            title={
-              <Space>
-                <CarOutlined style={{ color: '#0284c7' }} />
-                <span>Thông Tin Đặt Hàng & Giao Hàng Tận Nơi</span>
-              </Space>
-            }
-            bordered
-            style={{ borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}
-          >
-            <Form
-              form={form}
-              layout="vertical"
-              initialValues={{
-                customerName: user?.fullName || 'Công ty CP Đầu tư Xây dựng Hà Nội',
-                customerPhone: user?.phone || '0988776655',
-                quantity: 10,
-                deliveryAddress: 'Số 18 đường Cổ Linh, Phường Long Biên, Hà Nội (Dự án Nhà ở Phố Đông)',
-              }}
-              onValuesChange={() => {
-                idempotencyKey.current = `checkout_${crypto.randomUUID()}`;
-              }}
-              onFinish={submitOrder}
-              requiredMark="optional"
-            >
-              {/* Thông tin người nhận */}
-              <Row gutter={12}>
-                <Col xs={24} sm={12}>
-                  <Form.Item
-                    name="customerName"
-                    label="Tên khách hàng / Đơn vị thi công"
-                    rules={[{ required: true, message: 'Vui lòng nhập tên người nhận hoặc đơn vị' }]}
-                  >
-                    <Input placeholder="Ví dụ: Công ty XD Minh Anh" />
-                  </Form.Item>
-                </Col>
-                <Col xs={24} sm={12}>
-                  <Form.Item
-                    name="customerPhone"
-                    label="Số điện thoại liên hệ"
-                    rules={[{ required: true, message: 'Vui lòng nhập số điện thoại' }]}
-                  >
-                    <Input placeholder="0912345678" />
-                  </Form.Item>
-                </Col>
-              </Row>
-
-              <Divider orientation="left" style={{ margin: '8px 0 16px', fontSize: 13, color: '#64748b' }}>
-                <EnvironmentOutlined /> Địa Chỉ Nhận Hàng & Bản Đồ Tọa Độ
-              </Divider>
-
-              {/* Nhập địa chỉ và nút di chuyển trên bản đồ */}
-              <Form.Item
-                label="Địa chỉ giao hàng / Chân công trình"
-                required
-                extra="Nhập trực tiếp hoặc bấm nút bên phải để tìm kiếm và di chuyển ghim đỏ trên bản đồ Mapbox."
+    <div style={{ padding: '24px 32px', maxWidth: 1400, margin: '0 auto' }}>
+      {/* 1. Header chọn khu vực phục vụ */}
+      <Card style={{ marginBottom: 20, borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}>
+        <Row justify="space-between" align="middle" gutter={[16, 16]}>
+          <Col xs={24} md={12}>
+            <Space direction="vertical" size={2}>
+              <Title level={4} style={{ margin: 0 }}>
+                <CompassOutlined style={{ color: '#1890ff', marginRight: 8 }} />
+                Mua Hàng Vật Liệu Xây Dựng Theo Khu Vực
+              </Title>
+              <Text type="secondary">
+                Hệ thống tự động điều phối từ các cửa hàng gần nhất trong cùng vùng phục vụ.
+              </Text>
+            </Space>
+          </Col>
+          <Col xs={24} md={12} style={{ textAlign: 'right' }}>
+            <Space wrap>
+              <Text strong>Khu vực giao hàng:</Text>
+              <Select
+                value={selectedProvince}
+                onChange={(val) => {
+                  setSelectedProvince(val);
+                  setCart([]); // Reset giỏ khi đổi khu vực theo POL-M12
+                  message.info('Đã đổi khu vực phục vụ. Giỏ hàng đã được làm mới theo khu vực mới.');
+                }}
+                style={{ width: 220 }}
+                placeholder="Chọn tỉnh / thành phố"
               >
-                <Space.Compact style={{ width: '100%' }}>
-                  <Form.Item
-                    name="deliveryAddress"
-                    noStyle
-                    rules={[{ required: true, message: 'Vui lòng nhập hoặc chọn địa chỉ nhận hàng' }]}
-                  >
-                    <Input
-                      placeholder="Nhập số nhà, tên đường, khu đô thị, công trình..."
-                      style={{ width: 'calc(100% - 170px)' }}
-                    />
-                  </Form.Item>
-                  <Button
-                    type="primary"
-                    icon={<CompassOutlined />}
-                    onClick={() => setIsMapOpen(true)}
-                    style={{ width: '170px', background: '#0284c7' }}
-                  >
-                    📍 Chọn trên bản đồ
-                  </Button>
-                </Space.Compact>
-
-                {/* Hiển thị tọa độ đã ghim */}
-                {deliveryCoord && (
-                  <div style={{ marginTop: 8 }}>
-                    <Tag color="cyan" icon={<AimOutlined />} style={{ padding: '3px 8px', fontSize: 12 }}>
-                      Tọa độ GPS đã ghim: {deliveryCoord.lat.toFixed(5)}, {deliveryCoord.lng.toFixed(5)}
-                    </Tag>
-                    <Button
-                      type="link"
-                      size="small"
-                      onClick={() => setIsMapOpen(true)}
-                      style={{ padding: 0, marginLeft: 8 }}
-                    >
-                      Di chuyển lại ghim
-                    </Button>
-                  </div>
-                )}
-              </Form.Item>
-
-              <Divider orientation="left" style={{ margin: '8px 0 16px', fontSize: 13, color: '#64748b' }}>
-                <ShopOutlined /> Mặt Hàng Vật Liệu Xây Dựng
-              </Divider>
-
-              {/* Chọn SKU sản phẩm VLXD */}
-              <Form.Item
-                name="skuId"
-                label="Sản phẩm vật liệu xây dựng"
-                rules={[{ required: true, message: 'Vui lòng chọn mặt hàng cần mua' }]}
-              >
-                <Select
-                  showSearch
-                  optionFilterProp="label"
-                  options={skuOptions}
-                  placeholder="Chọn sắt thép, gạch, cửa, sơn, xi măng..."
-                  optionRender={(option) => {
-                    const item = skuOptions.find((s) => s.value === option.value);
-                    return (
-                      <Space align="center" style={{ padding: '4px 0' }}>
-                        <img
-                          src={item?.imageUrl}
-                          alt=""
-                          width={36}
-                          height={36}
-                          style={{
-                            objectFit: 'contain',
-                            borderRadius: 6,
-                            background: '#f8fafc',
-                            border: '1px solid #e2e8f0',
-                            padding: 2,
-                          }}
-                        />
-                        <div>
-                          <div style={{ fontWeight: 600, color: '#0f172a', fontSize: 13 }}>
-                            {item?.skuName}
-                          </div>
-                          <div style={{ fontSize: 11, color: '#64748b' }}>
-                            {item?.categoryName} — <Tag color="blue">{money(item?.price)} / {item?.uom}</Tag>
-                          </div>
-                        </div>
-                      </Space>
-                    );
-                  }}
-                />
-              </Form.Item>
-
-              {/* Số lượng */}
-              <Form.Item
-                name="quantity"
-                label={`Số lượng đặt (${currentSku?.uom || 'Đơn vị'})`}
-                rules={[{ required: true, message: 'Nhập số lượng' }]}
-              >
-                <InputNumber
-                  min={1}
-                  max={10000}
-                  style={{ width: '100%' }}
-                  addonAfter={currentSku?.uom || 'Đơn vị'}
-                />
-              </Form.Item>
-
-              {/* Card tóm tắt đơn hàng & thành tiền */}
-              {orderSummary && currentSku && (
-                <Card
-                  size="small"
-                  style={{
-                    marginBottom: 16,
-                    background: '#f8fafc',
-                    borderColor: '#cbd5e1',
-                    borderRadius: 8,
-                  }}
-                >
-                  <Row gutter={[16, 8]} align="middle">
-                    <Col xs={24} sm={6} style={{ textAlign: 'center' }}>
-                      <img
-                        src={currentSku.imageUrl}
-                        alt={currentSku.skuName}
-                        style={{
-                          width: '100%',
-                          maxHeight: 88,
-                          objectFit: 'cover',
-                          borderRadius: 6,
-                          border: '1px solid #cbd5e1',
-                        }}
-                      />
-                    </Col>
-                    <Col xs={24} sm={18}>
-                      <div style={{ fontWeight: 600, fontSize: 14, color: '#0f172a' }}>
-                        {currentSku.skuName}
-                      </div>
-                      <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
-                        {currentSku.categoryName} • Đơn giá: <b>{money(currentSku.price)}</b> / {currentSku.uom}
-                      </div>
-                      <div style={{ marginTop: 6 }}>
-                        <Text type="secondary" style={{ fontSize: 12 }}>Tổng tiền tạm tính:</Text>
-                        <div style={{ fontSize: 18, fontWeight: 700, color: '#16a34a' }}>
-                          {money(orderSummary.totalPrice)}
-                        </div>
-                      </div>
-                    </Col>
-                    <Col xs={24}>
-                      <Divider style={{ margin: '8px 0 6px' }} />
-                      <Text type="secondary" style={{ fontSize: 11, fontStyle: 'italic', color: '#64748b' }}>
-                        * Lưu ý vận chuyển: Quy cách đóng gói, tải trọng và phân bổ phương tiện chuyên dụng sẽ do bộ phận điều phối kho bãi và nhân viên xếp dỡ kiểm tra, sắp xếp khi xuất kho.
-                      </Text>
-                    </Col>
-                  </Row>
-                </Card>
-              )}
-
-              {/* Lựa chọn Tổng kho / Showroom xuất hàng (Tùy chọn) */}
-              <Form.Item
-                name="fulfillmentSourceId"
-                label="Kho / Showroom xuất hàng"
-                extra="Mặc định: Hệ thống TMS tự động điều phối từ Tổng kho gần công trình nhất để tối ưu chi phí."
-              >
-                <Select
-                  allowClear
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder="Để trống để hệ thống tự động tìm Tổng kho tối ưu"
-                  options={locations.map((loc) => ({
-                    value: loc.id,
-                    label: `${loc.name} (${loc.type === 'WAREHOUSE' ? 'Tổng kho' : loc.type === 'SHOWROOM' ? 'Showroom' : 'Kho vật liệu'}) — ${loc.address}`,
-                  }))}
-                />
-              </Form.Item>
-
-              <Alert
-                type="info"
-                showIcon
-                message="Chính sách giao nhận tại chân công trình"
-                description="Đơn hàng được phân bổ xe tải chuyên dụng có bạt che và hạ hàng tại chân công trình. Kiểm tra số lượng và ký biên bản giao nhận POD khi nhận hàng."
-                style={{ marginBottom: 16 }}
-              />
-
-              <Button
-                type="primary"
-                htmlType="submit"
-                size="large"
-                block
-                loading={submitting}
-                disabled={!skuOptions.length}
-                icon={<CheckCircleOutlined />}
-                style={{ height: 46, fontSize: 16, fontWeight: 600, background: '#16a34a' }}
-              >
-                Xác Nhận Đặt Hàng & Giao Chân Công Trình
-              </Button>
-            </Form>
-          </Card>
-        </Col>
-
-        {/* Cột phải: Lịch sử đơn hàng của tôi */}
-        <Col xs={24} lg={12}>
-          <Card
-            title={
-              <Space>
-                <ShoppingCartOutlined style={{ color: '#16a34a' }} />
-                <span>Đơn Hàng VLXD Của Tôi</span>
-              </Space>
-            }
-            extra={
-              <Button icon={<ReloadOutlined />} onClick={loadPage} size="small">
+                {provinces.map((p) => (
+                  <Select.Option key={p.provinceCode} value={p.provinceCode}>
+                    {p.provinceName} ({p.activeStoreCount} cửa hàng)
+                  </Select.Option>
+                ))}
+              </Select>
+              <Button icon={<ReloadOutlined />} onClick={loadCatalog} loading={loadingCatalog}>
                 Làm mới
               </Button>
-            }
-            bordered
-            style={{ borderRadius: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}
-          >
-            <List
-              dataSource={orders}
-              locale={{ emptyText: <Empty description="Bạn chưa có đơn đặt hàng nào" /> }}
-              renderItem={(order) => {
-                const deliveryStop = order.stops?.find((s) => s.type === 'DELIVERY');
-                const pickupStop = order.stops?.find((s) => s.type === 'PICKUP');
-                const destination = deliveryStop?.address || 'Giao tận chân công trình';
+            </Space>
+          </Col>
+        </Row>
+      </Card>
 
-                return (
-                  <List.Item
-                    style={{
-                      padding: '16px 0',
-                      borderBottom: '1px solid #f1f5f9',
-                    }}
-                  >
-                    <List.Item.Meta
-                      title={
-                        <Space wrap style={{ marginBottom: 4 }}>
-                          <Text strong style={{ fontSize: 15, color: '#0f172a' }}>
-                            {order.orderNumber}
-                          </Text>
-                          <Tag color="blue">{order.status}</Tag>
-                        </Space>
-                      }
-                      description={
-                        <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                          <Text type="secondary" style={{ fontSize: 12 }}>
-                            Thời gian tạo: {new Date(order.createdAt).toLocaleString('vi-VN')}
-                          </Text>
+      <Tabs defaultActiveKey="shopping">
+        <Tabs.TabPane
+          tab={
+            <span>
+              <ShoppingCartOutlined /> Mua Sắm & Đặt Hàng ({cart.length})
+            </span>
+          }
+          key="shopping"
+        >
+          <Row gutter={24}>
+            {/* Cột trái: Danh mục sản phẩm trong khu vực */}
+            <Col xs={24} lg={15}>
+              <Card
+                title={
+                  <Row justify="space-between" align="middle">
+                    <Col>
+                      <Space>
+                        <ShopOutlined />
+                        <span>Danh mục hàng hóa sẵn có</span>
+                      </Space>
+                    </Col>
+                    <Col>
+                      <Space>
+                        <Input.Search
+                          placeholder="Tìm xi măng, cát, đá, sắt thép..."
+                          value={searchTerm}
+                          onChange={(e) => setSearchTerm(e.target.value)}
+                          onSearch={loadCatalog}
+                          style={{ width: 240 }}
+                          allowClear
+                        />
+                        <Checkbox
+                          checked={showUnavailable}
+                          onChange={(e) => setShowUnavailable(e.target.checked)}
+                        >
+                          Hiện hàng hết
+                        </Checkbox>
+                      </Space>
+                    </Col>
+                  </Row>
+                }
+                style={{ borderRadius: 8 }}
+              >
+                {loadingCatalog ? (
+                  <Skeleton active paragraph={{ rows: 6 }} />
+                ) : catalogItems.length === 0 ? (
+                  <Empty
+                    description={
+                      <span>
+                        Chưa có sản phẩm nào khả dụng tại khu vực đã chọn.
+                        <br />
+                        Vui lòng thử chọn tỉnh/thành phố khác hoặc bật "Hiện hàng hết".
+                      </span>
+                    }
+                  />
+                ) : (
+                  <List
+                    grid={{ gutter: 16, xs: 1, sm: 2, md: 2, lg: 2, xl: 3 }}
+                    dataSource={catalogItems}
+                    renderItem={(item) => (
+                      <List.Item>
+                        <Card
+                          hoverable
+                          cover={
+                            <div style={{ height: 160, overflow: 'hidden', background: '#f5f5f5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <img
+                                alt={item.name}
+                                src={getProductImage(item.skuCode, item.imageUrl)}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                              />
+                            </div>
+                          }
+                          actions={[
+                            <Button
+                              type="primary"
+                              disabled={!item.canAddToCart}
+                              icon={<ShoppingCartOutlined />}
+                              onClick={() => addToCart(item)}
+                              block
+                            >
+                              Thêm vào giỏ
+                            </Button>,
+                          ]}
+                          style={{ borderRadius: 8, opacity: item.canAddToCart ? 1 : 0.6 }}
+                        >
+                          <Card.Meta
+                            title={
+                              <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {item.name}
+                              </div>
+                            }
+                            description={
+                              <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  {item.productName} · {item.categoryName || 'VLXD'}
+                                </Text>
+                                <div style={{ margin: '4px 0' }}>
+                                  <Text strong style={{ color: '#f5222d', fontSize: 16 }}>
+                                    {money(item.salePrice)}
+                                  </Text>
+                                  <Text type="secondary" style={{ fontSize: 12 }}> / {item.uom}</Text>
+                                </div>
+                                <div>
+                                  {item.fulfillmentLabel === 'SINGLE_STORE' && (
+                                    <Tag color="success">Giao từ 1 nơi</Tag>
+                                  )}
+                                  {item.fulfillmentLabel === 'MULTI_STORE' && (
+                                    <Tag color="warning">Cần gom từ 2 nơi</Tag>
+                                  )}
+                                  {item.fulfillmentLabel === 'UNAVAILABLE' && (
+                                    <Tag color="default">Không phục vụ tại khu vực</Tag>
+                                  )}
+                                </div>
+                                <Text type="secondary" style={{ fontSize: 11 }}>
+                                  Tối đa: {item.maxOrderableQuantity} {item.uom}
+                                </Text>
+                              </Space>
+                            }
+                          />
+                        </Card>
+                      </List.Item>
+                    )}
+                  />
+                )}
+              </Card>
+            </Col>
 
-                          {/* Điểm xuất hàng */}
-                          {pickupStop && (
-                            <Text style={{ fontSize: 13, color: '#475569' }}>
-                              <ShopOutlined style={{ color: '#0284c7', marginRight: 6 }} />
-                              <b>Kho xuất:</b> {pickupStop.address}
-                            </Text>
-                          )}
+            {/* Cột phải: Giỏ hàng nhiều SKU & Đặt hàng */}
+            <Col xs={24} lg={9}>
+              <Card
+                title={
+                  <Space>
+                    <ShoppingCartOutlined />
+                    <span>Giỏ hàng của bạn ({cart.length})</span>
+                  </Space>
+                }
+                style={{ borderRadius: 8, marginBottom: 20 }}
+              >
+                {cart.length === 0 ? (
+                  <Empty description="Giỏ hàng đang trống. Hãy chọn sản phẩm ở danh mục." />
+                ) : (
+                  <div>
+                    <List
+                      size="small"
+                      dataSource={cart}
+                      renderItem={(cItem) => (
+                        <List.Item
+                          actions={[
+                            <Button
+                              type="text"
+                              danger
+                              icon={<DeleteOutlined />}
+                              onClick={() => removeFromCart(cItem.skuId)}
+                            />,
+                          ]}
+                        >
+                          <List.Item.Meta
+                            title={<Text strong>{cItem.name}</Text>}
+                            description={
+                              <Space wrap>
+                                <Text>{money(cItem.unitPrice)} / {cItem.uom}</Text>
+                                <InputNumber
+                                  min={1}
+                                  max={999}
+                                  size="small"
+                                  value={cItem.quantity}
+                                  onChange={(val) => updateCartQuantity(cItem.skuId, val || 1)}
+                                />
+                                <Text strong style={{ color: '#1890ff' }}>
+                                  = {money(cItem.unitPrice * cItem.quantity)}
+                                </Text>
+                              </Space>
+                            }
+                          />
+                        </List.Item>
+                      )}
+                    />
 
-                          {/* Điểm giao hàng tận nơi */}
-                          <div style={{ background: '#f8fafc', padding: '6px 10px', borderRadius: 6, border: '1px solid #e2e8f0' }}>
-                            <Text style={{ fontSize: 13, color: '#0f172a' }}>
-                              <EnvironmentOutlined style={{ color: '#ef4444', marginRight: 6 }} />
-                              <b>Giao tại:</b> {destination}
+                    <Divider style={{ margin: '12px 0' }} />
+
+                    {/* Đánh giá tính khả thi giỏ hàng */}
+                    {checkingCart ? (
+                      <Skeleton active paragraph={{ rows: 2 }} />
+                    ) : cartCheck && (
+                      <div style={{ marginBottom: 16 }}>
+                        {cartCheck.isFeasible ? (
+                          <Alert
+                            type={cartCheck.sourceCount === 1 ? 'success' : 'warning'}
+                            showIcon
+                            icon={cartCheck.sourceCount === 1 ? <CheckCircleOutlined /> : <WarningOutlined />}
+                            message={
+                              cartCheck.sourceCount === 1
+                                ? 'Đủ hàng tại 1 cửa hàng trong khu vực'
+                                : `Cần gom hàng từ ${cartCheck.sourceCount} cửa hàng`
+                            }
+                            description={
+                              <div>
+                                {cartCheck.sources.map((s) => (
+                                  <div key={s.id} style={{ fontSize: 12 }}>
+                                    • {s.name} ({s.address})
+                                  </div>
+                                ))}
+                                {cartCheck.warnings.map((w, idx) => (
+                                  <div key={idx} style={{ color: '#fa8c16', fontSize: 12, marginTop: 4 }}>
+                                    {w}
+                                  </div>
+                                ))}
+                              </div>
+                            }
+                          />
+                        ) : (
+                          <Alert
+                            type="error"
+                            showIcon
+                            message="Không thể giao trọn giỏ hàng này"
+                            description={
+                              <div>
+                                {cartCheck.warnings.map((w, idx) => (
+                                  <div key={idx}>• {w}</div>
+                                ))}
+                                {cartCheck.suggestedActions?.map((act, idx) => (
+                                  <div key={idx} style={{ fontWeight: 500, marginTop: 2 }}>
+                                    👉 {act}
+                                  </div>
+                                ))}
+                              </div>
+                            }
+                          />
+                        )}
+                      </div>
+                    )}
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                      <Text strong style={{ fontSize: 16 }}>Tổng tiền hàng:</Text>
+                      <Text strong style={{ fontSize: 20, color: '#f5222d' }}>
+                        {money(cartSubtotal)}
+                      </Text>
+                    </div>
+
+                    <Divider style={{ margin: '12px 0' }} />
+
+                    {/* Biểu mẫu nhận hàng */}
+                    <Form form={form} layout="vertical">
+                      <Form.Item
+                        name="customerName"
+                        label="Họ tên người nhận"
+                        rules={[{ required: true, message: 'Vui lòng nhập tên người nhận' }]}
+                      >
+                        <Input placeholder="Ví dụ: Nguyễn Văn A" />
+                      </Form.Item>
+                      <Form.Item
+                        name="customerPhone"
+                        label="Số điện thoại"
+                        rules={[{ required: true, message: 'Vui lòng nhập số điện thoại' }]}
+                      >
+                        <Input placeholder="Ví dụ: 0912345678" />
+                      </Form.Item>
+                      <Form.Item
+                        name="deliveryAddress"
+                        label="Địa chỉ giao hàng tận nơi"
+                        rules={[{ required: true, message: 'Vui lòng nhập địa chỉ công trình/giao hàng' }]}
+                      >
+                        <Input.TextArea rows={2} placeholder="Nhập địa chỉ chi tiết hoặc ghim trên bản đồ" />
+                      </Form.Item>
+
+                      <Button
+                        type="dashed"
+                        icon={<AimOutlined />}
+                        onClick={() => setIsMapOpen(true)}
+                        block
+                        style={{ marginBottom: 16 }}
+                      >
+                        {deliveryCoord ? 'Đã ghim vị trí trên bản đồ' : 'Ghim vị trí trên bản đồ Mapbox'}
+                      </Button>
+
+                      <Button
+                        type="primary"
+                        size="large"
+                        icon={<FileTextOutlined />}
+                        onClick={handleRequestQuote}
+                        loading={creatingQuote}
+                        disabled={!cartCheck?.isFeasible}
+                        block
+                      >
+                        Lấy Báo Giá & Xác Nhận Đặt Hàng
+                      </Button>
+                    </Form>
+                  </div>
+                )}
+              </Card>
+            </Col>
+          </Row>
+        </Tabs.TabPane>
+
+        {/* Tab 2: Lịch sử đơn hàng của tôi */}
+        <Tabs.TabPane
+          tab={
+            <span>
+              <FileTextOutlined /> Đơn Hàng Của Tôi ({orders.length})
+            </span>
+          }
+          key="orders"
+        >
+          <Card title="Lịch sử đơn hàng đã đặt" style={{ borderRadius: 8 }}>
+            {loadingOrders ? (
+              <Skeleton active paragraph={{ rows: 6 }} />
+            ) : orders.length === 0 ? (
+              <Empty description="Bạn chưa có đơn hàng nào." />
+            ) : (
+              <List
+                dataSource={orders}
+                renderItem={(ord) => (
+                  <List.Item>
+                    <Card style={{ width: '100%', marginBottom: 8 }} size="small">
+                      <Row justify="space-between" align="middle">
+                        <Col>
+                          <Space>
+                            <Text strong style={{ fontSize: 16 }}>{ord.orderNumber}</Text>
+                            <Tag color={ord.status === 'CONFIRMED' ? 'blue' : 'green'}>{ord.status}</Tag>
+                          </Space>
+                          <div style={{ marginTop: 4 }}>
+                            <Text type="secondary">
+                              Ngày đặt: {new Date(ord.createdAt).toLocaleString('vi-VN')}
                             </Text>
                           </div>
+                        </Col>
+                        <Col style={{ textAlign: 'right' }}>
+                          <Text strong style={{ fontSize: 18, color: '#f5222d' }}>
+                            {money(ord.totalAmount || ord.subtotal)}
+                          </Text>
+                        </Col>
+                      </Row>
 
-                          {/* Danh sách mặt hàng */}
-                          {order.items && order.items.length > 0 && (
-                            <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                              {order.items.map((it) => (
-                                <Space key={it.id} size={4} style={{ background: '#f1f5f9', padding: '2px 8px 2px 4px', borderRadius: 6, border: '1px solid #e2e8f0' }}>
-                                  <img
-                                    src={getProductImage(it.sku, skuToImageMap.get(it.sku))}
-                                    alt=""
-                                    width={22}
-                                    height={22}
-                                    style={{ objectFit: 'cover', borderRadius: 4, verticalAlign: 'middle' }}
-                                  />
-                                  <span style={{ fontSize: 12, fontWeight: 500, color: '#334155' }}>
-                                    {it.description} x{it.quantity}
+                      {/* Hiển thị các nhóm chuẩn bị hàng theo nguồn (Fulfillment Groups) */}
+                      {ord.fulfillmentGroups && ord.fulfillmentGroups.length > 0 && (
+                        <div style={{ marginTop: 12, background: '#fafafa', padding: 12, borderRadius: 6 }}>
+                          <Text strong style={{ fontSize: 13 }}>
+                            <ShopOutlined style={{ marginRight: 6 }} />
+                            Phân bổ nguồn xuất hàng ({ord.fulfillmentGroups.length} cửa hàng):
+                          </Text>
+                          <div style={{ marginTop: 6 }}>
+                            {ord.fulfillmentGroups.map((grp) => (
+                              <div key={grp.id} style={{ marginBottom: 4, fontSize: 12 }}>
+                                • <strong>{grp.sourceLocation?.name || 'Cửa hàng'}</strong>: Trạng thái{' '}
+                                <Badge status={grp.status === 'PACKED' ? 'success' : 'processing'} text={grp.status} />
+                                {grp.lines && (
+                                  <span style={{ color: '#8c8c8c', marginLeft: 8 }}>
+                                    ({grp.lines.map((l) => `${l.sku?.name || 'SKU'}: ${l.requestedQuantity}`).join(', ')})
                                   </span>
-                                </Space>
-                              ))}
-                            </div>
-                          )}
-                        </Space>
-                      }
-                    />
-                    <div style={{ textAlign: 'right', minWidth: 120 }}>
-                      <Text strong style={{ color: '#16a34a', fontSize: 16, display: 'block' }}>
-                        {money(order.grandTotal || order.totalAmount)}
-                      </Text>
-                      <Tag color="success" style={{ marginTop: 4 }}>
-                        Giao tận nơi
-                      </Tag>
-                    </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </Card>
                   </List.Item>
-                );
-              }}
-            />
+                )}
+              />
+            )}
           </Card>
+        </Tabs.TabPane>
+      </Tabs>
+
+      {/* Modal chọn vị trí trên bản đồ Mapbox */}
+      <MapLocationPickerModal
+        open={isMapOpen}
+        onCancel={() => setIsMapOpen(false)}
+        onSelectLocation={handleSelectMapLocation}
+        initialLocation={
+          deliveryCoord
+            ? { latitude: deliveryCoord.lat, longitude: deliveryCoord.lng }
+            : undefined
+        }
+        title="Ghim Địa Chỉ Giao Hàng Trên Bản Đồ"
+      />
+
+      {/* Modal xác nhận báo giá (Quote Confirmation Modal) */}
+      <Modal
+        open={quoteModalOpen}
+        title={
+          <Space>
+            <FileTextOutlined style={{ color: '#1890ff' }} />
+            <span>Xác Nhận Báo Giá Đơn Hàng #{quote?.quoteId}</span>
+          </Space>
+        }
+        onCancel={() => setQuoteModalOpen(false)}
+        width={700}
+        footer={[
+          <Button key="back" onClick={() => setQuoteModalOpen(false)}>
+            Xem lại giỏ hàng
+          </Button>,
+          <Button
+            key="submit"
+            type="primary"
+            loading={submittingCheckout}
+            disabled={!acceptedConditions}
+            onClick={handleConfirmCheckout}
+          >
+            Chấp Thuận & Đặt Hàng
+          </Button>,
+        ]}
+      >
+        {quote && (
+          <div>
+            <Alert
+              type="info"
+              showIcon
+              message="Báo giá có hiệu lực trong 15 phút"
+              description="Hàng sẽ được giữ tạm thời trong quá trình nhân viên tại các cửa hàng đóng gói và đo kích thước thực tế."
+              style={{ marginBottom: 16 }}
+            />
+
+            <DescriptionsCard quote={quote} />
+
+            <Divider style={{ margin: '16px 0' }} />
+
+            <div style={{ marginBottom: 16 }}>
+              <Text strong>Điều kiện thương mại & vận tải cần khách hàng chấp thuận:</Text>
+              <div style={{ marginTop: 8, background: '#fafafa', padding: 12, borderRadius: 6 }}>
+                {quote.conditionsToAccept.map((cond, idx) => (
+                  <div key={idx} style={{ fontSize: 13, marginBottom: 4 }}>
+                    ✓ {cond}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <Checkbox
+              checked={acceptedConditions}
+              onChange={(e) => setAcceptedConditions(e.target.checked)}
+            >
+              <Text strong>
+                Tôi đồng ý với các điều kiện báo giá, quy trình đóng gói đo đạc và điều phối gom hàng liên chi nhánh.
+              </Text>
+            </Checkbox>
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+};
+
+// Component hiển thị chi tiết báo giá
+const DescriptionsCard: React.FC<{ quote: QuoteDetails }> = ({ quote }) => {
+  return (
+    <div>
+      <Row gutter={[16, 8]}>
+        <Col span={12}>
+          <Text type="secondary">Địa chỉ giao hàng:</Text>
+          <div><Text strong>{quote.deliveryAddress}</Text></div>
+        </Col>
+        <Col span={12}>
+          <Text type="secondary">Số lượng nguồn xuất hàng:</Text>
+          <div><Text strong>{quote.sourceStores.length} cửa hàng</Text></div>
         </Col>
       </Row>
 
-      {/* Modal Chọn Vị Trí Trên Bản Đồ Mapbox */}
-      <MapLocationPickerModal
-        open={isMapOpen}
-        title="Chọn Vị Trí Công Trình Trên Bản Đồ"
-        initialLocation={{
-          address: form.getFieldValue('deliveryAddress'),
-          latitude: deliveryCoord?.lat || 21.0285,
-          longitude: deliveryCoord?.lng || 105.8542,
-        }}
-        onCancel={() => setIsMapOpen(false)}
-        onSelectLocation={handleSelectMapLocation}
-      />
-    </main>
+      <div style={{ marginTop: 12 }}>
+        <Text type="secondary">Cửa hàng phục vụ & Khoảng cách đường bộ:</Text>
+        {quote.sourceStores.map((src) => (
+          <div key={src.id} style={{ fontSize: 12, marginTop: 2 }}>
+            📍 <strong>{src.name}</strong> — {src.address} (~{src.distanceToDeliveryKm} km)
+          </div>
+        ))}
+      </div>
+
+      <Divider style={{ margin: '12px 0' }} />
+
+      <Row justify="space-between" style={{ marginBottom: 6 }}>
+        <Text>Tiền hàng tạm tính:</Text>
+        <Text strong>{money(quote.subtotal)}</Text>
+      </Row>
+      <Row justify="space-between" style={{ marginBottom: 6 }}>
+        <Text>Phí vận chuyển dự kiến:</Text>
+        <Text type="secondary" italic>Chờ đo kích thước thực tế</Text>
+      </Row>
+      <Row justify="space-between" style={{ fontSize: 16, marginTop: 8 }}>
+        <Text strong>Tổng thanh toán tạm tính:</Text>
+        <Text strong style={{ color: '#f5222d', fontSize: 18 }}>
+          {money(quote.totalAmount)}
+        </Text>
+      </Row>
+    </div>
   );
 };
 

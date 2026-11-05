@@ -326,4 +326,64 @@ describe('assertFleetOptimizationBatchResult', () => {
       'chưa được sắp xếp theo objective tăng dần',
     );
   });
+
+  it('accepts lexicographic candidate ranking when extra_order_trips is lower despite higher solver_objective', () => {
+    const res1 = {
+      ...validResult(),
+      planning_objective: {
+        planning_span_days: 1,
+        operating_cost_vnd: 300,
+        driver_active_salary_allocation_vnd: 40,
+        driver_calendar_salary_vnd: 240,
+        driver_idle_salary_allocation_vnd: 200,
+        operational_late_penalty_vnd: 0,
+        selection_score_vnd: 500,
+        extra_order_trips: 0,
+        split_order_count: 0,
+        active_route_count: 1,
+        physical_vehicle_count: 1,
+        delivery_visit_count: 1,
+      },
+    };
+    const res2 = {
+      ...validResult(),
+      planning_objective: {
+        planning_span_days: 1,
+        operating_cost_vnd: 300,
+        driver_active_salary_allocation_vnd: 40,
+        driver_calendar_salary_vnd: 40,
+        driver_idle_salary_allocation_vnd: 0,
+        operational_late_penalty_vnd: 0,
+        selection_score_vnd: 300,
+        extra_order_trips: 1,
+        split_order_count: 1,
+        active_route_count: 2,
+        physical_vehicle_count: 2,
+        delivery_visit_count: 2,
+      },
+    };
+    const batch = {
+      job_id: 'job-1',
+      solver_run_count: 2,
+      fully_served_candidate_count: 2,
+      candidates: [
+        {
+          rank: 1,
+          search_strategy: 'Grouped',
+          solver_objective: 500,
+          is_best_found: true,
+          result: res1,
+        },
+        {
+          rank: 2,
+          search_strategy: 'Split',
+          solver_objective: 300,
+          is_best_found: false,
+          result: res2,
+        },
+      ],
+    };
+
+    expect(() => assertFleetOptimizationBatchResult(batch)).not.toThrow();
+  });
 });

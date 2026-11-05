@@ -1,0 +1,7 @@
+{
+  "status": "intentionally_stopped",
+  "reason": "verified_route_count_loss_seed2_and_company_loss_seed3",
+  "saved_trials": 8,
+  "expected_trials": 10,
+  "implementation_reverted": true
+}

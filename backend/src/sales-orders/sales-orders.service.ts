@@ -11,8 +11,10 @@ import { AuthenticatedUser, assertLocationAccess } from '../auth/branch-scope';
 import { OutboxService } from '../common/services/outbox.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ShoppingService } from '../shopping/shopping.service';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { CheckoutOrderDto } from './dto/checkout-order.dto';
+import { CheckoutMultiSourceDto } from './dto/checkout-multi-source.dto';
 import { QuerySalesOrdersDto } from './dto/query-sales-orders.dto';
 
 @Injectable()
@@ -21,8 +23,30 @@ export class SalesOrdersService {
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
     private readonly inventoryService: InventoryService,
+    private readonly shoppingService: ShoppingService,
   ) {}
 
+  private async upsertCheckoutCustomer(
+    tx: Prisma.TransactionClient,
+    dto: { customerPhone: string; customerName: string },
+    user: AuthenticatedUser,
+  ) {
+    const customer = await tx.customer.upsert({
+      where: { retailPhoneKey: dto.customerPhone },
+      update: {},
+      create: { code: `CUS-${randomUUID().toUpperCase()}`, name: dto.customerName, phone: dto.customerPhone, retailPhoneKey: dto.customerPhone, userId: user.role === Role.CUSTOMER ? user.id : undefined },
+    });
+    // A retail checkout must not overwrite a branch-managed transport profile.
+    await tx.$queryRaw`SELECT id FROM customers WHERE id = ${customer.id} FOR UPDATE`;
+    const managedTransportProfile = await tx.customerBranch.count({ where: { customerId: customer.id } });
+    await tx.customer.update({ where: { id: customer.id }, data: {
+      ...(!managedTransportProfile ? { name: dto.customerName } : {}),
+      userId: user.role === Role.CUSTOMER ? user.id : undefined, version: { increment: 1 },
+    } });
+    return customer;
+  }
+
+  // ================= 1. CHECKOUT ORDER (LEGACY / SINGLE-SOURCE) =================
   async checkoutOrder(dto: CheckoutOrderDto, user: AuthenticatedUser) {
     if (!dto.items.length) throw new BadRequestException('Đơn hàng phải có ít nhất một mặt hàng');
     const requestHash = createHash('sha256').update(JSON.stringify(dto)).digest('hex');
@@ -65,18 +89,7 @@ export class SalesOrdersService {
       if (skus.length !== new Set(dto.items.map((item) => item.skuId)).size) throw new BadRequestException('Có SKU không tồn tại hoặc không được bán');
       const skuById = new Map(skus.map((sku) => [sku.id, sku]));
 
-      const customer = await tx.customer.upsert({
-        where: { retailPhoneKey: dto.customerPhone },
-        update: {},
-        create: { code: `CUS-${randomUUID().toUpperCase()}`, name: dto.customerName, phone: dto.customerPhone, retailPhoneKey: dto.customerPhone, userId: user.role === Role.CUSTOMER ? user.id : undefined },
-      });
-      // A retail checkout must not overwrite a branch-managed transport profile.
-      await tx.$queryRaw`SELECT id FROM customers WHERE id = ${customer.id} FOR UPDATE`;
-      const managedTransportProfile = await tx.customerBranch.count({ where: { customerId: customer.id } });
-      await tx.customer.update({ where: { id: customer.id }, data: {
-        ...(!managedTransportProfile ? { name: dto.customerName } : {}),
-        userId: user.role === Role.CUSTOMER ? user.id : undefined, version: { increment: 1 },
-      } });
+      const customer = await this.upsertCheckoutCustomer(tx, dto, user);
 
       const deliveryLat = dto.deliveryLatitude || 21.0285;
       const deliveryLng = dto.deliveryLongitude || 105.8542;
@@ -175,50 +188,325 @@ export class SalesOrdersService {
         },
       });
 
-      // Tạo Packages vật lý tương ứng với các mặt hàng để thuật toán xếp thùng xe OR-Tools Floor Packing có thể lập kế hoạch
-      let packageIdx = 1;
-      for (const line of order.items) {
-        const sku = line.skuId ? skuById.get(line.skuId) : undefined;
-        const lMm = sku?.lengthMm || 600;
-        const wMm = sku?.widthMm || 400;
-        const hMm = sku?.heightMm || 300;
-        const wG = BigInt(sku?.weightGrams || 10000);
-
-        for (let q = 1; q <= line.quantity; q++) {
-          await tx.package.create({
-            data: {
-              orderId: order.id,
-              packageCode: `PKG-${order.orderNumber.slice(-6)}-${String(packageIdx++).padStart(3, '0')}`,
-              lengthMm: lMm,
-              widthMm: wMm,
-              heightMm: hMm,
-              weightG: wG,
-              allowedOrientations: ['DEFAULT', 'ROTATE_YAW'],
-              measurementSource: 'AUTO_ORDER',
-              status: 'READY',
-              items: {
-                create: {
-                  orderItemId: line.id,
-                  quantity: 1,
-                },
-              },
-              events: {
-                create: {
-                  eventType: 'PACKED',
-                  locationId: source.id,
-                },
-              },
-            },
-          });
-        }
-      }
-
       await tx.processedCommand.create({ data: { actorUserId: user.id, commandType: 'RETAIL_CHECKOUT', idempotencyKey: dto.idempotencyKey, requestHash, status: 'COMPLETED', result: { orderId: order.id } } });
       await this.outbox.enqueue({ aggregateType: 'Order', aggregateId: order.id, aggregateVersion: order.version, eventType: 'RETAIL_ORDER_CREATED', payload: { orderId: order.id } }, tx);
       return order;
     });
   }
 
+  // ================= 2. CHECKOUT MULTI-SOURCE ORDER (NEW ATOMIC FLOW) =================
+  async checkoutMultiSourceOrder(dto: CheckoutMultiSourceDto, user: AuthenticatedUser) {
+    if (!dto.acceptedConditions) {
+      throw new BadRequestException('Khách hàng cần chấp thuận các điều kiện giao hàng và quy trình chuẩn bị');
+    }
+
+    const quote = await this.shoppingService.getQuoteById(dto.quoteId);
+    if (!quote) {
+      throw new NotFoundException('Báo giá không tồn tại hoặc đã hết hạn. Vui lòng lấy lại báo giá mới.');
+    }
+    if (new Date(quote.expiresAt).getTime() < Date.now()) {
+      throw new BadRequestException('Báo giá đã hết hạn 15 phút. Vui lòng tạo lại báo giá mới.');
+    }
+
+    // Kiểm tra version cấu hình vùng phục vụ (MN28)
+    if (quote.serviceZoneId) {
+      const zone = await this.prisma.serviceZone.findUnique({
+        where: { id: quote.serviceZoneId },
+      });
+      if (zone && zone.version !== (quote.serviceZoneVersion ?? 1)) {
+        throw new ConflictException(
+          'Cấu hình vùng phục vụ đã thay đổi kể từ khi tạo báo giá. Vui lòng lấy lại báo giá mới.',
+        );
+      }
+    }
+
+    const requestHash = createHash('sha256').update(JSON.stringify(dto)).digest('hex');
+    const existing = await this.prisma.processedCommand.findUnique({
+      where: {
+        actorUserId_commandType_idempotencyKey: {
+          actorUserId: user.id,
+          commandType: 'RETAIL_MULTI_SOURCE_CHECKOUT',
+          idempotencyKey: dto.idempotencyKey,
+        },
+      },
+    });
+
+    if (existing) {
+      if (existing.requestHash !== requestHash) {
+        throw new ConflictException('Idempotency key đã được dùng với dữ liệu khác');
+      }
+      if (existing.result && typeof existing.result === 'object' && 'orderId' in existing.result) {
+        return this.findSalesOrderById(String((existing.result as any).orderId), user);
+      }
+    }
+
+    const createdOrderId = await this.prisma.$transaction(async (tx) => {
+      // 1. Thu thập và gộp tất cả các cặp (locationId, skuId) cần khóa (cộng dồn quantity - Fix Issue 6)
+      const lockPairsMap = new Map<string, { locationId: string; skuId: string; quantity: number }>();
+      for (const item of quote.items) {
+        for (const alloc of item.sourceAllocations) {
+          const key = `${alloc.locationId}::${item.skuId}`;
+          const existing = lockPairsMap.get(key);
+          if (existing) {
+            existing.quantity += alloc.quantity;
+          } else {
+            lockPairsMap.set(key, {
+              locationId: alloc.locationId,
+              skuId: item.skuId,
+              quantity: alloc.quantity,
+            });
+          }
+        }
+      }
+      const lockPairs = Array.from(lockPairsMap.values());
+
+      // Sắp xếp thứ tự ổn định toàn cục (locationId asc, skuId asc) để tránh deadlock
+      lockPairs.sort((a, b) => {
+        const locComp = a.locationId.localeCompare(b.locationId);
+        if (locComp !== 0) return locComp;
+        return a.skuId.localeCompare(b.skuId);
+      });
+
+      // 2. Khóa và kiểm tra tồn khả dụng tại từng nguồn (chống oversell)
+      for (const pair of lockPairs) {
+        await tx.$queryRaw`
+          SELECT "id"
+          FROM "stock_balances"
+          WHERE "locationId" = ${pair.locationId}
+            AND "skuId" = ${pair.skuId}
+          FOR UPDATE
+        `;
+
+        const balance = await tx.stockBalance.findUnique({
+          where: {
+            skuId_locationId: {
+              skuId: pair.skuId,
+              locationId: pair.locationId,
+            },
+          },
+        });
+
+        if (!balance) {
+          throw new ConflictException(
+            `Không tìm thấy tồn kho cho SKU ${pair.skuId} tại địa điểm ${pair.locationId}`,
+          );
+        }
+
+        const sellable = Math.max(0, balance.onHand - balance.reserved - balance.safetyBuffer);
+        if (sellable < pair.quantity) {
+          throw new ConflictException(
+            `Cửa hàng ${pair.locationId} không đủ tồn cho SKU ${pair.skuId}: Cần ${pair.quantity}, còn khả dụng ${sellable}`,
+          );
+        }
+      }
+
+      // 3. Upsert khách hàng
+      const customer = await this.upsertCheckoutCustomer(tx, dto, user);
+
+      // 4. Lưu địa chỉ công trình / giao hàng
+      await tx.customerAddress.create({
+        data: {
+          customerId: customer.id,
+          label: 'Địa chỉ giao hàng tận nơi (đa nguồn)',
+          recipientName: dto.customerName,
+          phone: dto.customerPhone,
+          address: quote.deliveryAddress,
+          latitude: quote.deliveryLatitude,
+          longitude: quote.deliveryLongitude,
+          isDefault: true,
+        },
+      });
+
+      // 5. Xác định chi nhánh điều phối chủ trì (lấy từ cửa hàng nguồn đầu tiên)
+      const firstSource = await tx.location.findUnique({
+        where: { id: quote.sourceStores[0].id },
+      });
+      const managingBranchId = firstSource?.managingBranchId || user.branchId;
+      if (!managingBranchId) {
+        throw new BadRequestException('Cửa hàng xuất hàng chưa được gán chi nhánh quản lý');
+      }
+
+      // 6. Tạo danh sách OrderItem và tính tổng
+      const orderItemsData = quote.items.map((item) => {
+        return {
+          skuId: item.skuId,
+          sku: item.skuCode,
+          description: item.name,
+          quantity: item.quantity,
+          unitPrice: new Prisma.Decimal(item.unitPrice),
+          lineTotal: new Prisma.Decimal(item.lineTotal),
+          weightKg: 0,
+          volumeM3: 0,
+        };
+      });
+
+      // 7. Tạo Order
+      const order = await tx.order.create({
+        data: {
+          orderNumber: `SO-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${randomUUID().slice(0, 6).toUpperCase()}`,
+          orderType: OrderType.RETAIL_DELIVERY,
+          customerId: customer.id,
+          branchId: managingBranchId,
+          allocatedSourceId: firstSource?.id,
+          status: OrderStatus.CONFIRMED,
+          paymentStatus: PaymentStatus.PENDING,
+          paymentMethod: dto.paymentMethod || 'MANUAL_PENDING',
+          subtotal: new Prisma.Decimal(quote.subtotal),
+          shippingFee: new Prisma.Decimal(quote.shippingFee),
+          totalAmount: new Prisma.Decimal(quote.totalAmount),
+          maxSourcesAllowed: quote.sourceStores.length,
+          maxDistanceBetweenSourcesKm: quote.maxDistanceBetweenSourcesKm,
+          serviceZoneSnapshotId: quote.provinceCode,
+          notes: dto.notes,
+          items: { create: orderItemsData },
+          events: {
+            create: {
+              eventType: 'ORDER_CHECKED_OUT_MULTI_SOURCE',
+              toStatus: OrderStatus.CONFIRMED,
+              actorUserId: user.id,
+              payload: {
+                quoteId: quote.quoteId,
+                sourceCount: quote.sourceStores.length,
+              },
+            },
+          },
+        },
+        include: {
+          items: true,
+        },
+      });
+
+      // 8. Tạo OrderStops (các điểm PICKUP tại từng STORE và 1 điểm DELIVERY tại khách)
+      let sequence = 1;
+      const storePickupStopMap = new Map<string, string>();
+      for (const store of quote.sourceStores) {
+        const storeEntity = await tx.location.findUnique({ where: { id: store.id } });
+        const pickupStop = await tx.orderStop.create({
+          data: {
+            orderId: order.id,
+            type: 'PICKUP',
+            sequence: sequence++,
+            address: store.address,
+            latitude: storeEntity?.latitude ?? 21.0,
+            longitude: storeEntity?.longitude ?? 105.8,
+            contactName: store.name,
+            contactPhone: '0901234567',
+            serviceDurationMinutes: 30,
+          },
+        });
+        storePickupStopMap.set(store.id, pickupStop.id);
+      }
+
+      await tx.orderStop.create({
+        data: {
+          orderId: order.id,
+          type: 'DELIVERY',
+          sequence: sequence,
+          address: quote.deliveryAddress,
+          latitude: quote.deliveryLatitude,
+          longitude: quote.deliveryLongitude,
+          contactName: dto.customerName,
+          contactPhone: dto.customerPhone,
+          windowStart: quote.deliveryWindowStart ? new Date(quote.deliveryWindowStart) : undefined,
+          windowEnd: quote.deliveryWindowEnd ? new Date(quote.deliveryWindowEnd) : undefined,
+          serviceDurationMinutes: 30,
+        },
+      });
+
+      // 9. Tạo FulfillmentGroup và FulfillmentLine cho từng STORE
+      const createdItemMap = new Map(order.items.map((i) => [i.skuId!, i.id]));
+
+      for (const store of quote.sourceStores) {
+        const storeEntity = await tx.location.findUnique({ where: { id: store.id } });
+        const pickupStopId = storePickupStopMap.get(store.id);
+        const group = await tx.fulfillmentGroup.create({
+          data: {
+            groupNumber: `FG-${order.orderNumber}-${storeEntity?.code || randomUUID().slice(0, 4)}`,
+            orderId: order.id,
+            sourceLocationId: store.id,
+            sourceBranchId: storeEntity?.managingBranchId,
+            pickupStopId,
+            status: 'PENDING',
+          },
+        });
+
+        // Tạo FulfillmentLine và InventoryReservation cho các SKU lấy tại STORE này
+        for (const item of quote.items) {
+          const alloc = item.sourceAllocations.find((a) => a.locationId === store.id);
+          if (alloc && alloc.quantity > 0) {
+            const orderItemId = createdItemMap.get(item.skuId)!;
+            const line = await tx.fulfillmentLine.create({
+              data: {
+                fulfillmentGroupId: group.id,
+                orderItemId,
+                skuId: item.skuId,
+                requestedQuantity: alloc.quantity,
+                reservedQuantity: alloc.quantity,
+              },
+            });
+
+            // Tạo InventoryReservation
+            await tx.inventoryReservation.create({
+              data: {
+                reservationNumber: `RES-${randomUUID()}`,
+                orderId: order.id,
+                fulfillmentLineId: line.id,
+                skuId: item.skuId,
+                locationId: store.id,
+                quantity: alloc.quantity,
+                status: 'ACTIVE',
+                expiresAt: new Date(quote.expiresAt),
+                createdById: user.id,
+              },
+            });
+
+            // Tăng reserved trên StockBalance
+            await tx.stockBalance.update({
+              where: {
+                skuId_locationId: {
+                  skuId: item.skuId,
+                  locationId: store.id,
+                },
+              },
+              data: {
+                reserved: { increment: alloc.quantity },
+                version: { increment: 1 },
+              },
+            });
+          }
+        }
+      }
+
+      // 10. Ghi nhận ProcessedCommand và Outbox
+      await tx.processedCommand.create({
+        data: {
+          actorUserId: user.id,
+          commandType: 'RETAIL_MULTI_SOURCE_CHECKOUT',
+          idempotencyKey: dto.idempotencyKey,
+          requestHash,
+          status: 'COMPLETED',
+          result: { orderId: order.id },
+        },
+      });
+
+      await this.outbox.enqueue(
+        {
+          aggregateType: 'Order',
+          aggregateId: order.id,
+          aggregateVersion: order.version,
+          eventType: 'RETAIL_MULTI_SOURCE_ORDER_CREATED',
+          payload: { orderId: order.id, quoteId: quote.quoteId },
+        },
+        tx,
+      );
+
+      return order.id;
+    });
+
+    return this.findSalesOrderById(createdOrderId, user);
+  }
+
+  // ================= 3. CANCEL ORDER =================
   async cancelOrder(id: string, dto: CancelOrderDto, user: AuthenticatedUser) {
     const order = await this.prisma.order.findUnique({ where: { id }, include: { customer: true } });
     // Transport cancellation has its own versioned command and assignment locks.
@@ -241,6 +529,7 @@ export class SalesOrdersService {
     });
   }
 
+  // ================= 4. FIND SALES ORDER BY ID =================
   async findSalesOrderById(id: string, user: AuthenticatedUser) {
     const order = await this.prisma.order.findUnique({
       where: { id },
@@ -250,6 +539,13 @@ export class SalesOrdersService {
         selectedPickupPoint: true,
         allocatedSource: true,
         packages: { include: { items: true } },
+        fulfillmentGroups: {
+          include: {
+            sourceLocation: true,
+            lines: { include: { sku: true } },
+            packages: true,
+          },
+        },
         events: { orderBy: { occurredAt: 'asc' } },
         payments: true,
         collectionToken: true,
@@ -261,6 +557,7 @@ export class SalesOrdersService {
     return order;
   }
 
+  // ================= 5. QUERY SALES ORDERS =================
   async querySalesOrders(query: QuerySalesOrdersDto, user: AuthenticatedUser) {
     const where: Prisma.OrderWhereInput = { orderType: { in: [OrderType.RETAIL_PICKUP, OrderType.RETAIL_DELIVERY] } };
     if (query.status) where.status = query.status;
@@ -268,7 +565,16 @@ export class SalesOrdersService {
     if (query.customerPhone) where.customer = { phone: query.customerPhone };
     if (query.search) where.OR = [{ orderNumber: { contains: query.search, mode: 'insensitive' } }, { customer: { name: { contains: query.search, mode: 'insensitive' } } }];
     if (user.role === Role.CUSTOMER) where.customer = { userId: user.id };
-    else if (user.role === Role.STAFF) where.OR = [{ allocatedSourceId: user.locationId }, { selectedPickupPointId: user.locationId }];
+    else if (user.role === Role.STAFF) {
+      const staffLocationId = user.locationId;
+      if (staffLocationId) {
+        where.OR = [
+          { allocatedSourceId: staffLocationId },
+          { selectedPickupPointId: staffLocationId },
+          { fulfillmentGroups: { some: { sourceLocationId: staffLocationId } } },
+        ];
+      }
+    }
     const page = query.page || 1, limit = Math.min(query.limit || 20, 100);
     const [data, total] = await this.prisma.$transaction([
       this.prisma.order.findMany({
@@ -278,6 +584,12 @@ export class SalesOrdersService {
           items: { include: { skuRef: { include: { product: true } } } },
           selectedPickupPoint: true,
           allocatedSource: true,
+          fulfillmentGroups: {
+            include: {
+              sourceLocation: true,
+              lines: true,
+            },
+          },
           packages: true,
           stops: true,
         },
@@ -290,9 +602,28 @@ export class SalesOrdersService {
     return { data, total, page, limit };
   }
 
-  private assertOrderAccess(order: { customer: { userId: string | null }; allocatedSourceId: string | null; selectedPickupPointId: string | null }, user: AuthenticatedUser) {
+  private assertOrderAccess(
+    order: {
+      customer: { userId: string | null };
+      allocatedSourceId: string | null;
+      selectedPickupPointId: string | null;
+      fulfillmentGroups?: Array<{ sourceLocationId: string }>;
+    },
+    user: AuthenticatedUser,
+  ) {
     if (user.role === Role.ADMIN) return;
-    if (user.role === Role.CUSTOMER && order.customer.userId !== user.id) throw new ForbiddenException('Không có quyền truy cập đơn hàng này');
-    if (user.role === Role.STAFF && ![order.allocatedSourceId, order.selectedPickupPointId].includes(user.locationId || null)) throw new ForbiddenException('Đơn hàng ngoài phạm vi địa điểm');
+    if (user.role === Role.CUSTOMER && order.customer.userId !== user.id) {
+      throw new ForbiddenException('Không có quyền truy cập đơn hàng này');
+    }
+    if (user.role === Role.STAFF) {
+      const allowedLocations = [
+        order.allocatedSourceId,
+        order.selectedPickupPointId,
+        ...(order.fulfillmentGroups?.map((g) => g.sourceLocationId) || []),
+      ];
+      if (!allowedLocations.includes(user.locationId || null)) {
+        throw new ForbiddenException('Đơn hàng ngoài phạm vi địa điểm');
+      }
+    }
   }
 }

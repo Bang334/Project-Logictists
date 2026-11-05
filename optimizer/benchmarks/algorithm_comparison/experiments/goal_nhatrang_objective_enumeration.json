@@ -1,0 +1,1388 @@
+[
+  {
+    "slot": 0,
+    "sequence": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      1219149,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 639205,
+      "driver_idle_salary_allocation_vnd": 474551,
+      "operational_late_penalty_vnd": 181586,
+      "selection_score_vnd": 1219149,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 0,
+    "sequence": [
+      0,
+      2,
+      1,
+      3
+    ],
+    "cost": 556691,
+    "key": [
+      0,
+      1,
+      1232753,
+      556691,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 556691,
+      "driver_active_salary_allocation_vnd": 161222,
+      "driver_calendar_salary_vnd": 639205,
+      "driver_idle_salary_allocation_vnd": 477983,
+      "operational_late_penalty_vnd": 198079,
+      "selection_score_vnd": 1232753,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 0,
+    "sequence": [
+      0,
+      2,
+      3,
+      1
+    ],
+    "cost": 539953,
+    "key": [
+      0,
+      1,
+      1215387,
+      539953,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 539953,
+      "driver_active_salary_allocation_vnd": 156132,
+      "driver_calendar_salary_vnd": 639205,
+      "driver_idle_salary_allocation_vnd": 483073,
+      "operational_late_penalty_vnd": 192361,
+      "selection_score_vnd": 1215387,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 0,
+    "sequence": [
+      2,
+      0,
+      1,
+      3
+    ],
+    "cost": 535486,
+    "key": [
+      0,
+      1,
+      1210171,
+      535486,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 535486,
+      "driver_active_salary_allocation_vnd": 153409,
+      "driver_calendar_salary_vnd": 639205,
+      "driver_idle_salary_allocation_vnd": 485796,
+      "operational_late_penalty_vnd": 188889,
+      "selection_score_vnd": 1210171,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 0,
+    "sequence": [
+      2,
+      0,
+      3,
+      1
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      1219149,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 639205,
+      "driver_idle_salary_allocation_vnd": 474551,
+      "operational_late_penalty_vnd": 181586,
+      "selection_score_vnd": 1219149,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 0,
+    "sequence": [
+      2,
+      3,
+      0,
+      1
+    ],
+    "cost": 543480,
+    "key": [
+      0,
+      1,
+      1198453,
+      543480,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 543480,
+      "driver_active_salary_allocation_vnd": 157079,
+      "driver_calendar_salary_vnd": 639205,
+      "driver_idle_salary_allocation_vnd": 482126,
+      "operational_late_penalty_vnd": 172847,
+      "selection_score_vnd": 1198453,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 1,
+    "sequence": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      3858354,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 2,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 1278410,
+      "driver_idle_salary_allocation_vnd": 1113756,
+      "operational_late_penalty_vnd": 2181586,
+      "selection_score_vnd": 3858354,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 1,
+    "sequence": [
+      0,
+      2,
+      1,
+      3
+    ],
+    "cost": 556691,
+    "key": [
+      0,
+      1,
+      3871958,
+      556691,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 2,
+      "operating_cost_vnd": 556691,
+      "driver_active_salary_allocation_vnd": 161222,
+      "driver_calendar_salary_vnd": 1278410,
+      "driver_idle_salary_allocation_vnd": 1117188,
+      "operational_late_penalty_vnd": 2198079,
+      "selection_score_vnd": 3871958,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 1,
+    "sequence": [
+      0,
+      2,
+      3,
+      1
+    ],
+    "cost": 539953,
+    "key": [
+      0,
+      1,
+      3854592,
+      539953,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 2,
+      "operating_cost_vnd": 539953,
+      "driver_active_salary_allocation_vnd": 156132,
+      "driver_calendar_salary_vnd": 1278410,
+      "driver_idle_salary_allocation_vnd": 1122278,
+      "operational_late_penalty_vnd": 2192361,
+      "selection_score_vnd": 3854592,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 1,
+    "sequence": [
+      2,
+      0,
+      1,
+      3
+    ],
+    "cost": 535486,
+    "key": [
+      0,
+      1,
+      3849376,
+      535486,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 2,
+      "operating_cost_vnd": 535486,
+      "driver_active_salary_allocation_vnd": 153409,
+      "driver_calendar_salary_vnd": 1278410,
+      "driver_idle_salary_allocation_vnd": 1125001,
+      "operational_late_penalty_vnd": 2188889,
+      "selection_score_vnd": 3849376,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 1,
+    "sequence": [
+      2,
+      0,
+      3,
+      1
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      1219149,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 639205,
+      "driver_idle_salary_allocation_vnd": 474551,
+      "operational_late_penalty_vnd": 181586,
+      "selection_score_vnd": 1219149,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 1,
+    "sequence": [
+      2,
+      3,
+      0,
+      1
+    ],
+    "cost": 543480,
+    "key": [
+      0,
+      1,
+      3837658,
+      543480,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 2,
+      "operating_cost_vnd": 543480,
+      "driver_active_salary_allocation_vnd": 157079,
+      "driver_calendar_salary_vnd": 1278410,
+      "driver_idle_salary_allocation_vnd": 1121331,
+      "operational_late_penalty_vnd": 2172847,
+      "selection_score_vnd": 3837658,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 2,
+    "sequence": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      6497559,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 3,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 1917615,
+      "driver_idle_salary_allocation_vnd": 1752961,
+      "operational_late_penalty_vnd": 4181586,
+      "selection_score_vnd": 6497559,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 2,
+    "sequence": [
+      0,
+      2,
+      1,
+      3
+    ],
+    "cost": 556691,
+    "key": [
+      0,
+      1,
+      6511163,
+      556691,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 3,
+      "operating_cost_vnd": 556691,
+      "driver_active_salary_allocation_vnd": 161222,
+      "driver_calendar_salary_vnd": 1917615,
+      "driver_idle_salary_allocation_vnd": 1756393,
+      "operational_late_penalty_vnd": 4198079,
+      "selection_score_vnd": 6511163,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 2,
+    "sequence": [
+      0,
+      2,
+      3,
+      1
+    ],
+    "cost": 539953,
+    "key": [
+      0,
+      1,
+      6493797,
+      539953,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 3,
+      "operating_cost_vnd": 539953,
+      "driver_active_salary_allocation_vnd": 156132,
+      "driver_calendar_salary_vnd": 1917615,
+      "driver_idle_salary_allocation_vnd": 1761483,
+      "operational_late_penalty_vnd": 4192361,
+      "selection_score_vnd": 6493797,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 2,
+    "sequence": [
+      2,
+      0,
+      1,
+      3
+    ],
+    "cost": 535486,
+    "key": [
+      0,
+      1,
+      6488581,
+      535486,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 3,
+      "operating_cost_vnd": 535486,
+      "driver_active_salary_allocation_vnd": 153409,
+      "driver_calendar_salary_vnd": 1917615,
+      "driver_idle_salary_allocation_vnd": 1764206,
+      "operational_late_penalty_vnd": 4188889,
+      "selection_score_vnd": 6488581,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 2,
+    "sequence": [
+      2,
+      0,
+      3,
+      1
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      1219149,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 639205,
+      "driver_idle_salary_allocation_vnd": 474551,
+      "operational_late_penalty_vnd": 181586,
+      "selection_score_vnd": 1219149,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 2,
+    "sequence": [
+      2,
+      3,
+      0,
+      1
+    ],
+    "cost": 543480,
+    "key": [
+      0,
+      1,
+      6476863,
+      543480,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 3,
+      "operating_cost_vnd": 543480,
+      "driver_active_salary_allocation_vnd": 157079,
+      "driver_calendar_salary_vnd": 1917615,
+      "driver_idle_salary_allocation_vnd": 1760536,
+      "operational_late_penalty_vnd": 4172847,
+      "selection_score_vnd": 6476863,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 3,
+    "sequence": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      9136764,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 4,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 2556820,
+      "driver_idle_salary_allocation_vnd": 2392166,
+      "operational_late_penalty_vnd": 6181586,
+      "selection_score_vnd": 9136764,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 3,
+    "sequence": [
+      0,
+      2,
+      1,
+      3
+    ],
+    "cost": 556691,
+    "key": [
+      0,
+      1,
+      9150368,
+      556691,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 4,
+      "operating_cost_vnd": 556691,
+      "driver_active_salary_allocation_vnd": 161222,
+      "driver_calendar_salary_vnd": 2556820,
+      "driver_idle_salary_allocation_vnd": 2395598,
+      "operational_late_penalty_vnd": 6198079,
+      "selection_score_vnd": 9150368,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 3,
+    "sequence": [
+      0,
+      2,
+      3,
+      1
+    ],
+    "cost": 539953,
+    "key": [
+      0,
+      1,
+      9133002,
+      539953,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 4,
+      "operating_cost_vnd": 539953,
+      "driver_active_salary_allocation_vnd": 156132,
+      "driver_calendar_salary_vnd": 2556820,
+      "driver_idle_salary_allocation_vnd": 2400688,
+      "operational_late_penalty_vnd": 6192361,
+      "selection_score_vnd": 9133002,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 3,
+    "sequence": [
+      2,
+      0,
+      1,
+      3
+    ],
+    "cost": 535486,
+    "key": [
+      0,
+      1,
+      9127786,
+      535486,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 4,
+      "operating_cost_vnd": 535486,
+      "driver_active_salary_allocation_vnd": 153409,
+      "driver_calendar_salary_vnd": 2556820,
+      "driver_idle_salary_allocation_vnd": 2403411,
+      "operational_late_penalty_vnd": 6188889,
+      "selection_score_vnd": 9127786,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 3,
+    "sequence": [
+      2,
+      0,
+      3,
+      1
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      1219149,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 639205,
+      "driver_idle_salary_allocation_vnd": 474551,
+      "operational_late_penalty_vnd": 181586,
+      "selection_score_vnd": 1219149,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 3,
+    "sequence": [
+      2,
+      3,
+      0,
+      1
+    ],
+    "cost": 543480,
+    "key": [
+      0,
+      1,
+      9116068,
+      543480,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 4,
+      "operating_cost_vnd": 543480,
+      "driver_active_salary_allocation_vnd": 157079,
+      "driver_calendar_salary_vnd": 2556820,
+      "driver_idle_salary_allocation_vnd": 2399741,
+      "operational_late_penalty_vnd": 6172847,
+      "selection_score_vnd": 9116068,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 4,
+    "sequence": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      11775969,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 5,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 3196025,
+      "driver_idle_salary_allocation_vnd": 3031371,
+      "operational_late_penalty_vnd": 8181586,
+      "selection_score_vnd": 11775969,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 4,
+    "sequence": [
+      0,
+      2,
+      1,
+      3
+    ],
+    "cost": 556691,
+    "key": [
+      0,
+      1,
+      11789573,
+      556691,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 5,
+      "operating_cost_vnd": 556691,
+      "driver_active_salary_allocation_vnd": 161222,
+      "driver_calendar_salary_vnd": 3196025,
+      "driver_idle_salary_allocation_vnd": 3034803,
+      "operational_late_penalty_vnd": 8198079,
+      "selection_score_vnd": 11789573,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 4,
+    "sequence": [
+      0,
+      2,
+      3,
+      1
+    ],
+    "cost": 539953,
+    "key": [
+      0,
+      1,
+      11772207,
+      539953,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 5,
+      "operating_cost_vnd": 539953,
+      "driver_active_salary_allocation_vnd": 156132,
+      "driver_calendar_salary_vnd": 3196025,
+      "driver_idle_salary_allocation_vnd": 3039893,
+      "operational_late_penalty_vnd": 8192361,
+      "selection_score_vnd": 11772207,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 4,
+    "sequence": [
+      2,
+      0,
+      1,
+      3
+    ],
+    "cost": 535486,
+    "key": [
+      0,
+      1,
+      11766991,
+      535486,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 5,
+      "operating_cost_vnd": 535486,
+      "driver_active_salary_allocation_vnd": 153409,
+      "driver_calendar_salary_vnd": 3196025,
+      "driver_idle_salary_allocation_vnd": 3042616,
+      "operational_late_penalty_vnd": 8188889,
+      "selection_score_vnd": 11766991,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 4,
+    "sequence": [
+      2,
+      0,
+      3,
+      1
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      1219149,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 639205,
+      "driver_idle_salary_allocation_vnd": 474551,
+      "operational_late_penalty_vnd": 181586,
+      "selection_score_vnd": 1219149,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 4,
+    "sequence": [
+      2,
+      3,
+      0,
+      1
+    ],
+    "cost": 543480,
+    "key": [
+      0,
+      1,
+      11755273,
+      543480,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 5,
+      "operating_cost_vnd": 543480,
+      "driver_active_salary_allocation_vnd": 157079,
+      "driver_calendar_salary_vnd": 3196025,
+      "driver_idle_salary_allocation_vnd": 3038946,
+      "operational_late_penalty_vnd": 8172847,
+      "selection_score_vnd": 11755273,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 5,
+    "sequence": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      14415174,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 6,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 3835230,
+      "driver_idle_salary_allocation_vnd": 3670576,
+      "operational_late_penalty_vnd": 10181586,
+      "selection_score_vnd": 14415174,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 5,
+    "sequence": [
+      0,
+      2,
+      1,
+      3
+    ],
+    "cost": 556691,
+    "key": [
+      0,
+      1,
+      14428778,
+      556691,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 6,
+      "operating_cost_vnd": 556691,
+      "driver_active_salary_allocation_vnd": 161222,
+      "driver_calendar_salary_vnd": 3835230,
+      "driver_idle_salary_allocation_vnd": 3674008,
+      "operational_late_penalty_vnd": 10198079,
+      "selection_score_vnd": 14428778,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 5,
+    "sequence": [
+      0,
+      2,
+      3,
+      1
+    ],
+    "cost": 539953,
+    "key": [
+      0,
+      1,
+      14411412,
+      539953,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 6,
+      "operating_cost_vnd": 539953,
+      "driver_active_salary_allocation_vnd": 156132,
+      "driver_calendar_salary_vnd": 3835230,
+      "driver_idle_salary_allocation_vnd": 3679098,
+      "operational_late_penalty_vnd": 10192361,
+      "selection_score_vnd": 14411412,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 5,
+    "sequence": [
+      2,
+      0,
+      1,
+      3
+    ],
+    "cost": 535486,
+    "key": [
+      0,
+      1,
+      14406196,
+      535486,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 6,
+      "operating_cost_vnd": 535486,
+      "driver_active_salary_allocation_vnd": 153409,
+      "driver_calendar_salary_vnd": 3835230,
+      "driver_idle_salary_allocation_vnd": 3681821,
+      "operational_late_penalty_vnd": 10188889,
+      "selection_score_vnd": 14406196,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 5,
+    "sequence": [
+      2,
+      0,
+      3,
+      1
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      1219149,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 639205,
+      "driver_idle_salary_allocation_vnd": 474551,
+      "operational_late_penalty_vnd": 181586,
+      "selection_score_vnd": 1219149,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 5,
+    "sequence": [
+      2,
+      3,
+      0,
+      1
+    ],
+    "cost": 543480,
+    "key": [
+      0,
+      1,
+      14394478,
+      543480,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 6,
+      "operating_cost_vnd": 543480,
+      "driver_active_salary_allocation_vnd": 157079,
+      "driver_calendar_salary_vnd": 3835230,
+      "driver_idle_salary_allocation_vnd": 3678151,
+      "operational_late_penalty_vnd": 10172847,
+      "selection_score_vnd": 14394478,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 6,
+    "sequence": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      17054379,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 7,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 4474435,
+      "driver_idle_salary_allocation_vnd": 4309781,
+      "operational_late_penalty_vnd": 12181586,
+      "selection_score_vnd": 17054379,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 6,
+    "sequence": [
+      0,
+      2,
+      1,
+      3
+    ],
+    "cost": 556691,
+    "key": [
+      0,
+      1,
+      17067983,
+      556691,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 7,
+      "operating_cost_vnd": 556691,
+      "driver_active_salary_allocation_vnd": 161222,
+      "driver_calendar_salary_vnd": 4474435,
+      "driver_idle_salary_allocation_vnd": 4313213,
+      "operational_late_penalty_vnd": 12198079,
+      "selection_score_vnd": 17067983,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 6,
+    "sequence": [
+      0,
+      2,
+      3,
+      1
+    ],
+    "cost": 539953,
+    "key": [
+      0,
+      1,
+      17050617,
+      539953,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 7,
+      "operating_cost_vnd": 539953,
+      "driver_active_salary_allocation_vnd": 156132,
+      "driver_calendar_salary_vnd": 4474435,
+      "driver_idle_salary_allocation_vnd": 4318303,
+      "operational_late_penalty_vnd": 12192361,
+      "selection_score_vnd": 17050617,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 6,
+    "sequence": [
+      2,
+      0,
+      1,
+      3
+    ],
+    "cost": 535486,
+    "key": [
+      0,
+      1,
+      17045401,
+      535486,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 7,
+      "operating_cost_vnd": 535486,
+      "driver_active_salary_allocation_vnd": 153409,
+      "driver_calendar_salary_vnd": 4474435,
+      "driver_idle_salary_allocation_vnd": 4321026,
+      "operational_late_penalty_vnd": 12188889,
+      "selection_score_vnd": 17045401,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 6,
+    "sequence": [
+      2,
+      0,
+      3,
+      1
+    ],
+    "cost": 563012,
+    "key": [
+      0,
+      1,
+      1219149,
+      563012,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 563012,
+      "driver_active_salary_allocation_vnd": 164654,
+      "driver_calendar_salary_vnd": 639205,
+      "driver_idle_salary_allocation_vnd": 474551,
+      "operational_late_penalty_vnd": 181586,
+      "selection_score_vnd": 1219149,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  },
+  {
+    "slot": 6,
+    "sequence": [
+      2,
+      3,
+      0,
+      1
+    ],
+    "cost": 543480,
+    "key": [
+      0,
+      1,
+      17033683,
+      543480,
+      1
+    ],
+    "objective": {
+      "planning_span_days": 7,
+      "operating_cost_vnd": 543480,
+      "driver_active_salary_allocation_vnd": 157079,
+      "driver_calendar_salary_vnd": 4474435,
+      "driver_idle_salary_allocation_vnd": 4317356,
+      "operational_late_penalty_vnd": 12172847,
+      "selection_score_vnd": 17033683,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 1,
+      "physical_vehicle_count": 1,
+      "delivery_visit_count": 2
+    }
+  }
+]

@@ -1,0 +1,7 @@
+{
+  "status": "intentionally_stopped",
+  "reason": "inadequate_rebuild_coverage_observed_hanoi_still_six_routes",
+  "saved_trials": 9,
+  "expected_trials": 12,
+  "comparison_status": "Hanoi seed1 had only Hybrid recorded at stop; do not claim a completed fresh comparison for that seed"
+}

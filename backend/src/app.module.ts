@@ -26,6 +26,7 @@ import { PickupModule } from './pickup/pickup.module';
 import { RetailAnalyticsModule } from './retail-analytics/retail-analytics.module';
 import { FeedbackModule } from './feedback/feedback.module';
 import { LocationsModule } from './locations/locations.module';
+import { ShoppingModule } from './shopping/shopping.module';
 
 @Module({
   imports: [
@@ -115,6 +116,7 @@ import { LocationsModule } from './locations/locations.module';
     RetailAnalyticsModule,
     FeedbackModule,
     LocationsModule,
+    ShoppingModule,
     MapboxModule,
     EventsModule,
     AuthModule,

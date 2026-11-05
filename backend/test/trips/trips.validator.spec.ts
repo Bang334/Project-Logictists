@@ -68,7 +68,7 @@ describe('TripsValidator - TMS Invariants', () => {
     const packages = [1, 2].map(n => ({ id: `pkg-${n}`, orderItemId: 'i1', packageCode: `PKG-${n}`,
       lengthMm: 1, widthMm: 1, heightMm: 1, weightG: 2500000n,
       status: 'READY' as const, version: 1, orderId: null, releasedAt: null, holdingSlot: null, arrivedAtPickupPointAt: null, measurementSource: 'USER_DECLARED', measuredAt: null,
-      allowedOrientations: null, createdAt: new Date(), updatedAt: new Date() }));
+      allowedOrientations: null, fulfillmentGroupId: null, measuredByUserId: null, createdAt: new Date(), updatedAt: new Date() }));
     const order = { ...createMockOrder('ord-1', 'O1', 0, 0, [{ ...sampleItems[0], quantity: 2, weightKg: 0, volumeM3: 0, packages }]), packageDataStatus: 'COMPLETE' };
     const orderStop = { id: 'p1', orderId: order.id, type: StopType.PICKUP, sequence: 1, address: 'test', latitude: 0, longitude: 0, contactName: '', contactPhone: '', windowBasis: null, windowStart: null, windowEnd: null, serviceDurationMinutes: 0, createdAt: new Date() };
     const stops = [{ order, orderStop }, { order, orderStop: { ...orderStop, id: 'd1', type: StopType.DELIVERY } }];

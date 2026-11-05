@@ -16,6 +16,7 @@ import { CreateTripDto } from './dto/create-trip.dto';
 import { Role, TripStatus } from '@prisma/client';
 import { OptimizeTripDto } from './dto/optimize-trip.dto';
 import { RunAutomaticOptimizationDto } from './dto/run-automatic-optimization.dto';
+import { RunDemoOptimizationDto } from './dto/run-demo-optimization.dto';
 import { OptimizationJobsService } from './optimization-jobs.service';
 import { Roles } from '../auth/roles.decorator';
 import { PublishTripDto } from './dto/publish-trip.dto';
@@ -46,6 +47,24 @@ export class TripsController {
     @Body() createTripDto: CreateTripDto,
   ) {
     return this.tripsService.create(createTripDto, req.user);
+  }
+
+  @Get('demo/cases')
+  @RequirePermission('trips.read')
+  getDemoCases() {
+    return this.tripsService.getDemoCases();
+  }
+
+  @Get('demo/cases/:caseId')
+  @RequirePermission('trips.read')
+  getDemoCasePayload(@Param('caseId') caseId: string) {
+    return this.tripsService.getDemoCasePayload(caseId);
+  }
+
+  @Post('demo/run')
+  @RequirePermission('trips.plan')
+  runDemoOptimization(@Body() body: RunDemoOptimizationDto) {
+    return this.tripsService.runDemoOptimization(body);
   }
 
   @Post('optimize')

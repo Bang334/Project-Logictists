@@ -581,3 +581,61 @@ def test_side_gap_narrower_than_package_is_not_a_valid_detour() -> None:
 
     assert path_clear is False
     assert blocker_id == blocker.item_id
+
+
+def test_multi_stop_lifo_pickups_pack_forward_without_blocking_door() -> None:
+    """Intermediate LIFO pickups must pack forward instead of sealing the rear door."""
+    truck = VehicleFloor(
+        id="wood-truck-01",
+        plate_number="51C-801.01",
+        length_cm=460,
+        width_cm=195,
+        height_cm=210,
+        payload_limit_kg=3_500,
+    )
+    order_specs = [
+        ("wd-ord-06", 92, 85, 65, 190),
+        ("wd-ord-08", 85, 92, 65, 195),
+        ("wd-ord-02", 88, 90, 65, 180),
+        ("wd-ord-04", 90, 88, 65, 185),
+    ]
+    orders = [
+        [
+            CargoItem(
+                id=f"{order_id}-{idx}",
+                order_id=order_id,
+                length_cm=length_cm,
+                width_cm=width_cm,
+                height_cm=height_cm,
+                weight_kg=weight_kg,
+                can_rotate=True,
+            )
+            for idx in (1, 2)
+        ]
+        for order_id, length_cm, width_cm, height_cm, weight_kg in order_specs
+    ]
+    stops = [
+        StopAction(
+            stop_id=f"pickup-{idx}",
+            sequence=idx + 1,
+            stop_type="PICKUP",
+            items_to_load=items,
+        )
+        for idx, items in enumerate(orders)
+    ] + [
+        StopAction(
+            stop_id=f"delivery-{idx}",
+            sequence=len(orders) + idx + 1,
+            stop_type="DELIVERY",
+            items_to_unload=[it.id for it in items],
+        )
+        for idx, items in enumerate(reversed(orders))
+    ]
+
+    result = SpatialValidator(truck).validate_plan(stops)
+
+    assert result.is_valid is True
+    assert len(result.step_states) == 8
+    assert len(result.step_states[3].placed_items) == 8
+    assert result.step_states[-1].placed_items == []
+

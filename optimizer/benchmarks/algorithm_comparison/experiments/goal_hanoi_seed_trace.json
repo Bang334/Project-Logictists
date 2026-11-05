@@ -1,0 +1,62 @@
+{
+  "seed_rank": [
+    9,
+    0,
+    3,
+    36540269,
+    4155441,
+    2
+  ],
+  "candidate_count": 3,
+  "selected_count": 3,
+  "seed_present": true,
+  "seed_selected": true,
+  "selected_ranks": [
+    [
+      0,
+      0,
+      8,
+      101153574,
+      8817552,
+      3
+    ],
+    [
+      9,
+      0,
+      3,
+      36211104,
+      3725672,
+      2
+    ],
+    [
+      9,
+      0,
+      3,
+      36540269,
+      4155441,
+      2
+    ]
+  ],
+  "construction_seed_audit": {
+    "served_requests": 16,
+    "total_requests": 16,
+    "delivered_packages": 268,
+    "total_packages": 268,
+    "complete_manifest": true,
+    "unique_balanced_manifest": true,
+    "spatial_valid": true,
+    "basic_schedule_valid": true,
+    "spatial_errors": [],
+    "schedule_errors": [],
+    "routes": 6,
+    "physical_vehicles": 3,
+    "service_days_used": [
+      0,
+      1
+    ],
+    "extra_order_trips": 0,
+    "cost_vnd": 9706937,
+    "reported_cost_vnd": 9706937,
+    "distance_km": 1073.67
+  }
+}

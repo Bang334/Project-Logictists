@@ -1,0 +1,94 @@
+{
+  "Hybrid ALNS": {
+    "production_key": [
+      0,
+      2,
+      9604142,
+      2980354,
+      2
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 2980354,
+      "driver_active_salary_allocation_vnd": 829336,
+      "driver_calendar_salary_vnd": 7453124,
+      "driver_idle_salary_allocation_vnd": 6623788,
+      "operational_late_penalty_vnd": 0,
+      "selection_score_vnd": 9604142,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 2,
+      "physical_vehicle_count": 2,
+      "delivery_visit_count": 16
+    },
+    "audit": {
+      "served_requests": 16,
+      "total_requests": 16,
+      "delivered_packages": 16,
+      "total_packages": 16,
+      "complete_manifest": true,
+      "unique_balanced_manifest": true,
+      "spatial_valid": true,
+      "basic_schedule_valid": true,
+      "spatial_errors": [],
+      "schedule_errors": [],
+      "routes": 2,
+      "physical_vehicles": 2,
+      "service_days_used": [
+        0
+      ],
+      "extra_order_trips": 0,
+      "cost_vnd": 2980354,
+      "reported_cost_vnd": 2980354,
+      "distance_km": 453.51
+    }
+  },
+  "HGS converted": {
+    "production_key": [
+      0,
+      2,
+      9604774,
+      2987275,
+      2
+    ],
+    "objective": {
+      "planning_span_days": 1,
+      "operating_cost_vnd": 2987275,
+      "driver_active_salary_allocation_vnd": 835625,
+      "driver_calendar_salary_vnd": 7453124,
+      "driver_idle_salary_allocation_vnd": 6617499,
+      "operational_late_penalty_vnd": 0,
+      "selection_score_vnd": 9604774,
+      "extra_order_trips": 0,
+      "split_order_count": 0,
+      "max_trips_per_order": 1,
+      "extra_request_trips": 0,
+      "active_route_count": 2,
+      "physical_vehicle_count": 2,
+      "delivery_visit_count": 16
+    },
+    "audit": {
+      "served_requests": 16,
+      "total_requests": 16,
+      "delivered_packages": 16,
+      "total_packages": 16,
+      "complete_manifest": true,
+      "unique_balanced_manifest": true,
+      "spatial_valid": true,
+      "basic_schedule_valid": true,
+      "spatial_errors": [],
+      "schedule_errors": [],
+      "routes": 2,
+      "physical_vehicles": 2,
+      "service_days_used": [
+        0
+      ],
+      "extra_order_trips": 0,
+      "cost_vnd": 2987275,
+      "reported_cost_vnd": 2987275,
+      "distance_km": 454.36
+    }
+  }
+}

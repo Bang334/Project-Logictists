@@ -36,7 +36,11 @@ export function validateOrderInput(dto: CreateOrderDto, confirmed: boolean) {
   dto.stops.forEach((stop, i) => {
     for (const field of ['address', 'contactName', 'contactPhone'] as const) if (!stop[field].trim()) orderFieldError(`stops.${i}.${field}`, 'Không được để trống');
     for (const field of ['windowStart', 'windowEnd'] as const) if (stop[field] && !Number.isFinite(Date.parse(stop[field]))) orderFieldError(`stops.${i}.${field}`, 'Ngày–giờ không hợp lệ');
-    if (Boolean(stop.windowStart) !== Boolean(stop.windowEnd) || (confirmed && !stop.windowStart)) orderFieldError(`stops.${i}.windowStart`, 'Cần nhập đủ ngày–giờ bắt đầu và kết thúc');
+    if (stop.type === 'DELIVERY') {
+      if (Boolean(stop.windowStart) !== Boolean(stop.windowEnd) || (confirmed && !stop.windowStart)) orderFieldError(`stops.${i}.windowStart`, 'Cần nhập đủ ngày–giờ bắt đầu và kết thúc giao hàng');
+    } else {
+      if (Boolean(stop.windowStart) !== Boolean(stop.windowEnd)) orderFieldError(`stops.${i}.windowStart`, 'Nếu nhập khung giờ lấy cần nhập cả bắt đầu và kết thúc');
+    }
     if (stop.windowStart && stop.windowEnd && Date.parse(stop.windowStart) > Date.parse(stop.windowEnd)) orderFieldError(`stops.${i}.windowEnd`, 'Kết thúc khung giờ phải bằng hoặc sau bắt đầu');
   });
   const pickup = dto.stops.find(s => s.type === 'PICKUP');
@@ -71,17 +75,35 @@ export function assertPackageManifest(order: { packageDataStatus: string; items:
 
 /** Dispatch never repairs an incomplete/advanced manifest implicitly. */
 export function assertDispatchableOrder(order: {
+  orderType?: string;
   status: string; packageDataStatus: string;
   stops: Array<{ type: string; windowBasis: string | null; windowStart: Date | null; windowEnd: Date | null; serviceDurationMinutes: number }>;
   items: Array<{ quantity: number; packages: Array<{ status: string; lengthMm: number; widthMm: number; heightMm: number; weightG: bigint }> }>;
 }) {
+  if (order.orderType && order.orderType !== 'B2B_TRANSPORT') {
+    if (order.status !== 'CONFIRMED') {
+      throw new ConflictException({ code: 'ORDER_NOT_DISPATCHABLE', message: 'Đơn bán lẻ phải ở trạng thái CONFIRMED' });
+    }
+    const delivery = order.stops.find(s => s.type === 'DELIVERY');
+    if (!delivery) {
+      throw new ConflictException({ code: 'ORDER_WINDOWS_INVALID', message: 'Đơn bán lẻ cần có điểm giao hàng' });
+    }
+    return;
+  }
   assertPackageManifest(order);
   if (order.status !== 'CONFIRMED' || order.items.some(i => i.packages.some(p => p.status !== 'READY'))) {
     throw new ConflictException({ code: 'ORDER_NOT_DISPATCHABLE', message: 'Đơn phải được xác nhận và mọi kiện phải ở trạng thái READY' });
   }
-  if (order.stops.length !== 2 || order.stops.filter(s => s.type === 'PICKUP').length !== 1 || order.stops.filter(s => s.type === 'DELIVERY').length !== 1
-    || order.stops.some(s => s.windowBasis !== 'SERVICE_START' || !s.windowStart || !s.windowEnd || s.windowStart > s.windowEnd)) {
-    throw new ConflictException({ code: 'ORDER_WINDOWS_INVALID', message: 'Cần đúng một điểm lấy, một điểm giao với khung giờ bắt đầu phục vụ hợp lệ' });
+  if (order.stops.length !== 2 || order.stops.filter(s => s.type === 'PICKUP').length !== 1 || order.stops.filter(s => s.type === 'DELIVERY').length !== 1) {
+    throw new ConflictException({ code: 'ORDER_WINDOWS_INVALID', message: 'Cần đúng một điểm lấy, một điểm giao' });
+  }
+  const delivery = order.stops.find(s => s.type === 'DELIVERY')!;
+  if (delivery.windowBasis !== 'SERVICE_START' || !delivery.windowStart || !delivery.windowEnd || delivery.windowStart > delivery.windowEnd) {
+    throw new ConflictException({ code: 'ORDER_WINDOWS_INVALID', message: 'Điểm giao cần có khung giờ giao hàng hợp lệ' });
+  }
+  const pickup = order.stops.find(s => s.type === 'PICKUP')!;
+  if (pickup.windowStart && pickup.windowEnd && pickup.windowStart > pickup.windowEnd) {
+    throw new ConflictException({ code: 'ORDER_WINDOWS_INVALID', message: 'Khung giờ điểm lấy hàng không hợp lệ' });
   }
 }
 

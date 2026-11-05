@@ -4,6 +4,7 @@ import { seedCentralBranchData } from './seed-central';
 import { seedRetailCatalog } from './seed-retail-catalog';
 import { seedRetailPilotFlow } from './seed-retail-pilot-flow';
 import { seedBuildingMaterials } from './seed-building-materials';
+import { seedMultiSourceRetail } from './seed-multi-source-retail';
 
 const prisma = new PrismaClient();
 
@@ -874,6 +875,9 @@ async function main() {
 
   // 10. Khởi tạo Dữ liệu chuỗi luồng End-to-End Pilot VLXD
   await seedRetailPilotFlow(prisma);
+
+  // 11. Khởi tạo Vùng phục vụ (ServiceZone) & Đơn hàng mẫu gom đa nguồn
+  await seedMultiSourceRetail(prisma);
 
   console.log('🎉 KHỞI TẠO MASTER DATA THÀNH CÔNG VÀO POSTGRESQL SUPABASE!');
 }

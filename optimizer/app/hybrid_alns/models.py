@@ -38,6 +38,18 @@ class OrderPair:
     delivery_window_end_sec: int = 86400
     order_value_vnd: int = 0
     allowed_source_vehicle_ids: List[str] = field(default_factory=list)
+    source_order_id: Optional[str] = None
+    split_group_id: Optional[str] = None
+    pickup_service_time_sec: Optional[int] = None
+    delivery_service_time_sec: Optional[int] = None
+
+    def service_seconds(self, stop_type: str) -> int:
+        duration = (
+            self.pickup_service_time_sec
+            if stop_type == "PICKUP"
+            else self.delivery_service_time_sec
+        )
+        return self.service_time_sec if duration is None else duration
 
     @property
     def total_weight_kg(self) -> float:
