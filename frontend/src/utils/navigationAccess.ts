@@ -1,8 +1,11 @@
 import { User } from '../types';
+import { canReadAudit } from '../types/audit';
 import { canManageAccounts } from '../types/accounts';
 
 export function canOpenTab(user: User | null, tab: string, can: (permission: string) => boolean): boolean {
   if (!user) return false;
+  if (tab === 'audit-logs') return canReadAudit(user);
+  if (tab === 'branch-detail') return can('branches.read');
   if (tab === 'accounts') return canManageAccounts(user);
   if (tab === 'customers') return can('customers.read');
   if (tab === 'trips') return can('trips.read');

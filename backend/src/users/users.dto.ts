@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { ArrayMinSize, ArrayUnique, Equals, IsArray, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Max, Min, Validate, ValidatorConstraint, ValidatorConstraintInterface } from 'class-validator';
+import { ArrayMinSize, ArrayUnique, IsArray, IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Max, Min, Validate, ValidatorConstraint, ValidatorConstraintInterface } from 'class-validator';
 
 @ValidatorConstraint({ name: 'newPasswordBytes' })
 export class NewPasswordBytes implements ValidatorConstraintInterface {
@@ -9,6 +9,14 @@ export class NewPasswordBytes implements ValidatorConstraintInterface {
   defaultMessage() { return 'password phải có từ 12 đến 72 byte UTF-8'; }
 }
 const trim = ({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value;
+
+export class AccountVersionDto {
+  @IsDateString() expectedUpdatedAt!: string;
+}
+export class UpdateUserDto extends AccountVersionDto {
+  @Transform(trim) @IsString() @Length(1, 200) fullName!: string;
+  @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayUnique() @IsUUID('all', { each: true }) branchIds?: string[];
+}
 
 export class CreateUserDto {
   @Transform(trim)
@@ -25,8 +33,12 @@ export class CreateUserDto {
   @Validate(NewPasswordBytes)
   password!: string;
 
-  @Equals('DISPATCHER', { message: 'roleCode phải là DISPATCHER' })
-  roleCode!: 'DISPATCHER';
+  @IsIn(['DISPATCHER', 'DRIVER'])
+  roleCode!: 'DISPATCHER' | 'DRIVER';
+
+  @IsOptional()
+  @IsUUID()
+  driverId?: string;
 
   @IsArray()
   @ArrayMinSize(1)

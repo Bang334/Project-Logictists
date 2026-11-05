@@ -33,6 +33,7 @@ interface OrderDetailDrawerProps {
   order: Order | null;
   onClose: () => void;
   onEdit?: (order: Order) => void;
+  onCancelOrder?: (order: Order) => void;
 }
 
 export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
@@ -40,6 +41,7 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
   order,
   onClose,
   onEdit,
+  onCancelOrder,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -295,6 +297,12 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
         </Button>,
       ]}
     >
+      {onCancelOrder && isEditable && <Button danger onClick={() => onCancelOrder(order)} style={{ marginBottom: 12 }}>Hủy đơn</Button>}
+      {order.status === 'CANCELLED' && <Alert type="warning" showIcon message="Đơn đã hủy" description={order.cancellation ? <>
+        <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>Lý do: {order.cancellation.reason ?? 'Chưa có thông tin'}</div>
+        <div>Người hủy: {order.cancellation.actorName ?? order.cancellation.actorUserId ?? 'Chưa có thông tin'}</div>
+        <div>Thời điểm: {new Date(order.cancellation.occurredAt).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })} (UTC+7)</div>
+      </> : 'Dữ liệu cũ chưa có thông tin truy vết hủy.'} style={{ marginBottom: 12 }} />}
       {mapError && <Alert type="warning" showIcon message={mapError} style={{ marginBottom: 12 }} />}
       {/* Thông tin khách hàng & tổng quan */}
       <Card

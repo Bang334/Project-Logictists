@@ -593,6 +593,7 @@ model AuditLog {
   @@index([entityType, entityId, timestamp])
   @@index([actorUserId, timestamp])
   @@map("audit_logs")
+  @@index([timestamp, id], map: "audit_logs_time_id_idx")
 }
 
 model OptimizationJob {
@@ -768,6 +769,7 @@ model OrderEvent {
   @@unique([commandId])
   @@index([orderId, occurredAt])
   @@map("order_status_events")
+  @@index([occurredAt, id], map: "order_events_time_id_idx")
 }
 
 model VehicleType {

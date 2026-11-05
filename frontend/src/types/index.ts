@@ -21,6 +21,8 @@ export function parseUser(value: unknown): User {
 }
 
 export interface Branch {
+  active?: boolean;
+  updatedAt?: string;
   id: string;
   code: string;
   name: string;
@@ -152,6 +154,8 @@ export interface OrderStop {
 }
 
 export interface Order {
+  cancellationAllowed?: boolean;
+  cancellation?: { reason: string | null; actorUserId: string | null; actorName: string | null; occurredAt: string } | null;
   id: string;
   orderNumber: string;
   customerId: string;

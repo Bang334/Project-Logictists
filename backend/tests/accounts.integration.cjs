@@ -20,7 +20,12 @@ test('Account management on real PostgreSQL', { timeout: 120000 }, async t => {
   const prefix = 'accounts_test_' + randomUUID().replaceAll('-', '') + '_';
   const sockets = [];
   const request = async (path, token, method = 'GET', body, extraHeaders = {}) => {
-    const res = await fetch(base + path, { method, headers: { ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...extraHeaders }, body: body ? JSON.stringify(body) : undefined });
+    if (method === 'PATCH' && path.endsWith('/lock') && !body) {
+      const id = path.split('/')[2];
+      const target = await db.user.findUnique({ where: { id }, select: { updatedAt: true } });
+      body = { expectedUpdatedAt: target?.updatedAt.toISOString() ?? new Date(0).toISOString() };
+    }
+    const res = await fetch(base + path, { method, headers: { ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...(method === 'POST' && path === '/users' ? { 'Idempotency-Key': randomUUID() } : {}), ...extraHeaders }, body: body ? JSON.stringify(body) : undefined });
     return { status: res.status, body: await res.json() };
   };
   const login = username => request('/auth/login', null, 'POST', { username, password: process.env.AUTH_DEMO_PASSWORD });
@@ -60,12 +65,18 @@ test('Account management on real PostgreSQL', { timeout: 120000 }, async t => {
         assert.equal((await request(path, dispatcher, method, body, headers)).status, 403);
       }
     });
-    await t.test('other COMPANY ADMIN and live DB username change are rejected', async () => {
+    await t.test('COMPANY ADMIN permission is independent of username; ADMIN targets remain protected', async () => {
       const other = await db.user.create({ data: { username: prefix + 'other_admin', fullName: '[TEST ACCOUNTS] Admin', password: adminUser.password, roleScopes: { create: { roleId: adminRole.id, scopeType: 'COMPANY' } } } });
       const otherToken = (await login(other.username)).body.accessToken;
-      for (const [path, method, body] of [['/users','GET'], ['/users','POST',payload('other_denied')], ['/users/' + other.id + '/lock','PATCH']]) assert.equal((await request(path, otherToken, method, body)).status, 403);
+      assert.equal((await request('/users', otherToken)).status, 200);
+      assert.equal((await request('/users', otherToken, 'POST', payload('other_authorized'))).status, 201);
+      assert.equal((await request('/users/' + other.id + '/lock', admin, 'PATCH')).status, 403);
+      const concurrentLocks = await Promise.all([1, 2].map(() => request('/users/' + other.id + '/lock', admin, 'PATCH')));
+      assert.ok(concurrentLocks.every(result => result.status === 403));
+      assert.equal((await db.user.findUniqueOrThrow({ where: { id: adminUser.id } })).active, true);
+      assert.equal((await db.user.findUniqueOrThrow({ where: { id: other.id } })).active, true);
       await db.user.update({ where: { id: adminUser.id }, data: { username: prefix + 'renamed_admin' } });
-      try { assert.equal((await request('/users', admin)).status, 403); }
+      try { assert.equal((await request('/users', admin)).status, 200); }
       finally { await db.user.update({ where: { id: adminUser.id }, data: { username: adminUser.username } }); }
     });
     await t.test('accidental dispatcher users permission still cannot bypass capability', async () => {
@@ -86,6 +97,39 @@ test('Account management on real PostgreSQL', { timeout: 120000 }, async t => {
       const res = await create('multi', [a.id, b.id]); assert.equal(res.status, 201); multi = res.body; safe(multi);
       assert.deepEqual(multi.roleScopes.map(s => s.branch.id).sort(), [a.id, b.id].sort());
     });
+    await t.test('create retries are atomic and mismatched payloads are rejected', async () => {
+      const headers = { 'Idempotency-Key': randomUUID() }, body = payload('retry');
+      const results = await Promise.all([1, 2].map(() => request('/users', admin, 'POST', body, headers)));
+      assert.ok(results.every(r => r.status === 201));
+      assert.equal(results[0].body.id, results[1].body.id);
+      assert.equal(await db.auditLog.count({ where: { entityId: results[0].body.id, action: 'ACCOUNT_CREATED' } }), 1);
+      assert.equal((await request('/users', admin, 'POST', { ...body, fullName: 'Changed' }, headers)).status, 409);
+    });
+    await t.test('DRIVER account links an existing driver once and gets only its home branch', async () => {
+      const role = await db.accessRole.upsert({ where: { code: 'DRIVER' }, update: {}, create: { code: 'DRIVER', name: 'DRIVER' } });
+      const driver = await db.driver.create({ data: { fullName: '[TEST] Driver account', citizenId: prefix + 'citizen', phone: '0000000000', licenseNumber: prefix + 'license', licenseClass: 'C', licenseExpiry: new Date('2035-01-01'), homeBranchId: a.id } });
+      const body = { ...payload('driver'), roleCode: 'DRIVER', driverId: driver.id };
+      assert.equal((await request('/users', admin, 'POST', { ...body, branchIds: [b.id] })).status, 409);
+      const result = await request('/users', admin, 'POST', body);
+      assert.equal(result.status, 201); safe(result.body);
+      assert.equal((await db.driver.findUniqueOrThrow({ where: { id: driver.id } })).userId, result.body.id);
+      assert.equal(await db.userRoleScope.count({ where: { userId: result.body.id, roleId: role.id, branchId: a.id } }), 1);
+      assert.equal((await request('/users', admin, 'POST', { ...body, username: prefix + 'driver_duplicate' })).status, 409);
+      const signed = await login(body.username); assert.equal(signed.status, 200);
+      assert.equal((await request('/users', signed.body.accessToken)).status, 403);
+      const beforeTransfer = await db.driver.findUniqueOrThrow({ where: { id: driver.id } });
+      const moved = await request('/drivers/' + driver.id, admin, 'PATCH', { homeBranchId: b.id, expectedUpdatedAt: beforeTransfer.updatedAt.toISOString() });
+      assert.equal(moved.status, 200, JSON.stringify(moved.body));
+      assert.equal((await request('/auth/profile', signed.body.accessToken)).status, 401);
+      const afterTransfer = await login(body.username); assert.equal(afterTransfer.status, 200);
+      assert.deepEqual(afterTransfer.body.user.grants.map(grant => grant.branchId), [b.id]);
+      assert.equal((await db.userRoleScope.findFirstOrThrow({ where: { userId: result.body.id, branchId: a.id } })).active, false);
+      await db.userRoleScope.updateMany({ where: { userId: result.body.id }, data: { active: false } });
+      const movedBack = await request('/drivers/' + driver.id, admin, 'PATCH', { homeBranchId: a.id, expectedUpdatedAt: moved.body.updatedAt });
+      assert.equal(movedBack.status, 200);
+      assert.equal(await db.userRoleScope.count({ where: { userId: result.body.id, active: true } }), 0);
+      assert.equal((await login(body.username)).status, 403);
+    });
     await t.test('runtime DTO rejects missing role/branches, ADMIN, duplicates and arbitrary fields', async () => {
       for (const changes of [{ roleCode: undefined }, { roleCode: 'ADMIN' }, { branchIds: undefined }, { branchIds: [] }, { branchIds: [a.id, a.id] }, { branchIds: ['bad'] }, { branchIds: [null] }, { permissions: ['users.read'] }, { userId: adminUser.id }, { username: ' ' }, { fullName: ' ' }]) {
         assert.equal((await request('/users', admin, 'POST', { ...payload('invalid'), ...changes })).status, 400);
@@ -98,9 +142,9 @@ test('Account management on real PostgreSQL', { timeout: 120000 }, async t => {
     });
     await t.test('inactive/missing role or branch cannot create a partial user', async () => {
       assert.equal((await create('missing_branch', [randomUUID()])).body.code, 'BRANCH_UNAVAILABLE');
-      await db.branch.update({ where: { id: b.id }, data: { active: false } });
-      try { assert.equal((await create('inactive_branch', [a.id, b.id])).body.code, 'BRANCH_UNAVAILABLE'); }
-      finally { await db.branch.update({ where: { id: b.id }, data: { active: b.active } }); }
+      const inactive = await db.branch.create({ data: { code: 'INACTIVE-' + randomUUID(), name: '[TEST] Inactive', address: '[TEST]', latitude: 10, longitude: 106, active: false } });
+      try { assert.equal((await create('inactive_branch', [a.id, inactive.id])).body.code, 'BRANCH_UNAVAILABLE'); }
+      finally { await db.branch.delete({ where: { id: inactive.id } }); }
       await db.accessRole.update({ where: { id: dispatcherRole.id }, data: { active: false } });
       try { assert.equal((await create('inactive_role')).body.code, 'ROLE_UNAVAILABLE'); }
       finally { await db.accessRole.update({ where: { id: dispatcherRole.id }, data: { active: true } }); }
@@ -215,6 +259,29 @@ test('Account management on real PostgreSQL', { timeout: 120000 }, async t => {
       assert.equal(await db.authSession.count({ where: { userId: res.body.id, revokedAt: null } }), 0);
       if (signed.status === 200) assert.equal((await request('/orders', signed.body.accessToken)).status, 401);
     });
+    await t.test('editing scopes revokes sessions; stale edits fail; unlock never restores tokens', async () => {
+      const created = await create('edit_scopes'); assert.equal(created.status, 201);
+      const old = (await login(created.body.username)).body.accessToken;
+      const update = { fullName: '[TEST] Updated', branchIds: [b.id], expectedUpdatedAt: created.body.updatedAt };
+      const edited = await request('/users/' + created.body.id, admin, 'PATCH', update);
+      assert.equal(edited.status, 200); assert.equal(edited.body.fullName, update.fullName);
+      assert.deepEqual(edited.body.roleScopes.map(s => s.branch.id), [b.id]);
+      const detail = await request('/users/' + created.body.id, admin);
+      assert.equal(detail.status, 200); safe(detail.body);
+      assert.equal(detail.body.scopeHistory.find(scope => scope.branch.id === a.id).active, false);
+      assert.equal(detail.body.scopeHistory.find(scope => scope.branch.id === b.id).active, true);
+      assert.equal((await request('/auth/profile', old)).status, 401);
+      assert.equal((await request('/users/' + created.body.id, admin, 'PATCH', update)).status, 409);
+      const newToken = (await login(created.body.username)).body.accessToken;
+      const locked = await request('/users/' + created.body.id + '/lock', admin, 'PATCH'); assert.equal(locked.status, 200);
+      const unlocks = await Promise.all([1, 2].map(() => request('/users/' + created.body.id + '/unlock', admin, 'PATCH', { expectedUpdatedAt: locked.body.updatedAt })));
+      assert.ok(unlocks.every(result => result.status === 200));
+      const unlocked = unlocks[0];
+      assert.equal(unlocked.status, 200); assert.equal(unlocked.body.active, true);
+      assert.equal(await db.auditLog.count({ where: { entityId: created.body.id, action: 'ACCOUNT_UNLOCKED' } }), 1);
+      assert.equal((await request('/auth/profile', newToken)).status, 401);
+      assert.equal((await login(created.body.username)).status, 200);
+    });
     await t.test('seed rerun preserves password/locked status/scopes and never elevates legacy users', async () => {
       const before = await db.user.findUniqueOrThrow({ where: { id: one.id } });
       const scopeCount = await db.userRoleScope.count();
@@ -240,6 +307,11 @@ test('Account management on real PostgreSQL', { timeout: 120000 }, async t => {
     });
   } finally {
     for (const s of sockets) s.disconnect();
+    const fixtures = await db.user.findMany({ where: { username: { startsWith: prefix } }, select: { id: true } });
+    const ids = fixtures.map(user => user.id);
+    await db.driver.deleteMany({ where: { citizenId: { startsWith: prefix } } });
+    await db.auditLog.deleteMany({ where: { OR: [{ entityId: { in: ids } }, { actorUserId: { in: ids } }] } });
+    await db.processedCommand.deleteMany({ where: { OR: [{ actorUserId: { in: ids } }, ...ids.map(id => ({ commandType: 'CREATE_ACCOUNT', result: { path: ['id'], equals: id } }))] } });
     await db.user.deleteMany({ where: { username: { startsWith: prefix } } });
     await app.close();
   }

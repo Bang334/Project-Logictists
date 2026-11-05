@@ -78,7 +78,8 @@ test('Auth and branch isolation on PostgreSQL', { timeout: 90000 }, async t => {
       for (const endpoint of ['/branches', '/vehicles', '/drivers', '/orders', '/trips', '/customers']) {
         const response = await request(endpoint, admin); assert.equal(response.status, 200); assert.ok((endpoint === '/orders' ? response.body.total : response.body.length) >= 2, endpoint);
       }
-      assert.equal((await request('/branches/' + b.id, admin, 'PATCH', { phone: '0000000000' })).status, 200);
+      const currentBranch = await db.branch.findUniqueOrThrow({ where: { id: b.id } });
+      assert.equal((await request('/branches/' + b.id, admin, 'PATCH', { phone: '0000000000', expectedUpdatedAt: currentBranch.updatedAt.toISOString() })).status, 200);
     });
     await t.test('lists, filters and direct IDs isolate A from B', async () => {
       for (const [endpoint, ownId, foreignId] of [['branches', a.id, b.id], ['vehicles', va.id, vb.id], ['drivers', da.id, dbDriver.id], ['orders', oa.id, ob.id], ['trips', ta.id, tb.id], ['customers', oa.customerId, ob.customerId]]) {
@@ -94,7 +95,7 @@ test('Auth and branch isolation on PostgreSQL', { timeout: 90000 }, async t => {
     });
     await t.test('dispatcher cannot modify master data, even within own branch', async () => {
       for (const [path, body] of [['/branches/' + a.id, { name: 'tamper' }], ['/vehicles/' + va.id, { model: 'tamper' }], ['/drivers/' + da.id, { fullName: 'tamper' }]]) assert.equal((await request(path, tokenA, 'PATCH', body)).status, 403);
-      assert.equal((await request('/users/' + ua.id, tokenA, 'PATCH', { role: 'ADMIN' })).status, 404);
+      assert.equal((await request('/users/' + ua.id, tokenA, 'PATCH', { role: 'ADMIN' })).status, 403);
     });
     await t.test('order writes persist and foreign IDs/customer payloads are refused', async () => {
       const dto = { branchId: a.id, customerId: oa.customerId, notes: '[TEST AUTH] persisted', items: [{ description: '[TEST AUTH] measured package', packageType: 'CARTON', packages: [{ weightG: '1000', lengthMm: 100, widthMm: 100, heightMm: 100 }] }], stops: oa.stops.map(s => ({ type: s.type, address: s.address, latitude: s.latitude, longitude: s.longitude, contactName: s.contactName, contactPhone: s.contactPhone, serviceDurationMinutes: 20 })) };

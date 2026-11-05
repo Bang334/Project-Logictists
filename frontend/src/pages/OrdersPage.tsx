@@ -12,6 +12,7 @@ import type { Branch, Order } from '../types';
 import type { OrderInput, OrderLineInput, PackageInput, StopInput } from '../types/orders';
 import { MapLocationPickerModal } from '../components/MapLocationPickerModal';
 import { OrderDetailDrawer } from '../components/OrderDetailDrawer';
+import { CancelOrderModal } from '../components/CancelOrderModal';
 dayjs.extend(utc); dayjs.extend(timezone);
 const TZ = 'Asia/Ho_Chi_Minh';
 interface FormStop extends Omit<StopInput, 'windowStart' | 'windowEnd'> { windowStart?: Dayjs | null; windowEnd?: Dayjs | null }
@@ -79,6 +80,7 @@ const OrdersPage: React.FC = () => {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [open, setOpen] = useState(false), [editing, setEditing] = useState<Order | null>(null), [detail, setDetail] = useState<Order | null>(null);
   const [mapStop, setMapStop] = useState<number | null>(null);
+  const [cancelling, setCancelling] = useState<Order | null>(null);
   const [form] = Form.useForm<FormValues>();
   const formBranch = Form.useWatch('branchId', form);
   const busy = useRef(false), request = useRef(0);
@@ -195,7 +197,8 @@ const OrdersPage: React.FC = () => {
       </Form>
     </Modal>
     <MapLocationPickerModal manualAddress open={mapStop !== null} onCancel={() => setMapStop(null)} initialLocation={mapStop !== null ? form.getFieldValue(['stops', mapStop]) : undefined} onSelectLocation={location => { if (mapStop !== null) for (const key of ['address', 'latitude', 'longitude'] as const) form.setFieldValue(['stops', mapStop, key], location[key]); setMapStop(null); }} />
-    <OrderDetailDrawer open={!!detail} order={detail} onClose={() => setDetail(null)} onEdit={detail && canEdit(detail) ? o => void beginEdit(o) : undefined} />
+    <OrderDetailDrawer open={!!detail} order={detail} onClose={() => setDetail(null)} onEdit={detail && canEdit(detail) ? o => void beginEdit(o) : undefined} onCancelOrder={detail && canEdit(detail) && detail.cancellationAllowed ? o => { setDetail(null); setCancelling(o); } : undefined} />
+    {cancelling && <CancelOrderModal key={cancelling.id} order={cancelling} onClose={() => { setDetail(cancelling); setCancelling(null); }} onReload={o => { setDetail(o); setCancelling(null); void fetchRows(); }} onSaved={o => { setDetail(o); setCancelling(null); void fetchRows(); }} />}
   </Space>;
 };
 export default OrdersPage;

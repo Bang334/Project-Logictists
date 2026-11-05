@@ -4,6 +4,8 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { packageTotals, serializePackageTotals } from './package-measurements';
 
 export const orderInclude = {
+  events: { where: { eventType: 'CANCELLED' }, orderBy: { occurredAt: 'desc' as const }, take: 1,
+    select: { occurredAt: true, actorUserId: true, actorUser: { select: { fullName: true } }, payload: true } },
   branch: { select: { id: true, code: true, name: true } },
   customer: { select: { id: true, code: true, name: true, phone: true } },
   stops: { orderBy: { sequence: 'asc' as const } },
@@ -88,8 +90,17 @@ export function serializeOrder(order: OrderRecord) {
   if (complete) assertPackageManifest(order);
   const pickup = order.stops.find(s => s.type === StopType.PICKUP);
   const delivery = order.stops.find(s => s.type === StopType.DELIVERY);
+  const { events, ...record } = order;
+  const cancellation = events[0];
+  const payload = cancellation?.payload;
   return {
-    ...order,
+    ...record,
+    cancellation: cancellation ? {
+      occurredAt: cancellation.occurredAt,
+      actorUserId: cancellation.actorUserId,
+      actorName: cancellation.actorUser?.fullName ?? null,
+      reason: payload && typeof payload === 'object' && !Array.isArray(payload) && typeof payload.reason === 'string' ? payload.reason : null,
+    } : null,
     ...(complete ? serializePackageTotals(order.items.flatMap(i => i.packages)) : { totalWeightG: null, totalVolumeMm3: null }),
     operationalTimezone: 'Asia/Ho_Chi_Minh',
     items: order.items.map(item => ({ ...item, packages: item.packages.map(p => ({

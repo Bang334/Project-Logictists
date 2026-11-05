@@ -1,7 +1,8 @@
 import { OrderInput, OrderQuery, parseOrder, parseOrderPage } from '../types/orders';
 import { CustomerInput, CustomerQuery, parseCustomer, parseChoice, parsePage, parseCustomerOrder } from '../types/customers';
 import axios, { CanceledError, InternalAxiosRequestConfig } from 'axios';
-import { AccountQuery, CreateAccount, parseAccount, parseAccountList } from '../types/accounts';
+import { AccountQuery, CreateAccount, parseAccount, parseAccountDetail, parseAccountList, parseAvailableDrivers } from '../types/accounts';
+import { BranchInput, parseBranchPage, parseManagedBranch } from '../types/branches';
 import {
   Branch,
   ApplyOptimizationResponseUI,
@@ -65,21 +66,29 @@ client.interceptors.response.use(response => {
   return Promise.reject(error);
 });
 export const authApi = {
+  changePassword: (currentPassword: string, newPassword: string) => client.post('/auth/change-password', { currentPassword, newPassword }, { timeout: 20000 }),
   login: (username: string, password: string) => client.post('/auth/login', { username, password }, { timeout: 10000 }),
   getProfile: () => client.get<unknown>('/auth/profile', { timeout: 10000 }),
   logout: () => client.post('/auth/logout', {}, { timeout: 10000, headers: { Authorization: `Bearer ${currentToken}` } }),
 };
 
 export const accountsApi = {
+  detail: async (id: string) => parseAccountDetail((await client.get<unknown>(`/users/${id}`)).data),
+  update: async (id: string, body: { fullName: string; branchIds?: string[]; expectedUpdatedAt: string }) => parseAccount((await client.patch<unknown>(`/users/${id}`, body)).data),
+  unlock: async (id: string, expectedUpdatedAt: string) => parseAccount((await client.patch<unknown>(`/users/${id}/unlock`, { expectedUpdatedAt })).data),
+  availableDrivers: async (search = '') => parseAvailableDrivers((await client.get<unknown>('/users/available-drivers', { params: { search, pageSize: 100 } })).data),
   list: async (params: AccountQuery) => parseAccountList((await client.get<unknown>('/users', { params, timeout: 10000 })).data),
-  create: async (data: CreateAccount) => parseAccount((await client.post<unknown>('/users', data, { timeout: 15000 })).data),
-  lock: async (id: string) => parseAccount((await client.patch<unknown>(`/users/${id}/lock`, {}, { timeout: 10000 })).data),
+  create: async (data: CreateAccount, key: string) => parseAccount((await client.post<unknown>('/users', data, { timeout: 20000, headers: { 'Idempotency-Key': key } })).data),
+  lock: async (id: string, expectedUpdatedAt: string) => parseAccount((await client.patch<unknown>(`/users/${id}/lock`, { expectedUpdatedAt }, { timeout: 10000 })).data),
 };
 
 export const branchesApi = {
+  listAdmin: async (params: { page: number; search?: string; status?: string }) => parseBranchPage((await client.get<unknown>('/branches/admin-list', { params })).data),
+  create: async (body: BranchInput, key: string) => parseManagedBranch((await client.post<unknown>('/branches', body, { headers: { 'Idempotency-Key': key } })).data),
+  setActive: async (id: string, active: boolean, expectedUpdatedAt: string, key: string) => parseManagedBranch((await client.patch<unknown>(`/branches/${id}/status`, { active, expectedUpdatedAt }, { headers: { 'Idempotency-Key': key } })).data),
   getAll: () => apiClient.get<Branch[]>('/branches'),
   getById: (id: string) => apiClient.get<Branch>(`/branches/${id}`),
-  update: (id: string, data: Partial<Branch>) =>
+  update: (id: string, data: Partial<Omit<Branch, 'lateDeliveryPenaltyValue'>> & { expectedUpdatedAt: string; lateDeliveryPenaltyValue?: number }) =>
     apiClient.patch<Branch>(`/branches/${id}`, data),
 };
 
@@ -115,6 +124,7 @@ export const driversApi = {
 };
 
 export const ordersApi = {
+  cancel: async (id: string, version: number, reason: string, key: string) => parseOrder((await client.post<unknown>(`/orders/${id}/cancel`, { version, reason }, { headers: { 'Idempotency-Key': key }, timeout: 25000 })).data),
   list: async (params: OrderQuery = {}) => parseOrderPage((await client.get<unknown>('/orders', { params })).data),
   getOne: async (id: string) => parseOrder((await client.get<unknown>(`/orders/${id}`)).data),
   getAvailableForDispatch: async (branchId?: string) => {

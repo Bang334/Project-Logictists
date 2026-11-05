@@ -33,7 +33,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     userRef.current = profile; setUser(profile);
     const savedBranch = firstProfile ? sessionStorage.getItem(`tms_branch:${profile.id}`) : null;
     let next = firstProfile && savedBranch && savedBranch !== 'ALL' ? savedBranch : branchRef.current;
-    if (next && !profile.branches.some(b => b.id === next)) next = undefined;
+    if (next && !profile.branches.some(b => b.id === next)) {
+      sessionStorage.removeItem(`tms_branch:${profile.id}`);
+      clear(); setError('Chi nhánh đang chọn không còn được cấp. Vui lòng đăng nhập lại và chọn phạm vi hợp lệ.'); return;
+    }
     if (!next && !profile.companyScope && profile.branches.length === 1) next = profile.branches[0].id;
     branchRef.current = next; setBranch(next);
     sessionStorage.setItem(`tms_branch:${profile.id}`, next || 'ALL');

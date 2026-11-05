@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Modal,
   Form,
@@ -21,11 +21,13 @@ import {
   EnvironmentOutlined,
   SaveOutlined,
 } from '@ant-design/icons';
-import { branchesApi, mapboxApi } from '../api/client';
+import { apiErrorMessage, branchesApi, mapboxApi } from '../api/client';
 import { Branch } from '../types';
 import { MapLocationPickerModal } from './MapLocationPickerModal';
 
 const { Text } = Typography;
+type BranchForm = Pick<Branch, 'name' | 'code' | 'address' | 'phone' | 'deliveryGraceDays' | 'lateDeliveryPenaltyMode'> & { lateDeliveryPenaltyValue: number };
+interface AddressOption { value: string; label: string; lat: number; lng: number }
 
 interface EditBranchModalProps {
   open: boolean;
@@ -41,20 +43,25 @@ export const EditBranchModal: React.FC<EditBranchModalProps> = ({
   onSuccess,
 }) => {
   const { message } = AntdApp.useApp();
-  const [form] = Form.useForm();
+  const [form] = Form.useForm<BranchForm>();
   const [loading, setLoading] = useState(false);
+  const saving = useRef(false);
+  const searchVersion = useRef(0);
+  const [error, setError] = useState<string>();
+  const [addressError, setAddressError] = useState<string>();
 
   // Tọa độ GPS của chi nhánh
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
 
   // Mapbox autocomplete
-  const [addressOptions, setAddressOptions] = useState<any[]>([]);
+  const [addressOptions, setAddressOptions] = useState<AddressOption[]>([]);
 
   // Modal bản đồ Mapbox
   const [isMapPickerOpen, setIsMapPickerOpen] = useState(false);
 
   useEffect(() => {
     if (open && branch) {
+      setError(undefined); setAddressError(undefined); setAddressOptions([]);
       form.setFieldsValue({
         name: branch.name,
         code: branch.code,
@@ -65,7 +72,7 @@ export const EditBranchModal: React.FC<EditBranchModalProps> = ({
         lateDeliveryPenaltyValue: Number(branch.lateDeliveryPenaltyValue ?? 0),
       });
 
-      if (branch.latitude && branch.longitude) {
+      if (branch.latitude != null && branch.longitude != null) {
         setCoords({ lat: branch.latitude, lng: branch.longitude });
       } else {
         setCoords(null);
@@ -74,22 +81,26 @@ export const EditBranchModal: React.FC<EditBranchModalProps> = ({
   }, [open, branch, form]);
 
   const handleSearchAddress = async (query: string) => {
+    const version = ++searchVersion.current;
+    setCoords(null); setAddressOptions([]); setAddressError(undefined);
     if (!query || query.length < 3) return;
-    const results = await mapboxApi.geocode(query);
-    setAddressOptions(
-      results.map((r: any) => ({
-        value: r.address,
-        label: r.address,
-        lat: r.latitude,
-        lng: r.longitude,
-      })),
-    );
+    try {
+      const results: unknown = await mapboxApi.geocode(query);
+      if (version !== searchVersion.current) return;
+      const options: AddressOption[] = [];
+      if (Array.isArray(results)) for (const result of results) {
+        if (result && typeof result === 'object' && typeof result.address === 'string' && Number.isFinite(result.latitude) && Number.isFinite(result.longitude)) {
+          options.push({ value: result.address, label: result.address, lat: result.latitude, lng: result.longitude });
+        }
+      }
+      setAddressOptions(options);
+      if (!options.length) setAddressError('Chưa lấy được gợi ý địa chỉ. Hãy thử lại hoặc chọn trên bản đồ.');
+    } catch (e) { if (version === searchVersion.current) setAddressError(apiErrorMessage(e)); }
   };
 
-  const handleSelectSearchResult = (_value: string, option: any) => {
-    if (option.lat && option.lng) {
-      setCoords({ lat: option.lat, lng: option.lng });
-    }
+  const handleSelectSearchResult = (_value: string, option: AddressOption) => {
+    ++searchVersion.current; setAddressError(undefined);
+    setCoords({ lat: option.lat, lng: option.lng });
   };
 
   const handleSelectFromMap = (result: {
@@ -97,22 +108,25 @@ export const EditBranchModal: React.FC<EditBranchModalProps> = ({
     latitude: number;
     longitude: number;
   }) => {
+    ++searchVersion.current; setAddressError(undefined);
     form.setFieldsValue({ address: result.address });
     setCoords({ lat: result.latitude, lng: result.longitude });
     setIsMapPickerOpen(false);
   };
 
-  const handleSubmit = async (values: any) => {
-    if (!branch) return;
+  const handleSubmit = async (values: BranchForm) => {
+    if (!branch || saving.current) return;
+    if (!branch.updatedAt) { message.error('Thiếu phiên bản chi nhánh. Hãy tải lại dữ liệu.'); return; }
 
     try {
-      setLoading(true);
+      saving.current = true; setLoading(true); setError(undefined);
 
       const matchedOption = addressOptions.find((o) => o.value === values.address);
-      const lat = coords?.lat || matchedOption?.lat;
-      const lng = coords?.lng || matchedOption?.lng;
+      const lat = coords?.lat ?? matchedOption?.lat;
+      const lng = coords?.lng ?? matchedOption?.lng;
 
-      const payload: Partial<Branch> = {
+      const payload = {
+        expectedUpdatedAt: branch.updatedAt,
         name: values.name,
         address: values.address,
         phone: values.phone,
@@ -127,10 +141,10 @@ export const EditBranchModal: React.FC<EditBranchModalProps> = ({
       message.success(`Đã cập nhật địa chỉ và thông tin chi nhánh "${values.name}" thành công!`);
       onSuccess();
       onCancel();
-    } catch (error: any) {
-      message.error(error.response?.data?.message || 'Lỗi khi cập nhật chi nhánh');
+    } catch (error: unknown) {
+      setError(apiErrorMessage(error));
     } finally {
-      setLoading(false);
+      saving.current = false; setLoading(false);
     }
   };
 
@@ -147,21 +161,24 @@ export const EditBranchModal: React.FC<EditBranchModalProps> = ({
           </Space>
         }
         open={open}
-        onCancel={onCancel}
+        onCancel={() => { if (!saving.current) onCancel(); }}
+        closable={!loading}
+        maskClosable={!loading}
         footer={null}
         width={680}
       >
         <Alert
           type="info"
           showIcon
-          message="Bạn có thể chỉnh sửa tên, số điện thoại và đặc biệt là địa chỉ kho bãi của chi nhánh bằng cách gõ tên đường hoặc bấm chọn trực tiếp trên bản đồ Mapbox."
+          message="Chỉnh sửa thông tin và địa chỉ chi nhánh. Thay đổi này không sửa địa điểm đã lưu trên đơn hoặc chuyến cũ."
           style={{ marginTop: 12, marginBottom: 16 }}
         />
 
-        <Form form={form} layout="vertical" onFinish={handleSubmit}>
+        {error && <Alert type="error" showIcon message={error} />}
+        <Form form={form} layout="vertical" onFinish={handleSubmit} disabled={loading}>
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
             <Form.Item
-              label="Tên Chi Nhánh / Kho Bãi"
+              label="Tên Chi Nhánh"
               name="name"
               rules={[{ required: true, message: 'Nhập tên chi nhánh' }]}
             >
@@ -178,7 +195,7 @@ export const EditBranchModal: React.FC<EditBranchModalProps> = ({
           </Form.Item>
 
           <Form.Item
-            label="Địa Chỉ Chi Nhánh (Bãi xe & Kho xuất phát)"
+            label="Địa Chỉ Chi Nhánh"
             required
             style={{ marginBottom: 8 }}
           >
@@ -208,9 +225,10 @@ export const EditBranchModal: React.FC<EditBranchModalProps> = ({
             </Space.Compact>
           </Form.Item>
 
+          {addressError && <Alert type="warning" message={addressError} />}
           {/* Hiển thị tọa độ GPS */}
           <div style={{ marginBottom: 20 }}>
-            {coords && coords.lat && coords.lng ? (
+            {coords ? (
               <Tag color="cyan" icon={<AimOutlined />}>
                 Tọa độ GPS chi nhánh: {coords.lat.toFixed(5)}, {coords.lng.toFixed(5)}
               </Tag>
@@ -292,11 +310,11 @@ export const EditBranchModal: React.FC<EditBranchModalProps> = ({
       {/* Modal Mapbox Picker cho Chi Nhánh */}
       <MapLocationPickerModal
         open={isMapPickerOpen}
-        title={`Chọn Vị Trí Kho Bãi Chi Nhánh: ${branch.name}`}
+        title={`Chọn Vị Trí Chi Nhánh: ${branch.name}`}
         initialLocation={{
           address: form.getFieldValue('address') || branch.address,
-          latitude: coords?.lat || branch.latitude,
-          longitude: coords?.lng || branch.longitude,
+          latitude: coords?.lat ?? branch.latitude,
+          longitude: coords?.lng ?? branch.longitude,
         }}
         onCancel={() => setIsMapPickerOpen(false)}
         onSelectLocation={handleSelectFromMap}

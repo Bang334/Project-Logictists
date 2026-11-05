@@ -2,52 +2,66 @@ import { LateDeliveryPenaltyMode } from '@prisma/client';
 import {
   IsEnum,
   IsInt,
-  IsNotEmpty,
   IsNumber,
-  IsOptional,
+  ValidateIf,
+  Length,
+  IsTimeZone,
+  Matches,
   IsString,
   Max,
   Min,
+  IsDateString,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 
 export class UpdateBranchDto {
-  @IsOptional()
+  @IsDateString()
+  @Matches(/T.*(?:Z|[+-]\d{2}:\d{2})$/)
+  expectedUpdatedAt!: string;
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value)
   @IsString()
-  @IsNotEmpty()
+  @Length(1, 200)
   name?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value)
   @IsString()
-  @IsNotEmpty()
+  @Length(1, 500)
   address?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsNumber()
+  @Min(-90)
+  @Max(90)
   latitude?: number;
 
-  @IsOptional()
+  @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsNumber()
+  @Min(-180)
+  @Max(180)
   longitude?: number;
 
-  @IsOptional()
+  @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsString()
+  @Length(0, 40)
   phone?: string;
 
-  @IsOptional()
-  @IsString()
+  @ValidateIf((_object, value: unknown) => value !== undefined)
+  @IsTimeZone()
   timezone?: string;
 
-  @IsOptional()
+  @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsInt()
   @Min(0)
   @Max(365)
   deliveryGraceDays?: number;
 
-  @IsOptional()
+  @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsEnum(LateDeliveryPenaltyMode)
   lateDeliveryPenaltyMode?: LateDeliveryPenaltyMode;
 
-  @IsOptional()
+  @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsNumber()
   @Min(0)
   lateDeliveryPenaltyValue?: number;

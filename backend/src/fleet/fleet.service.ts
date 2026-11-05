@@ -76,7 +76,7 @@ export class FleetService {
       if (dto.homeDepotLocationId && !await tx.location.findFirst({ where: { id: dto.homeDepotLocationId, managingBranchId: dto.homeBranchId, active: true, type: 'CENTRAL_WAREHOUSE' } })) throw new BadRequestException('Điểm xuất phát không thuộc chi nhánh hoặc không hoạt động');
       if (!normalizedPlate(dto.plateNumber)) throw new BadRequestException('Biển số không hợp lệ');
       const row = await tx.vehicle.create({ data: { ...dto, plateNumber: dto.plateNumber.toUpperCase(), status: 'AVAILABLE' } });
-      await this.audit(tx, user, 'Vehicle', row.id, 'CREATE', { version: row.updatedAt.toISOString() }); return row.id;
+      await this.audit(tx, user, 'Vehicle', row.id, 'CREATE', { auditBranchIds: [row.homeBranchId], version: row.updatedAt.toISOString() }); return row.id;
     }, (tx, id) => this.detail('vehicles', id, user, tx));
   }
   createDriver(dto: CreateDriverDto, user: Principal, key?: string) {
@@ -84,7 +84,7 @@ export class FleetService {
     return fleetCommand(this.db, user, 'FLEET_CREATE_DRIVER', key, dto, async tx => {
       const e = await this.employee(tx, dto.employeeId, dto.employeeVersion, user);
       const row = await tx.driver.create({ data: { employeeId: e.id, userId: e.userId, fullName: e.fullName, phone: e.phone, citizenId: e.citizenId, homeBranchId: e.branchId, licenseNumber: dto.licenseNumber, licenseClass: dto.licenseClass, licenseExpiry: new Date(dto.licenseExpiry) } });
-      await this.audit(tx, user, 'Driver', row.id, 'CREATE', { employeeId: e.id, version: row.updatedAt.toISOString() }); return row.id;
+      await this.audit(tx, user, 'Driver', row.id, 'CREATE', { auditBranchIds: [row.homeBranchId], employeeId: e.id, version: row.updatedAt.toISOString() }); return row.id;
     }, (tx, id) => this.detail('drivers', id, user, tx));
   }
   linkEmployee(id: string, dto: LinkEmployeeDto, user: Principal, key?: string) {
@@ -97,7 +97,7 @@ export class FleetService {
       const e = await this.employee(tx, dto.employeeId, dto.employeeVersion, user);
       if (d.userId && d.userId !== e.userId) throw new ConflictException('Tài khoản hiện tại không khớp Employee');
       await tx.driver.update({ where: { id }, data: { employeeId: e.id, userId: e.userId, fullName: e.fullName, phone: e.phone, citizenId: e.citizenId, homeBranchId: e.branchId, updatedAt: nextProfileTimestamp(d.updatedAt) } });
-      await this.audit(tx, user, 'Driver', id, 'LINK_EMPLOYEE', { employeeId: e.id }); return id;
+      await this.audit(tx, user, 'Driver', id, 'LINK_EMPLOYEE', { auditBranchIds: [...new Set([d.homeBranchId, e.branchId])], employeeId: e.id }); return id;
     }, (tx, resourceId) => this.detail('drivers', resourceId, user, tx));
   }
   async availability(kind: ResourceKind, query: IntervalQueryDto, user: Principal) {
@@ -182,9 +182,9 @@ export class FleetService {
           { vehicleId: id, plannedStartTime: times.endsAt ? { lt: times.endsAt } : undefined, plannedEndTime: { gt: times.startsAt } },
           { reservations: { some: { vehicleId: id, status: { in: ['HELD', 'ACTIVE'] }, startsAt: times.endsAt ? { lt: times.endsAt } : undefined, endsAt: { gt: times.startsAt } } } },
         ] }, select: { id: true }, take: 101 });
-        if (affected.length) await this.audit(tx, user, 'VehicleUnavailability', resultId, 'TRIP_CONFLICT_RECORDED', { resourceId: id, tripIds: affected.slice(0, 100).map(t => t.id), truncated: affected.length > 100 });
+        if (affected.length) await this.audit(tx, user, 'VehicleUnavailability', resultId, 'TRIP_CONFLICT_RECORDED', { auditBranchIds: [resource.homeBranchId], resourceId: id, tripIds: affected.slice(0, 100).map(t => t.id), truncated: affected.length > 100 });
       }
-      await this.audit(tx, user, kind === 'vehicles' ? 'VehicleUnavailability' : scheduleKind === 'SHIFT' ? 'DriverShift' : 'EmployeeLeave', resultId, cancel ? 'CANCEL' : scheduleId ? 'UPDATE' : 'CREATE', { resourceId: id, kind: scheduleKind, reason: dto.reason, startsAt: times.startsAt.toISOString(), endsAt: times.endsAt?.toISOString() ?? null, previous: previous ? { version: previous.version, startsAt: previous.startsAt.toISOString(), endsAt: previous.endsAt?.toISOString() ?? null, reason: previous.reason } : null });
+      await this.audit(tx, user, kind === 'vehicles' ? 'VehicleUnavailability' : scheduleKind === 'SHIFT' ? 'DriverShift' : 'EmployeeLeave', resultId, cancel ? 'CANCEL' : scheduleId ? 'UPDATE' : 'CREATE', { auditBranchIds: [resource.homeBranchId], resourceId: id, kind: scheduleKind, reason: dto.reason, startsAt: times.startsAt.toISOString(), endsAt: times.endsAt?.toISOString() ?? null, previous: previous ? { version: previous.version, startsAt: previous.startsAt.toISOString(), endsAt: previous.endsAt?.toISOString() ?? null, reason: previous.reason } : null });
       return resultId;
     }, async (tx, resultId) => { await this.resource(tx, kind, id, user, true); return { id: resultId, saved: true }; });
   }

@@ -17,10 +17,10 @@ describe('account boundaries', () => {
     for (const change of [{ roleCode: undefined }, { roleCode: 'ADMIN' }, { branchIds: [] }, { branchIds: undefined }, { branchIds: [...valid.branchIds, ...valid.branchIds] }]) expect((await validate(plainToInstance(CreateUserDto, { ...valid, ...change }))).length).toBeGreaterThan(0);
     for (const pageSize of [0, -1, 101, 'bad']) expect((await validate(plainToInstance(ListUsersDto, { pageSize }))).length).toBeGreaterThan(0);
   });
-  it('requires the exact username and a COMPANY ADMIN permission on the same grant', () => {
+  it('requires a COMPANY ADMIN permission on the same grant independently of username', () => {
     const user: Principal = { id: 'u', sessionId: 's', username: 'demo_auth_admin', fullName: 'Admin', grants: [{ role: 'ADMIN', scopeType: 'COMPANY', branchId: null, permissions: ['users.read'] }] };
     expect(hasPermission(user, 'users.read')).toBe(true);
-    expect(hasPermission({ ...user, username: 'other_admin' }, 'users.read')).toBe(false);
+    expect(hasPermission({ ...user, username: 'other_admin' }, 'users.read')).toBe(true);
     expect(hasPermission({ ...user, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'b', permissions: ['users.read'] }] }, 'users.read')).toBe(false);
     expect(hasPermission(user, 'users.create')).toBe(false);
   });

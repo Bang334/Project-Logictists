@@ -14,13 +14,25 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 const driver: Driver = { id: 'driver', updatedAt: '2026-10-17T00:00:00.000Z', fullName: 'Test Driver', phone: '100', citizenId: 'test-id', licenseNumber: 'test-license', licenseClass: 'C', licenseExpiry: '2035-01-01', homeBranchId: 'branch', status: 'AVAILABLE', fixedSalaryMonthly: '0', tripBasePay: '0', perKmPay: '0' };
 
+async function clickSaveProfile() {
+  // A whole-form role query spends seconds computing jsdom styles for every
+  // Ant Design button. Locate the label first, then check the actual button.
+  const button = screen.getByText('Lưu Hồ Sơ').closest('button');
+  if (!button) throw new Error('Không tìm thấy nút lưu hồ sơ');
+  expect(button).toHaveRole('button');
+  expect(button).toHaveAccessibleName('Lưu Hồ Sơ');
+  await waitFor(() => expect(button).toBeVisible());
+  expect(button).toBeEnabled();
+  fireEvent.click(button);
+}
+
 describe('EditDriverModal regression', () => {
   it('preserves zero compensation and submits the version read with the profile', async () => {
     vi.mocked(driversApi.update).mockResolvedValue({ data: driver } as Awaited<ReturnType<typeof driversApi.update>>);
     const onCancel = vi.fn(), onSuccess = vi.fn();
     render(<App><EditDriverModal open driver={driver} branches={[]} onCancel={onCancel} onSuccess={onSuccess} /></App>);
     await waitFor(() => expect(screen.getByLabelText('Lương Cứng Cơ Bản')).toHaveValue('0'));
-    fireEvent.click(screen.getByRole('button', { name: 'Lưu Hồ Sơ' }));
+    await clickSaveProfile();
     await waitFor(() => expect(driversApi.update).toHaveBeenCalledWith('driver', expect.objectContaining({ expectedUpdatedAt: driver.updatedAt, fixedSalaryMonthly: 0, tripBasePay: 0, perKmPay: 0 })));
     expect(onSuccess).toHaveBeenCalledOnce(); expect(onCancel).toHaveBeenCalledOnce();
   });
@@ -30,7 +42,7 @@ describe('EditDriverModal regression', () => {
     const onCancel = vi.fn(), onSuccess = vi.fn();
     render(<App><EditDriverModal open driver={driver} branches={[]} onCancel={onCancel} onSuccess={onSuccess} /></App>);
     fireEvent.change(await screen.findByLabelText('Họ và Tên Tài Xế'), { target: { value: 'Unsaved name' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Lưu Hồ Sơ' }));
+    await clickSaveProfile();
     await screen.findByText('Hồ sơ đã thay đổi');
     expect(screen.getByLabelText('Họ và Tên Tài Xế')).toHaveValue('Unsaved name');
     expect(onCancel).not.toHaveBeenCalled(); expect(onSuccess).not.toHaveBeenCalled();

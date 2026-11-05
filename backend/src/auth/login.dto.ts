@@ -2,7 +2,7 @@ import { Transform } from 'class-transformer';
 import { IsString, Length, Validate, ValidatorConstraint, ValidatorConstraintInterface } from 'class-validator';
 
 @ValidatorConstraint({ name: 'bcryptPasswordLength' })
-class BcryptPasswordLength implements ValidatorConstraintInterface {
+export class BcryptPasswordLength implements ValidatorConstraintInterface {
   validate(value: unknown) { return typeof value === 'string' && Buffer.byteLength(value, 'utf8') <= 72; }
   defaultMessage() { return 'Mật khẩu không được vượt quá 72 bytes UTF-8'; }
 }

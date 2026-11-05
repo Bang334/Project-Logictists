@@ -1,5 +1,13 @@
 # Hợp đồng Package / khung giờ sau merge
 
+> **Chốt 03/11/2026 — hủy trước phân công:** ADMIN/DISPATCHER có `orders.write` trong scope được hủy DRAFT/CONFIRMED chưa có phân công/lịch sử vận chuyển, bắt buộc lý do. `POST /orders/:id/cancel` nhận `{version, reason}` và `Idempotency-Key`; thành công đổi Order và mọi Package của dòng hàng sang CANCELLED, tăng version, giữ ID/quan hệ và ghi OrderEvent. Lệnh mới cho đơn đã hủy trả 409; cùng key/payload trả kết quả cũ sau kiểm tra quyền/scope hiện hành. Không phục hồi đơn đã hủy. Chi tiết API, khóa, kiểm thử và giới hạn: [Hủy đơn vận tải](WEB_ADMIN.md#huy-don-van-tai).
+
+`cancellation` trong response đơn là `{reason, actorUserId, actorName, occurredAt}` hoặc null nếu chưa có sự kiện; không suy diễn metadata cho đơn cũ. Chi tiết và response lệnh mới có `cancellationAllowed` theo quyền và quan hệ hiện tại. Đây là gợi ý UI; lệnh hủy luôn kiểm tra lại sau khóa. Cached response idempotent có thể chứa trạng thái cũ; GET chi tiết để xem hiện trạng.
+
+Consumer điều phối giữ nguyên `newDispatchOrderWhere` (chỉ CONFIRMED). Create thủ công và apply tự động khóa Order bằng `FOR UPDATE`, rồi đọc lại status/version/quan hệ trong transaction. Hủy dùng chính khóa row này, không lấy thêm khóa xe/tài xế sau đó. Job đang tính không cấm hủy, không bị hủy dây chuyền; proposal cũ bị chặn khi apply kiểm tra lại status/version. Không thay optimizer hoặc validator.
+
+API bán lẻ `POST /sales-orders/:id/cancel` từ chối B2B_TRANSPORT (404), kể cả ADMIN, để không đi vòng qua version/khóa/kiểm tra lịch sử của lệnh vận tải.
+
 > **Nghiệm thu 18/10/2026:** form sửa giữ nguyên mili giây của khung giờ; đơn/kiện có tác vụ hoặc lịch sử (kể cả StopTask chỉ liên kết Package) bị chặn sửa và loại khỏi danh sách chờ điều phối mới. Không đổi response hay thêm policy hủy. Ma trận kiểm thử, hai lỗi tái hiện và giới hạn tích hợp: [Nghiệm thu đơn–kiện](WEB_ADMIN.md#don-kien).
 
 > **Cập nhật 16/10/2026:** Theo yêu cầu người dùng, mã nguồn app mobile và API thực thi riêng của Người 3 đã được gỡ, gồm phần chưa commit. Nội dung mobile bên dưới là tài liệu lịch sử/yêu cầu, không mô tả chức năng hiện có. Schema và migration được giữ để bảo toàn lịch sử dữ liệu.

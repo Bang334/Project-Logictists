@@ -2,6 +2,7 @@ import React from 'react';
 import { Layout, Button, Space, Typography, Tag, Select, Grid } from 'antd';
 import { CarOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
+import ChangePasswordButton from './ChangePasswordButton';
 
 const { Header } = Layout;
 const { Text } = Typography;
@@ -41,7 +42,7 @@ const Navbar: React.FC = () => {
       </div>
 
       <Space size="middle" wrap style={{ maxWidth: '100%' }}>
-        <Select aria-label="Chi nhánh làm việc" style={{ width: screens.sm ? 260 : 'calc(100vw - 32px)', maxWidth: '100%' }} value={branchId || 'ALL'} onChange={value => setBranchId(value === 'ALL' ? undefined : value)} options={[{ value: 'ALL', label: 'Tất cả chi nhánh được cấp' }, ...(user?.branches || []).map(b => ({ value: b.id, label: b.name }))]} />
+        <Select aria-label="Chi nhánh làm việc" showSearch optionFilterProp="label" style={{ width: screens.sm ? 260 : 'calc(100vw - 32px)', maxWidth: '100%' }} value={branchId || 'ALL'} onChange={value => setBranchId(value === 'ALL' ? undefined : value)} options={[{ value: 'ALL', label: 'Tất cả chi nhánh được cấp' }, ...(user?.branches || []).map(b => ({ value: b.id, label: b.name }))]} />
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Tag color="geekblue" icon={<UserOutlined />}>
@@ -52,6 +53,7 @@ const Navbar: React.FC = () => {
           </Text>
         </div>
 
+        <ChangePasswordButton />
         <Button
           className="tms-logout-button"
           type="text"

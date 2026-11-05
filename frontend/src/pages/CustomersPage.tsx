@@ -10,7 +10,7 @@ export default function CustomersPage() {
   const canReadOrders = can('orders.read');
   const [rows, setRows] = useState<Customer[]>([]), [page, setPage] = useState(1), [pageSize, setPageSize] = useState(25), [total, setTotal] = useState(0);
   const [search, setSearch] = useState(''), [loading, setLoading] = useState(false), [error, setError] = useState(''), [reload, setReload] = useState(0);
-  const [detail, setDetail] = useState<Customer | null>(null), [detailId, setDetailId] = useState<string>();
+  const [detail, setDetail] = useState<Customer | null>(null), [detailId, setDetailId] = useState<string | undefined>(() => new URLSearchParams(window.location.search).get('customer') ?? undefined);
   const [detailLoading, setDetailLoading] = useState(false), [detailError, setDetailError] = useState('');
   const [orders, setOrders] = useState<CustomerOrder[]>([]), [orderTotal, setOrderTotal] = useState(0), [orderPage, setOrderPage] = useState(1), [orderError, setOrderError] = useState('');
   const [ordersLoading, setOrdersLoading] = useState(false);

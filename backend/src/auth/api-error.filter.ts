@@ -7,6 +7,10 @@ import { isFleetDatabaseConflict } from '../fleet/fleet-command';
 export class ApiErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost) {
     const response = host.switchToHttp().getResponse<Response>();
+    if (error instanceof Prisma.PrismaClientUnknownRequestError && /BRANCH_INACTIVE|BRANCH_IN_USE/.test(error.message)) {
+      response.status(409).json({ statusCode: 409, code: error.message.includes('BRANCH_IN_USE') ? 'BRANCH_IN_USE' : 'BRANCH_INACTIVE', message: 'Trạng thái chi nhánh không cho phép thao tác. Hãy tải lại chi nhánh và dữ liệu liên quan.' });
+      return;
+    }
     if (isFleetDatabaseConflict(error)) {
       response.status(409).json({ statusCode: 409, code: 'RESOURCE_SCHEDULE_CONFLICT', message: 'Lịch tài nguyên xung đột hoặc chưa đủ điều kiện. Tải lại hồ sơ/lịch trước khi phân công.' });
       return;

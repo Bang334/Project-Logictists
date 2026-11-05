@@ -27,6 +27,7 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
   const { can, user } = useAuth();
   const menuItems = [
+    { key: 'audit-logs', icon: <DatabaseOutlined />, label: 'Nhật ký thao tác' },
     { key: 'trips', icon: <CarOutlined />, label: 'Tra cứu chuyến' },
     { key: 'customer-shop', icon: <ShopOutlined />, label: 'Đặt hàng' },
     { key: 'catalog', icon: <AppstoreOutlined />, label: 'Danh mục hàng' },

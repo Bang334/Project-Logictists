@@ -12,11 +12,11 @@ const { validationException } = require('../dist/src/orders/validation-errors');
 const { BigIntSerializationInterceptor } = require('../dist/src/common/interceptors/bigint-serialization.interceptor');
 const { seedAuth } = require('../dist/prisma/seed-auth');
 const { createHmac } = require('node:crypto');
-async function orderAcceptanceApp(port = 0) {
+async function orderAcceptanceApp(port = 0, additionalModules = []) {
   const target = new URL(process.env.DATABASE_URL);
   if (!['localhost','127.0.0.1'].includes(target.hostname) || target.pathname !== '/tms_order_acceptance_20261018') throw new Error('Isolated order acceptance DB required');
   class OrderAcceptanceModule {}
-  Module({ imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true }), PrismaModule, AuthModule, CustomersModule, OrdersModule, BranchesModule] })(OrderAcceptanceModule);
+  Module({ imports: [ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true }), PrismaModule, AuthModule, CustomersModule, OrdersModule, BranchesModule, ...additionalModules] })(OrderAcceptanceModule);
   const app = await NestFactory.create(OrderAcceptanceModule, { logger: false });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true, exceptionFactory: validationException }));
   app.useGlobalInterceptors(new BigIntSerializationInterceptor());

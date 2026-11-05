@@ -2,6 +2,7 @@
 import { AuthService } from './auth.service';
 import { AuthRequest, Public, RequirePermission } from './access';
 import { LoginDto } from './login.dto';
+import { ChangePasswordDto } from './change-password.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -17,4 +18,8 @@ export class AuthController {
   @Post('logout')
   @HttpCode(200)
   logout(@Req() req: AuthRequest) { return this.auth.logout(req.user); }
+  @RequirePermission('authenticated')
+  @Post('change-password')
+  @HttpCode(200)
+  changePassword(@Req() req: AuthRequest, @Body() body: ChangePasswordDto) { return this.auth.changePassword(req.user, body); }
 }

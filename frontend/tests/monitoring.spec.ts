@@ -85,7 +85,9 @@ test('late detail response cannot replace another trip; revocation clears open P
   const revoked = await page.request.post('http://127.0.0.1:4019/__test/revoke-viewer');
   expect(revoked.ok()).toBeTruthy();
   await expect(page.getByRole('img', { name: 'Bằng chứng giao hàng của lần giao đã chọn' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Đăng xuất' }).click();
+  // Losing the selected branch now clears the session instead of widening its scope.
+  await expect(page.getByLabel('Tên đăng nhập')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Đăng xuất' })).toHaveCount(0);
   await expect(page.getByRole('img', { name: 'Bằng chứng giao hàng của lần giao đã chọn' })).toHaveCount(0);
   await expect(page.getByLabel('Tên đăng nhập')).toBeVisible();
 });

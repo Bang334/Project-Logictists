@@ -1,3 +1,4 @@
+import BranchAdminPanel from '../components/BranchAdminPanel';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, DatePicker, Descriptions, Drawer, Input, Select, Space, Table, Tabs, Tag, Typography } from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
@@ -50,7 +51,7 @@ export default function FleetPage() {
     </Space>
     {error && <Alert style={{ marginBottom: 12 }} type="error" message={error} action={<Button onClick={() => void fetchRows()}>Thử lại</Button>} />}
     <Card><Tabs activeKey={tab} onChange={v => { setTab(v); if (v !== 'branches') setKind(v as FleetKind); setPage(1); setSearch(''); setStatus(undefined); setSelected(null); setRows([]); }} items={[{ key: 'vehicles', label: 'Xe' }, { key: 'drivers', label: 'Tài xế' }, { key: 'branches', label: 'Chi nhánh' }]} />
-      {tab === 'branches' ? <Table<Branch> rowKey="id" dataSource={branches} scroll={{ x: 500 }} columns={[{ title: 'Mã', dataIndex: 'code' }, { title: 'Tên', dataIndex: 'name' }, { title: 'Địa chỉ quản lý', dataIndex: 'address' }, { title: 'Thao tác', render: (_, b) => <Button disabled={!can('branches.manage')} onClick={() => setEditB(b)}>Sửa</Button> }]} /> : <>
+      {tab === 'branches' ? (can('branches.manage') ? <BranchAdminPanel /> : <Table<Branch> rowKey="id" dataSource={branches} scroll={{ x: 500 }} columns={[{ title: 'Mã', dataIndex: 'code' }, { title: 'Tên', dataIndex: 'name' }, { title: 'Địa chỉ quản lý', dataIndex: 'address' }, { title: 'Thao tác', render: (_, b) => <Button disabled={!can('branches.manage')} onClick={() => setEditB(b)}>Sửa</Button> }]} />) : <>
         <Space wrap style={{ marginBottom: 12 }}><Input.Search aria-label="Tìm hồ sơ" placeholder={kind === 'vehicles' ? 'Biển số, dòng xe' : 'Tên, điện thoại'} allowClear onSearch={s => { setSearch(s); setPage(1); }} style={{ width: 240 }} />
           <Select aria-label="Trạng thái" allowClear placeholder="Tất cả trạng thái" value={status} style={{ width: 190 }} onChange={v => { setStatus(v); setPage(1); }} options={(kind === 'vehicles' ? ['AVAILABLE', 'ON_TRIP', 'MAINTENANCE', 'DECOMMISSIONED'] : ['AVAILABLE', 'ON_DUTY', 'ON_LEAVE', 'RESTING']).map(s => ({ value: s, label: s }))} />
           <Button type={availabilityMode ? 'primary' : 'default'} onClick={() => { setAvailabilityMode(v => !v); setPage(1); }}>Tra cứu theo thời gian</Button>

@@ -4,6 +4,7 @@ import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto, ConfirmOrderDto } from './dto/update-order.dto';
 import { AuthRequest, RequirePermission } from '../auth/access';
+import { CancelOrderDto } from './dto/cancel-order.dto';
 @Controller('orders')
 export class OrdersController {
   constructor(private readonly service: OrdersService) {}
@@ -25,6 +26,9 @@ export class OrdersController {
   @RequirePermission('orders.write')
   @Post(':id/confirm')
   confirm(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ConfirmOrderDto, @Headers('idempotency-key') key?: string) { return this.service.confirm(id, dto, req.user, key); }
+  @RequirePermission('orders.write')
+  @Post(':id/cancel')
+  cancel(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: CancelOrderDto, @Headers('idempotency-key') key?: string) { return this.service.cancel(id, dto, req.user, key); }
   @RequirePermission('orders.write')
   @Patch(':id')
   update(@Req() req: AuthRequest, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateOrderDto, @Headers('idempotency-key') key?: string) { return this.service.update(id, dto, req.user, key); }

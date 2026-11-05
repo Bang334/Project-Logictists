@@ -12,6 +12,11 @@ function object(x: unknown): x is Record<string, unknown> { return !!x && typeof
 function numeric(x: unknown): x is number { return typeof x === 'number' && Number.isFinite(x); }
 function nullableString(x: unknown) { return x === null || typeof x === 'string'; }
 function assertOrder(x: unknown): asserts x is Order {
+  if (object(x) && x.cancellationAllowed !== undefined && typeof x.cancellationAllowed !== 'boolean') throw new Error('Điều kiện hủy đơn không hợp lệ');
+  if (object(x) && x.cancellation !== undefined && x.cancellation !== null) {
+    const c = x.cancellation;
+    if (!object(c) || !nullableString(c.reason) || !nullableString(c.actorName) || !nullableString(c.actorUserId) || typeof c.occurredAt !== 'string' || !Number.isFinite(Date.parse(c.occurredAt))) throw new Error('Thông tin hủy đơn không hợp lệ');
+  }
   if (!object(x) || typeof x.id !== 'string' || typeof x.orderNumber !== 'string' || typeof x.customerId !== 'string' || typeof x.branchId !== 'string'
     || !numeric(x.version) || !numeric(x.totalPackages) || !numeric(x.totalWeightKg) || !numeric(x.totalVolumeM3)
     || !['DRAFT','CONFIRMED','ASSIGNED','IN_TRANSIT','COMPLETED','CANCELLED'].includes(String(x.status))

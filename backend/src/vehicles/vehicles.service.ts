@@ -133,7 +133,7 @@ export class VehiclesService {
         },
       });
       await tx.auditLog.create({ data: { entityType: 'Vehicle', entityId: id, action: 'UPDATE', performedBy: user.id, actorUserId: user.id,
-        changeSummary: { fields: Object.keys(dto).filter(key => key !== 'expectedUpdatedAt'), fromVersion: vehicle.updatedAt.toISOString(), toVersion: updated.updatedAt.toISOString() } } });
+        changeSummary: { auditBranchIds: [...new Set([vehicle.homeBranchId, updated.homeBranchId])], fields: Object.keys(dto).filter(key => key !== 'expectedUpdatedAt'), fromVersion: vehicle.updatedAt.toISOString(), toVersion: updated.updatedAt.toISOString() } } });
       return flattenVehicleType(updated);
     });
   }

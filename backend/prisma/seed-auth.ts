@@ -16,7 +16,7 @@ export async function seedAuth(prisma: PrismaClient) {
     for (const code of ['ADMIN', 'DISPATCHER'] as const) {
       const role = await tx.accessRole.upsert({ where: { code }, update: {}, create: { code, name: code, description: 'TMS MVP role' } });
       roles[code] = role.id;
-      // users.read/create/lock are ADMIN-only; the live username gate is enforced by hasPermission.
+      // users.read/create/lock require an active ADMIN COMPANY grant.
       // Upserting grants on roles does not add COMPANY scopes to any existing account.
       for (const permission of (code === 'ADMIN' ? PERMISSIONS : DISPATCHER_PERMISSIONS)) {
         const p = await tx.permission.upsert({ where: { code: permission }, update: {}, create: { code: permission, description: permission } });

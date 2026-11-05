@@ -1,4 +1,4 @@
-import { ForbiddenException, HttpException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, HttpException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
@@ -8,6 +8,7 @@ import { authConfig } from './auth.config';
 import { AccessGrant, Principal } from './access';
 import { LoginDto } from './login.dto';
 import { Prisma } from '@prisma/client';
+import { ChangePasswordDto } from './change-password.dto';
 
 @Injectable()
 export class AuthService {
@@ -23,8 +24,10 @@ export class AuthService {
     if (!user || !valid) throw new UnauthorizedException({ code: 'INVALID_CREDENTIALS', message: 'Sai tên đăng nhập hoặc mật khẩu' });
     const expiresAt = new Date(Date.now() + this.settings.ttl * 1000);
     const { session, grants } = await this.prisma.$transaction(async tx => {
-      const rows = await tx.$queryRaw<Array<{ active: boolean }>>`SELECT active FROM users WHERE id = ${user.id} FOR UPDATE`;
+      const rows = await tx.$queryRaw<Array<{ active: boolean; password: string }>>`SELECT active, password FROM users WHERE id = ${user.id} FOR UPDATE`;
       if (!rows[0]?.active) throw new UnauthorizedException({ code: 'ACCOUNT_DISABLED', message: 'Tài khoản đã bị khóa. Vui lòng liên hệ quản trị viên' });
+      // A password verified before this lock may have been replaced concurrently.
+      if (rows[0].password !== user.password) throw new UnauthorizedException({ code: 'INVALID_CREDENTIALS', message: 'Thông tin đăng nhập đã thay đổi. Vui lòng đăng nhập lại' });
       const grants = await this.loadGrants(user.id, tx);
       if (!grants.length && !['STAFF', 'CUSTOMER'].includes(user.role)) throw new ForbiddenException({ code: 'NO_SCOPE', message: 'Tài khoản chưa có phạm vi hoạt động được cấp' });
       return { grants, session: await tx.authSession.create({ data: { userId: user.id, expiresAt } }) };
@@ -86,5 +89,20 @@ export class AuthService {
   async logout(user: Principal) {
     await this.prisma.authSession.updateMany({ where: { id: user.sessionId, userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } });
     return { loggedOut: true };
+  }
+
+  async changePassword(user: Principal, dto: ChangePasswordDto) {
+    const password = await bcrypt.hash(dto.newPassword, 12);
+    await this.prisma.$transaction(async tx => {
+      const rows = await tx.$queryRaw<Array<{ active: boolean; password: string }>>`SELECT active, password FROM users WHERE id = ${user.id} FOR UPDATE`;
+      if (!rows[0]?.active) throw new UnauthorizedException({ code: 'ACCOUNT_DISABLED', message: 'Tài khoản không hoạt động' });
+      await this.authenticatePayload({ sub: user.id, sid: user.sessionId }, tx);
+      if (!await bcrypt.compare(dto.currentPassword, rows[0].password)) throw new ForbiddenException({ code: 'CURRENT_PASSWORD_INVALID', field: 'currentPassword', message: 'Mật khẩu hiện tại không đúng' });
+      if (dto.newPassword === dto.currentPassword) throw new BadRequestException({ code: 'PASSWORD_UNCHANGED', field: 'newPassword', message: 'Mật khẩu mới phải khác mật khẩu hiện tại' });
+      await tx.user.update({ where: { id: user.id }, data: { password } });
+      await tx.authSession.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } });
+      await tx.auditLog.create({ data: { entityType: 'User', entityId: user.id, action: 'PASSWORD_CHANGED', performedBy: user.id, actorUserId: user.id, changeSummary: { sessionsRevoked: true } } });
+    }, { timeout: 15000 });
+    return { changed: true, loginRequired: true };
   }
 }

@@ -1,13 +1,14 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { OrderStatus, PackageStatus, Prisma } from '@prisma/client';
 import { createHash, randomUUID } from 'crypto';
-import { Principal, branchFilter, requireBranch } from '../auth/access';
+import { Principal, branchFilter, requireBranch, hasPermission } from '../auth/access';
 import { ResourceAccess } from '../auth/resource-access.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { ConfirmOrderDto, UpdateOrderDto } from './dto/update-order.dto';
 import { assertDispatchableOrder, assertPackageManifest, newDispatchOrderWhere, packageHistory, orderFieldError, orderInclude, OrderRecord, serializeOrder, validateOrderInput } from './order-contract';
 import { packageTotals } from './package-measurements';
+import { CancelOrderDto } from './dto/cancel-order.dto';
 
 function json(value: unknown): Prisma.InputJsonValue { return JSON.parse(JSON.stringify(value)); }
 function canonical(value: unknown): string {
@@ -34,7 +35,7 @@ export class OrdersService {
   async findOne(id: string, user: Principal) {
     const order = await this.prisma.order.findFirst({ where: { id, orderType: 'B2B_TRANSPORT', branchId: branchFilter(user, 'orders.read') }, include: orderInclude });
     if (!order) throw new NotFoundException('Đơn không tồn tại hoặc ngoài phạm vi');
-    return serializeOrder(order);
+    return { ...serializeOrder(order), cancellationAllowed: hasPermission(user, 'orders.write', order.branchId) && !(await this.cancellationBlocker(this.prisma, order)) };
   }
   async getAvailableForDispatch(user: Principal, branchId?: string) {
     const rows = await this.prisma.order.findMany({
@@ -63,10 +64,10 @@ export class OrdersService {
       await tx.processedCommand.create({ data: { id: commandId, actorUserId: user.id, commandType: kind, idempotencyKey: key, requestHash: hash, status: 'PROCESSING' } });
       const id = await write(tx, commandId);
       const order = await tx.order.findUniqueOrThrow({ where: { id }, include: orderInclude });
-      const result = json(serializeOrder(order));
+      const result = json({ ...serializeOrder(order), cancellationAllowed: hasPermission(user, 'orders.write', order.branchId) && !(await this.cancellationBlocker(tx, order)) });
       await tx.processedCommand.update({ where: { id: commandId }, data: { status: 'COMPLETED', result } });
       return result;
-    }, { timeout: 20000, maxWait: 10000 });
+    }, { timeout: 20000, maxWait: 10000, isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
   }
   async create(dto: CreateOrderDto, user: Principal, key?: string) {
     validateOrderInput(dto, false);
@@ -78,7 +79,7 @@ export class OrdersService {
       const id = randomUUID();
       await tx.order.create({ data: { id, orderNumber: 'ORD-' + randomUUID().toUpperCase(), customerId: dto.customerId, branchId, status: OrderStatus.DRAFT, packageDataStatus: 'COMPLETE', notes: dto.notes } });
       await this.writeContents(tx, id, dto, PackageStatus.DRAFT);
-      await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: 'CREATED', toStatus: 'DRAFT' } });
+      await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: 'CREATED', toStatus: 'DRAFT', payload: { auditBranchIds: [branchId] } } });
       return id;
     });
   }
@@ -110,7 +111,7 @@ export class OrdersService {
       this.validateOwnedIds(old, dto);
       await this.writeContents(tx, id, dto, old.status === 'CONFIRMED' ? PackageStatus.READY : PackageStatus.DRAFT, old);
       await tx.order.update({ where: { id }, data: { customerId: dto.customerId, notes: dto.notes ?? null, packageDataStatus: 'COMPLETE', version: { increment: 1 } } });
-      await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: old.packageDataStatus === 'COMPLETE' ? 'UPDATED' : 'PACKAGES_RECONCILED', fromStatus: old.status, toStatus: old.status, payload: json({ before: serializeOrder(old), source: 'USER_DECLARED' }) } });
+      await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: old.packageDataStatus === 'COMPLETE' ? 'UPDATED' : 'PACKAGES_RECONCILED', fromStatus: old.status, toStatus: old.status, payload: json({ before: serializeOrder(old), source: 'USER_DECLARED', auditBranchIds: [old.branchId] }) } });
       return id;
     });
   }
@@ -124,9 +125,51 @@ export class OrdersService {
       await this.access.customer(user, order.customerId, order.branchId, tx);
       await tx.package.updateMany({ where: { orderItem: { orderId: id } }, data: { status: PackageStatus.READY, version: { increment: 1 } } });
       await tx.order.update({ where: { id }, data: { status: OrderStatus.CONFIRMED, version: { increment: 1 } } });
-      await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: 'CONFIRMED', fromStatus: 'DRAFT', toStatus: 'CONFIRMED' } });
+      await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: 'CONFIRMED', fromStatus: 'DRAFT', toStatus: 'CONFIRMED', payload: { auditBranchIds: [order.branchId] } } });
       return id;
     });
+  }
+  async cancel(id: string, dto: CancelOrderDto, user: Principal, key?: string) {
+    return this.command(user, 'ORDER_CANCEL', key, { id, ...dto }, async (tx, commandId) => {
+      // Dispatch acquires advisory resource locks before order rows. Cancellation
+      // needs only the order row and never acquires a resource lock after it.
+      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${id} FOR UPDATE`;
+      const order = await tx.order.findFirst({ where: { id, orderType: 'B2B_TRANSPORT', branchId: branchFilter(user, 'orders.write') }, include: orderInclude });
+      if (!order) throw new NotFoundException('Đơn không tồn tại hoặc ngoài phạm vi');
+      if (order.status === 'CANCELLED') throw new ConflictException({ code: 'ORDER_ALREADY_CANCELLED', message: 'Đơn đã hủy; không thể hủy lại hoặc phục hồi' });
+      if (order.version !== dto.version) throw new ConflictException({ code: 'ORDER_VERSION_CONFLICT', message: 'Đơn đã thay đổi. Tải lại để đối chiếu trước khi hủy' });
+      if (!['DRAFT', 'CONFIRMED'].includes(order.status)) throw new ConflictException({ code: 'ORDER_CANCEL_STATE', message: 'Chỉ hủy đơn nháp hoặc đã xác nhận chưa tham gia vận chuyển' });
+      const blocker = await this.cancellationBlocker(tx, order);
+      if (blocker) throw new ConflictException(blocker);
+      await tx.package.updateMany({ where: { orderItem: { orderId: id } }, data: { status: 'CANCELLED', version: { increment: 1 } } });
+      await tx.order.update({ where: { id }, data: { status: 'CANCELLED', version: { increment: 1 } } });
+      await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: 'CANCELLED', fromStatus: order.status, toStatus: 'CANCELLED', payload: { reason: dto.reason.trim(), auditBranchIds: [order.branchId] } } });
+      return id;
+    });
+  }
+  private async cancellationBlocker(tx: Prisma.TransactionClient, order: OrderRecord): Promise<{ code: string; message: string } | null> {
+    if (!['DRAFT', 'CONFIRMED'].includes(order.status)) return { code: 'ORDER_CANCEL_STATE', message: 'Trạng thái đơn không cho phép hủy trước phân công' };
+    const id = order.id;
+    const packages: Prisma.PackageWhereInput = { OR: [{ orderItem: { orderId: id } }, { orderId: id }] };
+    const tasks: Prisma.StopTaskWhereInput = { OR: [{ orderId: id }, { orderStop: { orderId: id } }, { package: packages }, { allocation: { orderItem: { orderId: id } } }] };
+    const [execution, assignment, task, history, inconsistent, reservation, orderHistory, legacyItems] = await Promise.all([
+      tx.package.findFirst({ where: { AND: [packages, { OR: [{ pickupResults: { some: {} } }, { deliveryResults: { some: {} } }, { arrivedAtPickupPointAt: { not: null } }, { releasedAt: { not: null } }] }] }, select: { id: true } }),
+      tx.allocation.findFirst({ where: { OR: [{ orderItem: { orderId: id } }, { package: packages }] }, select: { id: true } }),
+      tx.stopTask.findFirst({ where: tasks, select: { id: true, actualQuantity: true, _count: { select: { executionEvents: true, deliveryResults: true } } } }),
+      tx.package.findFirst({ where: { AND: [packages, packageHistory] }, select: { id: true } }),
+      tx.package.findFirst({ where: { AND: [packages, { OR: [{ orderItemId: null }, { orderItem: { orderId: { not: id } } }, { orderId: { not: id } }, { holdingSlot: { not: null } }, { items: { some: {} } }] }] }, select: { id: true } }),
+      tx.inventoryReservation.findFirst({ where: { orderId: id }, select: { id: true } }),
+      tx.orderEvent.findFirst({ where: { orderId: id, OR: [{ eventType: { notIn: ['CREATED', 'UPDATED', 'PACKAGES_RECONCILED', 'CONFIRMED'] } }, { fromStatus: { notIn: ['DRAFT', 'CONFIRMED'] } }, { toStatus: { notIn: ['DRAFT', 'CONFIRMED'] } }] }, select: { id: true } }),
+      tx.packageItem.findFirst({ where: { orderItem: { orderId: id } }, select: { id: true } }),
+    ]);
+    if (execution || (task && (task.actualQuantity !== null || task._count.executionEvents || task._count.deliveryResults))) return { code: 'ORDER_EXECUTION_EXISTS', message: 'Đơn/kiện có bằng chứng thực thi; không thể hủy trước phân công' };
+    if (assignment || task) return { code: 'ORDER_ASSIGNMENT_EXISTS', message: 'Đơn/kiện có phân công hoặc tác vụ vận chuyển; không thể hủy' };
+    const expectedPackageStatus = order.status === 'DRAFT' ? 'DRAFT' : 'READY';
+    if (history || inconsistent || reservation || orderHistory || legacyItems || order.allocatedSourceId || order.selectedPickupPointId || order.packageDataStatus !== 'COMPLETE'
+      || !order.items.length || order.items.some(i => i.quantity !== i.packages.length || !i.packages.length || i.packages.some(p => p.status !== expectedPackageStatus))) {
+      return { code: 'ORDER_RECONCILIATION_REQUIRED', message: 'Đơn/kiện có lịch sử hoặc dữ liệu không nhất quán; cần đối soát trước khi hủy' };
+    }
+    return null;
   }
   private validateOwnedIds(old: OrderRecord, dto: CreateOrderDto) {
     dto.stops.forEach((s, i) => { if (!s.id || !old.stops.some(o => o.id === s.id && o.type === s.type)) orderFieldError(`stops.${i}.id`, 'Phải giữ ID và loại điểm của đơn này'); });

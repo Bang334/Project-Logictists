@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuditModule } from './audit-logs/audit.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { MonitoringModule } from './trip-monitoring/monitoring.module';
 import { FleetModule } from './fleet/fleet.module';
@@ -28,6 +29,7 @@ import { LocationsModule } from './locations/locations.module';
 
 @Module({
   imports: [
+    AuditModule,
     ConfigModule.forRoot({
       isGlobal: true,
       validate: (config: Record<string, unknown>) => {

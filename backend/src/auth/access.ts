@@ -38,8 +38,8 @@ export interface AuthRequest {
 export function hasPermission(user: Principal, permission: PermissionCode, branchId?: string | null): boolean {
   if (permission.startsWith('driver.')) return user.grants.some(g => g.role === 'DRIVER' && g.scopeType === 'BRANCH' && !!g.branchId && (!branchId || g.branchId === branchId) && g.permissions.includes(permission));
   // Account administration is a closed capability, even if a dispatcher is accidentally granted it.
-  // Principal.username and grants are loaded from PostgreSQL by SessionGuard on every request.
-  if (permission.startsWith('users.')) return user.username === 'demo_auth_admin' && user.grants.some(g =>
+  // Grants are loaded from PostgreSQL on every request; usernames confer no authority.
+  if (permission.startsWith('users.')) return user.grants.some(g =>
     g.role === 'ADMIN' && g.scopeType === 'COMPANY' && g.branchId === null && g.permissions.includes(permission));
   return user.grants.some(g => g.permissions.includes(permission) && (
     (g.role === 'ADMIN' && g.scopeType === 'COMPANY' && g.branchId === null) ||

@@ -15,6 +15,7 @@ const login = async (page: Page, username: string) => {
 };
 const selectBranch = async (page: Page, code: string) => {
   await page.getByLabel('Chi nhánh được cấp', { exact: true }).click();
+  await page.getByLabel('Chi nhánh được cấp', { exact: true }).fill(code);
   await page.locator('.ant-select-item-option').filter({ hasText: code }).click();
   await page.getByLabel('Chi nhánh được cấp', { exact: true }).press('Escape');
 };
@@ -54,7 +55,8 @@ test('admin creates persisted account; reload, logout and dispatcher scope/cache
   await expect(page.getByText('Không có quyền truy cập', { exact: true })).toBeVisible();
   await expect(page.getByRole('table')).toHaveCount(0);
   await page.getByRole('menuitem', { name: 'Quản lý Đơn hàng' }).click();
-  await page.getByPlaceholder('Tìm theo mã đơn, khách hàng, địa chỉ, hàng hóa...').fill('DEMO-AUTH-ORDER-');
+  await page.getByRole('searchbox', { name: 'Tìm đơn' }).fill('DEMO-AUTH-ORDER-');
+  await page.getByRole('searchbox', { name: 'Tìm đơn' }).press('Enter');
   await expect(page.getByText('DEMO-AUTH-ORDER-A', { exact: true })).toBeVisible();
   await expect(page.getByText('DEMO-AUTH-ORDER-B', { exact: true })).toHaveCount(0);
   await page.goto('/accounts');
@@ -77,7 +79,8 @@ test('admin creates multiple branch scopes and locks all active browser sessions
   try {
     await other.goto('http://localhost:5173/'); await login(other, username);
     await other.getByRole('menuitem', { name: 'Quản lý Đơn hàng' }).click();
-    await other.getByPlaceholder('Tìm theo mã đơn, khách hàng, địa chỉ, hàng hóa...').fill('DEMO-AUTH-ORDER-');
+    await other.getByRole('searchbox', { name: 'Tìm đơn' }).fill('DEMO-AUTH-ORDER-');
+    await other.getByRole('searchbox', { name: 'Tìm đơn' }).press('Enter');
     await expect(other.getByText('DEMO-AUTH-ORDER-A', { exact: true })).toBeVisible();
     await expect(other.getByText('DEMO-AUTH-ORDER-B', { exact: true })).toBeVisible();
     await row.getByRole('button', { name: 'Khóa', exact: true }).click();
@@ -90,8 +93,51 @@ test('admin creates multiple branch scopes and locks all active browser sessions
     await expect(other.getByText('DEMO-AUTH-ORDER-A', { exact: true })).toHaveCount(0);
     await page.reload(); await search(page, username);
     await expect(row).toContainText('Đã khóa');
+    await row.getByRole('button', { name: 'Mở khóa', exact: true }).click();
+    await page.getByRole('button', { name: 'OK', exact: true }).click();
+    await expect(row).toContainText('Đang hoạt động');
     await search(page, 'demo_auth_admin');
     await expect(page.getByRole('row').filter({ hasText: 'demo_auth_admin' }).getByRole('button', { name: 'Khóa', exact: true })).toHaveCount(0);
+  } finally { await context.close(); }
+});
+
+test('edit scope clears the other session and invalid saved branch does not trap future logins', async ({ page, browser }) => {
+  const username = 'pw_scopes_' + randomUUID().slice(0, 12);
+  await page.goto('/accounts'); await login(page, 'demo_auth_admin');
+  await page.getByRole('button', { name: 'Tạo tài khoản', exact: true }).click();
+  await fill(page, username, ['DEMO-AUTH-A', 'DEMO-AUTH-B']);
+  await page.getByRole('button', { name: 'Lưu tài khoản' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0); await search(page, username);
+  const context = await browser.newContext(); const other = await context.newPage();
+  try {
+    await other.goto('http://localhost:5173/'); await login(other, username);
+    await other.getByRole('combobox', { name: 'Chi nhánh làm việc' }).focus();
+    await other.getByRole('combobox', { name: 'Chi nhánh làm việc' }).press('ArrowDown');
+    await other.getByTitle('[DEMO AUTH] Chi nhánh A', { exact: true }).last().click();
+    await other.getByRole('menuitem', { name: 'Quản lý Đơn hàng' }).click();
+    await other.getByRole('searchbox', { name: 'Tìm đơn' }).fill('DEMO-AUTH-ORDER-');
+    await other.getByRole('searchbox', { name: 'Tìm đơn' }).press('Enter');
+    await expect(other.getByText('DEMO-AUTH-ORDER-A', { exact: true })).toBeVisible();
+    await page.getByRole('row').filter({ hasText: username }).getByRole('button', { name: 'Chi tiết / sửa' }).click();
+    await page.getByLabel('Tên hiển thị').fill('[TEST] Scope edited');
+    await page.getByRole('dialog').locator('.ant-select-selection-item').filter({ hasText: 'DEMO-AUTH-A' }).locator('.ant-select-selection-item-remove').click();
+    await page.getByRole('button', { name: 'Xác nhận lưu thay đổi' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await other.reload(); await expect(other.getByLabel('Tên đăng nhập')).toBeVisible();
+    await expect(other.getByText('DEMO-AUTH-ORDER-A', { exact: true })).toHaveCount(0);
+    await other.getByLabel('Tên đăng nhập').fill(username);
+    await other.getByLabel('Mật khẩu', { exact: true }).fill(password);
+    await other.getByRole('button', { name: 'Đăng nhập', exact: true }).click();
+    await expect(other.getByRole('alert')).toContainText('Chi nhánh đang chọn không còn được cấp');
+    await login(other, username);
+    await expect(other.getByRole('combobox', { name: 'Chi nhánh làm việc' })).toBeVisible();
+    await other.reload(); await expect(other.getByRole('button', { name: 'Đăng xuất' })).toBeVisible();
+    await page.reload(); await search(page, username);
+    const row = page.getByRole('row').filter({ hasText: username });
+    await expect(row).toContainText('[TEST] Scope edited');
+    await expect(row).not.toContainText('[DEMO AUTH] Chi nhánh A');
+    await row.getByRole('button', { name: 'Chi tiết / sửa' }).click();
+    await expect(page.getByRole('dialog')).toContainText('Đã thu hồi');
   } finally { await context.close(); }
 });
 

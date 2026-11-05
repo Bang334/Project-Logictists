@@ -9,6 +9,8 @@ import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const AuditLogsPage = lazy(() => import('./pages/AuditLogsPage'));
+const BranchDetailPage = lazy(() => import('./pages/BranchDetailPage'));
 const TripMonitoringPage = lazy(() => import('./pages/TripMonitoringPage'));
 const OrdersPage = lazy(() => import('./pages/OrdersPage'));
 const CustomersPage = lazy(() => import('./pages/CustomersPage'));
@@ -53,6 +55,8 @@ const MainLayout: React.FC = () => {
     if (currentTab === 'accounts') return canManageAccounts(user) ? <AccountsPage /> : <Result status="403" title="Không có quyền truy cập" subTitle="Bạn không được phép quản lý tài khoản." />;
     if (!canOpenTab(user, currentTab, can)) return <Result status="403" title="Không có quyền truy cập" />;
     switch (currentTab) {
+      case 'audit-logs': return <AuditLogsPage />;
+      case 'branch-detail': return <BranchDetailPage />;
       case 'trips':
         return <TripMonitoringPage />;
       case 'dashboard':

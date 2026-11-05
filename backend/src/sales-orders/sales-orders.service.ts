@@ -221,7 +221,9 @@ export class SalesOrdersService {
 
   async cancelOrder(id: string, dto: CancelOrderDto, user: AuthenticatedUser) {
     const order = await this.prisma.order.findUnique({ where: { id }, include: { customer: true } });
-    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng');
+    // Transport cancellation has its own versioned command and assignment locks.
+    // Even ADMIN must not bypass those invariants through the retail endpoint.
+    if (!order || order.orderType === OrderType.B2B_TRANSPORT) throw new NotFoundException('Không tìm thấy đơn bán hàng');
     this.assertOrderAccess(order, user);
     if (order.status === OrderStatus.IN_TRANSIT || order.status === OrderStatus.COMPLETED || order.status === OrderStatus.CANCELLED) throw new ConflictException('Trạng thái hiện tại không cho phép hủy đơn');
     return this.prisma.$transaction(async (tx) => {

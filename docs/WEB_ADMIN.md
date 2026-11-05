@@ -1,6 +1,14 @@
 # Web Admin TMS — chức năng, contract và kiểm chứng
 
-Gộp tài liệu ngày 21/10/2026, phạm vi Người 2 — Web & Backend. Đây là nơi tra cứu chung cho các chức năng web admin đã thực hiện, gồm quyết định nghiệp vụ, API, migration, kiểm thử và hướng dẫn demo.
+**Nhật ký thao tác quản trị (05/11/2026):** đã nối `/audit-logs` → NestJS → PostgreSQL; chỉ ADMIN COMPANY theo quyết định người dùng. Có lọc, phân trang, chi tiết an toàn và liên kết đối tượng. Xem [nguồn dữ liệu, giới hạn lịch sử và thiết kế](#audit-log-survey), cùng mục 9 bên dưới. Migration index mới chưa áp lên database thật.
+
+**Quản trị tài khoản và chi nhánh (03/11/2026):** xem [ma trận quyền, API, migration, kiểm thử và demo](#account-branch-admin). ADMIN cấp/khóa DRIVER và DISPATCHER; quản trị chi nhánh nằm trong tab Chi nhánh của Fleet. Chưa áp migration lên database thật.
+
+**Rà soát bổ sung 03/11/2026:** tái sử dụng phần triển khai và chính sách đã ghi nhận trong workspace. Form đổi mật khẩu hiển thị lỗi server ngay tại `currentPassword`/`newPassword`, giữ nội dung khi thất bại; bộ chọn chi nhánh làm việc hỗ trợ tìm theo tên. Không thay API/schema hoặc cấp lại quyền. Test chọn chi nhánh dùng tìm kiếm trước khi chọn để không phụ thuộc vị trí trong danh sách ảo hóa; không xóa fixture cũ hoặc giảm assertion.
+
+Kiểm chứng lượt bổ sung: 36 test tích hợp PostgreSQL, 11 Jest, 4 Vitest và 11 Playwright đạt; backend/frontend typecheck, lint, build đạt (frontend còn cảnh báo hiện hữu). Replay migration trên dữ liệu test và ca mã trùng đều đạt. Chi tiết lệnh, lỗi test ban đầu đã sửa và giới hạn trong [bàn giao quản trị](#account-branch-admin). Chưa chạy migration/seed hoặc ghi dữ liệu nghiệp vụ lên database thật; preflight chỉ đọc vẫn ghi nhận bốn migration pending và 11 checksum lịch sử lệch.
+
+Gộp tài liệu ngày 21/10/2026; bổ sung gộp tài liệu tài khoản/chi nhánh và nhật ký ngày 05/11/2026, phạm vi Người 2 — Web & Backend. Đây là nơi tra cứu chung cho các chức năng web admin đã thực hiện, gồm quyết định nghiệp vụ, API, migration, kiểm thử và hướng dẫn demo.
 
 **Cách đọc:** mỗi mục giữ ngày và kết quả của đợt triển khai gốc. Các kết quả kiểm thử bên dưới là bằng chứng lịch sử của từng đợt, không phải một lần chạy mới cho toàn hệ thống. Phân biệt đã triển khai local, đã kiểm chứng trên database test, đã áp migration database thật và đã deploy ứng dụng; không suy các trạng thái này tương đương nhau. Nội dung chưa tích hợp/chưa chốt vẫn giữ nguyên.
 
@@ -15,6 +23,9 @@ Kế hoạch và nguồn dùng chung: [Kế hoạch TMS](../KE_HOACH_TMS.md), [T
 5. [Dashboard vận hành](#dashboard)
 6. [Biên bản đồng bộ database 16/10/2026](#database-20261016)
 7. [Biên bản migration khách hàng 17/10/2026](#database-khach-hang)
+8. [Hủy đơn vận tải trước phân công](#huy-don-van-tai)
+9. [Nhật ký thao tác quản trị](#nhat-ky-thao-tac) — [khảo sát nguồn dữ liệu](#audit-log-survey)
+10. [Quản trị tài khoản và chi nhánh](#account-branch-admin)
 
 ## Ánh xạ tài liệu đã gộp
 
@@ -29,6 +40,8 @@ Các file nguồn dưới đây được thay thế bằng mục tương ứng. 
 | `TMS_DASHBOARD.md` | [Dashboard vận hành](#dashboard) |
 | `DATABASE_SYNC_20261016.md` | [Biên bản đồng bộ database 16/10/2026](#database-20261016) |
 | `DATABASE_CUSTOMERS_20261017.md` | [Biên bản migration khách hàng 17/10/2026](#database-khach-hang) |
+| `AUDIT_LOG_SURVEY.md` | [Khảo sát nguồn nhật ký](#audit-log-survey) |
+| `ACCOUNT_BRANCH_ADMIN.md` | [Quản trị tài khoản và chi nhánh](#account-branch-admin) |
 
 ---
 
@@ -343,7 +356,7 @@ Demo thủ công: từ backend chạy `node scripts/with-order-acceptance-env.cj
 
 ### Policy và giới hạn còn mở
 
-Hủy Order vận tải chưa được chốt: trạng thái được hủy; vai trò/lý do; đơn đã phân công chưa lấy; ảnh hưởng Allocation/TripPlan/reservation/thông báo; và xử lý hàng sau pickup/giao một phần. Không thêm API/nút hủy. Các điểm này không chặn nghiệm thu luồng được giao.
+Tại mốc nghiệm thu đơn–kiện 18/10, hủy Order vận tải chưa được chốt. Quyết định mới ngày 03/11 cho hủy trước phân công được ghi tại [Hủy đơn vận tải](#huy-don-van-tai). Hủy sau phân công/pickup/giao một phần vẫn ngoài phạm vi.
 
 Chưa chạy bộ orders integration cũ có solver/Mapbox và fixture schema cũ; không nhận kết quả cũ làm bằng chứng hiện tại. Chưa deploy hoặc áp dụng lên database thật. Kết luận chỉ dành cho luồng Order–Package và hợp đồng bàn giao, không phải toàn bộ TMS.
 
@@ -586,3 +599,296 @@ Code mới cần dùng cùng Prisma Client/schema đã cập nhật; không ch�
 Không sửa các drift/checksum lịch sử được ghi trong biên bản ngày 16/10. Nếu cần phục hồi sau khi phát sinh dữ liệu mới, phục hồi backup trên database riêng để đối soát; không tự ghi đè database thật hoặc khôi phục unique phone vì số điện thoại vận tải đã được phép trùng.
 
 Kết quả kiểm chứng dạng JSON nằm cùng thư mục backup (`restored-verified.json`, `live-verified.json`); không chứa hồ sơ liên hệ hoặc chuỗi kết nối.
+
+---
+
+<a id="huy-don-van-tai"></a>
+
+## 8. Hủy đơn vận tải trước phân công — 03/11/2026
+
+### Chính sách đã xác nhận
+
+Người dùng xác nhận toàn bộ đề xuất trong phiên triển khai: ADMIN/DISPATCHER có `orders.write` theo phạm vi được cấp được hủy đơn B2B DRAFT/CONFIRMED chưa có phân công hay lịch sử vận chuyển. Bắt buộc lý do. Order và mọi Package của các dòng hàng sang CANCELLED, tăng version, giữ nguyên ID, stop, dòng hàng và lịch sử. Không sửa/xác nhận lại/phục hồi đơn đã hủy. Không gỡ phân công, sửa chuyến, trả hàng hay hủy sau pickup. Đây là phần POL02/BR14 trước phân công, không chốt phí hủy hoặc các luồng sau phân công.
+
+### API và dữ liệu
+
+- `POST /orders/:id/cancel`, quyền `orders.write`; body `{ "version": 1, "reason": "Khách yêu cầu hủy" }`, header `Idempotency-Key` theo quy ước 16–100 ký tự chữ/số/`_`/`-`. Version nguyên 1–2147483647; lý do chuỗi có ký tự khác khoảng trắng, tối đa 1000 ký tự. Không nhận actor, trạng thái đích, chi nhánh hoặc thời điểm từ client.
+- Trả 201 cùng response Order. Trong một transaction: đổi trạng thái/tăng version Order và Package, ghi OrderEvent `CANCELLED` với from/to, actor, thời điểm DB, payload lý do đã trim, và hoàn tất ProcessedCommand. Không thêm schema/migration hoặc permission; không backfill thông tin giả cho đơn cũ.
+- Response Order có `cancellation: {reason, actorUserId, actorName, occurredAt} | null`. Null nghĩa là chưa có sự kiện truy vết, kể cả đơn CANCELLED cũ. Chỉ trả trong scope `orders.read` hoặc response lệnh `orders.write` đã được kiểm tra.
+- GET chi tiết và kết quả lệnh mới có `cancellationAllowed`: backend dùng cùng kiểm tra quan hệ với lệnh hủy để quyết định hiển thị nút. Giá trị này là gợi ý tại lúc đọc; transaction vẫn kiểm tra lại. Response retry là kết quả cũ; GET chi tiết trả hiện trạng.
+- Cùng actor/type/key và cùng payload trả kết quả cũ, không thêm sự kiện. Khác payload trả `IDEMPOTENCY_CONFLICT`. Retry đi qua xác thực/quyền hiện hành và kiểm tra lại scope của Order trước khi trả dữ liệu. Lệnh mới cho đơn đã CANCELLED trả `ORDER_ALREADY_CANCELLED` (409).
+
+Lỗi quan trọng: 401 phiên không hợp lệ, 403 `PERMISSION_DENIED`, 404 đơn không tồn tại/ngoài scope; 409 `ORDER_VERSION_CONFLICT`, `ORDER_CANCEL_STATE`, `ORDER_ASSIGNMENT_EXISTS`, `ORDER_EXECUTION_EXISTS`, `ORDER_RECONCILIATION_REQUIRED`. Không trả mã chuyến hoặc dữ liệu chi nhánh khác trong lỗi hủy. API hủy bán lẻ từ chối B2B với 404, kể cả ADMIN, để không đi vòng qua version/quyền/khóa của lệnh hủy vận tải.
+
+### Ranh giới lịch sử và khóa
+
+Hủy lấy `FOR UPDATE` trên Order trong transaction ReadCommitted, cùng khóa row mà create thủ công và apply tự động đang sử dụng. Điều phối lấy khóa advisory tài nguyên trước row Order; hủy chỉ lấy row Order, không lấy khóa xe/tài xế sau đó nên không tạo chiều khóa ngược. Khóa idempotency `4201` có trước khóa Order theo quy ước OrdersService.
+
+Sau khóa, kiểm tra Allocation ở cả đường OrderItem và Package; StopTask qua Order/OrderStop/Package/Allocation; pickup/delivery, actual task, execution event, PackageEvent, load plan/placement, transfer, các mốc giữ/giao hàng; OrderEvent có lịch sử ngoài tạo/sửa/đối soát/xác nhận; inventory reservation, nguồn/điểm bán lẻ; PackageItem và mapping cũ/mâu thuẫn. Trạng thái kiện phải DRAFT với đơn DRAFT hoặc READY với đơn CONFIRMED; manifest phải COMPLETE và số kiện khớp dòng. Quan hệ cũ RELEASED hoặc task chỉ trỏ Package cũng chặn; không tự xóa liên kết để cho hủy.
+
+ResourceReservation chỉ gắn Trip/xe/tài xế trong schema hiện tại, không gắn trực tiếp Order. Bất kỳ Allocation/StopTask của Order tới Trip đã đủ chặn hủy, bất kể reservation của Trip còn hiệu lực hay đã giải phóng. InventoryReservation có OrderId được kiểm tra trực tiếp.
+
+Hủy commit trước: điều phối đọc lại sau khóa, loại CANCELLED và/hoặc phát hiện version thay đổi. Phân công commit trước: hủy đọc trạng thái/quan hệ mới và từ chối. Job đang tính không khóa nghiệp vụ hủy và không bị hủy theo; proposal/candidate đã lưu bị từ chối tại apply. Claim APPLYING rollback nếu kiểm tra lại thất bại. Không sửa solver/validator hay nội dung snapshot cũ.
+
+### Web và độ mới
+
+Mở Quản lý đơn → Chi tiết → Hủy đơn. Dialog hiển thị mã đơn, tác động, lý do; có loading và khóa submit bằng ref. API lỗi giữ lý do/key cho payload không đổi. 409 yêu cầu tải lại để đối chiếu, khóa gửi tiếp; không tự thay version và retry. Chỉ thông báo thành công sau response backend; chi tiết hiện lý do, người và giờ UTC+7, reload vẫn giữ dữ liệu. Bộ lọc CANCELLED dùng API danh sách hiện có.
+
+Danh sách chờ điều phối thủ công/tự động và Dashboard dùng `newDispatchOrderWhere` chỉ lấy CONFIRMED, nên lần tải kế tiếp không còn đơn hủy. Giữ cơ chế hiện có: Dashboard polling 30–60 giây/nút Làm mới; màn hình điều phối tải lại khi mở/làm mới. Không thêm sự kiện socket mới hoặc outbox không có consumer. OrderEvent là audit nghiệp vụ, ghi cùng transaction; không phát thông báo trước commit. AuthContext/App hiện có hủy request và remount nội dung khi tài khoản/scope đổi; modal hủy bỏ qua response sau unmount.
+
+File chính: `backend/src/orders/{orders.service,orders.controller,order-contract}.ts`, `dto/cancel-order.dto.ts`; `frontend/src/components/CancelOrderModal.tsx`, `OrderDetailDrawer.tsx`, `pages/OrdersPage.tsx`, API client và types Order. Giữ nguyên thay đổi quản trị tài khoản/chi nhánh có trước nhiệm vụ.
+
+### Kiểm chứng và cách chạy
+
+PostgreSQL 17 riêng: container `tms-order-cancel-test-20261103`, bind `127.0.0.1:55443`, database `tms_order_acceptance_20261018`. Dùng guard của `with-order-acceptance-env.cjs`; không đọc `.env` vận hành. Schema thử được tạo khi trống bằng script acceptance hiện có, gồm sáu constraint nghiệp vụ của migration đơn–kiện. Không reset/truncate, không migration dữ liệu thật.
+
+Đặt `ORDER_ACCEPTANCE_DATABASE_URL` tới database thử trên. Trong backend:
+
+```powershell
+npm run test:order-acceptance:prepare
+npm run build
+node scripts/with-order-acceptance-env.cjs --test --test-concurrency=1 tests/order-cancellation.integration.cjs tests/order-acceptance.integration.cjs
+```
+
+Các option Node phải đứng trước tên file. Hai suite dùng chung fixture quyền nên chạy tuần tự; chạy song song gây nhiễu ca thu hồi quyền và đếm rollback. Lượt chạy tuần tự đạt **36/36** (34 nhóm con + 2 test cha): 14 nhóm hủy/cạnh tranh và 20 nhóm hồi quy đơn–kiện. Bao gồm hai trạng thái hợp lệ, validation/quyền/scope, lịch sử/mapping cũ/reservation, hủy–hủy/xác nhận/sửa, rollback tại ghi event, idempotency/quyền retry, giữ ID, loại ứng viên/Dashboard, job đang tính/candidate cũ và chặn hủy B2B qua service bán lẻ trên dữ liệu PostgreSQL thật.
+
+`order-cancellation-races.cjs` chạy transaction create/apply thật trên PostgreSQL. Test chặn sau khóa row thật, quan sát `pg_blocking_pids` để chứng minh lệnh kia thực sự phải chờ; cả bốn tổ hợp thủ công/tự động × hủy/phân công commit trước đạt. Chỉ Mapbox/spatial response và proposal là fixture kiểm thử; không lấy các ca này làm bằng chứng tích hợp Mapbox/OR-Tools thật. Không đổi hoặc nới validator sản phẩm.
+
+Trong frontend, cùng biến môi trường:
+
+```powershell
+node node_modules/@playwright/test/cli.js test --config playwright.order-cancellation.config.ts
+```
+
+Chromium nối Nest/PostgreSQL thật: **6/6 đạt**. Kiểm tra xác nhận/lý do bắt buộc, chống submit lặp, reload truy vết, ứng viên điều phối, lỗi mạng giữ key/lý do, 403, version cũ bằng lệnh xác nhận thật, bàn phím/390 px, 401 và đổi tài khoản/chi nhánh. Ca cuối mở màn hình điều phối tự động và Dashboard thật, đối chiếu đơn biến mất và số ứng viên giảm đúng một sau hủy. Thành công không mock; mạng/401/403 được tiêm lỗi tại trình duyệt. Đã xem ảnh `frontend/test-results/order-cancellation-desktop.png` và `order-cancellation-mobile.png` do suite tạo (lượt Playwright sau có thể dọn thư mục kết quả).
+
+Backend/frontend typecheck, lint và build đạt; frontend còn 9 cảnh báo hook hiện hữu và cảnh báo kích thước bundle. Jest chạy trực tiếp `node node_modules/jest/bin/jest.js --runInBand`: 38 suite/163 test đạt, 3 suite/4 test bỏ qua theo cấu hình. Sau khi bổ sung chặn API bán lẻ, chạy lại riêng `test/sales-orders/sales-orders.service.spec.ts`: 2/2 đạt; suite PostgreSQL phía trên cũng chạy lại sau thay đổi này. Frontend `node node_modules/vitest/vitest.mjs run --maxWorkers=1 --pool=forks`: 15 file/45 test đạt, 2 test trong `EditDriverModal.test.tsx` timeout 5000 ms. Đây là lỗi đã ghi nhận ở mục Dashboard; component và test đó không được sửa trong nhiệm vụ hủy đơn. Không nới timeout/giảm assertion, không báo toàn bộ Vitest đạt.
+
+Hồi quy trình duyệt đơn–kiện: `node node_modules/@playwright/test/cli.js test --config playwright.order-acceptance.config.ts` đạt **5/5**, gồm tạo/sửa/xác nhận, lưu–reload giữ ID kiện và thời gian, lỗi API giữ form/key, pending/version, màn hình nhỏ/bàn phím và đổi tài khoản.
+
+Kiểm tra tiếp ngày 04/11/2026: đã tái hiện hai timeout `EditDriverModal` khi chạy toàn bộ Vitest. Đo tạm từng bước cho thấy render khoảng 1,3 giây, riêng `getByRole` quét toàn form để tìm nút Lưu mất khoảng 5,4 giây trong jsdom. Đổi test sang tìm nhãn trước, lấy button chứa nhãn rồi kiểm tra role, accessible name, enabled và chờ visible trước khi click. Giữ nguyên timeout 5000 ms, các assertion lương 0/version/giữ form khi xung đột và component thật; không thay logic ứng dụng. Đã gỡ instrumentation. Lượt cuối `node node_modules/vitest/vitest.mjs run --maxWorkers=1 --pool=forks` đạt **16 file/47 test**, không bỏ qua, trong 64,01 giây. Typecheck và lint đạt (lint toàn frontend còn 9 cảnh báo hiện hữu). Cảnh báo jsdom scrollbar và Ant Design deprecated vẫn xuất hiện; hai timeout ghi ở biên bản 03/11 phía trên đã được xử lý bằng thay đổi test này.
+
+Demo: tạo đơn nháp có kiện → xác nhận → mở chi tiết → Hủy đơn, nhập lý do → xác nhận hủy → reload → lọc CANCELLED và xem truy vết → tải lại danh sách chờ điều phối/Dashboard để đối chiếu không còn ứng viên đó. Không có migration mới cần áp dụng. Chưa commit, push, deploy hoặc ghi database vận hành.
+
+---
+
+<a id="nhat-ky-thao-tac"></a>
+
+## 9. Nhật ký thao tác quản trị — 05/11/2026
+
+**Quyền đã chốt:** chỉ ADMIN với grant COMPANY hiện hành, branchId null; gồm sự kiện tài khoản/quyền/đổi mật khẩu. DISPATCHER không được đọc. Không thêm role/permission, không cấp quyền bằng username. Quyền đọc audit độc lập với quyền đọc đối tượng đích; API đích vẫn kiểm tra scope/tồn tại. Nhóm hỗ trợ: đơn vận tải, khách vận tải, xe/tài xế, liên kết Employee, lịch khả dụng/nghỉ, tài khoản và chi nhánh. [Bảng nguồn và giới hạn dữ liệu cũ](#audit-log-survey).
+
+### Màn hình và API
+
+- Menu **Nhật ký thao tác**, URL `/audit-logs`. Bộ lọc theo khoảng ngày giờ, ID actor, loại đối tượng/thao tác, ID đối tượng và ID chi nhánh đã ghi nhận. Không tìm tùy ý trong payload hoặc tải toàn bộ nhật ký. Khoảng mặc định là bảy ngày lịch tính đến hết hôm nay theo giờ Việt Nam.
+- `GET /audit-logs?from=<ISO có timezone>&to=<ISO có timezone>&page=1&pageSize=20`. Khoảng `[from,to)`, tối đa 93 ngày; page 1–10000, pageSize 1–100. Optional: `actorUserId`, `entityType`, `action`, `entityId`, `branchId`. ID lọc chính xác, tối đa 100 ký tự chữ/số/`_`/`-`; action chữ in hoa/`_` tối đa 60. Không nhận trường thừa.
+- `GET /audit-logs/:source/:id`, source `AUDIT_LOG` hoặc `ORDER_EVENT`. ID không tồn tại/ngoài nhóm nguồn quản trị trả 404. Không có endpoint sửa/xóa/khôi phục.
+- Danh sách và tổng số dùng cùng predicate, cùng snapshot RepeatableRead. Thứ tự `timestamp DESC, id DESC, source DESC` (nguồn là khóa phân biệt cuối). Offset pagination giữ thứ tự xác định cho cùng dữ liệu; bản ghi mới có thể dịch vị trí trang giữa hai lần tải, không tuyên bố đây là snapshot xuyên suốt phiên xem.
+- API trả `Cache-Control: private, no-store`; không lưu nội dung audit vào localStorage/sessionStorage. URL giữ bộ lọc/trang/chi tiết cho Back/reload. Request cũ bị bỏ khi đổi bộ lọc hoặc phiên/scope; 403 xóa dữ liệu và vô hiệu hóa response còn chờ.
+- Thời điểm hiển thị Asia/Ho_Chi_Minh. Tên actor được chú thích là **tên hiện tại**; không dựng username/nhãn lịch sử. Không có actor thì nói rõ chưa ghi nhận, không tự coi là hệ thống. Không có giá trị cũ thì hiển thị chưa ghi nhận.
+- Chi nhánh làm việc ở thanh trên không giới hạn audit của ADMIN COMPANY. Bộ lọc riêng chỉ dùng metadata lịch sử hợp lệ; bỏ lọc để xem cả các dòng chưa xác định scope. Không suy chi nhánh từ actor/tài nguyên hiện tại.
+- Bộ chuyển backend có allowlist theo entity/action, không trả raw `details`/`changeSummary`, mật khẩu/hash/token, signed URL, giấy tờ tài xế, POD hoặc snapshot Order cũ đầy đủ. Lý do được render như văn bản. Nhãn hành động không nhận diện chỉ có thông tin cơ bản.
+
+Liên kết mở đơn/khách/xe/tài xế/tài khoản/chi nhánh cụ thể. Lịch mở tài nguyên liên quan khi nguồn có resourceId. Nếu đối tượng không còn truy cập được, màn hình đích hiển thị lỗi; lịch sử vẫn giữ nguyên. Màn hình chi nhánh đọc mới `/branch-detail?branch=...` dùng API `branches.read`, không trao quyền sửa.
+
+### Điểm ghi và migration
+
+Giữ nguyên các transaction nghiệp vụ; bổ sung `auditBranchIds` cho các lần ghi mới của Order, sửa Customer, tạo/sửa Vehicle/Driver, liên kết Employee và lịch fleet. Không thêm AuditLog trùng OrderEvent. Dữ liệu tài khoản, chi nhánh và các sự kiện khác tiếp tục dùng nguồn đã có. Không backfill actor/scope/giá trị trước-sau hoặc sửa/xóa audit cũ.
+
+Schema chỉ bổ sung khai báo hai index tương ứng migration `20261105100000_audit_lookup_indexes`: AuditLog `(timestamp,id)`, OrderEvent `(occurredAt,id)`, phục vụ lọc toàn công ty theo thời gian. Đã chạy SQL index trên PostgreSQL test có dữ liệu và đối chiếu count/hash toàn bộ hai bảng trước/sau. Không thay dữ liệu hoặc permission. CREATE INDEX thông thường có khóa ghi: trước triển khai bảng lớn cần backup, thử trên bản phục hồi và bố trí thời gian bảo trì; rollback riêng hai index nếu cần. **Chưa áp migration này hoặc migration pending có trước lên database thật.**
+
+File chính: `backend/src/audit-logs/*`, `backend/prisma/schema.prisma`, migration index; metadata tại OrdersService/CustomersService/FleetService/VehiclesService/DriversService; `frontend/src/pages/AuditLogsPage.tsx`, `BranchDetailPage.tsx`, `types/audit.ts`, App/menu/quyền điều hướng và deep-link trên trang khách/tài khoản.
+
+### Kiểm chứng đã chạy
+
+| Kiểm tra | Kết quả |
+|---|---|
+| Backend/frontend `npm run typecheck`, `npm run lint`, `npm run build` | Đạt; frontend còn 9 cảnh báo hook hiện hữu và cảnh báo bundle lớn |
+| Backend `node node_modules/jest/bin/jest.js --runInBand src/audit-logs/audit-projection.spec.ts` | 7/7 |
+| Frontend `node node_modules/vitest/vitest.mjs run src/test/audit.test.ts src/test/client.test.ts --maxWorkers=1 --pool=forks` | 6/6, 2 file |
+| Backend `node scripts/with-audit-test-env.cjs --test tests/audit.integration.cjs` | 10/10 (9 nhóm con + test cha), PostgreSQL/HTTP thật |
+| Backend `node scripts/with-audit-test-env.cjs --test --test-concurrency=1 tests/order-cancellation.integration.cjs tests/order-acceptance.integration.cjs` | 36/36 hồi quy đơn; đã chạy chung với suite audit ở lượt trước khi thêm ca quyền đối tượng |
+| `with-fleet-test-env.cjs --test tests/fleet-profiles.integration.cjs` | 17/17 trên `tms_fleet_test` |
+| `with-customer-test-env.cjs --test tests/customers.integration.cjs` | 12/12 trên `tms_customers_admin_20261101` |
+| Frontend `node node_modules/@playwright/test/cli.js test --config playwright.audit.config.ts` | 6/6 Chromium nối Nest/PostgreSQL thật |
+| `git diff --check` | Đạt |
+
+Suite audit kiểm tra phân trang trùng timestamp, biên `[from,to)`/UTC+7, list/detail và thu hồi grant, branch đa/khác/không rõ, actor bị khóa/đổi tên/chuyển nhánh, payload lạ và credential, query sai, quyền audit không trao quyền đối tượng, retry và rollback do trigger audit thất bại. Lỗi trigger được ApiErrorFilter hiện hữu trả 503 `SERVICE_UNAVAILABLE`; không biến thành thành công. Migration giữ fingerprint lịch sử. Các ca rollback chạy trên PostgreSQL test, không mock repository.
+
+Browser kiểm tra tạo khách thật → tra cứu → chi tiết → mở khách → Back/reload; tạo/hủy đơn thật và lý do chứa script hiển thị text; mở tài khoản/chi nhánh/xe; empty, lỗi mạng/404/403/401; đổi scope/tài khoản; response thật bị giữ lại rồi trả muộn; viewport 390 px và focus bàn phím. Chỉ lỗi HTTP/mạng được tiêm bằng Playwright route; dữ liệu thành công đến từ backend thật. Đã xem ảnh `frontend/test-results/audit-desktop.png` và `audit-mobile.png`; thư mục kết quả có thể bị Playwright ghi đè ở lần chạy sau.
+
+Trong quá trình kiểm chứng đã sửa selector test khớp nhãn thật (“Tên hiển thị”, “Lý do: …”), chờ route hoàn tất trước khi bỏ interception, và dùng Enter để chọn option Ant Design ảo hóa. Không tăng timeout, bỏ test hoặc giảm assertion. Khi tiếp tục phiên, container test đã dừng; khởi động lại đúng container localhost rồi chạy lại, không nới guard kết nối.
+
+### Chạy thử và giới hạn
+
+Container riêng đã dùng: `tms-order-cancel-test-20261103`, PostgreSQL 17 bind `127.0.0.1:55443`, database `tms_order_acceptance_20261018`. `with-audit-test-env.cjs` chỉ đọc cấu hình container này hoặc biến `ORDER_ACCEPTANCE_DATABASE_URL` trỏ database test localhost đúng tên; không đọc `.env` vận hành. Bộ khởi động API test seed fixture trong database test. Không chạy nó với database thật. Chạy suite HTTP và browser lần lượt vì có chung fixture quyền. Backend cần build trước khi khởi động API test.
+
+Demo: đăng nhập ADMIN COMPANY → tạo/sửa khách hoặc hủy đơn chưa phân công → mở **Nhật ký thao tác** → nhập ID đối tượng và khoảng thời gian phù hợp → Tra cứu → Xem nhật ký → Mở đối tượng → Back → reload. Thử DISPATCHER để thấy chặn quyền; không cấp thêm quyền chỉ để demo.
+
+Phần chức năng đã kiểm chứng trên môi trường test; chưa deploy hoặc áp index lên database vận hành, chưa đo hiệu năng với khối lượng audit production. Dữ liệu cũ thiếu scope/giá trị trước-sau vẫn thiếu và hiển thị đúng giới hạn. Không kiểm toán toàn bộ nội dung audit vận hành, không tuyên bố lịch sử vận hành không có dữ liệu nhạy cảm; API mới không trả raw payload. Không thêm dependency, không commit/push hoặc ghi database thật.
+
+<a id="audit-log-survey"></a>
+
+### Nhật ký thao tác quản trị — khảo sát 05/11/2026
+
+Người dùng đã cho phép triển khai và xác nhận **chỉ ADMIN COMPANY được xem nhật ký**, gồm tài khoản/quyền/đổi mật khẩu, không có giá trị mật khẩu. Trạng thái kiểm chứng cuối cùng được ghi tại mục Nhật ký thao tác trong `WEB_ADMIN.md`.
+
+#### Nguồn và dữ liệu
+
+Bảng dưới đây ghi nhận hiện trạng lúc khảo sát ban đầu. Metadata được bổ sung cho lần ghi mới được mô tả ở phần “Triển khai và dữ liệu mới”; không áp các mô tả thiếu dữ liệu cũ cho mọi bản ghi mới.
+
+| Nhóm thao tác | Nguồn hiện có | Dữ liệu ghi nhận | Thiếu/giới hạn lịch sử |
+|---|---|---|---|
+| Tạo/sửa/đối soát/xác nhận/hủy đơn | `OrderEvent` trong `OrdersService` | Actor, Order ID, loại sự kiện, occurredAt, commandId, trạng thái trước/sau; hủy có lý do | Không có snapshot chi nhánh cho mọi sự kiện. Sửa có snapshot Order cũ, nhưng không có snapshot sau tương ứng; không đưa toàn bộ snapshot lên UI |
+| Tạo/sửa khách, đổi phạm vi phục vụ | `AuditLog` trong `CustomersService` | Actor, Customer ID, timestamp, commandId, version, tên trường; tạo/đổi phạm vi có branchIds và khi đổi có previousBranchIds | Sửa hồ sơ không đổi phạm vi chưa lưu chi nhánh. Không có giá trị trước/sau cho các trường hồ sơ |
+| Tạo xe/tài xế, liên kết Employee | `AuditLog` trong `FleetService` | Actor, ID, action, version hoặc Employee ID | Chưa lưu phạm vi lịch sử và nhãn tài nguyên |
+| Sửa xe/tài xế | `AuditLog` trong `VehiclesService`/`DriversService` | Tên trường, version trước/sau | Không có giá trị trường trước/sau hoặc snapshot phạm vi; chuyển scope tài xế có sự kiện riêng trên User với chi nhánh cũ/mới |
+| Tạo/sửa/hủy lịch, ghi nhận xung đột | `AuditLog` trong `FleetService` | ID lịch/tài nguyên, loại lịch, lý do, thời gian; sửa có metadata lịch trước | Chưa lưu chi nhánh lịch sử; tripIds nội bộ không được trả nguyên khối |
+| Tạo/sửa/khóa/mở tài khoản | `AuditLog` trong `UsersService` | Actor, User ID, thao tác; tạo có roleCode/branchIds; sửa có tên trường | Sửa scope chưa ghi tập chi nhánh cũ/mới; không có nhãn lịch sử |
+| Đổi mật khẩu cá nhân | `AuditLog` trong `AuthService` | Actor, User ID, timestamp, sessionsRevoked | Chỉ hiển thị sự kiện đã đổi. Không có reset mật khẩu quản trị trong scope hiện hành |
+| Tạo/sửa/ngừng/kích hoạt chi nhánh | `AuditLog` trong `BranchesService` | Actor, Branch ID; tạo có code, sửa có tên trường, đổi trạng thái có active | Không có giá trị trước/sau đầy đủ. Branch ID của đối tượng xác định chi nhánh liên quan, không cần suy từ actor |
+
+Các điểm ghi trên gọi `tx.auditLog.create` hoặc `tx.orderEvent.create` trong transaction nghiệp vụ. Retry của các command có khóa idempotency không chạy lại callback ghi. Khóa tài khoản đã khóa và đổi trạng thái chi nhánh không thay đổi có nhánh không ghi thêm audit. Đây là nhận xét từ code, **chưa phải kết quả kiểm thử tích hợp của nhiệm vụ này**.
+
+`AuditLogService.log` dùng Prisma ngoài transaction và catch lỗi; hiện `InventoryService` chỉ inject, tìm kiếm không thấy lời gọi `.log` từ module này. Các luồng TMS ưu tiên ở bảng trên không gọi helper đó. Không thay helper hoặc nghiệp vụ inventory ngoài phạm vi chỉ để chuẩn hóa.
+
+Các nguồn khác có trách nhiệm riêng:
+
+- `ProcessedCommand`: chống lặp, hash yêu cầu và kết quả lệnh; không phải dòng lịch sử thao tác để đưa lên UI.
+- `ExecutionEvent`: bằng chứng thực thi chuyến, có occurredAt/receivedAt; ngoài phạm vi tra cứu quản trị này.
+- `OutboxEvent`: giao sự kiện sau commit, trạng thái retry/lỗi; không phải nhật ký quản trị. Sự kiện retry outbox, FeedbackCase và xem PodFile không thuộc nhóm ưu tiên.
+- `AuditLog.timestamp` và `OrderEvent.occurredAt` không có cặp thời gian xảy ra/nhận tương ứng. Không dựng thêm thời điểm còn thiếu.
+
+#### Quyền và thiết kế đã chốt
+
+Backend kiểm tra grant ADMIN, scope COMPANY, branchId null được AuthService tải từ PostgreSQL cho mỗi request. Không dựa vào username hoặc cột User.role. DISPATCHER bị chặn ở cả danh sách, tổng số, chi tiết. Không thêm role/permission hoặc chạy seed trên dữ liệu vận hành.
+
+ADMIN được xem sự kiện khác chi nhánh, nhiều chi nhánh và không xác định phạm vi. Bộ lọc chi nhánh chỉ tra metadata lịch sử hợp lệ; không dùng nhánh hiện tại của actor/tài nguyên. Selector chi nhánh làm việc không thu hẹp quyền đọc audit toàn công ty, và UI nói rõ điều này. Actor không có ID được ghi là không ghi nhận, không tự gán tác nhân hệ thống.
+
+Nguồn đọc: AuditLog của chín loại đối tượng trong bộ chuyển; OrderEvent chỉ CREATED/UPDATED/PACKAGES_RECONCILED/CONFIRMED/CANCELLED của đơn B2B. Mỗi dòng có nguồn riêng; không tạo AuditLog trùng OrderEvent. Không trả ProcessedCommand, ExecutionEvent hoặc OutboxEvent. Bộ lọc actor/đối tượng dùng ID chính xác; không tìm trong payload, không cấp API liệt kê toàn bộ actor. Tên actor được ghi rõ là tên hiện tại; nhãn lịch sử không được suy dựng.
+
+Liên kết đơn/Fleet dùng URL hiện có (`order`, `kind`/`resource`). Bổ sung `customer` trên trang khách, `account` trên trang tài khoản và trang đọc `/branch-detail?branch=...`. Backend chỉ trả link khi có quyền đọc loại đối tượng; API đích vẫn kiểm tra quyền/scope/tồn tại. Back và reload giữ URL bộ lọc/trang/chi tiết. AuthContext hủy request/remount theo phiên/scope; trang nhật ký bỏ response cũ theo vòng đời request và generation khi nhận 403.
+
+#### Triển khai và dữ liệu mới
+
+`backend/src/audit-logs`: DTO, controller, service truy vấn và bộ chuyển dữ liệu. Chỉ trả tên trường được phép theo entity/action; bỏ payload không nhận diện, giá trị hồ sơ và credential; giữ source, ID, thời gian và scope có bằng chứng metadata. Trả trạng thái đơn, trạng thái hoạt động chi nhánh, thời gian lịch trước/sau, phạm vi phục vụ trước/sau khi nguồn có lưu. Không dựng giá trị cũ từ hồ sơ hiện tại. React render lý do dưới dạng văn bản.
+
+`auditBranchIds` được bổ sung cho các lần ghi mới trong transaction hiện có: sự kiện tạo/sửa/xác nhận/hủy Order; sửa Customer (hợp phạm vi trước/sau); tạo/sửa xe và tài xế; liên kết Employee; lịch tài nguyên và ghi nhận xung đột. Không thêm dòng sự kiện trùng hoặc backfill lịch sử. Customer CREATE/đổi phạm vi và Driver scope transfer cũ đã có metadata có thể dùng; sự kiện Branch có ID đối tượng là chi nhánh liên quan. Tài khoản/mật khẩu cũ không có snapshot phạm vi tiếp tục hiển thị chưa xác định, vẫn chỉ ADMIN được đọc.
+
+Không có cột mới; metadata JSON tương thích dữ liệu cũ. Migration `20261105100000_audit_lookup_indexes` thêm index `(timestamp,id)` và `(occurredAt,id)` vì truy vấn toàn công ty có khoảng thời gian và thứ tự này; index entity/actor hiện có không có timestamp ở đầu. Migration không sửa/xóa dòng hoặc cấp quyền. CREATE INDEX thông thường khóa ghi trong lúc tạo: cần thử trên bản backup và chọn thời gian bảo trì khi triển khai bảng lớn. Khôi phục riêng thay đổi này bằng DROP hai index nếu cần; không reset/truncate hoặc sửa migration cũ. **Chưa áp lên database thật.**
+
+Kiểm thử tích hợp và browser ở `backend/tests/audit.integration.cjs`, `frontend/tests/audit.spec.ts`; fixture và runner chỉ dùng PostgreSQL localhost `tms_order_acceptance_20261018`. Bằng chứng unit không thay thế kết quả tích hợp. Không kiểm tra hoặc sửa hàng loạt nội dung audit vận hành, không khẳng định dữ liệu vận hành chưa từng chứa thông tin nhạy cảm. API mới không trả raw details/summary. Chưa commit/push/deploy và không ghi database vận hành.
+
+---
+
+<a id="account-branch-admin"></a>
+
+## 10. Quản trị tài khoản và chi nhánh — cập nhật 03/11/2026
+
+### Chính sách người dùng đã xác nhận
+
+- Chỉ giữ một tài khoản ADMIN; ADMIN là quyền cao nhất, cấp/khóa DRIVER và DISPATCHER. Không mở chức năng tạo/cấp/sửa/khóa ADMIN qua API quản trị tài khoản. Truy vấn chỉ đọc tại thời điểm khảo sát cho thấy database đang cấu hình chỉ có `admin` là ADMIN COMPANY hoạt động; không cần thu hồi hoặc chuyển tài khoản nào.
+- DRIVER đăng nhập ứng dụng tài xế; DISPATCHER đăng nhập web để lập kế hoạch chuyến. ADMIN quản lý lịch tài xế bằng module Fleet hiện có.
+- Quyền quản trị dựa trên scope ADMIN COMPANY đang hoạt động và permission tương ứng; không còn kiểm tra username demo. Không chạy seed để cấp quyền trên database thật.
+- DRIVER/DISPATCHER đổi mật khẩu của mình bằng mật khẩu hiện tại. Đổi xong thu hồi mọi phiên và đăng nhập lại. Không triển khai reset mật khẩu bởi quản trị, mật khẩu tạm hoặc email/SMS.
+- Có tạo/ngừng/kích hoạt lại chi nhánh. Không tự chuyển dữ liệu. Mọi Driver còn gắn đều chặn ngừng, kể cả nghỉ; xe DECOMMISSIONED không chặn. Khách hiện không có trạng thái ngừng riêng: quan hệ CustomerBranch còn tồn tại là phạm vi đang sử dụng.
+- Chi nhánh còn scope tài khoản hoạt động, khách, xe hoạt động, Driver, đơn/chuyến chưa kết thúc hoặc reservation HELD/ACTIVE bị chặn ngừng. Giữ cách loại scope chi nhánh ngừng khỏi quyền hiện hành. Kích hoạt lại không thay active của scope.
+
+Reservation được đối chiếu cả chi nhánh quản lý chuyến và chi nhánh của xe/tài xế. Xe DECOMMISSIONED tự nó không chặn; reservation HELD/ACTIVE còn tồn tại trên xe đó vẫn phải được xử lý trước khi ngừng chi nhánh.
+
+### API và quyền
+
+| API | Quyền / hành vi |
+|---|---|
+| GET `/users`, `/users/:id` | ADMIN COMPANY + users.read; không trả password/hash/session |
+| GET `/users/available-drivers` | ADMIN COMPANY + users.create; tìm kiếm/phân trang hồ sơ chưa có User |
+| POST `/users` | users.create; chỉ DRIVER/DISPATCHER; bắt buộc Idempotency-Key |
+| PATCH `/users/:id` | users.create; tên hiển thị, scope DISPATCHER; expectedUpdatedAt; thu hồi phiên |
+| PATCH `/users/:id/lock`, `/unlock` | users.lock; expectedUpdatedAt; không được tác động ADMIN/tự khóa |
+| POST `/auth/change-password` | Phiên đăng nhập hiện hành; currentPassword + newPassword; thu hồi mọi phiên |
+| GET `/branches/admin-list` | branches.manage; page/pageSize/search/status |
+| POST `/branches` | branches.manage; mã chuẩn hóa trim/uppercase, tọa độ thực tế; Idempotency-Key |
+| GET `/branches/:id/impacts` | branches.manage; số lượng dữ liệu chặn |
+| PATCH `/branches/:id` | branches.manage; expectedUpdatedAt; audit cùng transaction |
+| PATCH `/branches/:id/status` | branches.manage; active + expectedUpdatedAt; Idempotency-Key |
+
+Giữ GET `/branches` hiện có để consumer vẫn nhận danh sách chi nhánh hoạt động. Web quản trị chi nhánh nằm tại **Đội Xe & Tài Xế → Chi nhánh**, dùng lại modal sửa hiện có. Không tạo màn hình quản trị thứ hai.
+
+Tài khoản DRIVER phải chọn Driver có sẵn, không tự tạo hồ sơ. Scope phải khớp homeBranchId; nếu đã liên kết Employee thì kiểm tra nhân viên hoạt động/cùng chi nhánh/chưa có User và liên kết cùng transaction. Không đổi quan hệ Employee/Driver/Customer khi sửa User; không chuyển một User DRIVER thành DISPATCHER hoặc ngược lại bằng sửa role trực tiếp.
+
+Khi ADMIN chủ động chuyển hồ sơ Driver ở Fleet, scope DRIVER đang được cấp chuyển theo homeBranchId trong cùng transaction, lưu scope cũ ở trạng thái thu hồi và thu hồi phiên. Nếu scope nguồn đã bị thu hồi thì không cấp lại. Các điều kiện chặn chuyển khi còn chuyến/reservation vẫn giữ nguyên. Trường User.role được dùng để bảo vệ loại tài khoản/liên kết cũ, không thay thế UserRoleScope khi tính quyền truy cập.
+
+Chi tiết tài khoản hiển thị cả `scopeHistory`: scope đã thu hồi, vai trò đã ngừng, chi nhánh đã ngừng. Chỉ permission của grant hiện hành quyết định quyền. Khi chi nhánh đã chọn mất quyền, web xóa dữ liệu và phiên cục bộ, yêu cầu đăng nhập lại; không tự mở rộng sang mọi chi nhánh. Giá trị chi nhánh cũ được xóa để lần đăng nhập sau không mắc vòng lặp.
+
+Audit chỉ ghi loại thay đổi, actor và metadata cần thiết. Idempotency tạo tài khoản dùng HMAC để tránh lưu mật khẩu hoặc digest không khóa trong log lệnh. Sửa scope giữ bản ghi scope đã thu hồi, không xóa lịch sử. Mở khóa không phục hồi phiên cũ.
+
+### Migration và vận hành
+
+Ba migration mới, theo thứ tự:
+
+1. `20261021100000_branch_lifecycle_guard`: unique mã chuẩn hóa, trigger vòng đời và liên kết.
+2. `20261101100000_branch_link_lock_order`: tuần tự hóa cấp scope với mở khóa tài khoản, giữ chi nhánh quản lý chuyến ổn định khi tạo reservation.
+3. `20261101103000_branch_reservation_resources`: kiểm tra reservation theo cả xe/tài xế, kể cả dữ liệu xe đã DECOMMISSIONED nhưng còn giữ lịch.
+
+- Thêm unique index mã chi nhánh sau trim/uppercase. Nếu dữ liệu cũ xung đột, migration dừng; không tự đổi mã.
+- Thêm trigger/khóa hàng chi nhánh để phối hợp ngừng với các liên kết mới và chuyển trạng thái. Kiểm tra lại số lượng chặn trong transaction trước ngừng.
+- Không thêm cột/version số: dùng `updatedAt` làm token kiểm soát sửa đồng thời. Client phải đọc lại sau lưu hoặc xung đột.
+- Không thay scope, role, password hoặc dữ liệu lịch sử; không suy ra quyền từ cột User.role cũ để cấp mới.
+- **Chưa áp dụng các migration trên database thật.** Bản code mới cần đủ ba migration để bảo vệ cạnh tranh ngừng chi nhánh. Không chạy `migrate deploy` bừa khi còn migration khác pending. Không sửa migration đã áp dụng.
+
+Preflight chỉ đọc, chạy tại backend: `node scripts/administration-preflight.cjs`. Đối soát ADMIN duy nhất, mã trùng, migration pending và checksum lịch sử; không sửa checksum cũ. Trước áp dụng thật cần backup mới và thử trên bản phục hồi có dữ liệu đại diện. Nếu cần phục hồi, dùng backup riêng để đối soát; không reset/truncate hoặc tự ghi đè dữ liệu thật. Lỗi cấu hình quyền phải sửa có kiểm soát bằng ID tài khoản đã xác minh và ghi audit, không chạy seed demo hoặc tạo mật khẩu bí mật.
+
+Lần preflight 03/11 xác nhận chỉ một tài khoản có vai trò/scope ADMIN (`admin`), đang hoạt động và đủ cả bốn permission `users.read`, `users.create`, `users.lock`, `branches.manage`. Cả ba định nghĩa role ADMIN/DISPATCHER/DRIVER hiện hoạt động. Không có mã chi nhánh trùng sau chuẩn hóa. Có 11 migration lịch sử lệch checksum; migration Fleet `20261017120000_fleet_schedules` cùng ba migration quản trị còn pending. Không thay checksum hoặc áp cả chuỗi migration lên database này. Migration mới không cấp ADMIN; tài khoản `admin` hiện đủ quyền sử dụng, không cần seed demo.
+
+### Kiểm thử và demo
+
+Các suite mới/được cập nhật:
+
+- `npm run test:accounts` (backend): PostgreSQL, HTTP và Socket.IO; quyền/target, tạo DRIVER, retry/unique/rollback, scope, version, khóa/mở khóa, login cạnh tranh khóa.
+- `node scripts/with-auth-test-env.cjs --test tests/change-password.integration.cjs`: đổi mật khẩu cạnh tranh, phiên cũ, mật khẩu cũ, audit không chứa secret.
+- `node scripts/with-auth-test-env.cjs --test tests/branches-admin.integration.cjs`: tạo/retry/trùng mã, trạng thái/version, tọa độ 0, cạnh tranh cấp scope/tạo Driver/chuyến/reservation với ngừng chi nhánh, giữ lịch sử và scope đã thu hồi.
+- `node scripts/test-branch-admin-migration.cjs`: chạy đúng SQL trên schema test sao chép dữ liệu hiện hữu; so fingerprint các bảng user/scope/session/chi nhánh/nghiệp vụ trước và sau; mã cũ xung đột phải rollback.
+- `node node_modules/@playwright/test/cli.js test accounts.spec.ts admin-lifecycle.spec.ts auth.spec.ts` (frontend; tương đương script `test:auth`): backend thật cho luồng thành công. Các route mock chỉ dành cho lỗi mạng/HTTP hoặc đáp ứng chậm.
+- `npm test -- src/test/ChangePasswordButton.test.tsx`: component với API mock, giữ form khi lỗi và xóa dữ liệu sau thành công; không thay thế nghiệm thu tích hợp.
+
+Database kiểm thử phải là PostgreSQL localhost `tms_auth_test`, không phải database vận hành. Không chạy suite HTTP và browser đồng thời vì fixture quyền dùng chung. Migration mới phải được áp dụng trên database test trước suite chi nhánh. Các lần test tạo dữ liệu riêng có nhãn TEST; không dùng mật khẩu thật.
+
+Demo: ADMIN → Quản lý tài khoản → tạo DISPATCHER với một/nhiều chi nhánh hoặc DRIVER từ hồ sơ có sẵn → reload → đăng nhập tài khoản mới → đổi mật khẩu → đăng nhập lại → ADMIN khóa/mở khóa, kiểm tra token cũ vẫn bị từ chối. Tại tab Chi nhánh, tạo chi nhánh rỗng, reload, ngừng/kích hoạt lại; thử ngừng chi nhánh đang có Driver để xem lý do và số lượng chặn.
+
+### Bằng chứng kiểm chứng
+
+- Backend/frontend: build và typecheck đạt; lint không lỗi. Frontend còn 9 cảnh báo hook có trước, build còn cảnh báo bundle lớn. Không nâng dependency hoặc tắt kiểm tra để xử lý cảnh báo.
+- Jest `users.dto.spec.ts`, `events.gateway.spec.ts`, `auth.config.spec.ts`: 3 suite / 11 test đạt. Vitest ChangePasswordButton: 1 test đạt; jsdom có cảnh báo không mô phỏng pseudo-element, không dùng test này để kết luận layout trình duyệt.
+- PostgreSQL/HTTP auth: 21 test đạt; accounts: 23 test đạt; đổi mật khẩu: 4 test đạt; chi nhánh: 9 test đạt. Ba suite accounts/mật khẩu/chi nhánh được chạy lại cùng phiên 03/11, 36/36 test đạt, không bỏ qua. Có kiểm tra phiên/socket thật, đăng nhập cạnh tranh mật khẩu/khóa, rollback và audit.
+- Playwright tài khoản/auth: 9 test đạt; vòng đời chi nhánh/đổi mật khẩu: 2 test đạt. Bao gồm lưu/reload, sửa phạm vi, xem scope thu hồi, khóa/mở khóa, tài khoản khác không giữ dữ liệu cũ, lỗi API, viewport 390 px, tọa độ bằng 0.
+- Hồi quy PostgreSQL/HTTP: khách hàng 12, Fleet 17, giám sát/POD 6, dashboard 6 test đạt. Playwright tương ứng: 4 + 3 + 4 + 5 test đạt. Bao gồm POD bị từ chối sau thu hồi quyền, lịch/Employee, đổi chi nhánh và xóa dữ liệu cũ.
+- Fleet 17/17 được chạy lại ngày 03/11 sau khi áp migration reservation thứ ba trên database Fleet test, gồm kiểm tra đồng thời giữ lịch/bảo dưỡng. Replay migration trên dữ liệu test hiện hữu và ca mã cũ xung đột đều đạt; không thay đổi fingerprint các hàng cũ.
+- Test auth cũ được cập nhật theo contract `expectedUpdatedAt`, endpoint sửa User nay trả 403 cho DISPATCHER và bộ lọc đơn hiện tại. Test giám sát nay xác nhận tự xóa phiên khi mất chi nhánh đã chọn, không chờ người dùng bấm đăng xuất. Không bỏ assertion về quyền/dữ liệu.
+
+Các database dùng trong lần kiểm chứng: `tms_auth_test`, `tms_fleet_test`, `tms_customers_admin_20261101`, `tms_monitor_test`, `tms_dashboard_test`, đều ở container PostgreSQL chỉ bind localhost. Database khách hàng được sao chép từ database Fleet test; chỉ mật khẩu fixture `demo_auth_*` trong bản sao được cấu hình theo wrapper test. Không sao chép hoặc ghi dữ liệu vận hành. Các suite chuyên biệt chạy qua scripts `with-*-test-env.cjs` và cấu hình `playwright.*.config.ts` hiện có, với biến URL chỉ tới database test.
+
+### Giới hạn nghiệm thu
+
+#### Lượt rà soát bổ sung ngày 03/11/2026
+
+Phần quản trị đã tồn tại trong workspace trước lượt này. Giữ nguyên chính sách đã ghi nhận và các thay đổi đang có; bổ sung hiển thị lỗi server tại ô mật khẩu tương ứng và tìm kiếm theo tên trong bộ chọn chi nhánh làm việc. Không thêm migration, sửa schema hoặc thay quyền tài khoản hiện hữu trong lượt rà soát.
+
+Kết quả chạy lại trên trạng thái cuối:
+
+- Backend `npm run build`, `npm run typecheck`, `npm run lint`: đạt.
+- `node scripts/with-auth-test-env.cjs --test --test-concurrency=1 tests/accounts.integration.cjs tests/change-password.integration.cjs tests/branches-admin.integration.cjs`: 36/36 test đạt, không skip, PostgreSQL localhost `tms_auth_test` và Socket.IO thật.
+- Jest `src/users/users.dto.spec.ts`, `test/events/events.gateway.spec.ts`, `src/auth/auth.config.spec.ts`: 11/11 test đạt. Lệnh đầu nhập sai đường dẫn file gateway; đã chạy lại đúng đường dẫn, không bỏ suite.
+- Frontend `npm run typecheck`, `npm run lint`, `npm run build`: đạt; vẫn có 9 cảnh báo hook và cảnh báo bundle lớn.
+- `npm test -- src/test/ChangePasswordButton.test.tsx src/test/client.test.ts`: 4/4 test đạt; jsdom vẫn báo giới hạn pseudo-element.
+- Playwright `accounts.spec.ts`, `admin-lifecycle.spec.ts`, `auth.spec.ts` với `CI=true`: 11/11 đạt, 1,7 phút. Backend/server mới do Playwright khởi động, không dùng lại server vận hành. Bao gồm nhập sai mật khẩu hiện tại → lỗi tại trường → giữ mật khẩu mới → sửa và gửi lại → đăng nhập/reload bằng mật khẩu mới. Luồng thành công dùng backend thật; các ca lỗi mạng/HTTP giả lập được đánh dấu trong test.
+- Lượt browser đầu timeout khi test tìm một option chưa được render trong danh sách ảo hóa dài. Đã sửa thao tác test để nhập từ khóa trước khi chọn; không tăng timeout, xóa dữ liệu hoặc giảm assertion. Đã xem ảnh `frontend/test-results/accounts-mobile.png` ở chiều rộng 390 px.
+- `node scripts/test-branch-admin-migration.cjs`: cả hai ca dữ liệu có sẵn và mã cũ xung đột đạt; fingerprint dữ liệu giữ nguyên, ca xung đột rollback. Chỉ tạo schema thử trên database test.
+- Preflight chỉ đọc chạy lại: một ADMIN `admin` đủ bốn permission, không có mã chi nhánh trùng chuẩn hóa; vẫn 11 checksum lịch sử lệch và bốn migration pending (Fleet + ba migration quản trị). Không sửa dữ liệu/lịch sử migration.
+
+Các suite hồi quy khách hàng, Fleet, giám sát và dashboard ở mục trước là bằng chứng lịch sử; không chạy lại toàn bộ trong lượt bổ sung UI này. Kết quả trên không chứng nhận triển khai database thật, Mapbox hoặc ứng dụng mobile.
+
+#### Giới hạn triển khai
+
+- Checkout hiện không có file nguồn mobile được Git quản lý; chưa nối UI đổi mật khẩu và chưa chạy app tài xế trên thiết bị. API dùng chung không chứng minh UI mobile hoạt động.
+- Không có quyền triển khai lên database thật/deploy; hiện trạng database thật chỉ được truy vấn đọc.
+- Kiểm thử migration trên dữ liệu test có sẵn không thay thế thử trên bản backup vận hành trước triển khai. Chưa nghiệm thu dịch vụ Mapbox bằng địa chỉ thực trong nhiệm vụ này; kiểm thử form sửa dùng tọa độ nhập rõ ràng, không coi geocode mock là tích hợp thật.

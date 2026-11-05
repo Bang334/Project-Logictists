@@ -14,19 +14,22 @@ const login = async (page: Page, username: string) => {
 test('real login → reload → navigation → logout → different account isolates cached data', async ({ page }) => {
   await page.goto('/'); await login(page, 'demo_auth_a');
   await page.getByRole('menuitem', { name: 'Quản lý Đơn hàng' }).click();
-  await page.getByPlaceholder('Tìm theo mã đơn, khách hàng, địa chỉ, hàng hóa...').fill('DEMO-AUTH-ORDER-');
+  await page.getByRole('searchbox', { name: 'Tìm đơn' }).fill('DEMO-AUTH-ORDER-');
+  await page.getByRole('searchbox', { name: 'Tìm đơn' }).press('Enter');
   await expect(page.getByText('DEMO-AUTH-ORDER-A', { exact: true })).toBeVisible();
   await expect(page.getByText('DEMO-AUTH-ORDER-B', { exact: true })).toHaveCount(0);
   await page.reload();
   await expect(page.getByRole('button', { name: 'Đăng xuất' })).toBeVisible();
   await page.getByRole('menuitem', { name: 'Đội Xe & Tài Xế' }).click();
-  await expect(page.getByRole('button', { name: /Sửa/ }).first()).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Chi tiết / lịch' }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /Sửa/ })).toHaveCount(0);
   await page.getByRole('button', { name: 'Đăng xuất' }).click();
   await expect(page.getByLabel('Tên đăng nhập')).toBeVisible();
   await expect(page.getByRole('menuitem')).toHaveCount(0);
   await login(page, 'demo_auth_b');
   await page.getByRole('menuitem', { name: 'Quản lý Đơn hàng' }).click();
-  await page.getByPlaceholder('Tìm theo mã đơn, khách hàng, địa chỉ, hàng hóa...').fill('DEMO-AUTH-ORDER-');
+  await page.getByRole('searchbox', { name: 'Tìm đơn' }).fill('DEMO-AUTH-ORDER-');
+  await page.getByRole('searchbox', { name: 'Tìm đơn' }).press('Enter');
   await expect(page.getByText('DEMO-AUTH-ORDER-B', { exact: true })).toBeVisible();
   await expect(page.getByText('DEMO-AUTH-ORDER-A', { exact: true })).toHaveCount(0);
   await page.screenshot({ path: 'test-results/dispatcher-b.png' });
@@ -35,13 +38,16 @@ test('admin changes working branch without retaining the previous branch orders'
   await page.goto('/'); await login(page, 'demo_auth_admin');
   await page.getByRole('menuitem', { name: 'Quản lý Đơn hàng' }).click();
   // Repeated integration runs leave valid test orders; locate both fixtures through the real UI filter.
-  await page.getByPlaceholder('Tìm theo mã đơn, khách hàng, địa chỉ, hàng hóa...').fill('DEMO-AUTH-ORDER-');
+  await page.getByRole('searchbox', { name: 'Tìm đơn' }).fill('DEMO-AUTH-ORDER-');
+  await page.getByRole('searchbox', { name: 'Tìm đơn' }).press('Enter');
   await expect(page.getByText('DEMO-AUTH-ORDER-A', { exact: true })).toBeVisible();
   await expect(page.getByText('DEMO-AUTH-ORDER-B', { exact: true })).toBeVisible();
   await page.getByRole('combobox', { name: 'Chi nhánh làm việc' }).focus();
   await page.getByRole('combobox', { name: 'Chi nhánh làm việc' }).press('ArrowDown');
+  await page.getByRole('combobox', { name: 'Chi nhánh làm việc' }).fill('[DEMO AUTH] Chi nhánh A');
   await page.getByTitle('[DEMO AUTH] Chi nhánh A', { exact: true }).last().click();
-  await page.getByPlaceholder('Tìm theo mã đơn, khách hàng, địa chỉ, hàng hóa...').fill('DEMO-AUTH-ORDER-');
+  await page.getByRole('searchbox', { name: 'Tìm đơn' }).fill('DEMO-AUTH-ORDER-');
+  await page.getByRole('searchbox', { name: 'Tìm đơn' }).press('Enter');
   await expect(page.getByText('DEMO-AUTH-ORDER-A', { exact: true })).toBeVisible();
   await expect(page.getByText('DEMO-AUTH-ORDER-B', { exact: true })).toHaveCount(0);
 });

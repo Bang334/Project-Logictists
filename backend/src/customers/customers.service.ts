@@ -128,7 +128,7 @@ export class CustomersService {
       }
       await tx.customer.update({ where: { id }, data: { ...data, version: { increment: 1 } } });
       await tx.auditLog.create({ data: { entityType: 'Customer', entityId: id, action: 'UPDATE', performedBy: user.id, actorUserId: user.id, correlationId: commandId,
-        changeSummary: json({ fromVersion: old.version, toVersion: old.version + 1, fields: Object.keys(data).filter(k => data[k as keyof typeof data] !== old[k as keyof typeof data]), ...(branches ? { previousBranchIds: old.branches.map(b => b.branch.id), branchIds: branches } : {}) }) } });
+        changeSummary: json({ auditBranchIds: [...new Set([...old.branches.map(b => b.branch.id), ...(branches ?? [])])], fromVersion: old.version, toVersion: old.version + 1, fields: Object.keys(data).filter(k => data[k as keyof typeof data] !== old[k as keyof typeof data]), ...(branches ? { previousBranchIds: old.branches.map(b => b.branch.id), branchIds: branches } : {}) }) } });
       return id;
     });
   }
