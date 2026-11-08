@@ -22,9 +22,6 @@ import {
   CompassOutlined,
   EditOutlined,
   EnvironmentOutlined,
-  BankOutlined,
-  ShopOutlined,
-  InboxOutlined,
   ApartmentOutlined,
   ReloadOutlined,
   SearchOutlined,
@@ -46,7 +43,6 @@ import { formatDecimal } from '../utils/format';
 import MapboxMap, { MapMarker } from '../components/MapboxMap';
 import { EditBranchModal } from '../components/EditBranchModal';
 import {
-  NetworkPointFilter,
   TripStatusFilter,
   buildNetworkMarkers,
   buildNetworkPointItems,
@@ -79,8 +75,6 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
   const [pendingOrders, setPendingOrders] = useState(0);
   const [trips, setTrips] = useState<Trip[]>([]);
 
-  // Bộ lọc điểm mạng lưới & chuyến đi
-  const [pointTypeFilter, setPointTypeFilter] = useState<NetworkPointFilter>('ALL');
   const [pointSearchQuery, setPointSearchQuery] = useState('');
   const [selectedPointId, setSelectedPointId] = useState<string | null>(null);
   const [tripStatusFilter, setTripStatusFilter] = useState<TripStatusFilter>('ALL');
@@ -166,54 +160,23 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
   );
 
   const allPointItems = useMemo(
-    () => buildNetworkPointItems(scopedBranches, scopedLocations),
-    [scopedBranches, scopedLocations],
+    () => buildNetworkPointItems(scopedBranches),
+    [scopedBranches],
   );
 
   const filteredPointItems = useMemo(
-    () => filterNetworkPointItems(allPointItems, pointTypeFilter, pointSearchQuery),
-    [allPointItems, pointTypeFilter, pointSearchQuery],
+    () => filterNetworkPointItems(allPointItems, 'ALL', pointSearchQuery),
+    [allPointItems, pointSearchQuery],
   );
 
-  const visibleBranchesForMap = useMemo(() => {
-    const visibleIds = new Set(
-      filteredPointItems
-        .filter((item) => item.pointType === 'DEPOT')
-        .map((item) => item.entityId),
-    );
-    return scopedBranches.filter((b) => visibleIds.has(b.id));
-  }, [filteredPointItems, scopedBranches]);
-
-  const visibleLocationsForMap = useMemo(() => {
-    const visibleIds = new Set(
-      filteredPointItems
-        .filter((item) => item.pointType !== 'DEPOT')
-        .map((item) => item.entityId),
-    );
-    return scopedLocations.filter((l) => visibleIds.has(l.id));
-  }, [filteredPointItems, scopedLocations]);
-
   const networkMarkers = useMemo(
-    () => buildNetworkMarkers(visibleBranchesForMap, visibleLocationsForMap),
-    [visibleBranchesForMap, visibleLocationsForMap],
+    () => buildNetworkMarkers(scopedBranches),
+    [scopedBranches],
   );
 
   const selectedPoint = useMemo(
     () => filteredPointItems.find((item) => item.id === selectedPointId) || null,
     [filteredPointItems, selectedPointId],
-  );
-
-  const warehouseCount = useMemo(
-    () => scopedLocations.filter((l) => l.type === 'CENTRAL_WAREHOUSE').length,
-    [scopedLocations],
-  );
-  const pickupPointCount = useMemo(
-    () => scopedLocations.filter((l) => l.type === 'PICKUP_POINT').length,
-    [scopedLocations],
-  );
-  const storeCount = useMemo(
-    () => scopedLocations.filter((l) => l.type === 'STORE').length,
-    [scopedLocations],
   );
 
   const filteredTrips = useMemo(
@@ -310,27 +273,12 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
     },
   ];
 
-  const pointFilterButtons: Array<{ key: NetworkPointFilter; label: string; count: number }> = [
-    { key: 'ALL', label: 'Tất cả', count: allPointItems.length },
-    { key: 'DEPOT', label: 'Chi nhánh', count: scopedBranches.length },
-    { key: 'CENTRAL_WAREHOUSE', label: 'Kho', count: warehouseCount },
-    { key: 'PICKUP_POINT', label: 'Điểm nhận', count: pickupPointCount },
-    { key: 'STORE', label: 'Cửa hàng', count: storeCount },
-  ];
-
   const tripFilterButtons: Array<{ key: TripStatusFilter; label: string; count: number }> = [
     { key: 'ALL', label: 'Tất cả', count: kpis.trips.total },
     { key: 'ACTIVE', label: 'Đang chạy', count: kpis.trips.active },
     { key: 'PLANNED', label: 'Đã lên lịch', count: kpis.trips.planned },
     { key: 'COMPLETED', label: 'Hoàn thành', count: kpis.trips.completed },
   ];
-
-  const getPointIcon = (pointType: Exclude<NetworkPointFilter, 'ALL'>) => {
-    if (pointType === 'DEPOT') return <ApartmentOutlined />;
-    if (pointType === 'CENTRAL_WAREHOUSE') return <BankOutlined />;
-    if (pointType === 'PICKUP_POINT') return <InboxOutlined />;
-    return <ShopOutlined />;
-  };
 
   return (
     <div className="tms-page">
@@ -565,7 +513,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
         </Col>
       </Row>
 
-      {/* 3. Không Gian Bản Đồ Mạng Lưới Mapbox & Inspector Điểm Giao Nhận */}
+      {/* 3. Không Gian Bản Đồ Mạng Lưới Mapbox & Inspector Chi Nhánh */}
       <Row gutter={[16, 16]} className="dashboard-workspace-row">
         <Col xs={24} lg={15}>
           <Card className="dashboard-network-card" styles={{ body: { padding: 0 } }}>
@@ -573,20 +521,17 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
               <div className="dashboard-map-heading">
                 <div>
                   <Text className="dashboard-section-kicker">Bản đồ mạng lưới trực tiếp</Text>
-                  <Title level={4}>Mạng Lưới Chi Nhánh, Kho & Điểm Giao Nhận</Title>
+                  <Title level={4}>Mạng Lưới Chi Nhánh Vận Tải</Title>
                 </div>
                 <div className="dashboard-map-legend" aria-label="Chú giải bản đồ">
                   <Tag color="geekblue">
                     <ApartmentOutlined /> {scopedBranches.length} chi nhánh
                   </Tag>
                   <Tag color="blue">
-                    <BankOutlined /> {warehouseCount} kho trung tâm
+                    <CarOutlined /> {kpis.vehicles.total} xe trực thuộc
                   </Tag>
                   <Tag color="cyan">
-                    <InboxOutlined /> {pickupPointCount} điểm nhận
-                  </Tag>
-                  <Tag color="orange">
-                    <ShopOutlined /> {storeCount} cửa hàng
+                    <TeamOutlined /> {kpis.drivers.total} tài xế
                   </Tag>
                 </div>
               </div>
@@ -603,7 +548,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                 <div className="dashboard-selected-point-banner">
                   <div className="dashboard-selected-point-main">
                     <div className="dashboard-selected-point-title">
-                      <Tag color={selectedPoint.tagColor}>{selectedPoint.typeLabel}</Tag>
+                      <Tag color="geekblue">Chi nhánh</Tag>
                       <strong>{selectedPoint.name}</strong>
                       <Text type="secondary">({selectedPoint.code})</Text>
                     </div>
@@ -611,22 +556,12 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                       <EnvironmentOutlined /> {selectedPoint.address}
                     </div>
                     <div className="dashboard-selected-point-meta">
-                      {selectedPoint.pointType === 'DEPOT' && (
-                        <>
-                          <span>
-                            <CarOutlined /> {selectedPoint.vehicleCount || 0} xe trực thuộc
-                          </span>
-                          <span>
-                            <TeamOutlined /> {selectedPoint.driverCount || 0} tài xế
-                          </span>
-                        </>
-                      )}
-                      {selectedPoint.pointType === 'PICKUP_POINT' && (
-                        <span>
-                          <InboxOutlined /> Còn {selectedPoint.availableHoldingSlots ?? 0}/
-                          {selectedPoint.totalHoldingSlots ?? 0} chỗ lưu giữ trống
-                        </span>
-                      )}
+                      <span>
+                        <CarOutlined /> {selectedPoint.vehicleCount || 0} xe trực thuộc
+                      </span>
+                      <span>
+                        <TeamOutlined /> {selectedPoint.driverCount || 0} tài xế
+                      </span>
                     </div>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -660,54 +595,29 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
 
         <Col xs={24} lg={9}>
           <Card
-            title={`Điểm Trong Mạng Lưới (${filteredPointItems.length}/${allPointItems.length})`}
+            title={`Mạng Lưới Chi Nhánh (${filteredPointItems.length}/${allPointItems.length})`}
             className="dashboard-points-card"
           >
             <div className="dashboard-points-toolbar">
               <Input
                 allowClear
                 prefix={<SearchOutlined style={{ color: '#94a3b8' }} />}
-                placeholder="Tìm theo tên, mã điểm hoặc địa chỉ..."
+                placeholder="Tìm theo tên, mã chi nhánh hoặc địa chỉ..."
                 value={pointSearchQuery}
                 onChange={(e) => setPointSearchQuery(e.target.value)}
-                aria-label="Tìm kiếm điểm trong mạng lưới"
+                aria-label="Tìm kiếm chi nhánh trong mạng lưới"
               />
-              <div className="dashboard-filter-pills" role="tablist" aria-label="Lọc loại điểm mạng lưới">
-                {pointFilterButtons.map((btn) => {
-                  const isActive = pointTypeFilter === btn.key;
-                  return (
-                    <button
-                      key={btn.key}
-                      type="button"
-                      role="tab"
-                      aria-selected={isActive}
-                      className={`dashboard-filter-pill ${
-                        isActive ? 'dashboard-filter-pill-active' : ''
-                      }`}
-                      onClick={() => setPointTypeFilter(btn.key)}
-                    >
-                      {btn.label} ({btn.count})
-                    </button>
-                  );
-                })}
-              </div>
             </div>
 
             <div className="dashboard-point-list">
               {filteredPointItems.length === 0 ? (
                 <Empty
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description="Không tìm thấy điểm mạng lưới phù hợp với bộ lọc"
+                  description="Không tìm thấy chi nhánh phù hợp với tìm kiếm"
                 />
               ) : (
                 filteredPointItems.map((item) => {
                   const isSelected = item.id === selectedPointId;
-                  const totalSlots = item.totalHoldingSlots ?? 0;
-                  const availableSlots = item.availableHoldingSlots ?? 0;
-                  const usedSlots = Math.max(0, totalSlots - availableSlots);
-                  const usedSlotPercent =
-                    totalSlots > 0 ? Math.min(100, Math.round((usedSlots / totalSlots) * 100)) : 0;
-                  const isHighOccupancy = usedSlotPercent >= 80;
 
                   return (
                     <div
@@ -718,15 +628,13 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                       onClick={() => setSelectedPointId(item.id)}
                     >
                       <div className="dashboard-point-topline">
-                        <span
-                          className={`dashboard-point-type dashboard-point-type-${item.badgeClass}`}
-                        >
-                          {getPointIcon(item.pointType)}
+                        <span className="dashboard-point-type dashboard-point-type-branch">
+                          <ApartmentOutlined />
                         </span>
                         <div className="dashboard-point-copy">
                           <strong>{item.name}</strong>
                           <span>
-                            <Tag color={item.tagColor}>{item.typeLabel}</Tag>
+                            <Tag color="geekblue">Chi nhánh</Tag>
                             {item.code}
                           </span>
                         </div>
@@ -751,37 +659,14 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
                         <EnvironmentOutlined /> {item.address}
                       </div>
 
-                      {item.pointType === 'DEPOT' && (
-                        <div className="dashboard-point-meta">
-                          <span>
-                            <CarOutlined /> {item.vehicleCount || 0} xe
-                          </span>
-                          <span>
-                            <TeamOutlined /> {item.driverCount || 0} tài xế
-                          </span>
-                        </div>
-                      )}
-
-                      {item.pointType === 'PICKUP_POINT' && totalSlots > 0 && (
-                        <div className="dashboard-slot-box">
-                          <div className="dashboard-slot-header">
-                            <span>
-                              <InboxOutlined /> Chỗ lưu giữ khả dụng
-                            </span>
-                            <strong>
-                              {availableSlots}/{totalSlots} chỗ trống
-                            </strong>
-                          </div>
-                          <div className="dashboard-slot-progress" aria-hidden="true">
-                            <div
-                              className={`dashboard-slot-bar ${
-                                isHighOccupancy ? 'dashboard-slot-bar-warning' : ''
-                              }`}
-                              style={{ width: `${usedSlotPercent}%` }}
-                            />
-                          </div>
-                        </div>
-                      )}
+                      <div className="dashboard-point-meta">
+                        <span>
+                          <CarOutlined /> {item.vehicleCount || 0} xe trực thuộc
+                        </span>
+                        <span>
+                          <TeamOutlined /> {item.driverCount || 0} tài xế
+                        </span>
+                      </div>
                     </div>
                   );
                 })

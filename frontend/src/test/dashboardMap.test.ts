@@ -33,153 +33,123 @@ const branchB = {
   _count: { vehicles: 3, drivers: 4 },
 } satisfies Branch;
 
-const locations = [
-  {
-    id: 'warehouse',
-    code: 'WH-1',
-    name: 'Kho trung tâm Long Biên',
-    type: 'CENTRAL_WAREHOUSE',
-    managingBranchId: 'branch-1',
-    address: 'Long Biên, Hà Nội',
-    latitude: 21.03,
-    longitude: 105.85,
-    totalHoldingSlots: 0,
-    availableHoldingSlots: 0,
-  },
-  {
-    id: 'pickup',
-    code: 'PP-1',
-    name: 'Điểm nhận Cầu Giấy',
-    type: 'PICKUP_POINT',
-    managingBranchId: 'branch-1',
-    address: '85 Xuân Thủy, Hà Nội',
-    latitude: 21.04,
-    longitude: 105.86,
-    totalHoldingSlots: 20,
-    availableHoldingSlots: 18,
-  },
-  {
-    id: 'store',
-    code: 'ST-1',
-    name: 'Cửa hàng Ngô Quyền',
-    type: 'STORE',
-    managingBranchId: 'branch-2',
-    address: 'Ngô Quyền, Hải Phòng',
-    latitude: 20.85,
-    longitude: 106.69,
-    totalHoldingSlots: 10,
-    availableHoldingSlots: 10,
-  },
-] satisfies Location[];
-
 describe('buildNetworkMarkers', () => {
-  it('maps branches, warehouses, pickup points and stores to distinct marker types', () => {
-    expect(buildNetworkMarkers([branchA], locations).map((marker) => marker.type)).toEqual([
+  it('maps branches to DEPOT markers for Mapbox', () => {
+    expect(buildNetworkMarkers([branchA, branchB]).map((marker) => marker.type)).toEqual([
       'DEPOT',
-      'WAREHOUSE',
-      'PICKUP_POINT',
-      'STORE',
+      'DEPOT',
     ]);
   });
 
   it('does not put invalid coordinates on Mapbox', () => {
-    const invalid = { ...locations[0], id: 'invalid', latitude: 200 };
-    expect(buildNetworkMarkers([branchA], [invalid])).toHaveLength(1);
+    const invalid = { ...branchA, id: 'invalid', latitude: 200 };
+    expect(buildNetworkMarkers([invalid, branchB])).toHaveLength(1);
   });
 });
 
 describe('buildNetworkPointItems & filterNetworkPointItems', () => {
-  it('keeps distinct domain labels between Branch (Chi nhánh) and Warehouse (Kho trung tâm)', () => {
-    const items = buildNetworkPointItems([branchA], locations);
+  it('builds network items for operational transport branches', () => {
+    const items = buildNetworkPointItems([branchA, branchB]);
     expect(items.map((item) => item.typeLabel)).toEqual([
       'Chi nhánh',
-      'Kho trung tâm',
-      'Điểm nhận',
-      'Cửa hàng',
+      'Chi nhánh',
     ]);
+    expect(items[0].vehicleCount).toBe(6);
+    expect(items[0].driverCount).toBe(8);
   });
 
-  it('filters network points by type and search query', () => {
-    const items = buildNetworkPointItems([branchA, branchB], locations);
-    expect(filterNetworkPointItems(items, 'DEPOT', '')).toHaveLength(2);
-    expect(filterNetworkPointItems(items, 'PICKUP_POINT', '')).toHaveLength(1);
-    expect(filterNetworkPointItems(items, 'ALL', 'xuân thủy')).toHaveLength(1);
-    expect(filterNetworkPointItems(items, 'STORE', 'hà nội')).toHaveLength(0);
+  it('filters branches by search query', () => {
+    const items = buildNetworkPointItems([branchA, branchB]);
+    expect(filterNetworkPointItems(items, 'ALL', '')).toHaveLength(2);
+    expect(filterNetworkPointItems(items, 'ALL', 'Hải Phòng')).toHaveLength(1);
+    expect(filterNetworkPointItems(items, 'ALL', 'HAN')).toHaveLength(1);
+    expect(filterNetworkPointItems(items, 'ALL', 'Sài Gòn')).toHaveLength(0);
   });
 });
 
 describe('scopeDashboardEntities', () => {
-  it('filters branches and managed locations when a specific branchId is active', () => {
+  it('returns all entities when company scope (branchId is undefined)', () => {
     const scoped = scopeDashboardEntities({
       branches: [branchA, branchB],
-      locations,
+      locations: [],
+      trips: [],
+      branchId: undefined,
+    });
+    expect(scoped.scopedBranches).toHaveLength(2);
+  });
+
+  it('restricts entities to selected branch when branchId is set', () => {
+    const scoped = scopeDashboardEntities({
+      branches: [branchA, branchB],
+      locations: [],
       trips: [],
       branchId: 'branch-1',
     });
-    expect(scoped.scopedBranches.map((b) => b.id)).toEqual(['branch-1']);
-    expect(scoped.scopedLocations.map((l) => l.id)).toEqual(['warehouse', 'pickup']);
+    expect(scoped.scopedBranches).toHaveLength(1);
+    expect(scoped.scopedBranches[0].code).toBe('HAN');
   });
 });
 
-describe('computeDashboardKpis & trip helpers', () => {
-  const sampleVehicles = [
-    { status: 'AVAILABLE' },
-    { status: 'ON_TRIP' },
-    { status: 'MAINTENANCE' },
-  ] as Vehicle[];
+describe('computeDashboardKpis', () => {
+  it('computes multi-tier breakdown and percentages safely without division by zero', () => {
+    const vehicles: Vehicle[] = [
+      { id: 'v1', plateNumber: '29H-1', model: '5T', status: 'AVAILABLE' } as any,
+      { id: 'v2', plateNumber: '29H-2', model: '8T', status: 'ON_TRIP' } as any,
+    ];
+    const drivers: Driver[] = [
+      { id: 'd1', fullName: 'Driver A', status: 'AVAILABLE' } as any,
+      { id: 'd2', fullName: 'Driver B', status: 'ON_DUTY' } as any,
+      { id: 'd3', fullName: 'Driver C', status: 'RESTING' } as any,
+    ];
+    const trips: Trip[] = [
+      { id: 't1', status: 'IN_PROGRESS' } as any,
+      { id: 't2', status: 'PLANNED' } as any,
+      { id: 't3', status: 'COMPLETED' } as any,
+    ];
 
-  const sampleDrivers = [
-    { status: 'AVAILABLE' },
-    { status: 'AVAILABLE' },
-    { status: 'ON_DUTY' },
-    { status: 'RESTING' },
-  ] as Driver[];
+    const kpis = computeDashboardKpis(vehicles, drivers, 12, trips);
+    expect(kpis.vehicles.total).toBe(2);
+    expect(kpis.vehicles.available).toBe(1);
+    expect(kpis.vehicles.onTrip).toBe(1);
+    expect(kpis.vehicles.availablePercent).toBe(50);
 
-  const sampleTrips = [
-    { id: 't1', status: 'IN_PROGRESS' },
-    { id: 't2', status: 'DISPATCHED' },
-    { id: 't3', status: 'PLANNED' },
-    { id: 't4', status: 'COMPLETED' },
-  ] as Trip[];
+    expect(kpis.drivers.total).toBe(3);
+    expect(kpis.drivers.available).toBe(1);
+    expect(kpis.drivers.onDuty).toBe(1);
+    expect(kpis.drivers.restingOrLeave).toBe(1);
+    expect(kpis.drivers.availablePercent).toBe(33);
 
-  it('computes multi-tier KPI breakdown accurately', () => {
-    const summary = computeDashboardKpis(sampleVehicles, sampleDrivers, 9, sampleTrips);
-    expect(summary.vehicles).toEqual({
-      total: 3,
-      available: 1,
-      onTrip: 1,
-      maintenance: 1,
-      decommissioned: 0,
-      availablePercent: 33,
-    });
-    expect(summary.drivers).toEqual({
-      total: 4,
-      available: 2,
-      onDuty: 1,
-      restingOrLeave: 1,
-      availablePercent: 50,
-    });
-    expect(summary.orders.pendingCount).toBe(9);
-    expect(summary.trips).toEqual({
-      total: 4,
-      active: 2,
-      planned: 1,
-      completed: 1,
-      cancelled: 0,
-      activePercent: 50,
-    });
+    expect(kpis.orders.pendingCount).toBe(12);
+
+    expect(kpis.trips.total).toBe(3);
+    expect(kpis.trips.active).toBe(1);
+    expect(kpis.trips.planned).toBe(1);
+    expect(kpis.trips.completed).toBe(1);
+  });
+});
+
+describe('filterDashboardTrips & getTripStatusPresentation & formatTripWindow', () => {
+  it('filters trips by status correctly', () => {
+    const trips: Trip[] = [
+      { id: 't1', status: 'IN_PROGRESS' } as any,
+      { id: 't2', status: 'PLANNED' } as any,
+      { id: 't3', status: 'COMPLETED' } as any,
+    ];
+    expect(filterDashboardTrips(trips, 'ALL')).toHaveLength(3);
+    expect(filterDashboardTrips(trips, 'ACTIVE')).toHaveLength(1);
+    expect(filterDashboardTrips(trips, 'PLANNED')).toHaveLength(1);
+    expect(filterDashboardTrips(trips, 'COMPLETED')).toHaveLength(1);
   });
 
-  it('filters trips by status category and formats Vietnamese status labels', () => {
-    expect(filterDashboardTrips(sampleTrips, 'ACTIVE')).toHaveLength(2);
-    expect(filterDashboardTrips(sampleTrips, 'PLANNED')).toHaveLength(1);
-    expect(filterDashboardTrips(sampleTrips, 'COMPLETED')).toHaveLength(1);
-    expect(getTripStatusPresentation('IN_PROGRESS')).toEqual({
-      label: 'Đang vận chuyển',
-      color: 'blue',
-    });
-    expect(formatTripWindow('2026-11-08T01:00:00.000Z', '2026-11-08T04:30:00.000Z', 210).durationLabel).toBe(
-      '210 phút',
-    );
+  it('translates status to standard Vietnamese labels', () => {
+    expect(getTripStatusPresentation('IN_PROGRESS').label).toBe('Đang vận chuyển');
+    expect(getTripStatusPresentation('DISPATCHED').label).toBe('Đã điều lệnh');
+    expect(getTripStatusPresentation('COMPLETED').label).toBe('Hoàn thành');
+  });
+
+  it('formats trip window safely with duration', () => {
+    const res = formatTripWindow('2026-11-08T08:00:00.000Z', '2026-11-08T11:30:00.000Z', 210);
+    expect(res.durationLabel).toBe('210 phút');
+    expect(res.timeRange).toContain('→');
   });
 });

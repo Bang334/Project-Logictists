@@ -1,7 +1,7 @@
 import type { MapMarker } from '../components/MapboxMap';
 import type { Branch, Driver, Location, Trip, Vehicle } from '../types';
 
-export type NetworkPointFilter = 'ALL' | 'DEPOT' | 'CENTRAL_WAREHOUSE' | 'PICKUP_POINT' | 'STORE';
+export type NetworkPointFilter = 'ALL' | 'DEPOT';
 export type TripStatusFilter = 'ALL' | 'ACTIVE' | 'PLANNED' | 'COMPLETED';
 
 export interface NetworkPointItem {
@@ -9,10 +9,10 @@ export interface NetworkPointItem {
   entityId: string;
   code: string;
   name: string;
-  pointType: Exclude<NetworkPointFilter, 'ALL'>;
+  pointType: 'DEPOT';
   typeLabel: string;
   tagColor: string;
-  badgeClass: 'branch' | 'warehouse' | 'pickup' | 'store';
+  badgeClass: 'branch';
   address: string;
   latitude: number;
   longitude: number;
@@ -60,46 +60,11 @@ const hasValidCoordinates = (latitude: number, longitude: number): boolean =>
   longitude >= -180 &&
   longitude <= 180;
 
-const markerTypeByLocation: Record<Location['type'], MapMarker['type']> = {
-  CENTRAL_WAREHOUSE: 'WAREHOUSE',
-  PICKUP_POINT: 'PICKUP_POINT',
-  STORE: 'STORE',
-};
-
-const locationMetaByType: Record<
-  Location['type'],
-  {
-    pointType: Exclude<NetworkPointFilter, 'ALL'>;
-    typeLabel: string;
-    tagColor: string;
-    badgeClass: 'warehouse' | 'pickup' | 'store';
-  }
-> = {
-  CENTRAL_WAREHOUSE: {
-    pointType: 'CENTRAL_WAREHOUSE',
-    typeLabel: 'Kho trung tâm',
-    tagColor: 'blue',
-    badgeClass: 'warehouse',
-  },
-  PICKUP_POINT: {
-    pointType: 'PICKUP_POINT',
-    typeLabel: 'Điểm nhận',
-    tagColor: 'cyan',
-    badgeClass: 'pickup',
-  },
-  STORE: {
-    pointType: 'STORE',
-    typeLabel: 'Cửa hàng',
-    tagColor: 'orange',
-    badgeClass: 'store',
-  },
-};
-
 export const buildNetworkMarkers = (
   branches: Branch[],
-  locations: Location[],
+  _locations?: Location[],
 ): MapMarker[] => {
-  const branchMarkers: MapMarker[] = branches
+  return branches
     .filter((branch) => hasValidCoordinates(branch.latitude, branch.longitude))
     .map((branch) => ({
       id: `branch:${branch.id}`,
@@ -109,26 +74,13 @@ export const buildNetworkMarkers = (
       subtitle: `Chi nhánh vận tải · ${branch.address}`,
       type: 'DEPOT',
     }));
-
-  const locationMarkers: MapMarker[] = locations
-    .filter((location) => hasValidCoordinates(location.latitude, location.longitude))
-    .map((location) => ({
-      id: `location:${location.id}`,
-      latitude: location.latitude,
-      longitude: location.longitude,
-      title: location.name,
-      subtitle: `${location.code} · ${location.address}`,
-      type: markerTypeByLocation[location.type],
-    }));
-
-  return [...branchMarkers, ...locationMarkers];
 };
 
 export const buildNetworkPointItems = (
   branches: Branch[],
-  locations: Location[],
+  _locations?: Location[],
 ): NetworkPointItem[] => {
-  const branchItems: NetworkPointItem[] = branches.map((branch) => ({
+  return branches.map((branch) => ({
     id: `branch:${branch.id}`,
     entityId: branch.id,
     code: branch.code,
@@ -144,39 +96,16 @@ export const buildNetworkPointItems = (
     vehicleCount: branch._count?.vehicles ?? 0,
     driverCount: branch._count?.drivers ?? 0,
   }));
-
-  const locationItems: NetworkPointItem[] = locations.map((location) => {
-    const meta = locationMetaByType[location.type];
-    return {
-      id: `location:${location.id}`,
-      entityId: location.id,
-      code: location.code,
-      name: location.name,
-      pointType: meta.pointType,
-      typeLabel: meta.typeLabel,
-      tagColor: meta.tagColor,
-      badgeClass: meta.badgeClass,
-      address: location.address,
-      latitude: location.latitude,
-      longitude: location.longitude,
-      totalHoldingSlots: location.totalHoldingSlots,
-      availableHoldingSlots: location.availableHoldingSlots,
-    };
-  });
-
-  return [...branchItems, ...locationItems];
 };
 
 export const filterNetworkPointItems = (
   items: NetworkPointItem[],
-  typeFilter: NetworkPointFilter,
+  _typeFilter: NetworkPointFilter,
   searchQuery: string,
 ): NetworkPointItem[] => {
   const normalizedQuery = searchQuery.trim().toLowerCase();
+  if (!normalizedQuery) return items;
   return items.filter((item) => {
-    const isMatchingType = typeFilter === 'ALL' || item.pointType === typeFilter;
-    if (!isMatchingType) return false;
-    if (!normalizedQuery) return true;
     return (
       item.name.toLowerCase().includes(normalizedQuery) ||
       item.code.toLowerCase().includes(normalizedQuery) ||

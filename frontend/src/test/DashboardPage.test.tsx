@@ -197,14 +197,12 @@ describe('DashboardPage', () => {
     expect(screen.getByText('Đang vận chuyển')).toBeInTheDocument();
     expect(screen.getByText('42.5 km')).toBeInTheDocument();
 
-    // Select a network point from the map marker -> shows summary banner
-    fireEvent.click(screen.getByTestId('marker-location:loc-pp'));
-    expect(screen.getByText(/Còn 15\/20 chỗ lưu giữ trống/)).toBeInTheDocument();
-
-    // Filter network points by type (updates both map markers and point list)
-    fireEvent.click(screen.getByRole('tab', { name: 'Kho (1)' }));
-    expect(screen.getAllByText('Kho Trung Tâm Long Biên')).toHaveLength(2);
-    expect(screen.queryByText('Điểm Nhận Cầu Giấy')).not.toBeInTheDocument();
+    // Select a branch network point from the map marker -> shows summary banner
+    fireEvent.click(screen.getByTestId('marker-branch:branch-1'));
+    expect(screen.getAllByText('2 xe trực thuộc').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('2 tài xế').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Mạng Lưới Chi Nhánh Vận Tải')).toBeInTheDocument();
+    expect(screen.getByText('Mạng Lưới Chi Nhánh (1/1)')).toBeInTheDocument();
   }, 20_000);
 
   it('displays an explicit error alert with retry button when API fails', async () => {
