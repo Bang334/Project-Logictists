@@ -35,6 +35,7 @@ export const MAP_ROUTE_COLORS = [
 interface MapboxMapProps {
   markers?: MapMarker[];
   routeGeometry?: any; // GeoJSON LineString or FeatureCollection
+  connectMarkers?: boolean; // Chỉ tự động vẽ line nối các markers khi được bật tường minh (mặc định false)
   height?: string | number;
   interactive?: boolean;
   onMarkerClick?: (marker: MapMarker) => void;
@@ -131,6 +132,7 @@ const ROUTE_COLOR_EXPRESSION = [
 const MapboxMap: React.FC<MapboxMapProps> = ({
   markers = [],
   routeGeometry,
+  connectMarkers = false,
   height = '100%',
   interactive = true,
   onMarkerClick,
@@ -203,12 +205,12 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       }
     }
 
-    if (markers && markers.length >= 2) {
+    if (connectMarkers && markers && markers.length >= 2) {
       return markers.map((m) => [m.longitude, m.latitude] as [number, number]);
     }
 
     return enableSimulation ? HANOI_SAMPLE_DEMO_ROUTE : [];
-  }, [routeGeometry, enableSimulation, markers]);
+  }, [routeGeometry, enableSimulation, markers, connectMarkers]);
 
   const allRouteCoordinates = useMemo<[number, number][]>(() => {
     if (routeGeometry?.type === 'FeatureCollection' && Array.isArray(routeGeometry.features)) {
@@ -235,7 +237,9 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     const initialCenter: [number, number] =
       routeCoordinates.length > 0
         ? [routeCoordinates[0][0], routeCoordinates[0][1]]
-        : [105.854, 21.0283];
+        : markers.length > 0
+          ? [markers[0].longitude, markers[0].latitude]
+          : [105.854, 21.0283];
 
     const map = new mapboxgl.Map({
       container: mapContainer.current,
