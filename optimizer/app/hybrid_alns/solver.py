@@ -108,6 +108,7 @@ class HybridALNSSolver:
         self._vehicle_guidance_vnd = 1_000_000
         self._same_order_guidance_vnd = 2_000_000
         self._day_guidance_vnd = 50_000
+        self._calendar_salary_cache: Dict[int, int] = {}
         self._allow_empty_insertion_competition = False
         self._route_pool: List[Tuple[int, List[ScheduledStop]]] = []
 
@@ -432,6 +433,15 @@ class HybridALNSSolver:
             return []
         order = self.order_by_id[order_id]
         pickup, delivery = self._make_stops(order)
+        existing_span = max(
+            (
+                self.vehicles[idx].service_day_index + 1
+                for idx, r in enumerate(routes)
+                if r
+            ),
+            default=0,
+        )
+        base_span_salary = self._calendar_salary_for_span(existing_span)
         quick_candidates: List[Tuple[int, float, int, List[ScheduledStop]]] = []
         for vehicle_index in vehicle_indices:
             if time.perf_counter() >= deadline:
@@ -449,6 +459,8 @@ class HybridALNSSolver:
             ):
                 continue
             current = routes[vehicle_index]
+            span = max(existing_span, vehicle.service_day_index + 1)
+            calendar_extension = self._calendar_salary_for_span(span) - base_span_salary
             target_source_id = order.source_order_id or order.id
             shares_source_order = (
                 any(
@@ -477,7 +489,7 @@ class HybridALNSSolver:
                 quick = self._evaluate_route_without_packing(vehicle_index, candidate)
                 if not quick.feasible or quick.cost is None:
                     continue
-                delta_val = quick.cost.total_cost_vnd - current_cost
+                delta_val = quick.cost.total_cost_vnd - current_cost + calendar_extension
                 if not current:
                     delta_val += self.vehicles[vehicle_index].service_day_index * self._day_guidance_vnd
                 elif shares_source_order:
@@ -507,7 +519,9 @@ class HybridALNSSolver:
                     rejected_for_fallback.append((_delta, vehicle_index, candidate))
                 continue
             current_cost = self._route_cost(vehicle_index, routes[vehicle_index])
-            d_cost = evaluation.cost.total_cost_vnd - current_cost
+            span = max(existing_span, self.vehicles[vehicle_index].service_day_index + 1)
+            calendar_extension = self._calendar_salary_for_span(span) - base_span_salary
+            d_cost = evaluation.cost.total_cost_vnd - current_cost + calendar_extension
             if not routes[vehicle_index]:
                 d_cost += self.vehicles[vehicle_index].service_day_index * self._day_guidance_vnd
             elif (
@@ -783,6 +797,48 @@ class HybridALNSSolver:
             removed += pickup_ids[: remove_count - len(removed)]
         return self._remove_orders(routes, set(removed)), removed
 
+    def _calendar_salary_for_span(self, span: int) -> int:
+        if span <= 0:
+            return 0
+        cached = self._calendar_salary_cache.get(span)
+        if cached is not None:
+            return cached
+        has_daily_slots = any(
+            v.service_day_index > 0 or v.source_vehicle_id is not None
+            for v in self.vehicles
+        ) and any(
+            d.service_day_index > 0 or d.source_driver_id is not None
+            for d in self.drivers
+        )
+        if not has_daily_slots:
+            self._calendar_salary_cache[span] = 0
+            return 0
+        service_minutes_by_day: Dict[int, float] = {}
+        for v in self.vehicles:
+            if v.service_day_index >= span:
+                continue
+            avail_min = max(0.0, (v.available_end_sec - v.available_start_sec) / 60.0)
+            if avail_min > service_minutes_by_day.get(v.service_day_index, 0.0):
+                service_minutes_by_day[v.service_day_index] = avail_min
+        salary_vnd = 0
+        seen_driver_days: Set[Tuple[str, int]] = set()
+        for d in self.drivers:
+            day_idx = d.service_day_index
+            if day_idx >= span:
+                continue
+            phys_id = d.source_driver_id or d.id
+            key = (phys_id, day_idx)
+            if key in seen_driver_days:
+                continue
+            seen_driver_days.add(key)
+            salary_vnd += round(
+                d.fixed_salary_monthly_vnd
+                * service_minutes_by_day.get(day_idx, 0.0)
+                / max(1, self.policy.monthly_working_minutes)
+            )
+        self._calendar_salary_cache[span] = salary_vnd
+        return salary_vnd
+
     def _economic_plan_cost(
         self, routes: List[List[ScheduledStop]], unassigned: List[str]
     ) -> int:
@@ -791,8 +847,21 @@ class HybridALNSSolver:
             for index, route in enumerate(routes)
             if route
         )
+        span = max(
+            (
+                self.vehicles[index].service_day_index + 1
+                for index, route in enumerate(routes)
+                if route
+            ),
+            default=0,
+        )
+        calendar_extra = (
+            max(0, self._calendar_salary_for_span(span) - self._calendar_salary_for_span(1))
+            if span > 1
+            else 0
+        )
         unassigned_penalty = len(unassigned) * self.policy.unassigned_order_penalty_vnd
-        return routing_cost + unassigned_penalty
+        return routing_cost + calendar_extra + unassigned_penalty
 
     def _extra_order_trips(self, routes: List[List[ScheduledStop]]) -> int:
         trips_by_source: Dict[str, Set[int]] = {}

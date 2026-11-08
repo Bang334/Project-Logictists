@@ -74,7 +74,7 @@ describe('OptimizationProcessor', () => {
     prisma.optimizationJob.findUnique
       .mockResolvedValueOnce({
         ...persistedJob(),
-        parameters: { branchId: 'branch-1', searchBudgetSeconds: 45 },
+        parameters: { branchId: 'branch-1', searchBudgetSeconds: 45, deliveryBatchId: 'delivery-batch-1' },
       })
       .mockResolvedValueOnce({ status: 'CANCEL_REQUESTED' });
     prisma.optimizationJob.updateMany.mockResolvedValue({ count: 1 });
@@ -88,7 +88,7 @@ describe('OptimizationProcessor', () => {
 
     expect(trips.executeAutomaticOptimization).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ searchBudgetSeconds: 45 }),
+      expect.objectContaining({ searchBudgetSeconds: 45, deliveryBatchId: 'delivery-batch-1' }),
       'job-1',
       expect.any(Function),
     );

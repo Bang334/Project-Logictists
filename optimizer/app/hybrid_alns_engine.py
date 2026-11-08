@@ -1431,12 +1431,14 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 if scheduled is None:
                     return invalid_key
                 scheduled_stops, route_end, return_travel = scheduled
+                vehicle = self.vehicles[index]
                 weight = 0.0
                 for stop in scheduled_stops:
                     order = self.order_by_id[stop.allocation_id or stop.order_id]
                     weight += order.total_weight_kg * (1 if stop.stop_type == "PICKUP" else -1)
+                    if weight > vehicle.payload_limit_kg + 0.01:
+                        return invalid_key
                     stop.current_weight_kg = max(0.0, weight)
-                vehicle = self.vehicles[index]
                 base, surcharge, holding, ton_km, ton_hours = calculate_route_economic_metrics(
                     self.request, nodes, self.order_by_id, vehicle, scheduled_stops,
                 )
@@ -1515,45 +1517,80 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
         cur_rank = self._rank_candidate_for_audit(cur_routes, cur_unassigned)
         changed = False
         for _ in range(len(self.vehicles)):
+            step_changed = False
             reassigned = self._try_vehicle_reassignment(cur_routes, cur_unassigned)
-            if reassigned is None:
-                break
-            cand_rank = self._rank_candidate_for_audit(reassigned[1], reassigned[2])
-            if cand_rank < cur_rank:
-                cur_routes, cur_unassigned, cur_rank = reassigned[1], reassigned[2], cand_rank
-                changed = True
-            else:
-                break
-        active = [idx for idx, r in enumerate(cur_routes) if r]
-        for idx_a in range(len(active)):
-            for idx_b in range(idx_a + 1, len(active)):
-                i = active[idx_a]
-                j = active[idx_b]
-                vi = self.vehicles[i]
-                vj = self.vehicles[j]
-                if not self._vehicle_has_compatible_driver(vi) or not self._vehicle_has_compatible_driver(vj):
-                    continue
-                if any(
-                    not self._order_allows_vehicle(self.order_by_id[s.allocation_id or s.order_id], vj)
-                    for s in cur_routes[i]
-                    if s.stop_type == "PICKUP"
-                ):
-                    continue
-                if any(
-                    not self._order_allows_vehicle(self.order_by_id[s.allocation_id or s.order_id], vi)
-                    for s in cur_routes[j]
-                    if s.stop_type == "PICKUP"
-                ):
-                    continue
-                if not self._validate_stops_cached(j, cur_routes[i]) or not self._validate_stops_cached(i, cur_routes[j]):
-                    continue
-                swapped = list(cur_routes)
-                swapped[i] = cur_routes[j]
-                swapped[j] = cur_routes[i]
-                cand_rank = self._rank_candidate_for_audit(swapped, cur_unassigned)
+            if reassigned is not None:
+                cand_rank = self._rank_candidate_for_audit(reassigned[1], reassigned[2])
                 if cand_rank < cur_rank:
-                    cur_routes, cur_rank = swapped, cand_rank
+                    cur_routes, cur_unassigned, cur_rank = reassigned[1], reassigned[2], cand_rank
                     changed = True
+                    step_changed = True
+            if not step_changed:
+                active_indices = [i for i, r in enumerate(cur_routes) if r]
+                empty_indices = [i for i, r in enumerate(cur_routes) if not r]
+                best_direct = None
+                for src_i in active_indices:
+                    src_v = self.vehicles[src_i]
+                    stops = cur_routes[src_i]
+                    for tgt_i in empty_indices:
+                        tgt_v = self.vehicles[tgt_i]
+                        if (
+                            tgt_v.service_day_index >= src_v.service_day_index
+                            and tgt_v.fixed_operating_cost_vnd >= src_v.fixed_operating_cost_vnd
+                            and tgt_v.fuel_consumption_liters_per_100_km >= src_v.fuel_consumption_liters_per_100_km
+                        ):
+                            continue
+                        if not self._vehicle_has_compatible_driver(tgt_v) or any(
+                            not self._order_allows_vehicle(self.order_by_id[s.allocation_id or s.order_id], tgt_v)
+                            for s in stops
+                            if s.stop_type == "PICKUP" and (s.allocation_id or s.order_id) in self.order_by_id
+                        ):
+                            continue
+                        if self._schedule_stops(tgt_i, stops) is None or not self._validate_stops_cached(tgt_i, stops):
+                            continue
+                        cand_routes = list(cur_routes)
+                        cand_routes[src_i] = []
+                        cand_routes[tgt_i] = stops
+                        cand_rank = self._rank_candidate_for_audit(cand_routes, cur_unassigned)
+                        if cand_rank < cur_rank and (best_direct is None or cand_rank < best_direct[0]):
+                            best_direct = (cand_rank, cand_routes)
+                if best_direct is not None:
+                    cur_rank, cur_routes = best_direct
+                    changed = True
+                    step_changed = True
+            active = [idx for idx, r in enumerate(cur_routes) if r]
+            for idx_a in range(len(active)):
+                for idx_b in range(idx_a + 1, len(active)):
+                    i = active[idx_a]
+                    j = active[idx_b]
+                    vi = self.vehicles[i]
+                    vj = self.vehicles[j]
+                    if not self._vehicle_has_compatible_driver(vi) or not self._vehicle_has_compatible_driver(vj):
+                        continue
+                    if any(
+                        not self._order_allows_vehicle(self.order_by_id[s.allocation_id or s.order_id], vj)
+                        for s in cur_routes[i]
+                        if s.stop_type == "PICKUP"
+                    ):
+                        continue
+                    if any(
+                        not self._order_allows_vehicle(self.order_by_id[s.allocation_id or s.order_id], vi)
+                        for s in cur_routes[j]
+                        if s.stop_type == "PICKUP"
+                    ):
+                        continue
+                    if not self._validate_stops_cached(j, cur_routes[i]) or not self._validate_stops_cached(i, cur_routes[j]):
+                        continue
+                    swapped = list(cur_routes)
+                    swapped[i] = cur_routes[j]
+                    swapped[j] = cur_routes[i]
+                    cand_rank = self._rank_candidate_for_audit(swapped, cur_unassigned)
+                    if cand_rank < cur_rank:
+                        cur_routes, cur_rank = swapped, cand_rank
+                        changed = True
+                        step_changed = True
+            if not step_changed:
+                break
         if changed:
             cost, _, _ = self._evaluate_plan_cost(cur_routes, cur_unassigned)
             return (cost, cur_routes, cur_unassigned)
@@ -2407,6 +2444,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                         order.delivery_window_end_sec
                     ),
                     order_value_vnd=int(order.order_value_vnd),
+                    ordered_at_sec=int(order.ordered_at_sec),
                     allowed_source_vehicle_ids=list(
                         order.allowed_source_vehicle_ids
                     ),
@@ -2430,6 +2468,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             )
 
         policy = HybridPolicy(
+            delivery_grace_days=self.policy.delivery_grace_days,
             fuel_price_per_liter_vnd=int(
                 self.policy.fuel_price_per_liter_vnd
             ),

@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsInt, IsISO8601, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsISO8601, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { CargoKind } from '@prisma/client';
 
 export class PackageInputDto {
   @IsOptional() @IsUUID() id?: string;
@@ -7,6 +8,10 @@ export class PackageInputDto {
   @IsInt() @Min(1) @Max(2147483647) widthMm: number;
   @IsInt() @Min(1) @Max(2147483647) heightMm: number;
   @IsString() @Matches(/^[1-9][0-9]{0,18}$/) weightG: string;
+  @IsOptional() @IsEnum(CargoKind) cargoKind?: CargoKind;
+  @IsOptional() @IsBoolean() allowUpperTier?: boolean;
+  @IsOptional() @IsBoolean() noTopLoadRequested?: boolean;
+  @IsOptional() @IsInt() @Min(1) @Max(2147483647) maxTopLoadG?: number | null;
 }
 export class CreateOrderItemDto {
   @IsOptional() @IsUUID() id?: string;

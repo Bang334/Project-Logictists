@@ -67,6 +67,7 @@ describe('TripsValidator - TMS Invariants', () => {
   it('uses physical grams and mm³, ignores stale projections and rejects a one-gram overload', () => {
     const packages = [1, 2].map(n => ({ id: `pkg-${n}`, orderItemId: 'i1', packageCode: `PKG-${n}`,
       lengthMm: 1, widthMm: 1, heightMm: 1, weightG: 2500000n,
+      cargoKind: 'UNCLASSIFIED' as const, allowUpperTier: false, noTopLoadRequested: false, maxTopLoadG: null,
       status: 'READY' as const, version: 1, orderId: null, releasedAt: null, holdingSlot: null, arrivedAtPickupPointAt: null, measurementSource: 'USER_DECLARED', measuredAt: null,
       allowedOrientations: null, fulfillmentGroupId: null, measuredByUserId: null, createdAt: new Date(), updatedAt: new Date() }));
     const order = { ...createMockOrder('ord-1', 'O1', 0, 0, [{ ...sampleItems[0], quantity: 2, weightKg: 0, volumeM3: 0, packages }]), packageDataStatus: 'COMPLETE' };

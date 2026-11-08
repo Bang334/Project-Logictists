@@ -42,6 +42,8 @@ describe('TripsService.publish', () => {
     ],
   };
   const tx = {
+    deliveryAppointment: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn().mockResolvedValue(null) },
+    deliveryCapacityHold: { findFirst: jest.fn().mockResolvedValue(null) },
     $queryRaw: jest.fn(),
     $executeRaw: jest.fn(),
     trip: { findUnique: jest.fn(), findFirst: jest.fn(), updateMany: jest.fn() },

@@ -14,6 +14,9 @@ export enum AutomaticDispatchScheduleMode {
 }
 
 export class RunAutomaticOptimizationDto {
+  @IsOptional()
+  @IsUUID()
+  deliveryBatchId?: string;
   @IsUUID()
   idempotencyKey!: string;
 

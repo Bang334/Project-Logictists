@@ -120,7 +120,7 @@ export const ordersApi = {
   },
   create: async (data: OrderInput, key: string) => parseOrder((await client.post<unknown>('/orders', data, { headers: { 'Idempotency-Key': key }, timeout: 25000 })).data),
   update: async (id: string, data: OrderInput & { version: number }, key: string) => parseOrder((await client.patch<unknown>(`/orders/${id}`, data, { headers: { 'Idempotency-Key': key }, timeout: 25000 })).data),
-  confirm: async (id: string, version: number, key: string) => parseOrder((await client.post<unknown>(`/orders/${id}/confirm`, { version }, { headers: { 'Idempotency-Key': key }, timeout: 25000 })).data),
+  confirm: async (id: string, version: number, key: string, acceptedProtectionFeeVnd?: number) => parseOrder((await client.post<unknown>(`/orders/${id}/confirm`, { version, acceptedProtectionFeeVnd }, { headers: { 'Idempotency-Key': key }, timeout: 25000 })).data),
 };
 
 export const tripsApi = {
@@ -204,6 +204,31 @@ export const locationsApi = {
   getAll: () => apiClient.get<Location[]>('/locations'),
 };
 
+async function getDrivingRouteThrough(waypoints: [number, number][], signal?: AbortSignal) {
+  const token = import.meta.env.VITE_MAPBOX_TOKEN;
+  if (!token || waypoints.length < 2 || waypoints.length > 25) return null;
+  const path = waypoints.map(([longitude, latitude]) => `${longitude},${latitude}`).join(';');
+  try {
+    const response = await axios.get<{
+      routes?: { geometry?: { type?: string; coordinates?: unknown }; distance?: number; duration?: number }[];
+    }>(`https://api.mapbox.com/directions/v5/mapbox/driving/${path}`, {
+      params: { geometries: 'geojson', overview: 'full', access_token: token },
+      timeout: 10_000,
+      signal,
+    });
+    const route = response.data.routes?.[0];
+    const coordinates = route?.geometry?.coordinates;
+    if (route?.geometry?.type !== 'LineString' || !Array.isArray(coordinates) || coordinates.length < 2
+      || !coordinates.every((position): position is [number, number] => Array.isArray(position)
+        && position.length === 2 && position.every(value => typeof value === 'number' && Number.isFinite(value)))
+      || typeof route.distance !== 'number' || !Number.isFinite(route.distance)
+      || typeof route.duration !== 'number' || !Number.isFinite(route.duration)) return null;
+    return { coordinates, distanceMeters: route.distance, durationSeconds: route.duration };
+  } catch {
+    return null;
+  }
+}
+
 export const mapboxApi = {
   geocode: async (query: string) => {
     const token = import.meta.env.VITE_MAPBOX_TOKEN;
@@ -238,24 +263,7 @@ export const mapboxApi = {
       return null;
     }
   },
-  getDrivingRoute: async (startLng: number, startLat: number, endLng: number, endLat: number) => {
-    const token = import.meta.env.VITE_MAPBOX_TOKEN;
-    if (!token) return null;
-    try {
-      const res = await axios.get(
-        `https://api.mapbox.com/directions/v5/mapbox/driving/${startLng},${startLat};${endLng},${endLat}?geometries=geojson&overview=full&access_token=${token}`,
-      );
-      if (res.data.routes && res.data.routes.length > 0) {
-        const route = res.data.routes[0];
-        return {
-          coordinates: route.geometry.coordinates as [number, number][],
-          distanceMeters: route.distance as number,
-          durationSeconds: route.duration as number,
-        };
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  },
+  getDrivingRouteThrough,
+  getDrivingRoute: (startLng: number, startLat: number, endLng: number, endLat: number) =>
+    getDrivingRouteThrough([[startLng, startLat], [endLng, endLat]]),
 };

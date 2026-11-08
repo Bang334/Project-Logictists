@@ -1,6 +1,7 @@
 """Standardized Cost Evaluator for Hybrid ALNS ported from algo_lab."""
 
 from typing import Dict, List, Tuple
+from ..route_costing import calculate_late_delivery_penalty
 from .models import (
     CostPolicy,
     DriverOption,
@@ -127,13 +128,7 @@ def calculate_route_cost(
     for stop in stops:
         if stop.stop_type == "DELIVERY" and stop.order_id in order_by_id:
             order = order_by_id[stop.order_id]
-            if stop.arrival_time_sec > order.delivery_window_end_sec:
-                late_sec = stop.arrival_time_sec - order.delivery_window_end_sec
-                if policy.late_delivery_penalty_mode == "PERCENT_ORDER_VALUE_PER_DAY":
-                    daily = order.order_value_vnd * (policy.late_delivery_penalty_value / 100.0)
-                else:
-                    daily = policy.late_delivery_penalty_value
-                late_penalty += round(daily * late_sec / SECONDS_PER_DAY)
+            late_penalty += calculate_late_delivery_penalty(order, stop.arrival_time_sec, policy)
 
     total_cost = (
         fuel_cost

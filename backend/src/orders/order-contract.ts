@@ -2,12 +2,14 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma, StopType } from '@prisma/client';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { packageTotals, serializePackageTotals } from './package-measurements';
+import { TOP_LOAD_PROTECTION_CHARGE } from './top-load-protection';
 
 export const orderInclude = {
   branch: { select: { id: true, code: true, name: true } },
   customer: { select: { id: true, code: true, name: true, phone: true } },
   stops: { orderBy: { sequence: 'asc' as const } },
   items: { include: { packages: { orderBy: { packageCode: 'asc' as const } } }, orderBy: { createdAt: 'asc' as const } },
+  charges: { where: { chargeType: TOP_LOAD_PROTECTION_CHARGE, status: { in: ['DRAFT', 'CONFIRMED'] } }, select: { id: true, amount: true, status: true } },
 } satisfies Prisma.OrderInclude;
 export type OrderRecord = Prisma.OrderGetPayload<{ include: typeof orderInclude }>;
 
@@ -15,7 +17,7 @@ export function orderFieldError(field: string, message: string): never {
   throw new BadRequestException({ code: 'ORDER_VALIDATION', message, fieldErrors: [{ field, message }] });
 }
 
-export function validateOrderInput(dto: CreateOrderDto, confirmed: boolean) {
+export function validateOrderInput(dto: CreateOrderDto, _confirmed: boolean) {
   if (dto.stops.length !== 2 || dto.stops.filter(s => s.type === 'PICKUP').length !== 1 || dto.stops.filter(s => s.type === 'DELIVERY').length !== 1) {
     orderFieldError('stops', 'Đơn MVP phải có đúng một điểm lấy và một điểm giao');
   }
@@ -23,18 +25,12 @@ export function validateOrderInput(dto: CreateOrderDto, confirmed: boolean) {
     for (const field of ['address', 'contactName', 'contactPhone'] as const) if (!stop[field].trim()) orderFieldError(`stops.${i}.${field}`, 'Không được để trống');
     for (const field of ['windowStart', 'windowEnd'] as const) if (stop[field] && !Number.isFinite(Date.parse(stop[field]))) orderFieldError(`stops.${i}.${field}`, 'Ngày–giờ không hợp lệ');
     if (stop.type === 'DELIVERY') {
-      if (Boolean(stop.windowStart) !== Boolean(stop.windowEnd) || (confirmed && !stop.windowStart)) orderFieldError(`stops.${i}.windowStart`, 'Cần nhập đủ ngày–giờ bắt đầu và kết thúc giao hàng');
+      if (Boolean(stop.windowStart) !== Boolean(stop.windowEnd)) orderFieldError(`stops.${i}.windowStart`, 'Dữ liệu lịch cũ cần đủ bắt đầu và kết thúc');
     } else {
       if (Boolean(stop.windowStart) !== Boolean(stop.windowEnd)) orderFieldError(`stops.${i}.windowStart`, 'Nếu nhập khung giờ lấy cần nhập cả bắt đầu và kết thúc');
     }
     if (stop.windowStart && stop.windowEnd && Date.parse(stop.windowStart) > Date.parse(stop.windowEnd)) orderFieldError(`stops.${i}.windowEnd`, 'Kết thúc khung giờ phải bằng hoặc sau bắt đầu');
   });
-  const pickup = dto.stops.find(s => s.type === 'PICKUP');
-  const delivery = dto.stops.find(s => s.type === 'DELIVERY');
-  // Necessary chronology only. Travel feasibility belongs to dispatch, not this order form.
-  if (pickup?.windowStart && delivery?.windowEnd && Date.parse(pickup.windowStart) + pickup.serviceDurationMinutes * 60000 > Date.parse(delivery.windowEnd)) {
-    orderFieldError(`stops.${dto.stops.indexOf(delivery)}.windowEnd`, 'Không thể bắt đầu giao sau khi hoàn tất lấy trong các khung giờ này');
-  }
   const ids = new Set<string>();
   const unique = (id: string | undefined, field: string) => {
     if (id && ids.has(id)) orderFieldError(field, 'ID bị lặp trong yêu cầu');
@@ -47,6 +43,9 @@ export function validateOrderInput(dto: CreateOrderDto, confirmed: boolean) {
     item.packages.forEach((p, j) => {
       unique(p.id, `items.${i}.packages.${j}.id`);
       if (BigInt(p.weightG) > 9223372036854775807n) orderFieldError(`items.${i}.packages.${j}.weightG`, 'Khối lượng vượt giới hạn lưu trữ gram');
+      if (p.cargoKind !== 'STANDARD' && (p.allowUpperTier || p.noTopLoadRequested || p.maxTopLoadG != null)) {
+        orderFieldError(`items.${i}.packages.${j}.cargoKind`, 'Chỉ kiện thường mới có thể khai báo tùy chọn xếp chồng');
+      }
     });
     packageTotals(item.packages.map(p => ({ ...p, weightG: BigInt(p.weightG) })));
   });
@@ -67,14 +66,7 @@ export function assertDispatchableOrder(order: {
   items: Array<{ quantity: number; packages: Array<{ status: string; lengthMm: number; widthMm: number; heightMm: number; weightG: bigint }> }>;
 }) {
   if (order.orderType && order.orderType !== 'B2B_TRANSPORT') {
-    if (order.status !== 'CONFIRMED') {
-      throw new ConflictException({ code: 'ORDER_NOT_DISPATCHABLE', message: 'Đơn bán lẻ phải ở trạng thái CONFIRMED' });
-    }
-    const delivery = order.stops.find(s => s.type === 'DELIVERY');
-    if (!delivery) {
-      throw new ConflictException({ code: 'ORDER_WINDOWS_INVALID', message: 'Đơn bán lẻ cần có điểm giao hàng' });
-    }
-    return;
+    throw new ConflictException({ code: 'ORDER_NOT_DISPATCHABLE', message: 'Chỉ điều phối đơn vận chuyển' });
   }
   assertPackageManifest(order);
   if (order.status !== 'CONFIRMED' || order.items.some(i => i.packages.some(p => p.status !== 'READY'))) {
@@ -82,10 +74,6 @@ export function assertDispatchableOrder(order: {
   }
   if (order.stops.length !== 2 || order.stops.filter(s => s.type === 'PICKUP').length !== 1 || order.stops.filter(s => s.type === 'DELIVERY').length !== 1) {
     throw new ConflictException({ code: 'ORDER_WINDOWS_INVALID', message: 'Cần đúng một điểm lấy, một điểm giao' });
-  }
-  const delivery = order.stops.find(s => s.type === 'DELIVERY')!;
-  if (delivery.windowBasis !== 'SERVICE_START' || !delivery.windowStart || !delivery.windowEnd || delivery.windowStart > delivery.windowEnd) {
-    throw new ConflictException({ code: 'ORDER_WINDOWS_INVALID', message: 'Điểm giao cần có khung giờ giao hàng hợp lệ' });
   }
   const pickup = order.stops.find(s => s.type === 'PICKUP')!;
   if (pickup.windowStart && pickup.windowEnd && pickup.windowStart > pickup.windowEnd) {
@@ -98,8 +86,10 @@ export function serializeOrder(order: OrderRecord) {
   if (complete) assertPackageManifest(order);
   const pickup = order.stops.find(s => s.type === StopType.PICKUP);
   const delivery = order.stops.find(s => s.type === StopType.DELIVERY);
+  const { charges, ...record } = order;
   return {
-    ...order,
+    ...record,
+    protectionFeeVnd: Number(charges?.[0]?.amount ?? 0),
     ...(complete ? serializePackageTotals(order.items.flatMap(i => i.packages)) : { totalWeightG: null, totalVolumeMm3: null }),
     operationalTimezone: 'Asia/Ho_Chi_Minh',
     items: order.items.map(item => ({ ...item, packages: item.packages.map(p => ({

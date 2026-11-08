@@ -29,7 +29,12 @@ import {
   BranchesOutlined,
   NodeIndexOutlined,
 } from '@ant-design/icons';
-import { BenchmarkComparisonUI, BenchmarkMetricUI, FleetOptimizationResultUI } from '../types';
+import {
+  BenchmarkComparisonUI,
+  BenchmarkMetricUI,
+  FleetOptimizationResultUI,
+  PlanningObjectiveBreakdownUI,
+} from '../types';
 import { formatCurrency, formatDecimal } from '../utils/format';
 
 const { Text, Title, Paragraph } = Typography;
@@ -38,12 +43,18 @@ interface Props {
   benchmarks?: BenchmarkComparisonUI | null;
   optimizationStatus?: FleetOptimizationResultUI['status'];
   unassignedOrderCount?: number;
+  planningObjective?: PlanningObjectiveBreakdownUI | null;
+  onSelectDirect?: () => void;
+  showingDirect?: boolean;
 }
 
 export const BenchmarkCostComparisonCard: React.FC<Props> = ({
   benchmarks,
   optimizationStatus,
   unassignedOrderCount = 0,
+  planningObjective,
+  onSelectDirect,
+  showingDirect = false,
 }) => {
   const [showDetails, setShowDetails] = useState(false);
   const [showAlgorithmModal, setShowAlgorithmModal] = useState(false);
@@ -60,34 +71,92 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
   } = benchmarks;
   const isPartialOrTools =
     optimizationStatus === 'PARTIAL' && !or_tools.is_feasible;
+  const orToolsSpanDays =
+    planningObjective?.planning_span_days || or_tools.planning_span_days || 0;
+  const orToolsPhysVehicles =
+    planningObjective?.physical_vehicle_count ||
+    or_tools.physical_vehicle_count ||
+    or_tools.vehicles_used;
+  const hasCompanyObjective = Boolean(
+    ((planningObjective && planningObjective.selection_score_vnd > 0) ||
+      (or_tools.selection_score_vnd && or_tools.selection_score_vnd > 0)) &&
+      orToolsSpanDays > 0,
+  );
+  const orToolsRouteCostVnd = or_tools.total_cost_vnd;
+  const orToolsIdleSalaryVnd = hasCompanyObjective
+    ? (planningObjective?.driver_idle_salary_allocation_vnd ??
+      or_tools.driver_idle_salary_allocation_vnd ??
+      0)
+    : 0;
+  const orToolsCalendarSalaryVnd = hasCompanyObjective
+    ? (planningObjective?.driver_calendar_salary_vnd ??
+      or_tools.driver_calendar_salary_vnd ??
+      0)
+    : 0;
+  const orToolsOperationalPenaltyVnd = hasCompanyObjective
+    ? (planningObjective?.operational_late_penalty_vnd ?? 0)
+    : 0;
+  const orToolsEffectiveCostVnd = hasCompanyObjective
+    ? (planningObjective?.selection_score_vnd ||
+      or_tools.selection_score_vnd ||
+      or_tools.total_cost_vnd)
+    : or_tools.total_cost_vnd;
+
+  const directSpanDays = direct_dedicated.planning_span_days || 0;
+  const directPhysVehicles =
+    direct_dedicated.physical_vehicle_count || direct_dedicated.vehicles_used;
+  const directHasCompanyObjective = Boolean(
+    direct_dedicated.is_feasible &&
+      direct_dedicated.selection_score_vnd &&
+      direct_dedicated.selection_score_vnd > 0 &&
+      directSpanDays > 0,
+  );
+  const directIdleSalaryVnd = directHasCompanyObjective
+    ? (direct_dedicated.driver_idle_salary_allocation_vnd ?? 0)
+    : 0;
+  const directCalendarSalaryVnd = directHasCompanyObjective
+    ? (direct_dedicated.driver_calendar_salary_vnd ?? 0)
+    : 0;
+  const directEffectiveCostVnd =
+    hasCompanyObjective && directHasCompanyObjective
+      ? direct_dedicated.selection_score_vnd!
+      : direct_dedicated.total_cost_vnd;
+
   const canCompareSavings =
     or_tools.is_feasible && direct_dedicated.is_feasible;
   const comparableSavingsVnd = canCompareSavings
-    ? savings_vs_direct_vnd
+    ? hasCompanyObjective && directEffectiveCostVnd > 0
+      ? directEffectiveCostVnd - orToolsEffectiveCostVnd
+      : savings_vs_direct_vnd
     : null;
   const comparableSavingsPercent = canCompareSavings
-    ? savings_vs_direct_percent
+    ? hasCompanyObjective && directEffectiveCostVnd > 0 && comparableSavingsVnd !== null
+      ? Number(((comparableSavingsVnd / directEffectiveCostVnd) * 100).toFixed(2))
+      : savings_vs_direct_percent
     : null;
+  const routeOnlySavingsVnd = canCompareSavings ? savings_vs_direct_vnd : null;
+  const routeOnlySavingsPercent = canCompareSavings ? savings_vs_direct_percent : null;
 
   const methods = [
-    { key: 'or_tools', metric: or_tools },
-    { key: 'direct', metric: direct_dedicated },
+    { key: 'or_tools', metric: or_tools, effectiveCostVnd: orToolsEffectiveCostVnd },
+    { key: 'direct', metric: direct_dedicated, effectiveCostVnd: directEffectiveCostVnd },
   ];
   const feasibleMethods = methods.filter(({ metric }) => metric.is_feasible);
   const maxComparableCost = Math.max(
-    ...feasibleMethods.map(({ metric }) => metric.total_cost_vnd),
+    ...feasibleMethods.map(({ effectiveCostVnd }) => effectiveCostVnd),
     1,
   );
   const bestMethod = feasibleMethods.reduce<(typeof feasibleMethods)[number] | null>(
-    (best, method) => !best || method.metric.total_cost_vnd < best.metric.total_cost_vnd
+    (best, method) => !best || method.effectiveCostVnd < best.effectiveCostVnd
       ? method
       : best,
     null,
   );
-  const ratioFor = (metric: BenchmarkMetricUI) => metric.is_feasible
-    ? Math.round((metric.total_cost_vnd / maxComparableCost) * 100)
+  const ratioFor = (metric: BenchmarkMetricUI, costOverride?: number) => metric.is_feasible
+    ? Math.round(((costOverride ?? metric.total_cost_vnd) / maxComparableCost) * 100)
     : 0;
-  const orToolsRatio = ratioFor(or_tools);
+  const orToolsRatio = ratioFor(or_tools, orToolsEffectiveCostVnd);
+  const directRatio = ratioFor(direct_dedicated, directEffectiveCostVnd);
 
   const feasibilityTag = (
     metric: BenchmarkMetricUI,
@@ -142,7 +211,7 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
       title: 'Chuyến đơn lẻ (Direct Dedicated)',
       dataIndex: 'direct',
       key: 'direct',
-      render: (val: number) => <Text type="secondary">{formatCurrency(val)}</Text>,
+      render: (val: number) => <Text type="secondary">{direct_dedicated.is_feasible ? formatCurrency(val) : '—'}</Text>,
     },
   ];
 
@@ -161,7 +230,7 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
     },
     {
       key: 'driver',
-      category: '👨‍✈️ Lương & thù lao tài xế',
+      category: '👨‍✈️ Lương & thù lao tài xế (trên chuyến chạy)',
       or_tools: or_tools.driver_cost_vnd,
       direct: direct_dedicated.driver_cost_vnd,
     },
@@ -177,12 +246,47 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
       or_tools: or_tools.late_delivery_penalty_vnd,
       direct: direct_dedicated.late_delivery_penalty_vnd,
     },
-    {
-      key: 'total',
-      category: '💰 TỔNG CHI PHÍ TẠM TÍNH',
-      or_tools: or_tools.total_cost_vnd,
-      direct: direct_dedicated.total_cost_vnd,
-    },
+    ...(hasCompanyObjective
+      ? [
+          {
+            key: 'route-subtotal',
+            category: '🛣️ Tổng chi phí vận hành trực tiếp các chuyến',
+            or_tools: orToolsRouteCostVnd,
+            direct: direct_dedicated.total_cost_vnd,
+          },
+          {
+            key: 'idle-driver-salary',
+            category: directSpanDays > 0
+              ? `🗓️ Lương cứng tài xế chờ lịch (${orToolsSpanDays} ngày so với ${directSpanDays} ngày)`
+              : `🗓️ Lương cứng tài xế chờ lịch (${orToolsSpanDays} ngày)`,
+            or_tools: orToolsIdleSalaryVnd,
+            direct: directIdleSalaryVnd,
+          },
+          ...(orToolsOperationalPenaltyVnd > 0
+            ? [
+                {
+                  key: 'operational-penalty',
+                  category: '⚠️ Phạt trễ vận hành quy đổi',
+                  or_tools: orToolsOperationalPenaltyVnd,
+                  direct: 0,
+                },
+              ]
+            : []),
+          {
+            key: 'total',
+            category: '🏆 TỔNG CHI PHÍ TOÀN ĐỘI (Điểm xếp hạng)',
+            or_tools: orToolsEffectiveCostVnd,
+            direct: directEffectiveCostVnd,
+          },
+        ]
+      : [
+          {
+            key: 'total',
+            category: '💰 TỔNG CHI PHÍ TẠM TÍNH',
+            or_tools: or_tools.total_cost_vnd,
+            direct: direct_dedicated.total_cost_vnd,
+          },
+        ]),
   ];
 
   return (
@@ -282,11 +386,72 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
             </Paragraph>
 
             <Statistic
-              title={<span style={{ fontSize: 13, color: '#64748b' }}>Tổng chi phí</span>}
-              value={or_tools.total_cost_vnd}
+              title={
+                <span style={{ fontSize: 13, color: '#64748b' }}>
+                  {hasCompanyObjective
+                    ? 'Tổng chi phí toàn đội (Điểm xếp hạng)'
+                    : 'Tổng chi phí'}
+                </span>
+              }
+              value={orToolsEffectiveCostVnd}
               formatter={(val) => formatCurrency(Number(val))}
               valueStyle={{ color: '#059669', fontWeight: 700, fontSize: 22 }}
             />
+
+            {hasCompanyObjective && (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: '8px 10px',
+                  borderRadius: 8,
+                  background: '#f0fdf4',
+                  border: '1px solid #bbf7d0',
+                  fontSize: 12,
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <Text type="secondary">
+                    Chi phí vận hành {or_tools.vehicles_used} chuyến:
+                  </Text>
+                  <Text strong style={{ color: '#0f172a' }}>
+                    {formatCurrency(orToolsRouteCostVnd)}
+                  </Text>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <Text type="secondary">
+                    + Lương cứng tài xế chờ lịch ({orToolsSpanDays} ngày):
+                  </Text>
+                  <Text strong style={{ color: '#047857' }}>
+                    +{formatCurrency(orToolsIdleSalaryVnd)}
+                  </Text>
+                </div>
+                {orToolsOperationalPenaltyVnd > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <Text type="secondary">+ Phạt trễ vận hành quy đổi:</Text>
+                    <Text strong style={{ color: '#b45309' }}>
+                      +{formatCurrency(orToolsOperationalPenaltyVnd)}
+                    </Text>
+                  </div>
+                )}
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    borderTop: '1px dashed #86efac',
+                    paddingTop: 4,
+                    marginTop: 4,
+                    color: '#166534',
+                    fontSize: 11,
+                  }}
+                >
+                  <span>
+                    Hoàn tất trong {orToolsSpanDays} ngày ({or_tools.vehicles_used} chuyến /{' '}
+                    {orToolsPhysVehicles} xe)
+                  </span>
+                  <span>Tổng lương lịch: {formatCurrency(orToolsCalendarSalaryVnd)}</span>
+                </div>
+              </div>
+            )}
 
             <Divider style={{ margin: '12px 0' }} />
 
@@ -336,17 +501,73 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
               {feasibilityTag(direct_dedicated, bestMethod?.key === 'direct')}
             </div>
             <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12, minHeight: 32 }}>
-              Mỗi đơn cử 1 xe đi lấy và giao riêng biệt, không ghép chuyến
+              Mỗi chuyến chở một đơn. Xe và tài xế có thể chạy nhiều chuyến nối tiếp trong ca.
             </Paragraph>
 
+            {direct_dedicated.is_feasible && <>
             <Statistic
-              title={<span style={{ fontSize: 13, color: '#64748b' }}>
-                {direct_dedicated.is_feasible ? 'Tổng chi phí' : 'Chi phí ước tính chưa hợp lệ'}
-              </span>}
-              value={direct_dedicated.total_cost_vnd}
+              title={
+                <span style={{ fontSize: 13, color: '#64748b' }}>
+                  {hasCompanyObjective && directHasCompanyObjective
+                    ? 'Tổng chi phí toàn đội (Điểm xếp hạng)'
+                    : 'Tổng chi phí'}
+                </span>
+              }
+              value={directEffectiveCostVnd}
               formatter={(val) => formatCurrency(Number(val))}
               valueStyle={{ color: '#475569', fontWeight: 600, fontSize: 20 }}
             />
+
+            {directSpanDays > 0 && (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: '8px 10px',
+                  borderRadius: 8,
+                  background: '#f8fafc',
+                  border: '1px solid #cbd5e1',
+                  fontSize: 12,
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <Text type="secondary">
+                    Chi phí vận hành {direct_dedicated.vehicles_used} chuyến:
+                  </Text>
+                  <Text strong style={{ color: '#0f172a' }}>
+                    {formatCurrency(direct_dedicated.total_cost_vnd)}
+                  </Text>
+                </div>
+                {hasCompanyObjective && directHasCompanyObjective && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <Text type="secondary">
+                      + Lương cứng tài xế chờ lịch ({directSpanDays} ngày):
+                    </Text>
+                    <Text strong style={{ color: '#475569' }}>
+                      +{formatCurrency(directIdleSalaryVnd)}
+                    </Text>
+                  </div>
+                )}
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    borderTop: '1px dashed #cbd5e1',
+                    paddingTop: 4,
+                    marginTop: 4,
+                    color: '#334155',
+                    fontSize: 11,
+                  }}
+                >
+                  <span>
+                    Hoàn tất trong {directSpanDays} ngày ({direct_dedicated.vehicles_used} chuyến /{' '}
+                    {directPhysVehicles} xe)
+                  </span>
+                  {hasCompanyObjective && directHasCompanyObjective && (
+                    <span>Tổng lương lịch: {formatCurrency(directCalendarSalaryVnd)}</span>
+                  )}
+                </div>
+              </div>
+            )}
 
             <Divider style={{ margin: '12px 0' }} />
 
@@ -369,12 +590,20 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
                 <Text type="secondary">Tỷ lệ chi phí tương đối:</Text>
                 <Text strong style={{ color: '#64748b' }}>
-                  {direct_dedicated.is_feasible ? `${ratioFor(direct_dedicated)}%` : 'Không so sánh'}
+                  {directRatio}%
                 </Text>
               </div>
-              <Progress percent={ratioFor(direct_dedicated)} strokeColor="#94a3b8" showInfo={false} size="small" />
+              <Progress percent={directRatio} strokeColor="#94a3b8" showInfo={false} size="small" />
             </div>
+            </>}
             {feasibilityAlert(direct_dedicated)}
+            {onSelectDirect ? (
+              <Button style={{ marginTop: 12 }} onClick={onSelectDirect} aria-pressed={showingDirect}>
+                {showingDirect ? 'Đang xem Chuyến đơn lẻ' : 'Xem và mô phỏng Chuyến đơn lẻ'}
+              </Button>
+            ) : direct_dedicated.is_feasible && !direct_dedicated.routes?.length && (
+              <Text type="secondary" className="direct-route-help">Chạy lại tối ưu để tải tuyến mô phỏng.</Text>
+            )}
           </Card>
         </Col>
       </Row>
@@ -398,12 +627,26 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
           {comparableSavingsVnd !== null && comparableSavingsPercent !== null ? (
             <div>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                So với phương án Chuyến đơn lẻ (Direct) hợp lệ:
+                {hasCompanyObjective
+                  ? directSpanDays > 0
+                    ? `So với phương án Chuyến đơn lẻ (Direct) hợp lệ (${orToolsSpanDays} ngày so với ${directSpanDays} ngày):`
+                    : `So với phương án Chuyến đơn lẻ (Direct) hợp lệ (đã cộng đủ lương lịch ${orToolsSpanDays} ngày):`
+                  : 'So với phương án Chuyến đơn lẻ (Direct) hợp lệ:'}
               </Text>{' '}
               <Text strong style={{ color: comparableSavingsVnd >= 0 ? '#047857' : '#b45309', fontSize: 14 }}>
                 {comparableSavingsVnd >= 0 ? 'Tiết kiệm ' : 'Cao hơn '}
                 {formatCurrency(Math.abs(comparableSavingsVnd))} ({formatDecimal(Math.abs(comparableSavingsPercent))}%)
               </Text>
+              {hasCompanyObjective &&
+                routeOnlySavingsVnd !== null &&
+                routeOnlySavingsPercent !== null &&
+                orToolsIdleSalaryVnd > 0 && (
+                  <Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                    · Riêng chi phí chạy chuyến:{' '}
+                    {routeOnlySavingsVnd >= 0 ? 'Tiết kiệm ' : 'Cao hơn '}
+                    {formatCurrency(Math.abs(routeOnlySavingsVnd))} ({formatDecimal(Math.abs(routeOnlySavingsPercent))}%)
+                  </Text>
+                )}
             </div>
           ) : (
             <Text type="secondary" style={{ fontSize: 12 }}>
@@ -426,11 +669,12 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
       {showDetails && (
         <div style={{ marginTop: 14 }}>
           <Table
+            className="dispatch-candidate-table dispatch-cost-table"
             columns={breakdownColumns}
             dataSource={breakdownData}
             pagination={false}
             size="small"
-            bordered
+            scroll={{ x: 560 }}
           />
         </div>
       )}

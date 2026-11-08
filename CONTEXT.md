@@ -1,5 +1,10 @@
 # Logistics / TMS Domain
 
+Quyết định thời gian giao 02/11/2026: khách không chọn hạn giao cứng. `orderedAt`
+là mốc tuổi đơn, khoảng miễn phạt dùng cấu hình chi nhánh; giao sau đó vẫn hợp lệ
+nhưng tăng penalty theo thời gian trễ. Ca tài nguyên vẫn là ràng buộc bắt buộc.
+Không reset tuổi đơn khi tạo kế hoạch mới hoặc khởi động môi trường dev.
+
 Ngôn ngữ chung cho hệ thống quản lý vận tải tập trung. Các thuật ngữ dưới đây phân biệt yêu cầu thương mại, vật thể hàng hóa, kế hoạch vận tải và dữ liệu thực tế.
 
 ## Đơn hàng và hàng hóa

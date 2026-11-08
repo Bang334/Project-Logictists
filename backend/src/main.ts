@@ -7,7 +7,7 @@ import { BigIntSerializationInterceptor } from './common/interceptors/bigint-ser
 import { ConfiguredIoAdapter } from './events/configured-io.adapter';
 
 async function bootstrap() {
-  const logger = new Logger('Retail_TMS_Bootstrap');
+  const logger = new Logger('TMS_Bootstrap');
   const app = await NestFactory.create(AppModule);
 
   if (!process.env.MAPBOX_ACCESS_TOKEN) {
@@ -46,7 +46,7 @@ async function bootstrap() {
 
   const port = process.env.PORT || 4000;
   await app.listen(port);
-  logger.log(`🛒 Smart Retail & TMS Backend API đang chạy tại: http://localhost:${port}`);
+  logger.log(`Logistics TMS Backend API đang chạy tại: http://localhost:${port}`);
 }
 
 bootstrap();

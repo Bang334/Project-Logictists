@@ -18,12 +18,27 @@ from .models import (
     FleetOptimizationRequest,
 )
 from .multi_start import MultiStartFleetOptimizer
+from .stacking import DemoStacks
 
 router = APIRouter(prefix="/demo", tags=["Demo Benchmarks"])
 
 CASES_DIR = Path(__file__).resolve().parent.parent / "benchmarks" / "cases"
 
 CASE_METADATA: Dict[str, Dict[str, Any]] = {
+    "scenario_stack_customer_modes": {
+        "name": "Xếp chồng cùng khách và khác khách",
+        "category": "SCENARIO",
+        "category_name": "Kịch bản demo",
+        "description": "Hai khách có hai kiện cùng đáy. Thứ tự lấy và giao cho phép thử đặt kiện nhẹ của khách thứ hai lên kiện của khách thứ nhất.",
+        "suggested_time_limit_sec": 6.0,
+    },
+    "scenario_stack_cost_comparison": {
+        "name": "So sánh chi phí xếp chồng ba tầng",
+        "category": "SCENARIO",
+        "category_name": "Kịch bản demo",
+        "description": "Một đơn, ba kiện cùng đáy và ba xe nhỏ. Bật hoặc tắt xếp chồng trên cùng ma trận quãng đường giả lập để so chi phí.",
+        "suggested_time_limit_sec": 6.0,
+    },
     "novel_1_mekong_hub_spoke": {
         "name": "Mê Kông 2 chiều (Star Topology, Fronthaul-Backhaul)",
         "category": "NOVEL",
@@ -159,6 +174,7 @@ class DemoCaseSummary(BaseModel):
     total_weight_kg: float
     total_volume_cbm: float
     suggested_time_limit_sec: float
+    supports_stacking: bool = False
 
 
 class DemoRunRequest(BaseModel):
@@ -169,6 +185,8 @@ class DemoRunRequest(BaseModel):
     custom_request: Optional[FleetOptimizationRequest] = Field(
         default=None, description="Tùy chọn tải lên tệp JSON FleetOptimizationRequest riêng"
     )
+    demo_stacking_enabled: Optional[bool] = None
+    demo_stacking_owner_mode: Optional[Literal["SAME_CUSTOMER", "ANY_CUSTOMER"]] = None
 
 
 def _load_case_dict(case_id: str) -> dict:
@@ -238,6 +256,7 @@ def list_demo_cases() -> List[DemoCaseSummary]:
                     total_weight_kg=round(total_weight, 2),
                     total_volume_cbm=round(total_volume, 3),
                     suggested_time_limit_sec=float(meta.get("suggested_time_limit_sec", 6.0)),
+                    supports_stacking=data.get("demo_stacking") is not None,
                 )
             )
         except Exception:
@@ -262,6 +281,7 @@ def run_demo_case(payload: DemoRunRequest) -> FleetOptimizationBatchResponse:
         request = payload.custom_request
     elif payload.case_id:
         raw_dict = _load_case_dict(payload.case_id)
+        raw_dict.pop("scenario_profile", None)
         request = FleetOptimizationRequest(**raw_dict)
     else:
         raise HTTPException(
@@ -272,8 +292,18 @@ def run_demo_case(payload: DemoRunRequest) -> FleetOptimizationBatchResponse:
         request.max_time_seconds = float(payload.time_budget_seconds)
 
     # Chạy trực tiếp qua MultiStartFleetOptimizer (Hybrid ALNS first)
-    optimizer = MultiStartFleetOptimizer(request)
+    stacking_policy = request.demo_stacking if payload.demo_stacking_enabled is not False else None
+    if stacking_policy and payload.demo_stacking_owner_mode:
+        stacking_policy = stacking_policy.model_copy(update={"owner_mode": payload.demo_stacking_owner_mode})
+    stacks = DemoStacks(stacking_policy, request.vehicles) if stacking_policy else None
+    solver_request = request.model_copy(update={
+        "orders": stacks.bundle_orders(request.orders) if stacks else request.orders,
+        "demo_stacking": stacking_policy,
+    })
+    optimizer = MultiStartFleetOptimizer(solver_request)
     batch = optimizer.solve(max_candidates=3)
+    if stacks:
+        batch = stacks.expand_batch(batch)
 
     # Đính kèm thông tin depot và baseline route_geometry cho từng route
     vehicle_map = {v.id: v for v in request.vehicles}

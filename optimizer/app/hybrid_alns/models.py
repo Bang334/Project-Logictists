@@ -37,6 +37,7 @@ class OrderPair:
     delivery_window_start_sec: int = 0
     delivery_window_end_sec: int = 86400
     order_value_vnd: int = 0
+    ordered_at_sec: int = 0
     allowed_source_vehicle_ids: List[str] = field(default_factory=list)
     source_order_id: Optional[str] = None
     split_group_id: Optional[str] = None
@@ -97,6 +98,7 @@ class DriverOption:
 
 @dataclass
 class CostPolicy:
+    delivery_grace_days: int = 2
     fuel_price_per_liter_vnd: int = 23800
     monthly_working_minutes: int = 10560
     cargo_holding_cost_vnd_per_ton_hour: int = 15000

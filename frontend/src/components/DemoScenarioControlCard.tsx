@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useMemo } from 'react';
 import {
   Card,
   Select,
@@ -12,25 +12,29 @@ import {
   InputNumber,
   Upload,
   Alert,
+  Checkbox,
 } from 'antd';
 import {
   ExperimentOutlined,
   ThunderboltOutlined,
   UploadOutlined,
-  InfoCircleOutlined,
   DeleteOutlined,
   FileTextOutlined,
-  ClockCircleOutlined,
   CarOutlined,
   BranchesOutlined,
   UserOutlined,
   InboxOutlined,
 } from '@ant-design/icons';
-import { DemoCaseSummaryUI } from '../types';
+import { DemoCaseSummaryUI, DemoStackingOwnerMode, OptimizationCandidateSummaryUI } from '../types';
 
 const { Text } = Typography;
 
 interface DemoScenarioControlCardProps {
+  stackingEnabled: boolean;
+  onChangeStacking: (enabled: boolean) => void;
+  stackingOwnerMode?: DemoStackingOwnerMode;
+  onChangeStackingOwnerMode?: (mode: DemoStackingOwnerMode) => void;
+  stackingComparison?: Partial<Record<'off' | 'on', OptimizationCandidateSummaryUI>>;
   cases: DemoCaseSummaryUI[];
   loadingCases: boolean;
   selectedCaseId: string;
@@ -48,6 +52,11 @@ interface DemoScenarioControlCardProps {
 }
 
 export const DemoScenarioControlCard: React.FC<DemoScenarioControlCardProps> = ({
+  stackingEnabled,
+  onChangeStacking,
+  stackingOwnerMode = 'SAME_CUSTOMER',
+  onChangeStackingOwnerMode,
+  stackingComparison,
   cases,
   loadingCases,
   selectedCaseId,
@@ -63,8 +72,6 @@ export const DemoScenarioControlCard: React.FC<DemoScenarioControlCardProps> = (
   customFileName,
   onCustomJsonLoaded,
 }) => {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
   const selectedCase = useMemo(
     () => cases.find((c) => c.id === selectedCaseId) || cases[0],
     [cases, selectedCaseId],
@@ -165,7 +172,7 @@ export const DemoScenarioControlCard: React.FC<DemoScenarioControlCardProps> = (
               </Tag>
             </div>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              Chạy trực tiếp thuật toán tối ưu trên 17 bộ kịch bản tự trị hoặc nạp tệp JSON tùy biến (không cần dữ liệu chi nhánh).
+              Chạy trực tiếp thuật toán tối ưu trên các kịch bản có sẵn hoặc nạp tệp JSON tùy biến.
             </Text>
           </div>
         </Space>
@@ -216,7 +223,7 @@ export const DemoScenarioControlCard: React.FC<DemoScenarioControlCardProps> = (
         <Row gutter={[16, 16]} align="middle" style={{ marginBottom: 16 }}>
           <Col xs={24} md={12} lg={10}>
             <Text type="secondary" style={{ display: 'block', marginBottom: 4, fontWeight: 600, fontSize: 12 }}>
-              CHỌN TẬP DỮ LIỆU KỊCH BẢN (17 BỘ BENCHMARK)
+              CHỌN TẬP DỮ LIỆU KỊCH BẢN ({cases.length} BỘ BENCHMARK)
             </Text>
             <Select
               aria-label="Chọn kịch bản benchmark"
@@ -260,6 +267,17 @@ export const DemoScenarioControlCard: React.FC<DemoScenarioControlCardProps> = (
                 </Tooltip>
               )}
             </Space>
+            {selectedCase?.supports_stacking && <div style={{ marginTop: 8 }}>
+              <Checkbox checked={stackingEnabled} disabled={running} onChange={event => onChangeStacking(event.target.checked)}>
+                Cho phép xếp chồng demo
+              </Checkbox>
+              {stackingEnabled && <Select<DemoStackingOwnerMode> aria-label="Chế độ xếp chồng theo khách hàng"
+                size="small" value={stackingOwnerMode} disabled={running} onChange={onChangeStackingOwnerMode}
+                options={[
+                  { value: 'SAME_CUSTOMER', label: 'Chỉ kiện cùng khách hàng' },
+                  { value: 'ANY_CUSTOMER', label: 'Cho phép kiện khác khách hàng' },
+                ]} />}
+            </div>}
           </Col>
 
           <Col xs={24} md={24} lg={8} style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'flex-end' }}>
@@ -284,6 +302,22 @@ export const DemoScenarioControlCard: React.FC<DemoScenarioControlCardProps> = (
             </Button>
           </Col>
         </Row>
+      )}
+
+      {!isCustomUpload && selectedCase?.supports_stacking && stackingComparison && (
+        <Card size="small" title="Chi phí trên cùng kịch bản và ngân sách tìm kiếm" style={{ marginTop: 12 }}>
+          <Row gutter={[16, 8]}>
+            {(['off', 'on'] as const).map(mode => {
+              const result = stackingComparison[mode];
+              return <Col xs={24} sm={12} key={mode}>
+                <Text strong>{mode === 'on' ? 'Có xếp chồng' : 'Một lớp'}</Text>
+                <div>{!result ? 'Chưa chạy' : result.feasibilityStatus !== 'SUCCESS' ?
+                  `Chưa có nghiệm giao đủ đơn (${result.feasibilityStatus})` :
+                  `${result.totalCostVnd.toLocaleString('vi-VN')} ₫ · ${result.physicalVehicleCount ?? result.routeCount} xe · ${result.totalDistanceKm.toLocaleString('vi-VN')} km`}</div>
+              </Col>;
+            })}
+          </Row>
+        </Card>
       )}
 
       {/* Tóm tắt kịch bản đã chọn */}

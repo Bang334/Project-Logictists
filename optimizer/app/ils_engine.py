@@ -200,9 +200,30 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
         for src_i in active_indices:
             src_v = self.vehicles[src_i]
             stops = routes[src_i]
+            w = 0.0
+            max_w = 0.0
+            for st in stops:
+                oid = st.allocation_id or st.order_id
+                ord_obj = self.order_by_id.get(oid) if oid else None
+                if ord_obj:
+                    w += ord_obj.total_weight_kg if st.stop_type == "PICKUP" else -ord_obj.total_weight_kg
+                    if w > max_w:
+                        max_w = w
             for tgt_i in empty_indices:
                 tgt_v = self.vehicles[tgt_i]
-                if tgt_v.fixed_operating_cost_vnd >= src_v.fixed_operating_cost_vnd and tgt_v.fuel_consumption_liters_per_100_km >= src_v.fuel_consumption_liters_per_100_km:
+                if (
+                    tgt_v.service_day_index >= src_v.service_day_index
+                    and tgt_v.fixed_operating_cost_vnd >= src_v.fixed_operating_cost_vnd
+                    and tgt_v.fuel_consumption_liters_per_100_km >= src_v.fuel_consumption_liters_per_100_km
+                ):
+                    continue
+                if max_w > tgt_v.payload_limit_kg + 0.01:
+                    continue
+                if not self._vehicle_has_compatible_driver(tgt_v) or any(
+                    not self._order_allows_vehicle(self.order_by_id[s.allocation_id or s.order_id], tgt_v)
+                    for s in stops
+                    if s.stop_type == "PICKUP" and (s.allocation_id or s.order_id) in self.order_by_id
+                ):
                     continue
                 if self._schedule_stops(tgt_i, stops) is not None and self._validate_stops_cached(tgt_i, stops):
                     cand_routes = copy.deepcopy(routes)

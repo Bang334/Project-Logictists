@@ -24,11 +24,8 @@ async function fillOrder(page: Page, description: string) {
     await form.getByLabel('Kinh độ', { exact: true }).nth(i).fill('105.85');
     await form.getByLabel('Người liên hệ', { exact: true }).nth(i).fill('Test');
     await form.getByLabel('Điện thoại', { exact: true }).nth(i).fill('000');
-    const start = form.getByLabel('Bắt đầu khung giờ (UTC+7)', { exact: true }).nth(i);
-    await start.fill('01/01/2031 23:00'); await start.press('Enter'); await start.press('Tab');
-    const end = form.getByLabel('Kết thúc khung giờ (UTC+7)', { exact: true }).nth(i);
-    await end.fill('02/01/2031 04:00'); await end.press('Enter'); await end.press('Tab');
   }
+  await expect(form.locator('.ant-picker')).toHaveCount(0);
   await form.getByLabel('Mô tả hàng', { exact: true }).fill(description);
   await form.getByLabel('Dài mỗi kiện (mm)', { exact: true }).fill('401');
   await form.getByLabel('Rộng mỗi kiện (mm)', { exact: true }).fill('302');
@@ -63,7 +60,7 @@ async function saveReloadEditConfirm(page: Page, latitude: number) {
   const response = await createdResponse; expect(response.status()).toBe(201);
   const order = await response.json();
   expect(order.totalPackages).toBe(2); expect(order.totalWeightG).toBe('30003');
-  expect(order.stops[0].windowStart).toBe('2031-01-01T16:00:00.000Z');
+  expect(order.stops.every((stop: { windowStart: string | null; windowEnd: string | null }) => stop.windowStart === null && stop.windowEnd === null)).toBe(true);
   expect(order.stops[0].latitude).toBe(latitude);
   await expect(page.getByText('Từng kiện đã lưu', { exact: true })).toBeVisible();
   await expect(page.getByText(order.items[0].packages[0].packageCode, { exact: true })).toBeVisible();

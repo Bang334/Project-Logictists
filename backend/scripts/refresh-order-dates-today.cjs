@@ -7,6 +7,7 @@ require('dotenv').config({
 
 const CONFIRM_FLAG = '--confirm';
 const DRY_RUN_FLAG = '--dry-run';
+const STARTUP_FLAG = '--startup';
 const REMOTE_OVERRIDE_ENV = 'ALLOW_TEST_DATA_MUTATION';
 const DEMO_MEASUREMENT_SOURCE = 'SEED_DEMO';
 const DEMO_TIME_ZONE = 'Asia/Ho_Chi_Minh';
@@ -14,7 +15,7 @@ const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function printUsage() {
   console.log(`
-Dời lịch các đơn seed demo chưa phân công tới thời điểm hiện tại.
+Dời lịch các đơn seed demo chưa phân công đã qua hạn giao cuối.
 
 Script cập nhật đồng bộ orderedAt và windowStart/windowEnd bằng cùng một độ lệch
 cho từng đơn, vì vậy giữ nguyên khoảng cách và thời lượng của lịch demo.
@@ -25,10 +26,16 @@ Xem trước, không ghi database:
 Thực hiện cập nhật:
   node scripts/refresh-order-dates-today.cjs ${CONFIRM_FLAG}
 
+Khởi động dev dùng ${STARTUP_FLAG} để chạy cùng bộ lọc. Production, thiếu DATABASE_URL
+hoặc database từ xa chưa được cấp quyền sẽ bỏ qua bước này.
+
+Mỗi đơn được kiểm tra riêng: hạn giao cuối < hiện tại mới được dời.
+Đơn chưa hết hạn giữ nguyên ngày và version. Không kéo lịch lùi.
+
 Chỉ dùng cho dữ liệu phát triển/kiểm thử. Script luôn từ chối NODE_ENV=production.
 Database local được phép mặc định; database từ xa cần ${REMOTE_OVERRIDE_ENV}=true.
 Chỉ đơn CONFIRMED có toàn bộ Package READY, measurementSource=${DEMO_MEASUREMENT_SOURCE},
-không có Allocation và có cửa sổ thời gian đầy đủ mới được cập nhật.
+không có Allocation, chưa có lịch hẹn giao và có cửa sổ đầy đủ mới được cập nhật.
 `);
 }
 
@@ -75,6 +82,7 @@ function getDemoOrderSkipReason(order) {
   if (order.items.some((item) => (item.allocations ?? []).length > 0)) {
     return 'đã có phân công/Allocation';
   }
+  if (order.deliveryAppointments?.length > 0) return 'đã có lịch hẹn giao';
   if (packages.some((pkg) => pkg.status !== 'READY')) {
     return 'có Package chưa READY';
   }
@@ -96,6 +104,10 @@ function getDemoOrderSkipReason(order) {
     )
   ) {
     return 'khung giờ không đầy đủ hoặc không hợp lệ';
+  }
+  const deliveries = stops.filter((stop) => stop.type === 'DELIVERY');
+  if (deliveries.length === 0 || deliveries.some((stop) => !isValidDate(stop.windowEnd))) {
+    return 'thiếu hạn giao hàng để xác định quá hạn';
   }
 
   return null;
@@ -163,7 +175,7 @@ function buildScheduleShift(order, targetOrderedAt) {
   };
 }
 
-function summarizePlans(plans, skipped, referenceNow, shiftMilliseconds, dryRun) {
+function summarizePlans(plans, skipped, referenceNow, dryRun) {
   const shiftedWindows = plans.flatMap((plan) => plan.stops);
   const timestamps = shiftedWindows.flatMap((stop) => [
     stop.windowStart.getTime(),
@@ -172,7 +184,14 @@ function summarizePlans(plans, skipped, referenceNow, shiftMilliseconds, dryRun)
   return {
     dryRun,
     referenceNow: referenceNow.toISOString(),
-    shiftDays: shiftMilliseconds / MILLISECONDS_PER_DAY,
+    shiftDays: plans.length === 0 ? 0 : (
+      new Set(plans.map((plan) => plan.shiftMilliseconds)).size === 1
+        ? plans[0].shiftMilliseconds / MILLISECONDS_PER_DAY : null
+    ),
+    shifts: plans.map((plan) => ({
+      orderNumber: plan.orderNumber,
+      shiftDays: plan.shiftMilliseconds / MILLISECONDS_PER_DAY,
+    })),
     eligibleOrderCount: plans.length,
     shiftedStopCount: shiftedWindows.length,
     skippedOrderCount: skipped.length,
@@ -185,10 +204,12 @@ function summarizePlans(plans, skipped, referenceNow, shiftMilliseconds, dryRun)
 }
 
 async function refreshDemoSchedules(prisma, referenceNow, { dryRun = false } = {}) {
+  if (!isValidDate(referenceNow)) throw new Error('Thời điểm kiểm tra lịch không hợp lệ');
   const orders = await prisma.order.findMany({
     where: { status: 'CONFIRMED' },
     include: {
       stops: { orderBy: { sequence: 'asc' } },
+      deliveryAppointments: { select: { id: true }, take: 1 },
       items: {
         include: {
           allocations: { select: { id: true } },
@@ -204,7 +225,7 @@ async function refreshDemoSchedules(prisma, referenceNow, { dryRun = false } = {
     orderBy: { orderNumber: 'asc' },
   });
 
-  const eligibleOrders = [];
+  const plans = [];
   const skipped = [];
   for (const order of orders) {
     const reason = getDemoOrderSkipReason(order);
@@ -212,20 +233,23 @@ async function refreshDemoSchedules(prisma, referenceNow, { dryRun = false } = {
       skipped.push({ orderNumber: order.orderNumber, reason });
       continue;
     }
-    eligibleOrders.push(order);
+    const finalDeliveryEnd = Math.max(...order.stops
+      .filter((stop) => stop.type === 'DELIVERY')
+      .map((stop) => stop.windowEnd.getTime()));
+    if (finalDeliveryEnd >= referenceNow.getTime()) {
+      skipped.push({ orderNumber: order.orderNumber, reason: 'chưa quá hạn giao cuối' });
+      continue;
+    }
+    // Retain the demo's lead times and clock times; at least one day is
+    // needed when an order expires earlier on the same calendar day.
+    const shiftMilliseconds = Math.max(
+      MILLISECONDS_PER_DAY,
+      computeCalendarDayShiftMilliseconds(order.orderedAt, referenceNow),
+      (Math.floor((referenceNow.getTime() - finalDeliveryEnd) / MILLISECONDS_PER_DAY) + 1)
+        * MILLISECONDS_PER_DAY,
+    );
+    plans.push(buildScheduleShift(order, shiftDate(order.orderedAt, shiftMilliseconds)));
   }
-
-  const anchorOrderedAt = eligibleOrders.reduce(
-    (latest, order) =>
-      !latest || order.orderedAt > latest ? order.orderedAt : latest,
-    null,
-  );
-  const shiftMilliseconds = anchorOrderedAt
-    ? computeCalendarDayShiftMilliseconds(anchorOrderedAt, referenceNow)
-    : 0;
-  const plans = eligibleOrders.map((order) =>
-    buildScheduleShift(order, shiftDate(order.orderedAt, shiftMilliseconds)),
-  );
 
   if (!dryRun && plans.length > 0) {
     await prisma.$transaction(
@@ -236,6 +260,20 @@ async function refreshDemoSchedules(prisma, referenceNow, { dryRun = false } = {
               id: plan.orderId,
               status: 'CONFIRMED',
               version: plan.expectedVersion,
+              orderedAt: plan.originalOrderedAt,
+              deliveryAppointments: { none: {} },
+              items: {
+                none: {
+                  OR: [
+                    { allocations: { some: {} } },
+                    { packages: { some: { OR: [
+                      { status: { not: 'READY' } },
+                      { measurementSource: { not: DEMO_MEASUREMENT_SOURCE } },
+                    ] } } },
+                  ],
+                },
+                some: { packages: { some: {} } },
+              },
             },
             data: {
               orderedAt: plan.orderedAt,
@@ -269,7 +307,7 @@ async function refreshDemoSchedules(prisma, referenceNow, { dryRun = false } = {
           }
         }
       },
-      { maxWait: 10_000, timeout: 30_000 },
+      { isolationLevel: 'Serializable', maxWait: 10_000, timeout: 30_000 },
     );
   }
 
@@ -277,16 +315,21 @@ async function refreshDemoSchedules(prisma, referenceNow, { dryRun = false } = {
     plans,
     skipped,
     referenceNow,
-    shiftMilliseconds,
     dryRun,
   );
 }
 
 function printSummary(summary, database) {
+  if (!summary.dryRun && summary.eligibleOrderCount === 0) {
+    console.log('Không có đơn demo đủ điều kiện đã quá hạn giao; không ghi database hoặc tăng version đơn.');
+    return;
+  }
   const mode = summary.dryRun ? 'XEM TRƯỚC' : 'ĐÃ CẬP NHẬT';
   console.log(`[${mode}] ${summary.eligibleOrderCount} đơn, ${summary.shiftedStopCount} điểm dừng.`);
   console.log(
-    `Dời đồng bộ ${summary.shiftDays >= 0 ? '+' : ''}${summary.shiftDays} ngày theo múi giờ ${DEMO_TIME_ZONE}.`,
+    summary.shiftDays === null
+      ? `Dời từng đơn theo số ngày riêng, giữ nguyên giờ theo múi giờ ${DEMO_TIME_ZONE}.`
+      : `Dời +${summary.shiftDays} ngày theo múi giờ ${DEMO_TIME_ZONE}.`,
   );
   console.log(`Ngày tham chiếu: ${summary.referenceNow}`);
   if (summary.earliestShiftedWindow && summary.latestShiftedWindow) {
@@ -315,21 +358,26 @@ async function main() {
 
   const dryRun = process.argv.includes(DRY_RUN_FLAG);
   const confirmed = process.argv.includes(CONFIRM_FLAG);
-  if (!dryRun && !confirmed) {
+  const startup = process.argv.includes(STARTUP_FLAG);
+  if (!dryRun && !confirmed && !startup) {
     printUsage();
     fail(`thiếu ${DRY_RUN_FLAG} hoặc ${CONFIRM_FLAG}`);
     return;
   }
-  if (dryRun && confirmed) {
-    fail(`chỉ chọn một trong hai cờ ${DRY_RUN_FLAG} hoặc ${CONFIRM_FLAG}`);
+  if (Number(dryRun) + Number(confirmed) + Number(startup) > 1) {
+    fail(`chỉ chọn một cờ ${DRY_RUN_FLAG}, ${CONFIRM_FLAG} hoặc ${STARTUP_FLAG}`);
     return;
   }
+  const skipOrFail = (reason) => {
+    if (startup) console.log(`[BỎ QUA DỜI LỊCH DEMO] ${reason}`);
+    else fail(reason);
+  };
   if (process.env.NODE_ENV === 'production') {
-    fail('script test-data bị khóa trong NODE_ENV=production');
+    skipOrFail('script test-data bị khóa trong NODE_ENV=production');
     return;
   }
   if (!process.env.DATABASE_URL) {
-    fail('chưa cấu hình DATABASE_URL');
+    skipOrFail('chưa cấu hình DATABASE_URL');
     return;
   }
 
@@ -343,7 +391,7 @@ async function main() {
 
   const hasTestDatabaseName = /(test|dev|local|demo)/i.test(database.databaseName);
   if (!dryRun && !database.isLocal && process.env[REMOTE_OVERRIDE_ENV] !== 'true') {
-    fail(`database từ xa yêu cầu ${REMOTE_OVERRIDE_ENV}=true`);
+    skipOrFail(`database từ xa yêu cầu ${REMOTE_OVERRIDE_ENV}=true`);
     return;
   }
   if (!dryRun && !database.isLocal && !hasTestDatabaseName) {
@@ -355,7 +403,9 @@ async function main() {
   const { PrismaClient } = require('@prisma/client');
   const prisma = new PrismaClient();
   try {
-    const summary = await refreshDemoSchedules(prisma, new Date(), { dryRun });
+    const summary = await refreshDemoSchedules(prisma, new Date(), {
+      dryRun,
+    });
     printSummary(summary, database);
   } finally {
     await prisma.$disconnect();

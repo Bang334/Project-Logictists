@@ -68,6 +68,9 @@ function Stop-TMSPorts {
 }
 
 try {
+    $optimizerScript = Join-Path $ROOT_DIR 'start_optimizer.ps1'
+    & $optimizerScript -Check
+
     # ------------------------------------------------------------------------
     # BƯỚC 1: GIẢI PHÓNG CÁC CỔNG MẠNG VÀ TIẾN TRÌNH CŨ
     # ------------------------------------------------------------------------
@@ -82,8 +85,7 @@ try {
     # BƯỚC 2: KHỞI ĐỘNG PYTHON OPTIMIZATION ENGINE (PORT 8000)
     # ------------------------------------------------------------------------
     Write-Host "[2/4] Khởi động Python Optimization Engine (Port 8000)..." -ForegroundColor Cyan
-    $optimizerCmd = "cd '$ROOT_DIR\optimizer'; `$host.UI.RawUI.WindowTitle='[TMS] Optimization Engine - Port 8000'; python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
-    Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-Command", $optimizerCmd -WindowStyle Normal
+    Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$optimizerScript`"" -WindowStyle Hidden
 
     # ------------------------------------------------------------------------
     # BƯỚC 3: KHỞI ĐỘNG BACKEND NESTJS (PORT 4000)

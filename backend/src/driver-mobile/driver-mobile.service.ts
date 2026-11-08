@@ -226,13 +226,37 @@ export class DriverMobileService {
         });
         if (!assignment)
           throw new NotFoundException("Không tìm thấy phân công");
+        const plan = await tx.loadPlan.findFirst({
+          where: { tripId: assignment.trip.id },
+          orderBy: { revision: 'desc' },
+          select: { validatorVersion: true, steps: { select: { operationType: true, validationResult: true, tasks: { select: { id: true, packageId: true } } } } },
+        });
+        const handlingOrder = new Map<string, number>();
+        if (plan?.validatorVersion === 'spatial-demo-stacking-v1') {
+          for (const step of plan.steps) {
+            const state = step.validationResult;
+            const records = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
+            const sequence = step.operationType === 'DELIVERY' ? records.unload_sequence : records.placed_items;
+            const ids = Array.isArray(sequence) ? sequence.flatMap(entry => {
+              if (typeof entry === 'string') return [entry];
+              if (entry && typeof entry === 'object' && !Array.isArray(entry) && typeof entry.item_id === 'string') return [entry.item_id];
+              return [];
+            }) : [];
+            const rankByPackage = new Map(ids.map((packageId, rank) => [packageId, rank]));
+            for (const task of step.tasks) {
+              const rank = task.packageId ? rankByPackage.get(task.packageId) : undefined;
+              if (rank === undefined) throw new ConflictException('Thiếu thứ tự thao tác trong phương án xếp chồng');
+              handlingOrder.set(task.id, rank);
+            }
+          }
+        }
         return {
           ...assignment,
           trip: {
             ...assignment.trip,
             stops: assignment.trip.stops.map((stop) => ({
               ...stop,
-              tasks: stop.tasks.map((task) => {
+              tasks: [...stop.tasks].sort((a, b) => (handlingOrder.get(a.id) ?? 0) - (handlingOrder.get(b.id) ?? 0)).map((task) => {
                 const order = task.allocation?.orderItem.order ?? task.order;
                 if (
                   (task.allocation &&

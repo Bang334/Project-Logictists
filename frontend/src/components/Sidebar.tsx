@@ -3,15 +3,10 @@ import { canOpenTab } from '../utils/navigationAccess';
 import React from 'react';
 import { Layout, Menu } from 'antd';
 import {
-  AppstoreOutlined,
-  BarChartOutlined,
   CarOutlined,
   CompassOutlined,
   DashboardOutlined,
-  DatabaseOutlined,
   InboxOutlined,
-  ShopOutlined,
-  ShoppingOutlined,
   ThunderboltOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -34,8 +29,8 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
     },
     {
       key: 'orders',
-      icon: <ShoppingOutlined style={{ fontSize: '16px' }} />,
-      label: 'Quản lý Đơn hàng',
+      icon: <InboxOutlined style={{ fontSize: '16px' }} />,
+      label: 'Đơn vận chuyển',
     },
     {
       key: 'dispatch-manual',
@@ -52,13 +47,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
       icon: <CarOutlined style={{ fontSize: '16px' }} />,
       label: 'Đội Xe & Tài Xế',
     },
-    { key: 'catalog', icon: <AppstoreOutlined />, label: 'Danh mục hàng' },
-    { key: 'inventory', icon: <DatabaseOutlined />, label: 'Tồn kho' },
-    { key: 'sales-orders', icon: <ShoppingOutlined />, label: 'Đơn bán lẻ' },
-    { key: 'order-processing', icon: <InboxOutlined />, label: 'Xử lý đơn bán lẻ' },
-    { key: 'pickup-ops', icon: <ShopOutlined />, label: 'Điểm nhận hàng' },
-    { key: 'retail-analytics', icon: <BarChartOutlined />, label: 'Báo cáo bán lẻ' },
-    { key: 'customer-shop', icon: <ShopOutlined />, label: 'Đặt hàng' },
+    { key: 'delivery-appointments', icon: <InboxOutlined />, label: 'Lịch hẹn giao hàng' },
     { key: 'accounts', icon: <UserOutlined aria-hidden="true" />, label: 'Quản lý tài khoản' },
   ];
 

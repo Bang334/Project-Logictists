@@ -40,8 +40,10 @@ export type OptimizedRouteResult = {
     latitude: number;
     longitude: number;
   };
+  end_location?: OptimizedRouteResult['depot'] | null;
   stops: OptimizerStop[];
   spatial_validation: {
+    demo_stacking?: { max_tiers: number; lift_clearance_cm: number; owner_mode?: 'SAME_CUSTOMER' | 'ANY_CUSTOMER' } | null;
     is_valid: boolean;
     violation_code?: string;
     violation_scenario?: string;
@@ -62,6 +64,8 @@ export type OptimizedRouteResult = {
         width_cm: number;
         height_cm: number;
         weight_kg: number;
+        z?: number;
+        support_item_id?: string | null;
       }>;
       current_weight_kg: number;
       current_occupied_area_cm2: number;
@@ -108,8 +112,14 @@ export type BenchmarkMetric = {
   driver_cost_vnd: number;
   cargo_holding_cost_vnd: number;
   late_delivery_penalty_vnd: number;
+  planning_span_days?: number;
+  physical_vehicle_count?: number;
+  driver_calendar_salary_vnd?: number;
+  driver_idle_salary_allocation_vnd?: number;
+  selection_score_vnd?: number;
   is_feasible: boolean;
   violations: string[];
+  routes?: OptimizedRouteResult[];
 };
 
 export type BenchmarkComparison = {
@@ -272,7 +282,13 @@ export function assertFleetOptimizationResult(
       }
     }
   }
-  for (const route of value.routes) {
+  const benchmarkRoutes = isRecord(value.benchmarks) && isRecord(value.benchmarks.direct_dedicated)
+    ? value.benchmarks.direct_dedicated.routes
+    : undefined;
+  if (benchmarkRoutes !== undefined && !Array.isArray(benchmarkRoutes)) {
+    throw new Error('Optimizer trả danh sách chuyến đơn lẻ không hợp lệ');
+  }
+  for (const [index, route] of [...value.routes, ...(benchmarkRoutes ?? [])].entries()) {
     if (
       !isRecord(route) ||
       typeof route.route_id !== 'string' ||
@@ -282,6 +298,12 @@ export function assertFleetOptimizationResult(
       route.spatial_validation.is_valid !== true
     ) {
       throw new Error('Optimizer trả route thiếu dữ liệu hoặc chưa vượt spatial validator');
+    }
+    const endLocation = route.end_location;
+    if (endLocation != null && (!isRecord(endLocation) || typeof endLocation.id !== 'string'
+      || typeof endLocation.name !== 'string' || !isFiniteNumber(endLocation.longitude)
+      || !isFiniteNumber(endLocation.latitude))) {
+      throw new Error('Optimizer trả điểm kết thúc tuyến không hợp lệ');
     }
     for (const field of [
       'service_day_index',
@@ -298,7 +320,8 @@ export function assertFleetOptimizationResult(
     }
     if (
       !Number.isInteger(route.service_day_index) ||
-      Number(route.end_time_sec) <= Number(route.start_time_sec)
+      Number(route.end_time_sec) < Number(route.start_time_sec) ||
+      (index < value.routes.length && route.end_time_sec === route.start_time_sec)
     ) {
       throw new Error('Optimizer trả khung thời gian tuyến không hợp lệ');
     }
@@ -329,6 +352,10 @@ export function assertFleetOptimizationResult(
       for (const placed of step.placed_items) {
         if (!isRecord(placed) || typeof placed.item_id !== 'string') {
           throw new Error('Optimizer trả placement không hợp lệ');
+        }
+        if ((placed.z !== undefined && (!isFiniteNumber(placed.z) || Number(placed.z) < 0)) ||
+          (placed.support_item_id != null && typeof placed.support_item_id !== 'string')) {
+          throw new Error('Optimizer trả tầng xếp kiện không hợp lệ');
         }
         for (const field of [
           'x',

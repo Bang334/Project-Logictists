@@ -1,11 +1,16 @@
+import type { CargoKind } from '@prisma/client';
 import { PackageMeasurements, packageTotals } from '../orders/package-measurements';
 export type PhysicalPackageLine = {
   id: string; orderId: string; description: string; quantity: number;
-  packages: Array<PackageMeasurements & { id: string; orderItemId: string | null }>;
+  packages: Array<PackageMeasurements & {
+    id: string; orderItemId: string | null; cargoKind?: CargoKind;
+    allowUpperTier?: boolean; noTopLoadRequested?: boolean; maxTopLoadG?: number | null;
+  }>;
 };
 export type OptimizerCargoUnit = {
   id: string;
   order_id: string;
+  customer_id?: string;
   order_item_id: string;
   description: string;
   length_cm: number;
@@ -13,9 +18,13 @@ export type OptimizerCargoUnit = {
   height_cm: number;
   weight_kg: number;
   can_rotate: boolean;
+  cargo_kind?: CargoKind;
+  allow_upper_tier?: boolean;
+  no_top_load_requested?: boolean;
+  max_top_load_g?: number | null;
 };
 /** Only persisted packages. Compatibility units are converted once at this boundary. */
-export function packagesToCargoUnits(items: PhysicalPackageLine[]): OptimizerCargoUnit[] {
+export function packagesToCargoUnits(items: PhysicalPackageLine[], customerId?: string): OptimizerCargoUnit[] {
   const seen = new Set<string>();
   return items.flatMap(item => {
     if (!item.packages.length || item.quantity !== item.packages.length) throw new Error('Danh sách Package chưa được đối soát');
@@ -24,7 +33,16 @@ export function packagesToCargoUnits(items: PhysicalPackageLine[]): OptimizerCar
       if (p.orderItemId !== item.id || seen.has(p.id)) throw new Error('ID kiện trùng hoặc sai dòng hàng');
       if (p.weightG > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Khối lượng vượt độ chính xác contract optimizer');
       seen.add(p.id);
-      return { id: p.id, order_id: item.orderId, order_item_id: item.id, description: item.description, length_cm: p.lengthMm / 10, width_cm: p.widthMm / 10, height_cm: p.heightMm / 10, weight_kg: Number(p.weightG) / 1000, can_rotate: true as const };
+      return {
+        id: p.id, order_id: item.orderId, order_item_id: item.id, description: item.description,
+        ...(customerId ? { customer_id: customerId } : {}),
+        length_cm: p.lengthMm / 10, width_cm: p.widthMm / 10, height_cm: p.heightMm / 10,
+        weight_kg: Number(p.weightG) / 1000, can_rotate: true as const,
+        ...(p.cargoKind && p.cargoKind !== 'UNCLASSIFIED' ? {
+          cargo_kind: p.cargoKind, allow_upper_tier: p.allowUpperTier,
+          no_top_load_requested: p.noTopLoadRequested, max_top_load_g: p.maxTopLoadG,
+        } : {}),
+      };
     });
   });
 }

@@ -49,6 +49,52 @@ def test_comparison_uses_the_same_d11_floor_rotation_policy_as_production():
     assert all(c.can_rotate for o in converted for c in o.items)
 
 
+def test_hybrid_search_penalty_preserves_order_age_and_grace_period():
+    from app.hybrid_alns.solver import HybridALNSSolver
+    from app.hybrid_alns.route_evaluator import schedule_and_evaluate_route
+    from app.route_costing import calculate_late_delivery_penalty
+    request = comparison_request()
+    request.orders = [request.orders[0]]
+    request.orders[0].ordered_at_sec = -4 * 86400
+    request.policy.delivery_grace_days = 2
+    request.policy.late_delivery_penalty_mode = 'FIXED_PER_DAY'
+    request.policy.late_delivery_penalty_value = 120000
+    request.distance_matrix_meters = [row[:3] for row in request.distance_matrix_meters[:3]]
+    request.duration_matrix_seconds = [row[:3] for row in request.duration_matrix_seconds[:3]]
+    args = convert_request_to_hybrid(request)
+    vehicles, drivers, orders, policy, distances, durations, indices = args
+    assert orders[0].ordered_at_sec == -4 * 86400
+    assert policy.delivery_grace_days == 2
+    solver = HybridALNSSolver(*args, time_limit_sec=0.1)
+    pickup, delivery = solver._make_stops(orders[0])
+    result = schedule_and_evaluate_route(vehicles[0], drivers[0], [pickup, delivery],
+        solver.order_by_id, solver.cargo_by_id, policy, distances, durations, indices)
+    assert result.feasible, result.reason
+    assert result.cost.late_delivery_penalty_vnd == calculate_late_delivery_penalty(
+        request.orders[0], result.stops[-1].arrival_time_sec, request.policy)
+    assert result.cost.late_delivery_penalty_vnd > 240000
+
+
+def test_split_customer_order_is_charged_once_at_its_last_delivery():
+    from app.hybrid_alns_engine import PackingAwareHybridALNSOptimizer
+    from app.route_costing import calculate_late_delivery_penalty
+    from app.planning_objective import apply_planning_objective
+    request = comparison_request()
+    request.policy.late_delivery_penalty_mode = 'FIXED_PER_DAY'
+    request.policy.late_delivery_penalty_value = 50000
+    for order in request.orders:
+        order.ordered_at_sec = -4 * 86400
+    plan = PackingAwareHybridALNSOptimizer(request, time_budget_seconds=2, include_benchmarks=False).solve()
+    assert not plan.unassigned_orders
+    last_delivery = max(stop.arrival_time_sec for route in plan.routes
+        for stop in route.stops if stop.stop_type == 'DELIVERY')
+    expected = calculate_late_delivery_penalty(request.orders[0], last_delivery, request.policy)
+    assert sum(route.cost.late_delivery_penalty_vnd for route in plan.routes) == expected
+    cost = plan.total_cost_vnd
+    apply_planning_objective(request, plan)
+    assert plan.total_cost_vnd == cost
+
+
 def test_split_group_is_all_or_nothing_not_a_ban_on_sharing_one_vehicle():
     from app.hybrid_alns.solver import HybridALNSSolver
     from app.hybrid_alns.route_evaluator import schedule_and_evaluate_route

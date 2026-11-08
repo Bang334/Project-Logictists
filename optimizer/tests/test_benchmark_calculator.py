@@ -144,6 +144,86 @@ def test_direct_dedicated_benchmark_uses_the_same_cargo_holding_cost_component()
     )
 
 
+def test_direct_dedicated_runs_two_trips_in_one_shift_and_drives_directly_to_next_pickup():
+    vehicle = _vehicle(1).model_copy(update={"available_end_sec": 600})
+    orders = [_order(1), _order(2)]
+    # Matrix order is depot, pickup 1, delivery 1, pickup 2, delivery 2.
+    matrix = [[0 if i == j else 60 for j in range(5)] for i in range(5)]
+    matrix[2][3] = 10
+    matrix[4][1] = 300
+    request = _request(vehicles=[vehicle], orders=orders, distances=matrix, durations=matrix)
+    metric = BaselineCostCalculator(request, FleetRoutingSolver(request).nodes).compute_direct_dedicated()
+
+    assert metric.is_feasible
+    assert metric.vehicles_used == 2 and metric.physical_vehicle_count == 1
+    assert metric.planning_span_days == 1
+    first, second = metric.routes
+    assert first.route_id != second.route_id
+    assert first.driver_id == second.driver_id
+    assert [stop.allocation_id for stop in first.stops] == ['order-1', 'order-1']
+    assert [stop.allocation_id for stop in second.stops] == ['order-2', 'order-2']
+    assert first.end_time_sec == second.start_time_sec
+    assert first.return_travel_time_sec == 0
+    assert second.stops[0].travel_time_sec == 10
+    assert second.return_travel_time_sec == 60
+    assert metric.total_distance_km == 0.25
+    assert first.end_location == second.depot == orders[0].delivery_location
+    assert second.end_location == vehicle.depot
+    assert metric.fuel_cost_vnd == 500
+
+
+def test_direct_dedicated_uses_next_shift_when_two_trips_do_not_fit_in_one():
+    vehicle = _vehicle(1).model_copy(update={"source_vehicle_id": "truck-1", "available_end_sec": 180})
+    next_day = vehicle.model_copy(update={
+        "id": "vehicle-1-next-day", "service_day_index": 1,
+        "available_start_sec": 86_400, "available_end_sec": 86_580,
+    })
+    matrix = [[0 if i == j else 60 for j in range(6)] for i in range(6)]
+    request = _request(vehicles=[vehicle, next_day], orders=[_order(1), _order(2)],
+                       distances=matrix, durations=matrix)
+    request.drivers[0] = request.drivers[0].model_copy(update={"source_driver_id": "drv-1", "service_day_index": 0})
+    request.drivers[1] = request.drivers[1].model_copy(update={"source_driver_id": "drv-1", "service_day_index": 1})
+    calculator = BaselineCostCalculator(request, FleetRoutingSolver(request).nodes)
+
+    comparison = calculator.build_comparison([], 100_000, 0, 0)
+
+    assert comparison.direct_dedicated.is_feasible is True
+    assert comparison.direct_dedicated.vehicles_used == 2
+    assert comparison.direct_dedicated.physical_vehicle_count == 1
+    assert comparison.direct_dedicated.planning_span_days == 2
+    assert comparison.savings_vs_direct_vnd is not None
+
+
+def test_direct_dedicated_reports_no_full_plan_when_available_shift_is_too_short():
+    vehicle = _vehicle(1).model_copy(update={"available_end_sec": 180})
+    orders = [_order(1), _order(2)]
+    matrix = [[0 if i == j else 60 for j in range(5)] for i in range(5)]
+    request = _request(vehicles=[vehicle], orders=orders, distances=matrix, durations=matrix)
+    comparison = BaselineCostCalculator(request, FleetRoutingSolver(request).nodes).build_comparison([], 100_000, 0, 0)
+
+    assert not comparison.direct_dedicated.is_feasible
+    assert not comparison.direct_dedicated.routes
+    assert comparison.savings_vs_direct_vnd is None
+
+
+def test_direct_dedicated_assigns_the_large_truck_to_the_order_that_needs_it():
+    vehicles = [
+        _vehicle(1, length_cm=200),
+        _vehicle(2).model_copy(update={"fixed_operating_cost_vnd": 150_000}),
+    ]
+    vehicles = [vehicle.model_copy(update={"available_end_sec": 180}) for vehicle in vehicles]
+    orders = [_order(1), _order(2, length_cm=150)]
+    matrix = [[0 if i == j else 60 for j in range(6)] for i in range(6)]
+    request = _request(vehicles=vehicles, orders=orders, distances=matrix, durations=matrix)
+    calculator = BaselineCostCalculator(request, FleetRoutingSolver(request).nodes)
+
+    metric = calculator.compute_direct_dedicated()
+
+    assert metric.is_feasible
+    assert metric.vehicles_used == 2
+    assert metric.vehicle_fixed_cost_vnd == sum(vehicle.fixed_operating_cost_vnd for vehicle in vehicles)
+
+
 def test_build_comparison_includes_direct_dedicated_without_greedy():
     vehicle = _vehicle(1)
     order = _order(1, weight=500)

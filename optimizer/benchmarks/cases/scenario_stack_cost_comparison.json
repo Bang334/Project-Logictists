@@ -1,0 +1,219 @@
+{
+  "job_id": "demo-stack-cost",
+  "vehicles": [
+    {
+      "id": "van-1",
+      "plate_number": "DEMO-01",
+      "length_cm": 100,
+      "width_cm": 100,
+      "height_cm": 100,
+      "payload_limit_kg": 500,
+      "depot": {
+        "id": "depot",
+        "name": "Bãi demo",
+        "latitude": 21.02,
+        "longitude": 105.83
+      },
+      "fuel_consumption_liters_per_100_km": 12,
+      "fixed_operating_cost_vnd": 100000,
+      "available_end_sec": 86400
+    },
+    {
+      "id": "van-2",
+      "plate_number": "DEMO-02",
+      "length_cm": 100,
+      "width_cm": 100,
+      "height_cm": 100,
+      "payload_limit_kg": 500,
+      "depot": {
+        "id": "depot",
+        "name": "Bãi demo",
+        "latitude": 21.02,
+        "longitude": 105.83
+      },
+      "fuel_consumption_liters_per_100_km": 12,
+      "fixed_operating_cost_vnd": 100000,
+      "available_end_sec": 86400
+    },
+    {
+      "id": "van-3",
+      "plate_number": "DEMO-03",
+      "length_cm": 100,
+      "width_cm": 100,
+      "height_cm": 100,
+      "payload_limit_kg": 500,
+      "depot": {
+        "id": "depot",
+        "name": "Bãi demo",
+        "latitude": 21.02,
+        "longitude": 105.83
+      },
+      "fuel_consumption_liters_per_100_km": 12,
+      "fixed_operating_cost_vnd": 100000,
+      "available_end_sec": 86400
+    }
+  ],
+  "drivers": [
+    {
+      "id": "driver-1",
+      "full_name": "Tài xế demo 1",
+      "license_class": "C",
+      "fixed_salary_monthly_vnd": 0,
+      "trip_base_pay_vnd": 30000,
+      "per_km_pay_vnd": 1000
+    },
+    {
+      "id": "driver-2",
+      "full_name": "Tài xế demo 2",
+      "license_class": "C",
+      "fixed_salary_monthly_vnd": 0,
+      "trip_base_pay_vnd": 30000,
+      "per_km_pay_vnd": 1000
+    },
+    {
+      "id": "driver-3",
+      "full_name": "Tài xế demo 3",
+      "license_class": "C",
+      "fixed_salary_monthly_vnd": 0,
+      "trip_base_pay_vnd": 30000,
+      "per_km_pay_vnd": 1000
+    }
+  ],
+  "orders": [
+    {
+      "id": "demo-stack-order",
+      "order_number": "DEMO-XEP-CHONG",
+      "pickup_location": {
+        "id": "pickup",
+        "name": "Điểm lấy demo",
+        "latitude": 21.03,
+        "longitude": 105.85
+      },
+      "delivery_location": {
+        "id": "delivery",
+        "name": "Điểm giao demo",
+        "latitude": 21.04,
+        "longitude": 105.86
+      },
+      "items": [
+        {
+          "id": "KIEN-A",
+          "order_id": "demo-stack-order",
+          "length_cm": 100,
+          "width_cm": 100,
+          "height_cm": 25,
+          "weight_kg": 100,
+          "cargo_kind": "STANDARD",
+          "allow_upper_tier": false,
+          "max_top_load_g": 30000
+        },
+        {
+          "id": "KIEN-B",
+          "order_id": "demo-stack-order",
+          "length_cm": 100,
+          "width_cm": 100,
+          "height_cm": 25,
+          "weight_kg": 22,
+          "cargo_kind": "STANDARD",
+          "allow_upper_tier": true,
+          "max_top_load_g": 30000
+        },
+        {
+          "id": "KIEN-C",
+          "order_id": "demo-stack-order",
+          "length_cm": 100,
+          "width_cm": 100,
+          "height_cm": 25,
+          "weight_kg": 5,
+          "cargo_kind": "STANDARD",
+          "allow_upper_tier": true,
+          "max_top_load_g": null
+        }
+      ],
+      "service_time_sec": 600
+    }
+  ],
+  "policy": {
+    "fuel_price_per_liter_vnd": 25000,
+    "monthly_working_minutes": 10560
+  },
+  "demo_stacking": {
+    "max_tiers": 3,
+    "lift_clearance_cm": 5
+  },
+  "max_time_seconds": 6,
+  "distance_matrix_meters": [
+    [
+      0,
+      0,
+      0,
+      8000,
+      9000
+    ],
+    [
+      0,
+      0,
+      0,
+      8000,
+      9000
+    ],
+    [
+      0,
+      0,
+      0,
+      8000,
+      9000
+    ],
+    [
+      8000,
+      8000,
+      8000,
+      0,
+      12000
+    ],
+    [
+      9000,
+      9000,
+      9000,
+      12000,
+      0
+    ]
+  ],
+  "duration_matrix_seconds": [
+    [
+      0,
+      0,
+      0,
+      800,
+      900
+    ],
+    [
+      0,
+      0,
+      0,
+      800,
+      900
+    ],
+    [
+      0,
+      0,
+      0,
+      800,
+      900
+    ],
+    [
+      800,
+      800,
+      800,
+      0,
+      1200
+    ],
+    [
+      900,
+      900,
+      900,
+      1200,
+      0
+    ]
+  ]
+}

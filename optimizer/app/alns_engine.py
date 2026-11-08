@@ -36,6 +36,7 @@ from .models import (
     UnassignedOrder,
     can_driver_drive_vehicle,
 )
+from .planning_objective import calendar_salary_for_span
 from .route_costing import (
     calculate_driver_cost,
     calculate_late_delivery_penalty,
@@ -370,6 +371,22 @@ class ALNSFleetOptimizer:
 
             total_economic += (fuel_cost + load_fuel_surcharge + holding_cost + fixed_cost + driver_est)
 
+        obj_req = getattr(self, "objective_request", getattr(self, "request", None))
+        span = max(
+            (
+                self.vehicles[v_idx].service_day_index + 1
+                for v_idx, stops in enumerate(routes_stops)
+                if stops
+            ),
+            default=0,
+        )
+        if span > 1 and obj_req is not None:
+            total_economic += max(
+                0,
+                calendar_salary_for_span(obj_req, span)
+                - calendar_salary_for_span(obj_req, 1),
+            )
+
         penalized = (
             total_economic
             + len(unassigned_ids) * self.policy.unassigned_order_penalty_vnd
@@ -508,6 +525,20 @@ class ALNSFleetOptimizer:
             best_v_idx: Optional[int] = None
             best_cand_stops: Optional[List[ScheduledStop]] = None
             checked_empty_types: Set[Tuple] = set()
+            obj_req = getattr(self, "objective_request", getattr(self, "request", None))
+            existing_span = max(
+                (
+                    self.vehicles[idx].service_day_index + 1
+                    for idx, r in enumerate(routes_stops)
+                    if r
+                ),
+                default=0,
+            )
+            calendar_by_span = {
+                existing_span: calendar_salary_for_span(obj_req, existing_span)
+                if obj_req is not None
+                else 0
+            }
 
             for v_idx in range(len(self.vehicles)):
                 curr_stops = routes_stops[v_idx]
@@ -515,6 +546,16 @@ class ALNSFleetOptimizer:
 
                 if not self._order_allows_vehicle(order, v):
                     continue
+                span = max(existing_span, v.service_day_index + 1)
+                if span not in calendar_by_span:
+                    calendar_by_span[span] = (
+                        calendar_salary_for_span(obj_req, span)
+                        if obj_req is not None
+                        else 0
+                    )
+                calendar_extension = (
+                    calendar_by_span[span] - calendar_by_span[existing_span]
+                )
 
                 if len(curr_stops) == 0:
                     v_type = (
@@ -560,7 +601,7 @@ class ALNSFleetOptimizer:
                         inc_fuel = (v.fuel_consumption_liters_per_100_km / 100.0) * inc_dist * self.policy.fuel_price_per_liter_vnd
                         inc_fixed = v.fixed_operating_cost_vnd if len(curr_stops) == 0 else 0
                         inc_driver = (150_000 if len(curr_stops) == 0 else 0) + round(1_200 * inc_dist)
-                        inc_cost = inc_fuel + inc_fixed + inc_driver
+                        inc_cost = inc_fuel + inc_fixed + inc_driver + calendar_extension
                         if shares_source_order:
                             inc_cost -= 50_000
 

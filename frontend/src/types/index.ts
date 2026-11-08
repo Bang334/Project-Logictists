@@ -1,3 +1,5 @@
+import type { PackageHandling } from './orders';
+
 export interface User {
   role?: 'ADMIN' | 'DISPATCHER' | 'STAFF' | 'CUSTOMER' | 'DRIVER';
   phone?: string | null;
@@ -113,7 +115,7 @@ export interface Driver {
   perKmPay?: string;
 }
 
-export interface OrderPackage {
+export interface OrderPackage extends PackageHandling {
   id: string; orderId: string; orderItemId: string; packageCode: string;
   lengthMm: number; widthMm: number; heightMm: number; weightG: string;
   pickupStopId: string | null; deliveryStopId: string | null; status: string; version: number;
@@ -150,6 +152,7 @@ export interface OrderStop {
 }
 
 export interface Order {
+  protectionFeeVnd?: number;
   id: string;
   orderNumber: string;
   customerId: string;
@@ -257,6 +260,8 @@ export interface PlacedItemUI {
   order_id: string;
   x: number;
   y: number;
+  z?: number;
+  support_item_id?: string | null;
   length_cm: number;
   width_cm: number;
   height_cm: number;
@@ -266,7 +271,7 @@ export interface PlacedItemUI {
 export interface PackageAccessPathUI {
   item_id: string;
   is_clear: boolean;
-  points: Array<{ x: number; y: number }>;
+  points: Array<{ x: number; y: number; z?: number }>;
   blocker_item_ids: string[];
 }
 
@@ -363,6 +368,7 @@ export interface OptimizedRouteUI {
     latitude: number;
     longitude: number;
   };
+  end_location?: OptimizedRouteUI['depot'] | null;
   stops: OptimizedStopUI[];
   spatial_validation: SpatialValidationUI;
   cost?: RouteCostBreakdownUI;
@@ -370,6 +376,7 @@ export interface OptimizedRouteUI {
 }
 
 export interface BenchmarkMetricUI {
+  routes?: OptimizedRouteUI[];
   method_name: string;
   description: string;
   total_cost_vnd: number;
@@ -381,6 +388,11 @@ export interface BenchmarkMetricUI {
   driver_cost_vnd: number;
   cargo_holding_cost_vnd: number;
   late_delivery_penalty_vnd: number;
+  planning_span_days?: number;
+  physical_vehicle_count?: number;
+  driver_calendar_salary_vnd?: number;
+  driver_idle_salary_allocation_vnd?: number;
+  selection_score_vnd?: number;
   is_feasible: boolean;
   violations: string[];
 }
@@ -551,6 +563,7 @@ export interface ApplyOptimizationResponseUI {
 }
 
 export interface DemoCaseSummaryUI {
+  supports_stacking?: boolean;
   id: string;
   filename: string;
   name: string;
@@ -566,10 +579,14 @@ export interface DemoCaseSummaryUI {
 }
 
 export interface RunDemoOptimizationPayloadUI {
+  demoStackingEnabled?: boolean;
+  demoStackingOwnerMode?: DemoStackingOwnerMode;
   caseId?: string;
   timeBudgetSeconds?: number;
   customRequest?: any;
 }
+
+export type DemoStackingOwnerMode = 'SAME_CUSTOMER' | 'ANY_CUSTOMER';
 
 export interface DemoOptimizationResponseUI extends AutomaticOptimizationResponseUI {
   candidateResults?: Record<number, FleetOptimizationResultUI>;

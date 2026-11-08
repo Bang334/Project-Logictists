@@ -178,6 +178,7 @@ def convert_request_to_hybrid(
                 pickup_window_end_sec=int(order.pickup_window_end_sec),
                 delivery_window_start_sec=int(order.delivery_window_start_sec),
                 delivery_window_end_sec=int(order.delivery_window_end_sec),
+                ordered_at_sec=int(order.ordered_at_sec),
                 order_value_vnd=int(order.order_value_vnd),
                 allowed_source_vehicle_ids=list(order.allowed_source_vehicle_ids),
                 source_order_id=order.source_order_id or order.id,
@@ -190,6 +191,7 @@ def convert_request_to_hybrid(
         node_id_to_index[d_key] = len(request.vehicles) + 2 * order_idx + 1
 
     policy = HybridPolicy(
+        delivery_grace_days=request.policy.delivery_grace_days,
         fuel_price_per_liter_vnd=int(request.policy.fuel_price_per_liter_vnd),
         monthly_working_minutes=int(request.policy.monthly_working_minutes),
         cargo_holding_cost_vnd_per_ton_hour=int(

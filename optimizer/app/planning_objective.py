@@ -10,6 +10,7 @@ follows the confirmed lexicographic hierarchy:
 
 from collections import defaultdict
 from typing import Dict, Set, Tuple
+from .route_costing import allocate_order_late_penalties
 
 from .models import (
     FleetOptimizationRequest,
@@ -266,6 +267,7 @@ def apply_planning_objective(
     request: FleetOptimizationRequest,
     plan: FleetOptimizationResponse,
 ) -> PlanningObjectiveBreakdown:
+    allocate_order_late_penalties(request, plan)
     planning_span_days = (
         max(route.service_day_index for route in plan.routes) + 1
         if plan.routes

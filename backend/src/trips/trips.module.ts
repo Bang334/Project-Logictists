@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { DeliveryPlanningService } from './delivery-planning.service';
+import { DeliveryPlanningController } from './delivery-planning.controller';
 import { TripsService } from './trips.service';
 import { TripsController } from './trips.controller';
 import { MapboxModule } from '../mapbox/mapbox.module';
@@ -38,13 +40,14 @@ function redisConnection(urlValue: string | undefined) {
     }),
   ],
   providers: [
+    DeliveryPlanningService,
     TripsService,
     OptimizationJobsService,
     OptimizationProcessor,
     OptimizationRecoveryService,
     OptimizationJobMetricsService,
   ],
-  controllers: [TripsController, OptimizationJobMetricsController],
+  controllers: [TripsController, OptimizationJobMetricsController, DeliveryPlanningController],
   exports: [TripsService, OptimizationJobsService],
 })
 export class TripsModule {}

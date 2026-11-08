@@ -137,4 +137,15 @@ export class EventsGateway implements OnGatewayInit, OnModuleDestroy {
       }); } catch { client.disconnect(true); }
     }
   }
+  async emitDeliveryAppointment(customerId: string, appointmentId: string, version: number) {
+    if (!this.server) throw new Error('Socket.IO server chưa sẵn sàng');
+    for (const client of this.server.sockets.sockets.values()) {
+      try { await this.emitAuthorized(client, async (user, tx) => {
+        const customer = await tx.customer.findFirst({ where: { id: customerId, OR: [
+          { userId: user.id }, { userAccounts: { some: { userId: user.id, active: true } } },
+        ] }, select: { id: true } });
+        if (user.role === 'CUSTOMER' && customer) client.emit('delivery:appointment-updated', { appointmentId, version });
+      }); } catch { await this.revalidate(client); }
+    }
+  }
 }

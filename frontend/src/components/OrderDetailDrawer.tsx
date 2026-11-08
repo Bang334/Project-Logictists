@@ -24,6 +24,7 @@ import {
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { Order, OrderItem } from '../types';
+import { cargoKindLabels } from '../types/orders';
 import { mapboxApi } from '../api/client';
 
 const { Text } = Typography;
@@ -496,17 +497,19 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
       </div>
 
       {order.packageDataStatus === 'LEGACY_REVIEW' && <Alert type="warning" showIcon message="Dữ liệu cũ cần đối soát Package; chưa dùng để lập kế hoạch mới" />}
-      <Typography.Title level={5}>Khung giờ bắt đầu phục vụ — Asia/Ho_Chi_Minh</Typography.Title>
+      <Typography.Title level={5}>Lấy và giao hàng</Typography.Title>
       {order.stops.filter(stop => stop.type === 'PICKUP' || stop.type === 'DELIVERY').map(stop => <div key={stop.id} style={{ marginBottom: 12 }}>
-        <strong>{stop.type === 'PICKUP' ? 'Lấy hàng' : 'Giao hàng'}</strong>: {stop.windowStart && stop.windowEnd ? <>{new Date(stop.windowStart).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })} → {new Date(stop.windowEnd).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}</> : 'Chưa nhập'}
+        <strong>{stop.type === 'PICKUP' ? 'Lấy hàng' : 'Giao hàng'}</strong>: lịch do điều phối tối ưu; không có hạn giao cứng.
         <div><Text type="secondary">Stop ID: {stop.id} · Phục vụ: {stop.serviceDurationMinutes} phút</Text></div>
       </div>)}
       <Typography.Title level={5}>Từng kiện đã lưu</Typography.Title>
+      {!!order.protectionFeeVnd && <Typography.Paragraph>Phụ phí bảo vệ kiện {order.protectionFeeVnd.toLocaleString('vi-VN')} ₫ {order.status === 'DRAFT' ? '(báo trước khi xác nhận)' : '(đã xác nhận)'}</Typography.Paragraph>}
       <Table rowKey="id" size="small" scroll={{ x: 950 }} dataSource={order.items.flatMap(item => item.packages.map(pkg => ({ ...pkg, description: item.description })))} pagination={{ pageSize: 10 }} columns={[
         { title: 'Mã kiện / ID', render: (_, p) => <><Text copyable>{p.packageCode}</Text><br /><Text type="secondary">{p.id}</Text></> },
         { title: 'Dòng hàng', dataIndex: 'description' },
         { title: 'Dài × rộng × cao (mm)', render: (_, p) => `${p.lengthMm} × ${p.widthMm} × ${p.heightMm}` },
         { title: 'Khối lượng (g)', dataIndex: 'weightG' },
+        { title: 'Loại hàng', render: (_, p) => <>{cargoKindLabels[p.cargoKind ?? 'UNCLASSIFIED']}{(p.cargoKind === 'FRAGILE' || p.noTopLoadRequested) && <><br />Không đặt hàng lên trên</>}</> },
         { title: 'Điểm lấy → giao (ID)', render: (_, p) => <>{p.pickupStopId ?? 'Chưa đối soát'}<br />→ {p.deliveryStopId ?? 'Chưa đối soát'}</> },
       ]} />
       {order.totalWeightG !== null && <Typography.Paragraph>Tổng server: {order.totalPackages} kiện · {order.totalWeightG} g · {order.totalVolumeMm3} mm³</Typography.Paragraph>}

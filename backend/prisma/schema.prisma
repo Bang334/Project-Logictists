@@ -113,24 +113,8 @@ enum PaymentStatus {
   REFUNDED
 }
 
-enum FulfillmentGroupStatus {
-  PENDING
-  PREPARING
-  PACKED
-  HANDED_OVER
-  CANCELLED
-}
-
-enum TransportRequestStatus {
-  PENDING
-  READY_FOR_ROUTING
-  ASSIGNED
-  IN_TRANSIT
-  COMPLETED
-  CANCELLED
-}
-
 model User {
+  deliveryPlanningBatches DeliveryPlanningBatch[]
   locationScopes UserLocationScope[]
   id               String            @id @default(uuid())
   username         String            @unique
@@ -167,21 +151,14 @@ model User {
   location                Location?              @relation(fields: [locationId], references: [id])
   employee                Employee?
   customer                Customer?
-  issuedSalesInvoices     SalesInvoice[]         @relation("SalesInvoiceIssuer")
-  assignedFeedback        FeedbackCase[]         @relation("FeedbackAssignee")
-  feedbackMessages        FeedbackMessage[]
   packageEvents           PackageEvent[]
-  verifiedTokens          CollectionToken[]
-  createdLedgerEntries    StockLedgerEntry[]
-  createdReservations     InventoryReservation[]
-  receivedStockReceipts   StockReceipt[]
-  createdStockAdjustments StockAdjustment[]
   createdPayrollRuns      PayrollRun[]           @relation("PayrollCreator")
   approvedPayrollRuns     PayrollRun[]           @relation("PayrollApprover")
   measuredPackages        Package[]              @relation("MeasuredPackages")
 }
 
 model Branch {
+  deliveryPlanningBatches DeliveryPlanningBatch[]
   locationScopes UserLocationScope[]
   id                            String          @id @default(uuid())
   code                          String          @unique
@@ -218,10 +195,10 @@ model Branch {
   optimizationJobs              OptimizationJob[]
   payrollPeriods                PayrollPeriod[]
   managedLocations              Location[]              @relation("ManagingBranchLocations")
-  fulfillmentGroups             FulfillmentGroup[]
 }
 
 model Vehicle {
+  deliveryCapacityHolds DeliveryCapacityHold[]
   id                                    String        @id @default(uuid())
   plateNumber                           String        @unique
   model                                 String
@@ -254,6 +231,7 @@ model Vehicle {
 }
 
 model Driver {
+  deliveryCapacityHolds DeliveryCapacityHold[]
   id            String   @id @default(uuid())
   userId        String?  @unique
   user          User?    @relation(fields: [userId], references: [id])
@@ -288,6 +266,7 @@ model Driver {
 }
 
 model Customer {
+  deliveryAppointments DeliveryAppointment[]
   id            String            @id @default(uuid())
   code          String            @unique
   name          String
@@ -307,12 +286,10 @@ model Customer {
   @@map("customers")
   userId           String?           @unique
   user             User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
-  addresses        CustomerAddress[]
-  feedbackCases    FeedbackCase[]
-  feedbackMessages FeedbackMessage[]
 }
 
 model Order {
+  deliveryAppointments DeliveryAppointment[]
   id            String          @id @default(uuid())
   orderNumber   String          @unique
   customerId    String
@@ -352,14 +329,7 @@ model Order {
   currency              String                 @default("VND")
   orderedAt             DateTime               @default(now()) @db.Timestamptz(3)
   packages              Package[]
-  reservations          InventoryReservation[]
-  payments              PaymentTransaction[]
-  invoice               SalesInvoice?
-  collectionToken       CollectionToken?
-  feedbackCases         FeedbackCase[]
   StopTask              StopTask[]
-  fulfillmentGroups     FulfillmentGroup[]
-  transportRequests     TransportRequest[]
   maxSourcesAllowed     Int                    @default(2)
   maxDistanceBetweenSourcesKm Float            @default(40.0)
   serviceZoneSnapshotId String?
@@ -383,9 +353,6 @@ model OrderStop {
   windowEnd              DateTime?  @db.Timestamptz(3)
   serviceDurationMinutes Int        @default(15)
   tasks                  StopTask[]
-  pickupTransportRequests   TransportRequest[] @relation("PickupTransportRequests")
-  deliveryTransportRequests TransportRequest[] @relation("DeliveryTransportRequests")
-  fulfillmentGroups         FulfillmentGroup[] @relation("GroupPickupStop")
   createdAt              DateTime   @default(now()) @db.Timestamptz(3)
 
   @@unique([orderId, sequence])
@@ -412,12 +379,9 @@ model OrderItem {
 
   @@map("order_items")
   skuId        String?
-  skuRef       Sku?               @relation(fields: [skuId], references: [id], onDelete: Restrict)
   unitPrice    Decimal            @default(0) @db.Decimal(20, 4)
   lineTotal    Decimal            @default(0) @db.Decimal(20, 4)
   packageItems PackageItem[]
-  invoiceLines SalesInvoiceLine[]
-  fulfillmentLines FulfillmentLine[]
   @@index([orderId])
   @@index([skuId])
 }
@@ -593,6 +557,7 @@ model AuditLog {
 }
 
 model OptimizationJob {
+  deliveryPlanningBatches DeliveryPlanningBatch[]
   id              String    @id @default(uuid())
   status          String    @default("PENDING")
   branchId        String
@@ -710,6 +675,12 @@ model CustomerUser {
   @@map("customer_users")
 }
 
+enum CargoKind {
+  UNCLASSIFIED
+  STANDARD
+  FRAGILE
+}
+
 model Package {
   id                  String           @id @default(uuid())
   orderItemId         String?
@@ -719,6 +690,10 @@ model Package {
   widthMm             Int
   heightMm            Int
   weightG             BigInt
+  cargoKind           CargoKind        @default(UNCLASSIFIED)
+  allowUpperTier      Boolean          @default(false)
+  noTopLoadRequested  Boolean          @default(false)
+  maxTopLoadG         Int?
   allowedOrientations Json?
   measurementSource   String
   measuredAt          DateTime?        @db.Timestamptz(3)
@@ -743,11 +718,8 @@ model Package {
   transferShipment       TransferShipment?
   loadPlanSteps          LoadPlanStep[]
   loadPlacements         LoadPlacement[]
-  feedbackCases          FeedbackCase[]
   StopTask               StopTask[]
   fulfillmentGroupId     String?
-  fulfillmentGroup       FulfillmentGroup?        @relation(fields: [fulfillmentGroupId], references: [id], onDelete: SetNull)
-  transportRequestPackages TransportRequestPackage[]
   measuredByUserId       String?
   measuredByUser         User?                    @relation("MeasuredPackages", fields: [measuredByUserId], references: [id], onDelete: SetNull)
   @@index([orderId, status])
@@ -1210,85 +1182,12 @@ enum LocationType {
   PICKUP_POINT
 }
 
-enum StorageCondition {
-  AMBIENT
-  COOL
-  CHILLED
-}
-
-enum ProductStatus {
-  DRAFT
-  ACTIVE
-  INACTIVE
-  DISCONTINUED
-}
-
-enum SkuStatus {
-  ACTIVE
-  INACTIVE
-  DISCONTINUED
-}
-
-enum MediaType {
-  IMAGE
-  DOCUMENT
-}
-
-enum LedgerSourceType {
-  RECEIPT
-  ORDER_COMMIT
-  ORDER_RELEASE
-  ADJUSTMENT
-  TRANSFER_OUT
-  TRANSFER_IN
-  RETURN
-}
-
-enum ReservationStatus {
-  HELD
-  ACTIVE
-  COMMITTED
-  RELEASED
-  CANCELLED
-  EXPIRED
-}
-
-enum AdjustmentReason {
-  DAMAGE
-  LOSS
-  COUNT_DISCREPANCY
-  EXPIRY
-  CORRECTION
-}
-
 enum TransferStatus {
   DRAFT
   APPROVED
   SHIPPED
   RECEIVED
   CANCELLED
-}
-
-enum FeedbackType {
-  RATING
-  COMPLAINT
-  SUPPORT_REQUEST
-  SUGGESTION
-}
-
-enum FeedbackStatus {
-  OPEN
-  IN_PROGRESS
-  WAITING_CUSTOMER
-  RESOLVED
-  CLOSED
-}
-
-enum FeedbackPriority {
-  LOW
-  NORMAL
-  HIGH
-  URGENT
 }
 
 enum OrderType {
@@ -1301,11 +1200,6 @@ enum LateDeliveryPenaltyMode {
   NONE
   FIXED_PER_DAY
   PERCENT_ORDER_VALUE_PER_DAY
-}
-
-enum PaymentTransactionType {
-  PAYMENT
-  REFUND
 }
 
 enum PackageEventType {
@@ -1342,224 +1236,18 @@ model Location {
   active                  Boolean                @default(true)
   userScopes              UserRoleScope[]
   users                   User[]
-  stockBalances           StockBalance[]
-  ledgerEntries           StockLedgerEntry[]
-  reservations            InventoryReservation[]
-  stockReceipts           StockReceipt[]
-  stockAdjustments        StockAdjustment[]
   pickupOrders            Order[]                @relation("PickupPointOrders")
   sourceOrders            Order[]                @relation("SourceOrders")
   sourceTransferShipments TransferShipment[]     @relation("SourceTransferShipments")
   destTransferShipments   TransferShipment[]     @relation("DestTransferShipments")
-  salesInvoices           SalesInvoice[]
-  feedbackCases           FeedbackCase[]
   depotVehicles           Vehicle[]              @relation("VehicleHomeDepots")
   maxDeliveryDistanceKm   Int?                   @default(100)
-  storeServiceZones       StoreServiceZone[]
-  fulfillmentGroups       FulfillmentGroup[]
-  transportRequests       TransportRequest[]
   createdAt               DateTime               @default(now()) @db.Timestamptz(3)
   updatedAt               DateTime               @updatedAt @db.Timestamptz(3)
 
   @@index([type, active])
   @@index([managingBranchId])
   @@map("locations")
-}
-
-model Category {
-  id           String     @id @default(uuid())
-  code         String     @unique
-  name         String
-  description  String?
-  parentId     String?
-  parent       Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
-  children     Category[] @relation("CategoryHierarchy")
-  displayOrder Int        @default(0)
-  active       Boolean    @default(true)
-  products     Product[]
-  createdAt    DateTime   @default(now()) @db.Timestamptz(3)
-  updatedAt    DateTime   @updatedAt @db.Timestamptz(3)
-
-  @@index([parentId, active])
-  @@map("categories")
-}
-
-model Product {
-  id          String        @id @default(uuid())
-  categoryId  String?
-  category    Category?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  code        String        @unique
-  name        String
-  description String?
-  brand       String?
-  imageUrl    String?
-  status      ProductStatus @default(DRAFT)
-  skus        Sku[]
-  createdAt   DateTime      @default(now()) @db.Timestamptz(3)
-  updatedAt   DateTime      @updatedAt @db.Timestamptz(3)
-
-  @@index([categoryId, status])
-  @@map("products")
-}
-
-model Sku {
-  id               String                 @id @default(uuid())
-  productId        String
-  product          Product                @relation(fields: [productId], references: [id], onDelete: Restrict)
-  skuCode          String                 @unique
-  barcode          String?                @unique
-  name             String
-  uom              String                 @default("GOI")
-  salePrice        Decimal                @default(0) @db.Decimal(20, 4)
-  weightGrams      Int                    @default(0)
-  lengthMm         Int                    @default(0)
-  widthMm          Int                    @default(0)
-  heightMm         Int                    @default(0)
-  volumeMm3        BigInt                 @default(0)
-  storageCondition StorageCondition       @default(AMBIENT)
-  isSellable       Boolean                @default(true)
-  allowPickup      Boolean                @default(true)
-  status           SkuStatus              @default(ACTIVE)
-  stockBalances    StockBalance[]
-  ledgerEntries    StockLedgerEntry[]
-  reservations     InventoryReservation[]
-  receiptLines     StockReceiptLine[]
-  adjustmentLines  StockAdjustmentLine[]
-  orderItems       OrderItem[]
-  fulfillmentLines FulfillmentLine[]
-  createdAt        DateTime               @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime               @updatedAt @db.Timestamptz(3)
-
-  @@index([productId, status])
-  @@index([storageCondition, isSellable])
-  @@map("skus")
-}
-
-model StockBalance {
-  id           String   @id @default(uuid())
-  skuId        String
-  sku          Sku      @relation(fields: [skuId], references: [id], onDelete: Restrict)
-  locationId   String
-  location     Location @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  onHand       Int      @default(0)
-  reserved     Int      @default(0)
-  safetyBuffer Int      @default(2)
-  damaged      Int      @default(0)
-  inTransit    Int      @default(0)
-  version      Int      @default(1)
-  createdAt    DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
-
-  @@unique([skuId, locationId])
-  @@index([locationId])
-  @@map("stock_balances")
-}
-
-model StockLedgerEntry {
-  id           String           @id @default(uuid())
-  skuId        String
-  sku          Sku              @relation(fields: [skuId], references: [id], onDelete: Restrict)
-  locationId   String
-  location     Location         @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  sourceType   LedgerSourceType
-  sourceId     String
-  commandKey   String?
-  quantity     Int
-  balanceAfter Int
-  note         String?
-  createdById  String?
-  createdBy    User?            @relation(fields: [createdById], references: [id], onDelete: SetNull)
-  createdAt    DateTime         @default(now()) @db.Timestamptz(3)
-
-  @@index([skuId, locationId, createdAt])
-  @@index([sourceType, sourceId])
-  @@map("stock_ledger_entries")
-}
-
-model InventoryReservation {
-  id                String            @id @default(uuid())
-  reservationNumber String            @unique
-  orderId           String?
-  order             Order?            @relation(fields: [orderId], references: [id], onDelete: SetNull)
-  skuId             String
-  sku               Sku               @relation(fields: [skuId], references: [id], onDelete: Restrict)
-  locationId        String
-  location          Location          @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  quantity          Int
-  status            ReservationStatus @default(ACTIVE)
-  expiresAt         DateTime          @db.Timestamptz(3)
-  committedAt       DateTime?         @db.Timestamptz(3)
-  releasedAt        DateTime?         @db.Timestamptz(3)
-  createdById       String?
-  createdBy         User?             @relation(fields: [createdById], references: [id], onDelete: SetNull)
-  fulfillmentLineId String?
-  fulfillmentLine   FulfillmentLine?  @relation(fields: [fulfillmentLineId], references: [id], onDelete: SetNull)
-  createdAt         DateTime          @default(now()) @db.Timestamptz(3)
-  updatedAt         DateTime          @updatedAt @db.Timestamptz(3)
-
-  @@index([skuId, locationId, status])
-  @@index([status, expiresAt])
-  @@index([fulfillmentLineId])
-  @@map("inventory_reservations")
-}
-
-model StockReceipt {
-  id            String             @id @default(uuid())
-  receiptNumber String             @unique
-  locationId    String
-  location      Location           @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  supplierName  String?
-  status        String             @default("COMPLETED")
-  receivedById  String?
-  receivedBy    User?              @relation(fields: [receivedById], references: [id], onDelete: SetNull)
-  lines         StockReceiptLine[]
-  createdAt     DateTime           @default(now()) @db.Timestamptz(3)
-  updatedAt     DateTime           @updatedAt @db.Timestamptz(3)
-
-  @@index([locationId, createdAt])
-  @@map("stock_receipts")
-}
-
-model StockReceiptLine {
-  id        String       @id @default(uuid())
-  receiptId String
-  receipt   StockReceipt @relation(fields: [receiptId], references: [id], onDelete: Cascade)
-  skuId     String
-  sku       Sku          @relation(fields: [skuId], references: [id], onDelete: Restrict)
-  quantity  Int
-  createdAt DateTime     @default(now()) @db.Timestamptz(3)
-
-  @@map("stock_receipt_lines")
-}
-
-model StockAdjustment {
-  id               String                @id @default(uuid())
-  adjustmentNumber String                @unique
-  locationId       String
-  location         Location              @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  reason           AdjustmentReason
-  note             String?
-  status           String                @default("APPROVED")
-  createdById      String?
-  createdBy        User?                 @relation(fields: [createdById], references: [id], onDelete: SetNull)
-  lines            StockAdjustmentLine[]
-  createdAt        DateTime              @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime              @updatedAt @db.Timestamptz(3)
-
-  @@index([locationId, reason])
-  @@map("stock_adjustments")
-}
-
-model StockAdjustmentLine {
-  id            String          @id @default(uuid())
-  adjustmentId  String
-  adjustment    StockAdjustment @relation(fields: [adjustmentId], references: [id], onDelete: Cascade)
-  skuId         String
-  sku           Sku             @relation(fields: [skuId], references: [id], onDelete: Restrict)
-  deltaQuantity Int
-  createdAt     DateTime        @default(now()) @db.Timestamptz(3)
-
-  @@map("stock_adjustment_lines")
 }
 
 model TransferShipment {
@@ -1584,23 +1272,6 @@ model TransferShipment {
   @@index([sourceLocationId])
   @@index([destinationPickupPointId, status])
   @@map("transfer_shipments")
-}
-
-model CollectionToken {
-  id           String    @id @default(uuid())
-  orderId      String    @unique
-  order        Order     @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  otpCode      String
-  qrToken      String    @unique
-  status       String    @default("ACTIVE")
-  expiresAt    DateTime  @db.Timestamptz(3)
-  attemptCount Int       @default(0)
-  verifiedAt   DateTime? @db.Timestamptz(3)
-  verifiedById String?
-  verifiedBy   User?     @relation(fields: [verifiedById], references: [id], onDelete: SetNull)
-  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
-
-  @@map("collection_tokens")
 }
 
 enum EmploymentStatus {
@@ -1875,6 +1546,85 @@ model PayrollRun {
   @@map("payroll_runs")
 }
 
+model DeliveryPlanningBatch {
+  id                    String @id @default(uuid())
+  branchId              String
+  branch                Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  sourceJobId           String
+  sourceJob             OptimizationJob @relation(fields: [sourceJobId], references: [id], onDelete: Restrict)
+  candidateNumber       Int
+  createdById           String
+  createdBy             User @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  idempotencyKey        String
+  requestHash           String
+  status                String @default("OFFERING")
+  version               Int @default(1)
+  windowMinutes         Int
+  expiresAt             DateTime @db.Timestamptz(3)
+  proposal              Json
+  finalOptimizationJobId String? @unique
+  createdAt             DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime @updatedAt @db.Timestamptz(3)
+  appointments          DeliveryAppointment[]
+  capacityHolds         DeliveryCapacityHold[]
+
+  @@unique([createdById, idempotencyKey])
+  @@index([branchId, createdAt])
+  @@index([status, expiresAt])
+  @@map("delivery_planning_batches")
+}
+
+model DeliveryAppointment {
+  id             String @id @default(uuid())
+  batchId        String
+  batch          DeliveryPlanningBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  orderId        String
+  order          Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  customerId     String
+  customer       Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  windowStart    DateTime @db.Timestamptz(3)
+  windowEnd      DateTime @db.Timestamptz(3)
+  expiresAt      DateTime @db.Timestamptz(3)
+  status         String @default("PENDING")
+  version        Int @default(1)
+  respondedAt    DateTime? @db.Timestamptz(3)
+  responseKey    String?
+  responseHash   String?
+  requestedStart DateTime? @db.Timestamptz(3)
+  requestedEnd   DateTime? @db.Timestamptz(3)
+  responseNote   String?
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([batchId, orderId])
+  @@index([customerId, createdAt])
+  @@index([status, expiresAt])
+  @@map("delivery_appointments")
+}
+
+model DeliveryCapacityHold {
+  id         String @id @default(uuid())
+  batchId    String
+  batch      DeliveryPlanningBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  routeIndex Int
+  vehicleId  String
+  vehicle    Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  driverId   String
+  driver     Driver @relation(fields: [driverId], references: [id], onDelete: Restrict)
+  orderIds   String[]
+  startsAt   DateTime @db.Timestamptz(3)
+  endsAt     DateTime @db.Timestamptz(3)
+  expiresAt  DateTime? @db.Timestamptz(3)
+  status     String @default("HELD")
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([batchId, routeIndex])
+  @@index([vehicleId, startsAt, endsAt])
+  @@index([driverId, startsAt, endsAt])
+  @@map("delivery_capacity_holds")
+}
+
 model ResourceReservation {
   id        String            @id @default(uuid())
   tripId    String
@@ -1910,126 +1660,6 @@ model VehicleUnavailability {
   @@map("vehicle_unavailability")
 }
 
-model CustomerAddress {
-  id            String   @id @default(uuid())
-  customerId    String
-  customer      Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  label         String?
-  recipientName String
-  phone         String
-  address       String
-  ward          String?
-  district      String?
-  city          String?
-  latitude      Float?
-  longitude     Float?
-  isDefault     Boolean  @default(false)
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
-
-  @@index([customerId, active])
-  @@map("customer_addresses")
-}
-
-model FeedbackCase {
-  id               String            @id @default(uuid())
-  caseNumber       String            @unique
-  type             FeedbackType
-  status           FeedbackStatus    @default(OPEN)
-  priority         FeedbackPriority  @default(NORMAL)
-  customerId       String
-  customer         Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
-  orderId          String?
-  order            Order?            @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  packageId        String?
-  package          Package?          @relation(fields: [packageId], references: [id], onDelete: Restrict)
-  locationId       String?
-  location         Location?         @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  assignedToUserId String?
-  assignedToUser   User?             @relation("FeedbackAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
-  subject          String
-  description      String
-  rating           Int?
-  resolution       String?
-  resolvedAt       DateTime?         @db.Timestamptz(3)
-  version          Int               @default(1)
-  messages         FeedbackMessage[]
-  createdAt        DateTime          @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime          @updatedAt @db.Timestamptz(3)
-
-  @@index([customerId, status, createdAt])
-  @@index([assignedToUserId, status, priority])
-  @@index([locationId, status])
-  @@map("feedback_cases")
-}
-
-model FeedbackMessage {
-  id               String       @id @default(uuid())
-  feedbackCaseId   String
-  feedbackCase     FeedbackCase @relation(fields: [feedbackCaseId], references: [id], onDelete: Cascade)
-  authorUserId     String?
-  authorUser       User?        @relation(fields: [authorUserId], references: [id], onDelete: SetNull)
-  authorCustomerId String?
-  authorCustomer   Customer?    @relation(fields: [authorCustomerId], references: [id], onDelete: SetNull)
-  message          String
-  visibility       String       @default("PUBLIC")
-  createdAt        DateTime     @default(now()) @db.Timestamptz(3)
-
-  @@index([feedbackCaseId, createdAt])
-  @@map("feedback_messages")
-}
-
-model SalesInvoice {
-  id            String             @id @default(uuid())
-  invoiceNumber String             @unique
-  orderId       String             @unique
-  order         Order              @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  locationId    String
-  location      Location           @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  status        InvoiceStatus      @default(DRAFT)
-  buyerName     String
-  buyerPhone    String?
-  buyerTaxCode  String?
-  buyerAddress  String?
-  subtotal      Decimal            @db.Decimal(20, 4)
-  taxAmount     Decimal            @default(0) @db.Decimal(20, 4)
-  totalAmount   Decimal            @db.Decimal(20, 4)
-  currency      String             @default("VND")
-  providerRef   String?            @unique
-  issuedAt      DateTime?          @db.Timestamptz(3)
-  voidedAt      DateTime?          @db.Timestamptz(3)
-  issuedById    String?
-  issuedBy      User?              @relation("SalesInvoiceIssuer", fields: [issuedById], references: [id], onDelete: SetNull)
-  lines         SalesInvoiceLine[]
-  createdAt     DateTime           @default(now()) @db.Timestamptz(3)
-  updatedAt     DateTime           @updatedAt @db.Timestamptz(3)
-
-  @@index([locationId, status, issuedAt])
-  @@map("sales_invoices")
-}
-
-model SalesInvoiceLine {
-  id             String       @id @default(uuid())
-  salesInvoiceId String
-  salesInvoice   SalesInvoice @relation(fields: [salesInvoiceId], references: [id], onDelete: Cascade)
-  orderItemId    String?
-  orderItem      OrderItem?   @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
-  skuCode        String
-  skuName        String
-  uom            String
-  quantity       Int
-  unitPrice      Decimal      @db.Decimal(20, 4)
-  taxRate        Decimal      @default(0) @db.Decimal(5, 2)
-  taxAmount      Decimal      @default(0) @db.Decimal(20, 4)
-  lineTotal      Decimal      @db.Decimal(20, 4)
-  createdAt      DateTime     @default(now()) @db.Timestamptz(3)
-
-  @@index([salesInvoiceId])
-  @@index([orderItemId])
-  @@map("sales_invoice_lines")
-}
-
 model TripTransferShipment {
   id                 String           @id @default(uuid())
   tripId             String
@@ -2048,25 +1678,6 @@ model TripTransferShipment {
   @@index([tripId, status])
   @@index([transferShipmentId, status])
   @@map("trip_transfer_shipments")
-}
-
-model PaymentTransaction {
-  id             String                 @id @default(uuid())
-  orderId        String
-  order          Order                  @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  type           PaymentTransactionType
-  amount         Decimal                @db.Decimal(20, 4)
-  method         String
-  status         PaymentStatus          @default(PENDING)
-  transactionRef String?                @unique
-  idempotencyKey String                 @unique
-  actorUserId    String?
-  occurredAt     DateTime               @default(now()) @db.Timestamptz(3)
-  metadata       Json?
-  createdAt      DateTime               @default(now()) @db.Timestamptz(3)
-
-  @@index([orderId, type, createdAt])
-  @@map("payment_transactions")
 }
 
 model PackageItem {
@@ -2119,160 +1730,11 @@ model UserLocationScope {
   @@map("user_location_scopes")
 }
 
-model ServiceZone {
-  id                          String                @id @default(uuid())
-  code                        String                @unique
-  name                        String
-  description                 String?
-  active                      Boolean               @default(true)
-  version                     Int                   @default(1)
-  maxSourcesAllowed           Int                   @default(2)
-  maxDistanceBetweenSourcesKm Float                 @default(40.0)
-  provinces                   ServiceZoneProvince[]
-  storeZones                  StoreServiceZone[]
-  quotes                      RetailQuote[]
-  createdAt                   DateTime              @default(now()) @db.Timestamptz(3)
-  updatedAt                   DateTime              @updatedAt @db.Timestamptz(3)
-
-  @@map("service_zones")
+enum ReservationStatus {
+  HELD
+  ACTIVE
+  COMMITTED
+  RELEASED
+  CANCELLED
+  EXPIRED
 }
-
-model ServiceZoneProvince {
-  id           String      @id @default(uuid())
-  zoneId       String
-  zone         ServiceZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
-  provinceCode String
-  provinceName String
-  createdAt    DateTime    @default(now()) @db.Timestamptz(3)
-
-  @@unique([zoneId, provinceCode])
-  @@index([provinceCode])
-  @@map("service_zone_provinces")
-}
-
-model StoreServiceZone {
-  id                    String      @id @default(uuid())
-  locationId            String
-  location              Location    @relation(fields: [locationId], references: [id], onDelete: Cascade)
-  zoneId                String
-  zone                  ServiceZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
-  maxDeliveryDistanceKm Int?
-  createdAt             DateTime    @default(now()) @db.Timestamptz(3)
-
-  @@unique([locationId, zoneId])
-  @@map("store_service_zones")
-}
-
-model FulfillmentGroup {
-  id                String                 @id @default(uuid())
-  groupNumber       String                 @unique
-  orderId           String
-  order             Order                  @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  sourceLocationId  String
-  sourceLocation    Location               @relation(fields: [sourceLocationId], references: [id], onDelete: Restrict)
-  sourceBranchId    String?
-  sourceBranch      Branch?                @relation(fields: [sourceBranchId], references: [id], onDelete: Restrict)
-  pickupStopId      String?
-  pickupStop        OrderStop?             @relation("GroupPickupStop", fields: [pickupStopId], references: [id], onDelete: SetNull)
-  status            FulfillmentGroupStatus @default(PENDING)
-  version           Int                    @default(1)
-  notes             String?
-  readyAt           DateTime?              @db.Timestamptz(3)
-  packedAt          DateTime?              @db.Timestamptz(3)
-  handedOverAt      DateTime?              @db.Timestamptz(3)
-  lines             FulfillmentLine[]
-  packages          Package[]
-  transportRequests TransportRequest[]
-  createdAt         DateTime               @default(now()) @db.Timestamptz(3)
-  updatedAt         DateTime               @updatedAt @db.Timestamptz(3)
-
-  @@index([orderId, status])
-  @@index([sourceLocationId, status])
-  @@map("fulfillment_groups")
-}
-
-model FulfillmentLine {
-  id                 String                 @id @default(uuid())
-  fulfillmentGroupId String
-  fulfillmentGroup   FulfillmentGroup       @relation(fields: [fulfillmentGroupId], references: [id], onDelete: Cascade)
-  orderItemId        String
-  orderItem          OrderItem              @relation(fields: [orderItemId], references: [id], onDelete: Restrict)
-  skuId              String
-  sku                Sku                    @relation(fields: [skuId], references: [id], onDelete: Restrict)
-  requestedQuantity  Int
-  reservedQuantity   Int                    @default(0)
-  packedQuantity     Int                    @default(0)
-  rejectedQuantity   Int                    @default(0)
-  reservations       InventoryReservation[]
-  createdAt          DateTime               @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime               @updatedAt @db.Timestamptz(3)
-
-  @@index([fulfillmentGroupId])
-  @@index([orderItemId])
-  @@index([skuId])
-  @@map("fulfillment_lines")
-}
-
-model TransportRequest {
-  id                 String                    @id @default(uuid())
-  requestNumber      String                    @unique
-  orderId            String
-  order              Order                     @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  fulfillmentGroupId String
-  fulfillmentGroup   FulfillmentGroup          @relation(fields: [fulfillmentGroupId], references: [id], onDelete: Cascade)
-  sourceLocationId   String
-  sourceLocation     Location                  @relation(fields: [sourceLocationId], references: [id], onDelete: Restrict)
-  pickupStopId       String?
-  pickupStop         OrderStop?                @relation("PickupTransportRequests", fields: [pickupStopId], references: [id], onDelete: SetNull)
-  deliveryStopId     String?
-  deliveryStop       OrderStop?                @relation("DeliveryTransportRequests", fields: [deliveryStopId], references: [id], onDelete: SetNull)
-  status             TransportRequestStatus    @default(PENDING)
-  version            Int                       @default(1)
-  packages           TransportRequestPackage[]
-  createdAt          DateTime                  @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime                  @updatedAt @db.Timestamptz(3)
-
-  @@index([orderId, status])
-  @@index([fulfillmentGroupId, status])
-  @@map("transport_requests")
-}
-
-model TransportRequestPackage {
-  id                 String           @id @default(uuid())
-  transportRequestId String
-  transportRequest   TransportRequest @relation(fields: [transportRequestId], references: [id], onDelete: Cascade)
-  packageId          String
-  package            Package          @relation(fields: [packageId], references: [id], onDelete: Restrict)
-  createdAt          DateTime         @default(now()) @db.Timestamptz(3)
-
-  @@unique([transportRequestId, packageId])
-  @@index([packageId])
-  @@map("transport_request_packages")
-}
-
-model RetailQuote {
-  id                          String       @id // e.g. QTE-...
-  quoteVersion                Int          @default(1)
-  serviceZoneId               String?
-  serviceZone                 ServiceZone? @relation(fields: [serviceZoneId], references: [id], onDelete: SetNull)
-  serviceZoneVersion          Int          @default(1)
-  provinceCode                String
-  deliveryAddress             String
-  deliveryLatitude            Float
-  deliveryLongitude           Float
-  deliveryWindowStart         DateTime?    @db.Timestamptz(3)
-  deliveryWindowEnd           DateTime?    @db.Timestamptz(3)
-  subtotal                    Decimal      @db.Decimal(20, 4)
-  shippingFee                 Decimal      @default(0) @db.Decimal(20, 4)
-  totalAmount                 Decimal      @db.Decimal(20, 4)
-  sourceStoreCount            Int
-  maxDistanceBetweenSourcesKm Float        @default(40.0)
-  payload                     Json
-  expiresAt                   DateTime     @db.Timestamptz(3)
-  createdAt                   DateTime     @default(now()) @db.Timestamptz(3)
-
-  @@index([expiresAt])
-  @@index([serviceZoneId])
-  @@map("retail_quotes")
-}
-

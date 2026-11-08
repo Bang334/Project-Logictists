@@ -6,6 +6,7 @@ describe('RunDemoOptimizationDto validation', () => {
     const dto = Object.assign(new RunDemoOptimizationDto(), {
       caseId: 'novel_1_mekong_hub_spoke',
       timeBudgetSeconds: 6,
+      demoStackingEnabled: false,
     });
     const errors = await validate(dto);
     expect(errors).toHaveLength(0);

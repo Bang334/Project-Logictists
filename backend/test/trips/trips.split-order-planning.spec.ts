@@ -7,6 +7,7 @@ describe('TripsService split-order planning', () => {
   const buildPlannedTrips = (
     proposal: Record<string, unknown>,
     routesOverride?: unknown[],
+    ordersOverride?: unknown[],
   ) => {
     if (routesOverride) {
       (proposal.result as { routes: unknown[] }).routes = routesOverride;
@@ -20,11 +21,12 @@ describe('TripsService split-order planning', () => {
           drivers: unknown[],
         ) => Array<{ orderIds: string[]; cargoUnitIds: string[] }>;
       }
-    ).buildPlannedAutomaticTrips(proposal, [order], vehicles, drivers);
+    ).buildPlannedAutomaticTrips(proposal, ordersOverride ?? [order], vehicles, drivers);
   };
 
   const order = {
     id: 'order-large',
+    orderedAt: new Date('2026-10-05T00:00:00Z'),
     orderNumber: 'DH-LARGE',
     version: 4, status: 'CONFIRMED', packageDataStatus: 'COMPLETE',
     items: [
@@ -169,6 +171,7 @@ describe('TripsService split-order planning', () => {
         buildOptimizerOrders: (
           orders: unknown[],
           planningEpoch: Date,
+          confirmedWindows?: Map<string, { windowStart: Date; windowEnd: Date }>,
         ) => Array<{ items: Array<{ id: string; weight_kg: number }> }>;
       }
     ).buildOptimizerOrders.bind(service);
@@ -194,5 +197,27 @@ describe('TripsService split-order planning', () => {
         weight_kg: 2400,
       }),
     ]);
+
+    const [lateOrder] = buildOptimizerOrders([packedOrder], new Date('2026-10-10T00:00:00Z'));
+    expect(lateOrder).toMatchObject({
+      ordered_at_sec: -4 * 86400,
+      delivery_window_start_sec: 0,
+      delivery_window_end_sec: 7 * 86400,
+    });
+    const [committed] = buildOptimizerOrders([packedOrder], new Date('2026-10-10T00:00:00Z'), new Map([
+      [packedOrder.id, { windowStart: new Date('2026-10-10T09:00:00Z'), windowEnd: new Date('2026-10-10T11:00:00Z') }],
+    ]));
+    expect(committed).toMatchObject({ ordered_at_sec: -4 * 86400, delivery_window_start_sec: 9 * 3600, delivery_window_end_sec: 11 * 3600 });
+  });
+
+  it('áp dụng được phương án sau cửa sổ giao cũ, vẫn kiểm tra thời lượng phục vụ', () => {
+    const oldOrder = { ...order, stops: order.stops.map(stop => ({ ...stop,
+      windowStart: new Date('2026-10-05T00:00:00Z'),
+      windowEnd: new Date('2026-10-05T01:00:00Z'),
+    })) };
+    expect(() => buildPlannedTrips(proposal(), undefined, [oldOrder])).not.toThrow();
+    const invalid = route(1);
+    invalid.stops[0].departure_time_sec += 1;
+    expect(() => buildPlannedTrips(proposal(), [invalid, route(2)], [oldOrder])).toThrow(/thời lượng/);
   });
 });

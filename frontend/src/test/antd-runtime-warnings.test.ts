@@ -1,21 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import appSource from '../App.tsx?raw';
-import catalogSource from '../pages/CatalogPage.tsx?raw';
-import customerPortalSource from '../pages/CustomerPortalPage.tsx?raw';
-import inventorySource from '../pages/InventoryPage.tsx?raw';
-import orderProcessingSource from '../pages/OrderProcessingPage.tsx?raw';
-import pickupPointOpsSource from '../pages/PickupPointOpsPage.tsx?raw';
-import retailAnalyticsSource from '../pages/RetailAnalyticsPage.tsx?raw';
-import retailOrdersSource from '../pages/RetailOrdersPage.tsx?raw';
+import automaticDispatchSource from '../pages/AutomaticDispatchPage.tsx?raw';
+import dispatchSource from '../pages/DispatchPage.tsx?raw';
+import fleetSource from '../pages/FleetPage.tsx?raw';
 
 const messageConsumers = [
-  ['CatalogPage', catalogSource],
-  ['CustomerPortalPage', customerPortalSource],
-  ['InventoryPage', inventorySource],
-  ['OrderProcessingPage', orderProcessingSource],
-  ['PickupPointOpsPage', pickupPointOpsSource],
-  ['RetailAnalyticsPage', retailAnalyticsSource],
-  ['RetailOrdersPage', retailOrdersSource],
+  ['AutomaticDispatchPage', automaticDispatchSource],
+  ['DispatchPage', dispatchSource],
+  ['FleetPage', fleetSource],
 ] as const;
 
 describe('Ant Design runtime warning guardrails', () => {

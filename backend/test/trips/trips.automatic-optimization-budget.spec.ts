@@ -143,6 +143,9 @@ describe('TripsService automatic optimization search budget', () => {
       ],
     };
     const prisma = {
+      deliveryAppointment: { findMany: jest.fn().mockResolvedValue([]) },
+      deliveryCapacityHold: { findMany: jest.fn().mockResolvedValue([]) },
+      resourceReservation: { findMany: jest.fn().mockResolvedValue([]) },
       branch: { findFirst: jest.fn().mockResolvedValue(branch) },
       vehicle: { findMany: jest.fn().mockResolvedValue([vehicle]) },
       driver: { findMany: jest.fn().mockResolvedValue([driver]) },

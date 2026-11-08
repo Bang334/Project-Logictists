@@ -6,6 +6,23 @@ Ngày lập: 09/09/2026 · Phiên bản: 0.3 · Trạng thái: Bản nháp để
 
 > Tài liệu này mô tả phương án nghiệp vụ và kỹ thuật đề xuất, chưa phải đặc tả đã được duyệt. Người dùng đã cho phép tạo file kế hoạch; chưa cho phép triển khai ứng dụng. Chỉ bắt đầu viết code, tạo database hoặc migration khi người dùng nói chính xác: **“OK, bắt đầu triển khai”**.
 
+## Mô hình xếp chồng demo ngày 08/11/2026
+
+Mở rộng quy tắc một lớp trong mục 6.5 cho demo khi cấu hình thiết bị nâng và giới hạn tầng. Loại hàng và yêu cầu không đặt hàng lên trên lưu theo từng kiện. Chính sách dùng ngưỡng 30% cộng dồn và giới hạn theo tải bao bì khai báo. Hai chế độ xét chủ hàng theo Customer, gồm chỉ cùng khách và cho phép khác khách. Kiện cùng mặt đáy có thể ghép khi kiện đỡ lên xe trước, xuống sau và cả hai có đường qua cửa. Điều phối tự động thử bố trí khác đơn trên tuyến đã tìm được. Kiện dễ vỡ và dữ liệu cũ đặt sàn. Mọi cấu hình chưa bật demo tiếp tục áp dụng quy tắc một lớp và T21–T27. Phụ phí demo là khoản riêng trong `OrderCharge` và cần chấp nhận trước khi xác nhận đơn. Xem [cấu hình demo](README.md#phân-loại-kiện-và-xếp-chồng-demo).
+
+## Thu gọn về TMS thuần vận tải ngày 08/11/2026
+
+Theo yêu cầu người dùng, dừng phạm vi bán lẻ gồm danh mục, tồn kho, giỏ hàng, đặt hàng đa nguồn, xử lý xuất hàng và báo cáo bán lẻ. Phần kế hoạch bán lẻ bên dưới được lưu làm lịch sử. Đơn vận chuyển, kiện, lấy/giao, điều phối, tối ưu, lịch hẹn giao và thực thi chuyến tiếp tục thuộc phạm vi TMS. Xem [README](README.md#chuyển-về-tms-thuần-vận-tải) để chuẩn bị chuyển schema.
+
+## Cập nhật chính sách thời gian giao ngày 02/11/2026
+
+- **Đã chốt theo yêu cầu người dùng:** khách đặt hàng không chọn hạn hoặc cửa sổ giao cứng. Bộ tối ưu được phép lập lịch giao muộn, cân đối chi phí vận chuyển với penalty trễ.
+- Khoảng miễn phạt tính từ `orderedAt` gốc, dùng `deliveryGraceDays` của chi nhánh (người dùng nêu 2–3 ngày làm ví dụ; không tự thay cấu hình hiện có). Sau đó phạt tăng theo thời gian trễ và cách tính/mức phạt đã cấu hình. Không biến mốc miễn phạt thành hạn cấm giao.
+- Ca xe/tài xế, pickup trước delivery, tải và bố trí/xếp dỡ vẫn là ràng buộc bắt buộc. Phạm vi lập kế hoạch hiện tại là 7 ngày, không phải hạn giao của đơn.
+- Khi đổi ngày lập kế hoạch, tuổi đơn vẫn tính từ `orderedAt` gốc. Từ 08/11/2026, khởi động dev tự reset lịch cho đơn seed demo quá hạn, chưa phân công và chưa có lịch hẹn giao. PostgreSQL từ xa cần cấp quyền reset trong cấu hình. Đây là thao tác dành cho dữ liệu thử nghiệm.
+- Quyết định này thay thế các mô tả cửa sổ giao bắt buộc/khách chọn hạn giao trong luồng đơn hàng bên dưới. Không suy ra việc thay đổi ca làm việc hoặc cấu hình phạt tài chính chưa được người dùng chốt.
+- **Cấu hình dev Hà Nội ngày 02/11/2026:** người dùng giao quyền lựa chọn mức phạt; giữ miễn phạt 2 ngày và chọn `FIXED_PER_DAY = 50000` (50.000 VND/đơn/ngày trễ, tính tỷ lệ theo số giây, làm tròn VND). Bộ demo hiện có giá trị đơn bằng 0 nên không dùng % giá trị đơn. Đây là cấu hình của chi nhánh dev, không là mặc định cho mọi chi nhánh.
+
 ## Cập nhật luồng bán hàng ngày 31/10/2026
 
 - **Đã chốt:** đơn giản hóa luồng bán hàng, chỉ dùng cửa hàng làm nguồn xuất; không đưa lựa chọn tổng kho và điểm nhận hàng vào luồng đặt hàng này. Luồng mục tiêu: cửa hàng → nhân viên chuẩn bị/đóng gói và xác nhận số đo, khối lượng từng kiện → điều phối vận tải → giao đến địa chỉ khách/công trình.

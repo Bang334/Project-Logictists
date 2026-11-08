@@ -74,6 +74,7 @@ export class OptimizationJobsService {
   async create(user: JobUser, dto: RunAutomaticOptimizationDto) {
     const branchId = resolveBranchScope(user, dto.branchId);
     const request = {
+      ...(dto.deliveryBatchId ? { deliveryBatchId: dto.deliveryBatchId } : {}),
       branchId,
       scheduleMode: dto.scheduleMode ?? null,
       customStartTime: dto.customStartTime ?? null,
@@ -103,6 +104,17 @@ export class OptimizationJobsService {
     let job;
     try {
       job = await this.prisma.$transaction(async (tx) => {
+        if (dto.deliveryBatchId) {
+          await tx.$queryRaw`SELECT id FROM delivery_planning_batches WHERE id = ${dto.deliveryBatchId} FOR UPDATE`;
+          const batch = await tx.deliveryPlanningBatch.findUnique({ where: { id: dto.deliveryBatchId }, include: { appointments: true } });
+          if (!batch || batch.branchId !== branchId || batch.status !== 'OFFERING' || batch.appointments.some(row => row.status === 'PENDING') || !batch.appointments.some(row => row.status === 'CONFIRMED')) {
+            throw new ConflictException('Đợt đề xuất chưa đủ điều kiện chốt hoặc ngoài chi nhánh');
+          }
+          if (batch.finalOptimizationJobId) {
+            const running = await tx.optimizationJob.findUnique({ where: { id: batch.finalOptimizationJobId } });
+            if (running && !['FAILED','CANCELLED','INFEASIBLE','TIMEOUT','PARTIAL'].includes(running.status)) throw new ConflictException('Đợt này đã có lượt tối ưu chốt; hãy sử dụng job đó');
+          }
+        }
         const created = await tx.optimizationJob.create({
           data: {
             status: 'PENDING',
@@ -122,6 +134,7 @@ export class OptimizationJobsService {
             },
           },
         });
+        if (dto.deliveryBatchId) await tx.deliveryPlanningBatch.update({ where: { id: dto.deliveryBatchId }, data: { finalOptimizationJobId: created.id } });
         await this.outbox.enqueue(
           {
             aggregateType: 'OptimizationJob',

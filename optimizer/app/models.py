@@ -115,6 +115,7 @@ class CostPolicy(StrictContractModel):
 class CargoItem(StrictContractModel):
     id: str
     order_id: str
+    customer_id: Optional[str] = None
     order_item_id: Optional[str] = None
     description: str = ""
     length_cm: float = Field(gt=0)
@@ -122,6 +123,10 @@ class CargoItem(StrictContractModel):
     height_cm: float = Field(gt=0)
     weight_kg: float = Field(gt=0)
     can_rotate: bool = True
+    cargo_kind: Literal["UNCLASSIFIED", "STANDARD", "FRAGILE"] = "UNCLASSIFIED"
+    allow_upper_tier: bool = False
+    no_top_load_requested: bool = False
+    max_top_load_g: Optional[int] = Field(default=None, gt=0)
 
 
 class PlacedItem(StrictContractModel):
@@ -133,11 +138,14 @@ class PlacedItem(StrictContractModel):
     width_cm: float
     height_cm: float
     weight_kg: float
+    z: float = Field(default=0, ge=0)
+    support_item_id: Optional[str] = None
 
 
 class MovementPoint(StrictContractModel):
     x: float
     y: float
+    z: float = Field(default=0, ge=0)
 
 
 class PackageAccessPath(StrictContractModel):
@@ -176,6 +184,12 @@ class FloorState(StrictContractModel):
     error_message: Optional[str] = None
 
 
+class DemoStackingPolicy(StrictContractModel):
+    max_tiers: int = Field(ge=2, le=20)
+    lift_clearance_cm: float = Field(gt=0, allow_inf_nan=False)
+    owner_mode: Literal["SAME_CUSTOMER", "ANY_CUSTOMER"] = "SAME_CUSTOMER"
+
+
 class SpatialValidationResult(StrictContractModel):
     is_valid: bool
     violation_code: Optional[str] = None
@@ -184,6 +198,7 @@ class SpatialValidationResult(StrictContractModel):
     max_weight_kg: float = 0.0
     max_area_cm2: float = 0.0
     step_states: List[FloorState] = Field(default_factory=list)
+    demo_stacking: Optional[DemoStackingPolicy] = None
 
 
 class OrderPair(StrictContractModel):
@@ -234,6 +249,7 @@ class OptimizationRequest(StrictContractModel):
     vehicle: VehicleFloor
     depot: LocationPoint
     orders: List[OrderPair] = Field(min_length=1)
+    demo_stacking: Optional[DemoStackingPolicy] = None
     max_time_seconds: int = Field(default=10, ge=1, le=120)
     distance_matrix_meters: List[List[float]]
     duration_matrix_seconds: List[List[float]]
@@ -244,6 +260,7 @@ class FleetOptimizationRequest(StrictContractModel):
     vehicles: List[FleetVehicle] = Field(min_length=1)
     drivers: List[DriverOption] = Field(min_length=1)
     orders: List[OrderPair] = Field(min_length=1)
+    demo_stacking: Optional[DemoStackingPolicy] = None
     policy: CostPolicy
     max_time_seconds: int = Field(default=15, ge=1, le=120)
     search_time_seconds: Optional[int] = Field(default=None, ge=1, le=120)
@@ -321,6 +338,7 @@ class OptimizedRoute(StrictContractModel):
     cost: Optional[RouteCostBreakdown] = None
     route_geometry: Optional[Dict] = None
     depot: Optional[LocationPoint] = None
+    end_location: Optional[LocationPoint] = None
 
 
 class UnassignedOrder(StrictContractModel):
@@ -342,8 +360,14 @@ class BenchmarkMetric(StrictContractModel):
     driver_cost_vnd: int
     cargo_holding_cost_vnd: int = 0
     late_delivery_penalty_vnd: int = 0
+    planning_span_days: int = 0
+    physical_vehicle_count: int = 0
+    driver_calendar_salary_vnd: int = 0
+    driver_idle_salary_allocation_vnd: int = 0
+    selection_score_vnd: int = 0
     is_feasible: bool = True
     violations: List[str] = Field(default_factory=list)
+    routes: List[OptimizedRoute] = Field(default_factory=list)
 
 
 class BenchmarkComparisonResponse(StrictContractModel):

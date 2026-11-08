@@ -136,6 +136,7 @@ export class OptimizationProcessor extends WorkerHost {
     };
 
     const dto: RunAutomaticOptimizationDto = {
+      ...(typeof request.deliveryBatchId === 'string' ? { deliveryBatchId: request.deliveryBatchId } : {}),
       idempotencyKey: optimizationJob.id,
       branchId: optimizationJob.branchId,
       ...(typeof request.scheduleMode === 'string'

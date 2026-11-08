@@ -93,6 +93,29 @@ describe('assertFleetOptimizationResult', () => {
     expect(() => assertFleetOptimizationResult(validResult())).not.toThrow();
   });
 
+  it('validates Chuyến đơn lẻ routes when the benchmark includes them', () => {
+    const result = validResult();
+    const route = { ...result.routes[0], route_id: 'direct:vehicle-1', stops: [validStop()] };
+    const direct = { ...result.benchmarks.direct_dedicated, routes: [route] };
+    const response = { ...result, benchmarks: { ...result.benchmarks, direct_dedicated: direct } };
+
+    expect(() => assertFleetOptimizationResult(response)).not.toThrow();
+    route.spatial_validation = { ...route.spatial_validation, is_valid: false };
+    expect(() => assertFleetOptimizationResult(response)).toThrow('spatial validator');
+  });
+
+  it('accepts a dedicated trip that ends at its delivery point', () => {
+    const result = validResult();
+    const end = { id: 'delivery', name: 'Điểm giao', longitude: 105, latitude: 21 };
+    const route = { ...result.routes[0], route_id: 'direct:vehicle-1:order-1', end_location: end };
+    const direct = { ...result.benchmarks.direct_dedicated, routes: [route] };
+    const response = { ...result, benchmarks: { ...result.benchmarks, direct_dedicated: direct } };
+
+    expect(() => assertFleetOptimizationResult(response)).not.toThrow();
+    end.latitude = Number.NaN;
+    expect(() => assertFleetOptimizationResult(response)).toThrow('điểm kết thúc tuyến');
+  });
+
   it('accepts a consistent planning objective breakdown', () => {
     const result = {
       ...validResult(),

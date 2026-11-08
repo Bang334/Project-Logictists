@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { assertNoDeliveryOrderHold } from '../trips/delivery-planning.rules';
 import { OrderStatus, PackageStatus, Prisma } from '@prisma/client';
 import { createHash, randomUUID } from 'crypto';
 import { Principal, branchFilter, requireBranch } from '../auth/access';
@@ -8,6 +9,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { ConfirmOrderDto, UpdateOrderDto } from './dto/update-order.dto';
 import { assertDispatchableOrder, assertPackageManifest, orderFieldError, orderInclude, OrderRecord, serializeOrder, validateOrderInput } from './order-contract';
 import { packageTotals } from './package-measurements';
+import { hasOptionalTopLoadProtection, readTopLoadProtectionFee, TOP_LOAD_PROTECTION_CHARGE } from './top-load-protection';
 
 function json(value: unknown): Prisma.InputJsonValue { return JSON.parse(JSON.stringify(value)); }
 function canonical(value: unknown): string {
@@ -78,6 +80,7 @@ export class OrdersService {
       const id = randomUUID();
       await tx.order.create({ data: { id, orderNumber: 'ORD-' + randomUUID().toUpperCase(), customerId: dto.customerId, branchId, status: OrderStatus.DRAFT, packageDataStatus: 'COMPLETE', notes: dto.notes } });
       await this.writeContents(tx, id, dto, PackageStatus.DRAFT);
+      await this.saveDraftProtectionFee(tx, id, dto);
       await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: 'CREATED', toStatus: 'DRAFT' } });
       return id;
     });
@@ -85,6 +88,7 @@ export class OrdersService {
   private async lockedOrder(tx: Prisma.TransactionClient, id: string, user: Principal, version: number) {
     // Same order row protects edits from manual and automatic assignment transactions.
     await tx.$queryRaw`SELECT id FROM orders WHERE id = ${id} FOR UPDATE`;
+    await assertNoDeliveryOrderHold(tx, [id]);
     const order = await tx.order.findFirst({ where: { id, orderType: 'B2B_TRANSPORT', branchId: branchFilter(user, 'orders.write') }, include: orderInclude });
     if (!order) throw new NotFoundException('Đơn không tồn tại hoặc ngoài phạm vi');
     if (order.version !== version) throw new ConflictException({ code: 'ORDER_VERSION_CONFLICT', message: 'Đơn đã thay đổi. Tải lại để đối chiếu trước khi lưu' });
@@ -106,9 +110,28 @@ export class OrdersService {
       if (dto.branchId !== old.branchId) orderFieldError('branchId', 'Không chuyển chi nhánh quản lý qua thao tác sửa đơn');
       await this.access.branch(user, 'orders.write', old.branchId, tx);
       await this.access.customer(user, dto.customerId, old.branchId, tx);
-      validateOrderInput(dto, old.status === 'CONFIRMED');
       this.validateOwnedIds(old, dto);
-      await this.writeContents(tx, id, dto, old.status === 'CONFIRMED' ? PackageStatus.READY : PackageStatus.DRAFT, old);
+      const existingPackages = new Map(old.items.flatMap(item => item.packages.map(pkg => [pkg.id, pkg] as const)));
+      const updated = {
+        ...dto,
+        items: dto.items.map(item => ({ ...item, packages: item.packages.map(pkg => {
+          const previous = pkg.id ? existingPackages.get(pkg.id) : undefined;
+          if (!previous || (pkg.cargoKind != null && pkg.cargoKind !== previous.cargoKind)) return pkg;
+          return {
+            ...pkg, cargoKind: previous.cargoKind,
+            allowUpperTier: pkg.allowUpperTier ?? previous.allowUpperTier,
+            noTopLoadRequested: pkg.noTopLoadRequested ?? previous.noTopLoadRequested,
+            maxTopLoadG: pkg.maxTopLoadG === undefined ? previous.maxTopLoadG : pkg.maxTopLoadG,
+          };
+        }) })),
+      };
+      validateOrderInput(updated, old.status === 'CONFIRMED');
+      if (old.status === 'CONFIRMED' && (old.charges?.length || readTopLoadProtectionFee(process.env)) &&
+        hasOptionalTopLoadProtection(old.items) !== hasOptionalTopLoadProtection(updated.items)) {
+        throw new ConflictException('Thay đổi dịch vụ có phụ phí cần xác nhận trên đơn nháp');
+      }
+      await this.writeContents(tx, id, updated, old.status === 'CONFIRMED' ? PackageStatus.READY : PackageStatus.DRAFT, old);
+      if (old.status === 'DRAFT') await this.saveDraftProtectionFee(tx, id, updated, old.charges?.[0]?.id);
       await tx.order.update({ where: { id }, data: { customerId: dto.customerId, notes: dto.notes ?? null, packageDataStatus: 'COMPLETE', version: { increment: 1 } } });
       await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: old.packageDataStatus === 'COMPLETE' ? 'UPDATED' : 'PACKAGES_RECONCILED', fromStatus: old.status, toStatus: old.status, payload: json({ before: serializeOrder(old), source: 'USER_DECLARED' }) } });
       return id;
@@ -122,11 +145,27 @@ export class OrdersService {
       validateOrderInput({ ...order, notes: order.notes ?? undefined, stops: order.stops.map(s => ({ ...s, type: s.type === 'PICKUP' ? 'PICKUP' : 'DELIVERY', windowStart: s.windowStart?.toISOString(), windowEnd: s.windowEnd?.toISOString() })), items: order.items.map(i => ({ ...i, sku: i.sku ?? undefined, packages: i.packages.map(p => ({ ...p, weightG: p.weightG.toString() })) })) }, true);
       await this.access.branch(user, 'orders.write', order.branchId, tx);
       await this.access.customer(user, order.customerId, order.branchId, tx);
+      const charge = order.charges?.[0];
+      const fee = Number(charge?.amount ?? 0);
+      if ((dto.acceptedProtectionFeeVnd ?? 0) !== fee) {
+        throw new ConflictException({ code: 'PROTECTION_FEE_ACCEPTANCE_REQUIRED', message: 'Cần chấp nhận đúng phụ phí bảo vệ kiện đã báo trước khi xác nhận đơn' });
+      }
+      if (charge) await tx.orderCharge.update({ where: { id: charge.id }, data: { status: 'CONFIRMED' } });
       await tx.package.updateMany({ where: { orderItem: { orderId: id } }, data: { status: PackageStatus.READY, version: { increment: 1 } } });
       await tx.order.update({ where: { id }, data: { status: OrderStatus.CONFIRMED, version: { increment: 1 } } });
-      await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: 'CONFIRMED', fromStatus: 'DRAFT', toStatus: 'CONFIRMED' } });
+      await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: 'CONFIRMED', fromStatus: 'DRAFT', toStatus: 'CONFIRMED', ...(charge ? { payload: { acceptedProtectionFeeVnd: fee, chargeId: charge.id } } : {}) } });
       return id;
     });
+  }
+  private async saveDraftProtectionFee(tx: Prisma.TransactionClient, orderId: string, dto: CreateOrderDto, currentId?: string) {
+    const rate = readTopLoadProtectionFee(process.env);
+    const amount = hasOptionalTopLoadProtection(dto.items) ? rate : undefined;
+    if (currentId) {
+      if (amount === undefined) await tx.orderCharge.delete({ where: { id: currentId } });
+      else await tx.orderCharge.update({ where: { id: currentId }, data: { amount } });
+    } else if (amount !== undefined) {
+      await tx.orderCharge.create({ data: { orderId, chargeType: TOP_LOAD_PROTECTION_CHARGE, amount, sourceReference: 'CUSTOMER_NO_TOP_LOAD' } });
+    }
   }
   private validateOwnedIds(old: OrderRecord, dto: CreateOrderDto) {
     dto.stops.forEach((s, i) => { if (!s.id || !old.stops.some(o => o.id === s.id && o.type === s.type)) orderFieldError(`stops.${i}.id`, 'Phải giữ ID và loại điểm của đơn này'); });
@@ -153,7 +192,12 @@ export class OrdersService {
       const data = { orderId, sku: item.sku ?? null, description: item.description.trim(), packageType: item.packageType, quantity: totals.totalPackages, weightKg: Number(totals.weightG) / 1000, volumeM3: Number(totals.volumeMm3) / 1e9, lengthCm: null, widthCm: null, heightCm: null };
       const line = item.id ? await tx.orderItem.update({ where: { id: item.id }, data }) : await tx.orderItem.create({ data });
       for (const p of item.packages) {
-        const data = { lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: BigInt(p.weightG), measurementSource: 'USER_DECLARED', status };
+        const data = {
+          lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: BigInt(p.weightG),
+          cargoKind: p.cargoKind ?? 'UNCLASSIFIED', allowUpperTier: p.allowUpperTier ?? false,
+          noTopLoadRequested: p.noTopLoadRequested ?? false, maxTopLoadG: p.maxTopLoadG ?? null,
+          measurementSource: 'USER_DECLARED', status,
+        } as const;
         if (p.id) await tx.package.update({ where: { id: p.id }, data: { ...data, version: { increment: 1 } } });
         else await tx.package.create({ data: { ...data, orderItemId: line.id, packageCode: 'PKG-' + randomUUID().toUpperCase(), allowedOrientations: Prisma.DbNull } });
       }
