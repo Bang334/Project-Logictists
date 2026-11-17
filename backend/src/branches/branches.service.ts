@@ -1,8 +1,9 @@
 import { Principal, branchFilter, assertPermission, hasPermission } from '../auth/access';
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Optional } from '@nestjs/common';
 import { LateDeliveryPenaltyMode } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MapboxService } from '../mapbox/mapbox.service';
+import { SettingsService } from '../settings/settings.service';
 import { UpdateBranchDto } from './dto/update-branch.dto';
 
 @Injectable()
@@ -10,6 +11,7 @@ export class BranchesService {
   constructor(
     private prisma: PrismaService,
     private mapboxService: MapboxService,
+    @Optional() private settingsService?: SettingsService,
   ) {}
 
   async findAll(user: Principal) {
@@ -73,30 +75,50 @@ export class BranchesService {
       }
     }
 
-    return this.prisma.branch.update({
-      where: { id },
-      data: {
-        ...(dto.name ? { name: dto.name } : {}),
-        ...(dto.address ? { address: dto.address } : {}),
-        ...(latitude !== undefined ? { latitude } : {}),
-        ...(longitude !== undefined ? { longitude } : {}),
-        ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
-        ...(dto.timezone ? { timezone: dto.timezone } : {}),
-        ...(dto.deliveryGraceDays !== undefined
-          ? { deliveryGraceDays: dto.deliveryGraceDays }
-          : {}),
-        ...(dto.lateDeliveryPenaltyMode !== undefined
-          ? { lateDeliveryPenaltyMode: dto.lateDeliveryPenaltyMode }
-          : {}),
-        ...(dto.lateDeliveryPenaltyValue !== undefined
-          ? { lateDeliveryPenaltyValue: dto.lateDeliveryPenaltyValue }
-          : {}),
+    const updateData = {
+      ...(dto.name ? { name: dto.name } : {}),
+      ...(dto.address ? { address: dto.address } : {}),
+      ...(latitude !== undefined ? { latitude } : {}),
+      ...(longitude !== undefined ? { longitude } : {}),
+      ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+      ...(dto.timezone ? { timezone: dto.timezone } : {}),
+      ...(dto.deliveryGraceDays !== undefined
+        ? { deliveryGraceDays: dto.deliveryGraceDays }
+        : {}),
+      ...(dto.lateDeliveryPenaltyMode !== undefined
+        ? { lateDeliveryPenaltyMode: dto.lateDeliveryPenaltyMode }
+        : {}),
+      ...(dto.lateDeliveryPenaltyValue !== undefined
+        ? { lateDeliveryPenaltyValue: dto.lateDeliveryPenaltyValue }
+        : {}),
+    };
+    const updateInclude = {
+      _count: {
+        select: { vehicles: true, drivers: true },
       },
-      include: {
-        _count: {
-          select: { vehicles: true, drivers: true },
-        },
-      },
+    };
+    const touchesCostPenalty =
+      dto.deliveryGraceDays !== undefined ||
+      dto.lateDeliveryPenaltyMode !== undefined ||
+      dto.lateDeliveryPenaltyValue !== undefined;
+
+    if (!touchesCostPenalty || !this.settingsService) {
+      return this.prisma.branch.update({
+        where: { id },
+        data: updateData,
+        include: updateInclude,
+      });
+    }
+
+    const settingsService = this.settingsService;
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.branch.update({
+        where: { id },
+        data: updateData,
+        include: updateInclude,
+      });
+      await settingsService.syncBranchCostOverrideFromBranchUpdate(tx, id, updated, user);
+      return updated;
     });
   }
 }

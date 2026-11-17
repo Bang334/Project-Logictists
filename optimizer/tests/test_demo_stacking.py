@@ -121,3 +121,94 @@ def test_cross_order_stack_cannot_load_through_another_packages_footprint():
     ))
     assert response.status_code == 200, response.text
     assert not response.json()["is_valid"]
+
+
+def test_rotated_items_stack_together_inside_rotated_vehicle_footprint():
+    body = minimal_fleet_request()
+    body["vehicles"][0].update(length_cm=100, width_cm=80, height_cm=100)
+    body["orders"][0]["items"] = [
+        package("A1", 100, length_cm=100, width_cm=80, can_rotate=True, order_id=body["orders"][0]["id"]),
+        package("A2", 22, length_cm=80, width_cm=100, can_rotate=True, order_id=body["orders"][0]["id"]),
+    ]
+    body["demo_stacking"] = dict(max_tiers=3, lift_clearance_cm=5)
+    body["max_time_seconds"] = 3
+    body["search_time_seconds"] = 3
+    response = TestClient(app).post("/optimize-fleet/candidates", json=body)
+    assert response.status_code == 200, response.text
+    result = response.json()["candidates"][0]["result"]
+    assert result["status"] == "SUCCESS"
+    assert len(result["routes"]) == 1
+    placed = {item["item_id"]: item for item in result["routes"][0]["spatial_validation"]["step_states"][0]["placed_items"]}
+    assert placed["A1"]["z"] == 0 and placed["A2"]["z"] == 25 and placed["A2"]["support_item_id"] == "A1"
+
+
+def test_heterogeneous_fleet_respects_per_vehicle_height_and_payload_limits():
+    def run_fleet(v1_patch, v2_patch, items):
+        body = minimal_fleet_request()
+        base_v = dict(body["vehicles"][0], length_cm=100, width_cm=100, height_cm=150, payload_limit_kg=500)
+        body["vehicles"] = [dict(base_v, **v1_patch), dict(base_v, **v2_patch)]
+        body["drivers"] = [dict(body["drivers"][0]), dict(body["drivers"][0], id="driver-2", full_name="Driver Two")]
+        body["orders"][0]["items"] = [dict(it, order_id=body["orders"][0]["id"]) for it in items]
+        body["distance_matrix_meters"] = [[0 if i == j else 3000 for j in range(4)] for i in range(4)]
+        body["duration_matrix_seconds"] = [[0 if i == j else 600 for j in range(4)] for i in range(4)]
+        body["demo_stacking"] = dict(max_tiers=3, lift_clearance_cm=5)
+        body["max_time_seconds"] = 3
+        body["search_time_seconds"] = 3
+        response = TestClient(app).post("/optimize-fleet/candidates", json=body)
+        assert response.status_code == 200, response.text
+        return response.json()["candidates"][0]["result"]
+
+    tall_res = run_fleet(
+        dict(id="v-low", plate_number="LOW-60", height_cm=60, fixed_operating_cost_vnd=100_000),
+        dict(id="v-tall", plate_number="TALL-130", height_cm=130, fixed_operating_cost_vnd=120_000),
+        [package("H1", 20, height_cm=50), package("H2", 5, height_cm=50)],
+    )
+    assert tall_res["status"] == "SUCCESS" and len(tall_res["routes"]) == 1
+    assert tall_res["routes"][0]["plate_number"] == "TALL-130"
+    assert tall_res["routes"][0]["vehicle_height_cm"] == 130
+
+    heavy_res = run_fleet(
+        dict(id="v-light", plate_number="LIGHT-150", payload_limit_kg=150, fixed_operating_cost_vnd=100_000),
+        dict(id="v-heavy", plate_number="HEAVY-500", payload_limit_kg=500, fixed_operating_cost_vnd=120_000),
+        [package("W1", 140), package("W2", 30, max_top_load_g=100000)],
+    )
+    assert heavy_res["status"] == "SUCCESS" and len(heavy_res["routes"]) == 1
+    assert heavy_res["routes"][0]["plate_number"] == "HEAVY-500"
+
+
+def test_cross_order_tight_van_stacks_under_any_customer_and_splits_under_same_customer():
+    def run_mode(owner_mode):
+        body = minimal_fleet_request()
+        base_v = dict(body["vehicles"][0], length_cm=100, width_cm=100, height_cm=150, payload_limit_kg=500,
+                      available_start_sec=0, available_end_sec=43200)
+        body["vehicles"] = [dict(base_v, id="v1", plate_number="TIGHT-1"), dict(base_v, id="v2", plate_number="TIGHT-2")]
+        body["drivers"] = [dict(body["drivers"][0]), dict(body["drivers"][0], id="driver-2", full_name="Driver Two")]
+        base_o = dict(body["orders"][0])
+        body["orders"] = [
+            dict(base_o, id="o1", order_number="O1", pickup_window_start_sec=0, pickup_window_end_sec=1800,
+                 delivery_window_start_sec=3000, delivery_window_end_sec=10000,
+                 items=[package("K1", 50, order_id="o1", customer_id="C1", height_cm=40, max_top_load_g=100000)]),
+            dict(base_o, id="o2", order_number="O2",
+                 pickup_location=dict(base_o["pickup_location"], id="p2"),
+                 delivery_location=dict(base_o["delivery_location"], id="d2"),
+                 pickup_window_start_sec=600, pickup_window_end_sec=2400,
+                 delivery_window_start_sec=2400, delivery_window_end_sec=10000,
+                 items=[package("K2", 10, order_id="o2", customer_id="C2", height_cm=40, max_top_load_g=100000)]),
+        ]
+        body["distance_matrix_meters"] = [[0 if i == j else 3000 for j in range(6)] for i in range(6)]
+        body["duration_matrix_seconds"] = [[0 if i == j else 600 for j in range(6)] for i in range(6)]
+        body["demo_stacking"] = dict(max_tiers=3, lift_clearance_cm=5, owner_mode=owner_mode)
+        body["max_time_seconds"] = 4
+        body["search_time_seconds"] = 4
+        response = TestClient(app).post("/optimize-fleet/candidates", json=body)
+        assert response.status_code == 200, response.text
+        return response.json()["candidates"][0]["result"]
+
+    any_res = run_mode("ANY_CUSTOMER")
+    assert any_res["status"] == "SUCCESS" and len(any_res["routes"]) == 1
+    assert any(item["item_id"] == "K2" and item["support_item_id"] == "K1"
+               for state in any_res["routes"][0]["spatial_validation"]["step_states"]
+               for item in state["placed_items"])
+
+    same_res = run_mode("SAME_CUSTOMER")
+    assert same_res["status"] == "SUCCESS" and len(same_res["routes"]) == 2

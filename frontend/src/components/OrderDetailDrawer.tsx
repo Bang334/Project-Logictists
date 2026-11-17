@@ -25,6 +25,7 @@ import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { Order, OrderItem } from '../types';
 import { cargoKindLabels } from '../types/orders';
+import { isFloorRotationLocked } from '../utils/weightBalance';
 import { mapboxApi } from '../api/client';
 
 const { Text } = Typography;
@@ -509,7 +510,7 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
         { title: 'Dòng hàng', dataIndex: 'description' },
         { title: 'Dài × rộng × cao (mm)', render: (_, p) => `${p.lengthMm} × ${p.widthMm} × ${p.heightMm}` },
         { title: 'Khối lượng (g)', dataIndex: 'weightG' },
-        { title: 'Loại hàng', render: (_, p) => <>{cargoKindLabels[p.cargoKind ?? 'UNCLASSIFIED']}{(p.cargoKind === 'FRAGILE' || p.noTopLoadRequested) && <><br />Không đặt hàng lên trên</>}</> },
+        { title: 'Loại hàng', render: (_, p) => <>{cargoKindLabels[p.cargoKind ?? 'UNCLASSIFIED']}{(p.cargoKind === 'FRAGILE' || p.noTopLoadRequested) && <><br />Không đặt hàng lên trên</>}{isFloorRotationLocked(p.allowedOrientations) && <><br /><Tag color="purple">Khóa xoay 90° (LWH)</Tag></>}</> },
         { title: 'Điểm lấy → giao (ID)', render: (_, p) => <>{p.pickupStopId ?? 'Chưa đối soát'}<br />→ {p.deliveryStopId ?? 'Chưa đối soát'}</> },
       ]} />
       {order.totalWeightG !== null && <Typography.Paragraph>Tổng server: {order.totalPackages} kiện · {order.totalWeightG} g · {order.totalVolumeMm3} mm³</Typography.Paragraph>}

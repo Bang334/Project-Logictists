@@ -65,3 +65,32 @@ it('ẩn khu vực hẹn khi điều phối thường và chỉ hiển thị hư
   expect(await screen.findByText(/Phương án #2 dùng để đề xuất/)).toBeInTheDocument();
   expect(apiClient.post).not.toHaveBeenCalled();
 });
+
+it('cho phép chạy tối ưu lại cùng xe & đơn khác khi khách yêu cầu đổi khung (ví dụ 11-14h)', async () => {
+  const changedAppointment = {
+    ...appointment,
+    status: 'CHANGE_REQUESTED',
+    requestedStart: '2031-01-03T04:00:00Z',
+    requestedEnd: '2031-01-03T07:00:00Z',
+  };
+  vi.mocked(apiClient.get).mockResolvedValue({
+    data: [{ id: 'batch-change', status: 'OFFERING', expiresAt: appointment.expiresAt, windowMinutes: 120, appointments: [changedAppointment] }],
+  });
+  vi.mocked(apiClient.post).mockResolvedValue({ data: { id: 'replan-job-1' } });
+  const onJob = vi.fn().mockResolvedValue(undefined);
+  render(<DispatcherDeliveryPlanning branchId="branch" candidateNumber={1} canPropose={false} onJob={onJob} />);
+
+  expect(await screen.findByText(/1 yêu cầu đổi khung/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Xem phản hồi' }));
+  await screen.findByText(/Muốn đổi:/);
+
+  const replanBtn = screen.getByRole('button', { name: 'Tối ưu lại cùng xe & đơn khác' });
+  expect(replanBtn).not.toBeDisabled();
+  fireEvent.click(replanBtn);
+
+  await waitFor(() => expect(apiClient.post).toHaveBeenCalledWith(
+    '/delivery-planning/batches/batch-change/optimize',
+    expect.objectContaining({ replanWithFleet: true }),
+  ));
+  expect(onJob).toHaveBeenCalledWith('replan-job-1');
+});

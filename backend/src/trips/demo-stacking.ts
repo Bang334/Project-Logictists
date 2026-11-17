@@ -40,15 +40,35 @@ export function assertDemoStackSupports(
   const byId = new Map(placements.map(placement => [placement.item_id, placement]));
   if (byId.size !== placements.length) return reject();
   const above = new Map<string, bigint>();
-  const supportedBy = new Set<string>();
   const mm = (value: number) => Math.round(value * 10);
+
+  for (let i = 0; i < placements.length; i++) {
+    const a = placements[i];
+    const ax0 = mm(a.x);
+    const ay0 = mm(a.y);
+    const az0 = mm(a.z ?? 0);
+    const ax1 = ax0 + mm(a.length_cm);
+    const ay1 = ay0 + mm(a.width_cm);
+    const az1 = az0 + mm(a.height_cm);
+    for (let j = i + 1; j < placements.length; j++) {
+      const b = placements[j];
+      const bx0 = mm(b.x);
+      const by0 = mm(b.y);
+      const bz0 = mm(b.z ?? 0);
+      const bx1 = bx0 + mm(b.length_cm);
+      const by1 = by0 + mm(b.width_cm);
+      const bz1 = bz0 + mm(b.height_cm);
+      if (ax0 < bx1 && ax1 > bx0 && ay0 < by1 && ay1 > by0 && az0 < bz1 && az1 > bz0) {
+        return reject();
+      }
+    }
+  }
 
   for (const item of elevated) {
     const physical = packageByCargoId.get(item.item_id);
     if (!physical?.allowUpperTier || physical.cargoKind !== 'STANDARD' || (item.z ?? 0) <= 0 ||
       mm((item.z ?? 0) + item.height_cm + policy.lift_clearance_cm) > heightMm ||
-      !item.support_item_id || supportedBy.has(item.support_item_id)) return reject();
-    supportedBy.add(item.support_item_id);
+      !item.support_item_id) return reject();
 
     let layer = item;
     let tier = 1;
@@ -59,8 +79,9 @@ export function assertDemoStackSupports(
         !customerByPackageId.has(physical.id) || !customerByPackageId.has(support.id) ||
         (policy.owner_mode === 'SAME_CUSTOMER' && customerByPackageId.get(physical.id) !== customerByPackageId.get(support.id)) ||
         support.cargoKind !== 'STANDARD' || support.noTopLoadRequested || support.maxTopLoadG == null ||
-        mm(layer.x) !== mm(base.x) || mm(layer.y) !== mm(base.y) ||
-        mm(layer.length_cm) !== mm(base.length_cm) || mm(layer.width_cm) !== mm(base.width_cm) ||
+        mm(layer.x) < mm(base.x) || mm(layer.y) < mm(base.y) ||
+        mm(layer.x) + mm(layer.length_cm) > mm(base.x) + mm(base.length_cm) ||
+        mm(layer.y) + mm(layer.width_cm) > mm(base.y) + mm(base.width_cm) ||
         mm(layer.z ?? 0) !== mm((base.z ?? 0) + base.height_cm)) return reject();
       const total = (above.get(base.item_id) ?? 0n) + physical.weightG;
       if (total * 10n >= support.weightG * 3n || total > BigInt(support.maxTopLoadG)) return reject();

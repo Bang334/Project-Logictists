@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma, StopType } from '@prisma/client';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { packageTotals, serializePackageTotals } from './package-measurements';
+import { parseAllowedOrientationsInput } from './package-orientations';
 import { TOP_LOAD_PROTECTION_CHARGE } from './top-load-protection';
 
 export const orderInclude = {
@@ -45,6 +46,14 @@ export function validateOrderInput(dto: CreateOrderDto, _confirmed: boolean) {
       if (BigInt(p.weightG) > 9223372036854775807n) orderFieldError(`items.${i}.packages.${j}.weightG`, 'Khối lượng vượt giới hạn lưu trữ gram');
       if (p.cargoKind !== 'STANDARD' && (p.allowUpperTier || p.noTopLoadRequested || p.maxTopLoadG != null)) {
         orderFieldError(`items.${i}.packages.${j}.cargoKind`, 'Chỉ kiện thường mới có thể khai báo tùy chọn xếp chồng');
+      }
+      try {
+        parseAllowedOrientationsInput(p.allowedOrientations);
+      } catch (err) {
+        orderFieldError(
+          `items.${i}.packages.${j}.allowedOrientations`,
+          err instanceof Error ? err.message : 'allowedOrientations không hợp lệ',
+        );
       }
     });
     packageTotals(item.packages.map(p => ({ ...p, weightG: BigInt(p.weightG) })));

@@ -7,6 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import type { Branch, Order } from '../types';
 import type { OrderInput, OrderLineInput, PackageInput, StopInput } from '../types/orders';
 import { cargoKindLabels } from '../types/orders';
+import { isFloorRotationLocked } from '../utils/weightBalance';
 import { MapLocationPickerModal } from '../components/MapLocationPickerModal';
 import { OrderDetailDrawer } from '../components/OrderDetailDrawer';
 interface FormValues extends Omit<OrderInput, 'stops'> { stops: StopInput[] }
@@ -43,6 +44,14 @@ const PackageFields: React.FC<{ index: number; form: FormInstance<FormValues> }>
         </Row>
         <Form.Item name={[field.name, 'cargoKind']} label="Loại hàng">
           <Select placeholder="Chưa phân loại" options={Object.entries(cargoKindLabels).map(([value, label]) => ({ value, label }))} />
+        </Form.Item>
+        <Form.Item
+          name={[field.name, 'allowedOrientations']}
+          valuePropName="checked"
+          getValueProps={(value) => ({ checked: isFloorRotationLocked(value) })}
+          getValueFromEvent={(event) => (event?.target?.checked ? ['LWH'] : null)}
+        >
+          <Checkbox>Khóa xoay 90° trên sàn (chỉ đặt đúng chiều dài × rộng)</Checkbox>
         </Form.Item>
         <Form.Item noStyle shouldUpdate={(previous: FormValues, next: FormValues) =>
           previous.items?.[index]?.packages?.[field.name]?.cargoKind !== next.items?.[index]?.packages?.[field.name]?.cargoKind}>
@@ -123,7 +132,7 @@ const OrdersPage: React.FC = () => {
       const current = await ordersApi.getOne(order.id); setEditing(current); setDetail(null); setSaveError(''); command.current = undefined; form.resetFields();
       form.setFieldsValue({ branchId: current.branchId, customerId: current.customerId, notes: current.notes,
         stops: current.stops,
-        items: current.items.map(i => ({ id: i.id, description: i.description, packageType: i.packageType, sku: i.sku, packages: i.packages.length ? i.packages.map(p => ({ id: p.id, lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: p.weightG, cargoKind: p.cargoKind, allowUpperTier: p.allowUpperTier, noTopLoadRequested: p.noTopLoadRequested, maxTopLoadG: p.maxTopLoadG })) : [blankPackage()] })),
+        items: current.items.map(i => ({ id: i.id, description: i.description, packageType: i.packageType, sku: i.sku, packages: i.packages.length ? i.packages.map(p => ({ id: p.id, lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: p.weightG, cargoKind: p.cargoKind, allowUpperTier: p.allowUpperTier, noTopLoadRequested: p.noTopLoadRequested, maxTopLoadG: p.maxTopLoadG, allowedOrientations: p.allowedOrientations ?? undefined })) : [blankPackage()] })),
       }); setOpen(true);
     } catch (e) { message.error(apiErrorMessage(e)); }
   };
@@ -138,6 +147,7 @@ const OrdersPage: React.FC = () => {
         allowUpperTier: p.cargoKind === 'STANDARD' && !!p.allowUpperTier,
         noTopLoadRequested: p.cargoKind === 'STANDARD' && !!p.noTopLoadRequested,
         maxTopLoadG: p.cargoKind === 'STANDARD' ? p.maxTopLoadG ?? null : null,
+        allowedOrientations: isFloorRotationLocked(p.allowedOrientations) ? ['LWH'] : null,
       })) })),
     };
     const payload = JSON.stringify({ id: editing?.id, version: editing?.version, ...input });

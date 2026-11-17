@@ -15,16 +15,13 @@ import { UsersModule } from './users/users.module';
 
 import { CommonModule } from './common/common.module';
 import { LocationsModule } from './locations/locations.module';
-import { readDemoStackingPolicy } from './trips/demo-stacking';
-import { readTopLoadProtectionFee } from './orders/top-load-protection';
+import { SettingsModule } from './settings/settings.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       validate: (config: Record<string, unknown>) => {
-        const demoStacking = readDemoStackingPolicy(config);
-        if (readTopLoadProtectionFee(config) && !demoStacking) throw new Error('Phụ phí bảo vệ kiện chỉ áp dụng khi bật xếp chồng demo');
         config.CORS_ORIGIN = config.CORS_ORIGIN || config.WEB_ORIGIN;
         const required = [
           'DATABASE_URL',
@@ -85,6 +82,7 @@ import { readTopLoadProtectionFee } from './orders/top-load-protection';
     AuthModule,
     UsersModule,
     BranchesModule,
+    SettingsModule,
     VehiclesModule,
     DriversModule,
     CustomersModule,

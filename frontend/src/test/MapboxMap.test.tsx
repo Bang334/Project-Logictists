@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, render } from '@testing-library/react';
+import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mapboxMocks = vi.hoisted(() => {
@@ -37,7 +37,7 @@ const mapboxMocks = vi.hoisted(() => {
     remove() { this.removed = true; }
     isStyleLoaded() { return true; }
     once(_event: string, callback: () => void) { callback(); }
-    addSource(id: string) { this.sources.set(id, { setData: () => {} }); }
+    addSource(id: string) { this.sources.set(id, { setData: vi.fn() }); }
     getSource(id: string) { return this.sources.get(id); }
     addLayer(layer: { id: string }) { this.layers.add(layer.id); }
     getLayer(id: string) { return this.layers.has(id) ? { id } : undefined; }
@@ -122,6 +122,7 @@ describe('MapboxMap vehicle simulation lifecycle', () => {
         autoPlaySimulation={false}
       />,
     );
+    expect(document.querySelector('[aria-label="Chạy mô phỏng"]')).toBeInTheDocument();
 
     rerender(
       <MapboxMap
@@ -167,5 +168,34 @@ describe('MapboxMap vehicle simulation lifecycle', () => {
 
     expect(getByRole('button', { name: 'Chạy mô phỏng' })).toBeInTheDocument();
     expect(onSimulationStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires route geometry before displaying a simulation', () => {
+    const { queryByRole } = render(<MapboxMap enableSimulation autoPlaySimulation />);
+    expect(queryByRole('button', { name: 'Tạm dừng mô phỏng' })).not.toBeInTheDocument();
+    expect(mapboxMocks.markerInstances).toHaveLength(0);
+  });
+
+  it('keeps moving the truck without jumping or redrawing the trail on each frame', () => {
+    let nextFrame: FrameRequestCallback | undefined;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      nextFrame = callback;
+      return 1;
+    });
+    const onSimulationProgress = vi.fn();
+    render(<MapboxMap routeGeometry={firstRoute} enableSimulation autoPlaySimulation onSimulationProgress={onSimulationProgress} />);
+    const trail = mapboxMocks.mapInstances[0] as InstanceType<typeof mapboxMocks.MockMap>;
+    const setTrail = trail.getSource('traveled-route')?.setData;
+    act(() => nextFrame?.(1000));
+    const initialTrailUpdates = vi.mocked(setTrail!).mock.calls.length;
+
+    act(() => nextFrame?.(1016));
+    const beforeStopUpdate = onSimulationProgress.mock.lastCall?.[0];
+    act(() => nextFrame?.(1216));
+    const afterStopUpdate = onSimulationProgress.mock.lastCall?.[0];
+
+    expect(afterStopUpdate - beforeStopUpdate).toBeGreaterThan(0);
+    expect(afterStopUpdate - beforeStopUpdate).toBeLessThan(0.003);
+    expect(setTrail).toHaveBeenCalledTimes(initialTrailUpdates + 1);
   });
 });

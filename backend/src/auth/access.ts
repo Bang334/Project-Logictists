@@ -6,6 +6,7 @@ export const PERMISSIONS = [
   'drivers.read', 'drivers.manage', 'customers.read', 'orders.read',
   'orders.write', 'trips.read', 'trips.plan', 'trips.publish',
   'users.read', 'users.create', 'users.lock',
+  'settings.read', 'settings.manage',
 ] as const;
 export const DRIVER_PERMISSIONS = ['driver.profile.read', 'driver.assignments.read', 'driver.assignments.respond'] as const;
 export type PermissionCode = typeof PERMISSIONS[number] | typeof DRIVER_PERMISSIONS[number];

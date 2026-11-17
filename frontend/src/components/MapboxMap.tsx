@@ -4,7 +4,6 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import {
   buildRouteProfile,
   interpolateAlongRoute,
-  HANOI_SAMPLE_DEMO_ROUTE,
   RouteProfile,
 } from '../utils/geoSimulation';
 import { MapSimulationOverlay } from './MapSimulationOverlay';
@@ -129,8 +128,10 @@ const ROUTE_COLOR_EXPRESSION = [
   MAP_ROUTE_COLORS[0],
 ];
 
+const EMPTY_MAP_MARKERS: MapMarker[] = [];
+
 const MapboxMap: React.FC<MapboxMapProps> = ({
-  markers = [],
+  markers = EMPTY_MAP_MARKERS,
   routeGeometry,
   connectMarkers = false,
   height = '100%',
@@ -139,7 +140,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   enableSimulation = false,
   autoPlaySimulation = false,
   showControls = true,
-  vehiclePlate = '29C-678.92',
+  vehiclePlate = 'Xe mô phỏng',
   driverName = 'Tài xế',
   onSimulationProgress,
   onSimulationStop,
@@ -155,26 +156,15 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   const [isPlaying, setIsPlaying] = useState<boolean>(autoPlaySimulation && !prefersReducedMotion);
   const [progress, setProgress] = useState<number>(0);
   const [speedMultiplier, setSpeedMultiplier] = useState<number>(1);
-  const [currentSpeedKmh, setCurrentSpeedKmh] = useState<number>(45);
 
   const progressRef = useRef<number>(0);
-  const isPlayingRef = useRef<boolean>(autoPlaySimulation);
+  const isPlayingRef = useRef<boolean>(autoPlaySimulation && !prefersReducedMotion);
   const speedMultiplierRef = useRef<number>(1);
   const animationFrameRef = useRef<number | null>(null);
   const lastTimestampRef = useRef<number | null>(null);
-  const lastUiUpdateRef = useRef<number>(0);
   const lastProgressUpdateRef = useRef<number>(0);
   const simulationIdentity = `${vehiclePlate}:${driverName}`;
   const previousSimulationIdentityRef = useRef(simulationIdentity);
-
-  // Sync refs with states
-  useEffect(() => {
-    progressRef.current = progress;
-  }, [progress]);
-
-  useEffect(() => {
-    isPlayingRef.current = isPlaying;
-  }, [isPlaying]);
 
   useEffect(() => {
     speedMultiplierRef.current = speedMultiplier;
@@ -209,8 +199,8 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       return markers.map((m) => [m.longitude, m.latitude] as [number, number]);
     }
 
-    return enableSimulation ? HANOI_SAMPLE_DEMO_ROUTE : [];
-  }, [routeGeometry, enableSimulation, markers, connectMarkers]);
+    return [];
+  }, [routeGeometry, markers, connectMarkers]);
 
   const allRouteCoordinates = useMemo<[number, number][]>(() => {
     if (routeGeometry?.type === 'FeatureCollection' && Array.isArray(routeGeometry.features)) {
@@ -285,11 +275,11 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   useEffect(() => {
     setProgress(0);
     progressRef.current = 0;
-    if (enableSimulation) {
-      setIsPlaying(true);
-      isPlayingRef.current = true;
-    }
-  }, [routeCoordinates, enableSimulation]);
+    lastTimestampRef.current = null;
+    const shouldPlay = enableSimulation && autoPlaySimulation && !prefersReducedMotion;
+    setIsPlaying(shouldPlay);
+    isPlayingRef.current = shouldPlay;
+  }, [routeCoordinates, enableSimulation, autoPlaySimulation, prefersReducedMotion]);
 
   // Một phiên mô phỏng chỉ thuộc về đúng một cặp xe - tài xế.
   useEffect(() => {
@@ -550,13 +540,13 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
 
   // Hàm cập nhật vị trí xe và ĐỔI MÀU ĐƯỜNG TỚI ĐÂU THEO TỚI ĐÓ (Bản đồ đứng yên)
   const updateTruckPosition = useCallback(
-    (currentProg: number) => {
+    (currentProg: number, refreshTrail = true) => {
       const map = mapRef.current;
       const truck = truckMarkerRef.current;
       const truckEl = truckElementRef.current;
       if (!map || !truck || !truckEl || routeProfile.totalDistanceKm === 0) return;
 
-      const { coord, bearing, traveledKm, traveledCoordinates } = interpolateAlongRoute(
+      const { coord, bearing, traveledKm, segmentIndex } = interpolateAlongRoute(
         routeProfile,
         currentProg,
       );
@@ -574,27 +564,26 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       const simulatedSpeed = isPlayingRef.current
         ? Math.round(45 + Math.sin(currentProg * 50) * 8 + Math.random() * 3)
         : 0;
-      const now = performance.now();
-      if (now - lastUiUpdateRef.current >= 100) {
-        setCurrentSpeedKmh(simulatedSpeed);
-        lastUiUpdateRef.current = now;
-      }
-
       const speedPill = truckEl.querySelector('.speed-pill');
       if (speedPill) {
         speedPill.textContent = `${simulatedSpeed} km/h`;
       }
 
       // ĐỔI MÀU ĐƯỜNG: Vệt đường đã đi qua (traveled-route) dài ra đến đúng vị trí của chiếc xe
-      const traveledSource = map.getSource('traveled-route') as mapboxgl.GeoJSONSource | undefined;
+      const traveledSource = refreshTrail
+        ? map.getSource<mapboxgl.GeoJSONSource>('traveled-route')
+        : undefined;
       if (traveledSource) {
+        const traveledCoordinates = routeProfile.coordinates.slice(0, segmentIndex + 1);
+        traveledCoordinates.push(coord);
         traveledSource.setData({
           type: 'Feature',
+          properties: null,
           geometry: {
             type: 'LineString',
-            coordinates: traveledCoordinates.length > 1 ? traveledCoordinates : [coord, coord],
+            coordinates: traveledCoordinates,
           },
-        } as any);
+        });
       }
 
       // MAP ĐỨNG YÊN HOÀN TOÀN: Không gọi map.easeTo, giữ nguyên góc nhìn tổng thể cho người dùng
@@ -648,13 +637,11 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
 
   // Animation Loop chạy mô phỏng 60 FPS
   useEffect(() => {
-    if (!enableSimulation || prefersReducedMotion) return;
+    if (!enableSimulation || routeProfile.totalDistanceKm === 0) return;
 
     const animate = (timestamp: number) => {
-      if (!lastTimestampRef.current) {
-        lastTimestampRef.current = timestamp;
-      }
-      const deltaSeconds = (timestamp - lastTimestampRef.current) / 1000;
+      // A slow frame or a background tab should not make the truck leap ahead.
+      const deltaSeconds = Math.min(timestamp - (lastTimestampRef.current ?? timestamp), 50) / 1000;
       lastTimestampRef.current = timestamp;
 
       if (isPlayingRef.current && routeProfile.totalDistanceKm > 0) {
@@ -670,12 +657,13 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
           setIsPlaying(false);
         }
 
-        if (timestamp - lastProgressUpdateRef.current >= 100 || nextProgress === 1) {
+        const refreshTrail = timestamp - lastProgressUpdateRef.current >= 100 || nextProgress === 1;
+        if (refreshTrail) {
           setProgress(nextProgress);
           lastProgressUpdateRef.current = timestamp;
         }
         progressRef.current = nextProgress;
-        updateTruckPosition(nextProgress);
+        updateTruckPosition(nextProgress, refreshTrail);
       }
 
       animationFrameRef.current = requestAnimationFrame(animate);
@@ -688,13 +676,9 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [enableSimulation, prefersReducedMotion, routeProfile.totalDistanceKm, updateTruckPosition]);
+  }, [enableSimulation, routeProfile.totalDistanceKm, updateTruckPosition]);
 
   // Handlers
-  const handleTogglePlay = () => {
-    setIsPlaying((prev) => !prev);
-  };
-
   const handleSeek = (val: number) => {
     setProgress(val);
     progressRef.current = val;
@@ -702,10 +686,21 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   };
 
   const handleReset = () => {
+    isPlayingRef.current = true;
     setIsPlaying(true);
     setProgress(0);
     progressRef.current = 0;
     updateTruckPosition(0);
+  };
+
+  const handleTogglePlay = () => {
+    if (!isPlayingRef.current && progressRef.current >= 1) {
+      handleReset();
+      return;
+    }
+    isPlayingRef.current = !isPlayingRef.current;
+    setIsPlaying(isPlayingRef.current);
+    updateTruckPosition(progressRef.current);
   };
 
   return (
@@ -720,13 +715,12 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     >
       <div ref={mapContainer} style={{ width: '100%', height: '100%', position: 'relative' }} />
 
-      {enableSimulation && showControls && (
+      {enableSimulation && showControls && routeProfile.totalDistanceKm > 0 && (
         <MapSimulationOverlay
           isPlaying={isPlaying}
           progress={progress}
           speedMultiplier={speedMultiplier}
           followVehicle={false}
-          currentSpeedKmh={currentSpeedKmh}
           traveledDistanceKm={progress * routeProfile.totalDistanceKm}
           totalDistanceKm={routeProfile.totalDistanceKm}
           vehiclePlate={vehiclePlate}
@@ -742,4 +736,4 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   );
 };
 
-export default MapboxMap;
+export default React.memo(MapboxMap);

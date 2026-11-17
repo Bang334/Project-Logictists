@@ -7,6 +7,7 @@ import {
   CompassOutlined,
   DashboardOutlined,
   InboxOutlined,
+  SettingOutlined,
   ThunderboltOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -48,6 +49,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
       label: 'Đội Xe & Tài Xế',
     },
     { key: 'delivery-appointments', icon: <InboxOutlined />, label: 'Lịch hẹn giao hàng' },
+    { key: 'settings', icon: <SettingOutlined aria-hidden="true" />, label: 'Cấu hình chung' },
     { key: 'accounts', icon: <UserOutlined aria-hidden="true" />, label: 'Quản lý tài khoản' },
   ];
 

@@ -13,6 +13,7 @@ from .models import (
     FleetOptimizationCandidate,
     FleetOptimizationRequest,
     FleetOptimizationResponse,
+    UnassignedOrder,
     PlanningObjectiveBreakdown,
 )
 from .routing_solver import FleetRoutingSolver
@@ -28,6 +29,7 @@ from .search_strategies import (
     find_search_strategy,
 )
 from .hybrid_alns_engine import PackingAwareHybridALNSOptimizer
+from .ortools_seed import extract_ortools_seed_pool
 from .planning_objective import apply_planning_objective, plan_lexicographic_key
 
 _REAL_HYBRID_OPTIMIZER = PackingAwareHybridALNSOptimizer
@@ -43,13 +45,14 @@ def _run_hybrid_seed_worker(
     try:
         request = FleetOptimizationRequest(**request_dict)
         objective_request = FleetOptimizationRequest(**objective_request_dict)
+        worker_deadline = time.perf_counter() + max(0.5, float(time_budget))
         hybrid = PackingAwareHybridALNSOptimizer(
             request,
             time_budget_seconds=time_budget,
             random_seed=seed,
             initial_plan=None,
         )
-        plan = hybrid.solve()
+        plan = hybrid.solve(hard_deadline=worker_deadline)
         if not plan.routes:
             return seed, None, None, f"Packing-aware Hybrid ALNS (seed {seed}) không trả về tuyến."
         obj = apply_planning_objective(objective_request, plan)
@@ -157,6 +160,7 @@ def _candidate_lexicographic_key(
 def is_fully_served(
     plan: FleetOptimizationResponse,
     all_order_ids: Set[str],
+    max_routes_per_day: Optional[int] = None,
 ) -> bool:
     """Check whether a plan delivers 100% of requested orders without violations."""
     if plan.status != "SUCCESS":
@@ -240,6 +244,14 @@ def is_fully_served(
                 return False
             day_drivers.add(driver_key)
 
+    if max_routes_per_day is not None:
+        routes_per_day: Dict[int, int] = {}
+        for route in plan.routes:
+            day_idx = route.service_day_index
+            routes_per_day[day_idx] = routes_per_day.get(day_idx, 0) + 1
+            if routes_per_day[day_idx] > max_routes_per_day:
+                return False
+
     return True
 
 
@@ -247,6 +259,7 @@ def select_ranked_candidates(
     evaluated_runs: List[Tuple[SearchStrategy, FleetOptimizationResponse, int]],
     all_order_ids: Set[str],
     max_candidates: int = 3,
+    max_routes_per_day: Optional[int] = None,
 ) -> Tuple[List[FleetOptimizationCandidate], int, List[str]]:
     """Pure selection and ranking function to allow isolated unit testing.
 
@@ -257,7 +270,7 @@ def select_ranked_candidates(
     fully_served_runs = [
         (strategy, plan, objective)
         for strategy, plan, objective in evaluated_runs
-        if is_fully_served(plan, all_order_ids)
+        if is_fully_served(plan, all_order_ids, max_routes_per_day=max_routes_per_day)
     ]
     fully_served_count = len(fully_served_runs)
 
@@ -327,6 +340,7 @@ class MultiStartFleetOptimizer:
         request: FleetOptimizationRequest,
         strategies: Optional[List[SearchStrategy]] = None,
     ):
+        self._created_at = time.perf_counter()
         pruned_request, self.pruned_virtual_vehicle_count = (
             prune_unserviceable_virtual_resources(request)
         )
@@ -353,7 +367,9 @@ class MultiStartFleetOptimizer:
         )
 
     def solve(self, max_candidates: int = 3) -> FleetOptimizationBatchResponse:
+        job_started_at = getattr(self, "_created_at", time.perf_counter())
         search_budget_seconds = float(self.policy.time_budget_seconds)
+        job_deadline = job_started_at + search_budget_seconds
         exhaustive_fallback_diagnostic: Optional[str] = None
         if self.use_exhaustive_search:
             exhaustive_started_at = time.monotonic()
@@ -419,9 +435,12 @@ class MultiStartFleetOptimizer:
         hybrid_run_budget = search_budget_seconds / len(hybrid_seeds)
 
         is_mocked = PackingAwareHybridALNSOptimizer is not _REAL_HYBRID_OPTIMIZER
+        timed_out_seed_plan: Optional[FleetOptimizationResponse] = None
         if len(hybrid_seeds) > 1 and not is_mocked:
             import concurrent.futures
             objective_request_dict = self.objective_request.model_dump()
+            remaining_parallel = max(1.0, job_deadline - time.perf_counter())
+            effective_run_budget = min(hybrid_run_budget, remaining_parallel)
             with concurrent.futures.ProcessPoolExecutor(max_workers=len(hybrid_seeds)) as executor:
                 futures = {
                     executor.submit(
@@ -429,7 +448,7 @@ class MultiStartFleetOptimizer:
                         request_dict,
                         objective_request_dict,
                         seed,
-                        hybrid_run_budget,
+                        effective_run_budget,
                     ): seed
                     for seed in hybrid_seeds
                 }
@@ -437,7 +456,7 @@ class MultiStartFleetOptimizer:
                     seed = futures[future]
                     try:
                         seed_res, plan_dict, obj_dict, err = future.result(
-                            timeout=hybrid_run_budget + 15.0
+                            timeout=max(0.5, job_deadline - time.perf_counter() + 2.0)
                         )
                         if err or plan_dict is None:
                             search_errors.append(
@@ -466,15 +485,47 @@ class MultiStartFleetOptimizer:
                         )
         else:
             for seed in hybrid_seeds:
+                remaining_for_seed = job_deadline - time.perf_counter()
+                if remaining_for_seed <= 0.5 and not is_mocked:
+                    search_errors.append(
+                        f"Hết ngân sách trước khi chạy Packing-aware Hybrid ALNS (seed {seed})."
+                    )
+                    break
+                seed_budget = (
+                    hybrid_run_budget
+                    if is_mocked
+                    else min(hybrid_run_budget, max(0.5, remaining_for_seed))
+                )
+                seed_deadline = time.perf_counter() + seed_budget
                 try:
+                    ortools_seed_pool = None
+                    max_items_per_order = max((len(o.items) for o in self.request.orders), default=0)
+                    if not is_mocked and len(self.request.orders) >= 2 and seed_budget >= 3.0 and max_items_per_order < 20:
+                        ortools_seed_pool, _ = extract_ortools_seed_pool(
+                            self.request,
+                            routing_seconds=min(0.95, seed_budget * 0.19),
+                            stagnation_seconds=0.20,
+                        )
+                    effective_budget = (
+                        seed_budget
+                        if is_mocked
+                        else max(0.5, min(seed_budget, seed_deadline - time.perf_counter()))
+                    )
                     hybrid = PackingAwareHybridALNSOptimizer(
                         self.request,
-                        time_budget_seconds=hybrid_run_budget,
+                        time_budget_seconds=effective_budget,
                         random_seed=seed,
                         initial_plan=None,
+                        ortools_seed_pool=ortools_seed_pool,
                     )
-                    hybrid_plan = hybrid.solve()
+                    if is_mocked:
+                        hybrid_plan = hybrid.solve()
+                    else:
+                        effective_hard_deadline = None if (max_items_per_order >= 20 and seed_budget >= 3.0) else min(job_deadline, seed_deadline)
+                        hybrid_plan = hybrid.solve(hard_deadline=effective_hard_deadline)
                     if not hybrid_plan.routes:
+                        if getattr(hybrid_plan, "status", None) == "TIMEOUT" and timed_out_seed_plan is None:
+                            timed_out_seed_plan = hybrid_plan
                         search_errors.append(
                             f"Packing-aware Hybrid ALNS (seed {seed}) không trả về tuyến."
                         )
@@ -503,21 +554,67 @@ class MultiStartFleetOptimizer:
         hybrid_success_count = len(evaluated_runs)
         ortools_fallback_used = False
         if not evaluated_runs:
+            remaining_fallback = job_deadline - time.perf_counter()
             fallback_strategy = (
                 self.strategies[0]
                 if self.strategies
                 else DEFAULT_SEARCH_STRATEGY
             )
-            _, _, plan_dict, _, error = _run_search_worker(
-                request_dict,
-                fallback_strategy.key,
-                search_budget_seconds,
-                self.policy.stagnation_seconds,
-                self.policy.routing_budget_share,
-                self.policy.validation_budget_share,
-                self.policy.consolidation_budget_share,
-            )
+            plan_dict = None
+            error: Optional[str] = None
+            if remaining_fallback >= 1.5:
+                _, _, plan_dict, _, error = _run_search_worker(
+                    request_dict,
+                    fallback_strategy.key,
+                    min(search_budget_seconds, remaining_fallback),
+                    self.policy.stagnation_seconds,
+                    self.policy.routing_budget_share,
+                    self.policy.validation_budget_share,
+                    self.policy.consolidation_budget_share,
+                )
             if error is not None or plan_dict is None:
+                if timed_out_seed_plan is not None or remaining_fallback < 1.5:
+                    timeout_plan = timed_out_seed_plan or FleetOptimizationResponse(
+                        job_id=self.request.job_id,
+                        status="TIMEOUT",
+                        total_distance_km=0.0,
+                        total_duration_minutes=0.0,
+                        total_cost_vnd=0,
+                        routes=[],
+                        unassigned_orders=[
+                            UnassignedOrder(
+                                order_id=order.id,
+                                order_number=order.order_number or order.id,
+                                reason_code="TIMEOUT",
+                                reason_message=f"Hết ngân sách tối ưu {search_budget_seconds:g} giây trước khi kiểm chứng được phương án khả thi.",
+                            )
+                            for order in self.request.orders
+                        ],
+                        diagnostics=[
+                            f"Hết ngân sách tối ưu {search_budget_seconds:g} giây trước khi kiểm chứng được phương án khả thi.",
+                            *search_errors[:2],
+                        ],
+                    )
+                    timeout_obj = apply_planning_objective(self.objective_request, timeout_plan)
+                    timeout_plan.planning_objective = timeout_obj
+                    return FleetOptimizationBatchResponse(
+                        job_id=self.request.job_id,
+                        solver_run_count=len(hybrid_seeds),
+                        fully_served_candidate_count=0,
+                        candidates=[
+                            FleetOptimizationCandidate(
+                                rank=1,
+                                search_strategy=fallback_strategy.label,
+                                solver_objective=timeout_obj.selection_score_vnd,
+                                is_best_found=True,
+                                result=timeout_plan,
+                            )
+                        ],
+                        diagnostics=[
+                            f"Hết ngân sách tối ưu ({search_budget_seconds:g} giây): chưa kiểm chứng được phương án khả thi.",
+                            *search_errors[:2],
+                        ],
+                    )
                 details = "; ".join(search_errors + ([error] if error else []))
                 raise RuntimeError(
                     "Hybrid-first và OR-Tools fallback đều không trả được nghiệm: "
@@ -540,6 +637,7 @@ class MultiStartFleetOptimizer:
             evaluated_runs,
             all_order_ids,
             max_candidates=max_candidates,
+            max_routes_per_day=self.request.policy.max_routes_per_day,
         )
 
         batch_diagnostics = [

@@ -27,6 +27,7 @@ from app.models import (
 )
 from app.route_costing import calculate_late_delivery_penalty, calculate_route_economic_metrics
 from app.spatial_validator import SpatialValidator
+from app.packing_rules import resolve_can_rotate
 from app.planning_objective import apply_planning_objective
 
 from .daytime_cases import DaytimeShift
@@ -58,9 +59,20 @@ class PlanAuditor:
         self.request = request
         self.shift = shift
         # D11 is the same floor-rotation policy used by production builders and
-        # every benchmark converter, independently of legacy fixture flags.
-        self.cargo = {item.id: item.model_copy(update={"can_rotate": True})
-            for order in request.orders for item in order.items}
+        # every benchmark converter, independently of legacy fixture flags,
+        # unless explicit allowed_orientations locks a package.
+        self.cargo = {
+            item.id: item.model_copy(
+                update={
+                    "can_rotate": resolve_can_rotate(
+                        item,
+                        d11_default=True if getattr(request, "demo_stacking", None) is None else None,
+                    )
+                }
+            )
+            for order in request.orders
+            for item in order.items
+        }
         self.orders = {order.id: order for order in request.orders}
         self.owner = {item.id: order.id for order in request.orders for item in order.items}
         self.order_index = {order.id: index for index, order in enumerate(request.orders)}
@@ -281,7 +293,10 @@ class PlanAuditor:
                 has_certificate = bool(states)
             if has_certificate:
                 certificate_routes += 1
-                error = verify_layout_certificate(view.vehicle, actions, layouts, sequences)
+                error = verify_layout_certificate(
+                    view.vehicle, actions, layouts, sequences,
+                    demo_stacking=self.request.demo_stacking,
+                )
                 if error is not None:
                     spatial_errors.append(error)
             else:

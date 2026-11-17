@@ -14,11 +14,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .models import (
+    DemoStackingPolicy,
     FleetOptimizationBatchResponse,
     FleetOptimizationRequest,
 )
 from .multi_start import MultiStartFleetOptimizer
-from .stacking import DemoStacks
 
 router = APIRouter(prefix="/demo", tags=["Demo Benchmarks"])
 
@@ -289,21 +289,26 @@ def run_demo_case(payload: DemoRunRequest) -> FleetOptimizationBatchResponse:
         )
 
     if payload.time_budget_seconds:
-        request.max_time_seconds = float(payload.time_budget_seconds)
+        request.max_time_seconds = int(round(payload.time_budget_seconds))
 
     # Chạy trực tiếp qua MultiStartFleetOptimizer (Hybrid ALNS first)
-    stacking_policy = request.demo_stacking if payload.demo_stacking_enabled is not False else None
+    if payload.demo_stacking_enabled is False:
+        stacking_policy = None
+    elif request.demo_stacking is not None:
+        stacking_policy = request.demo_stacking
+    elif payload.demo_stacking_enabled is True:
+        stacking_policy = DemoStackingPolicy(
+            max_tiers=3,
+            lift_clearance_cm=5.0,
+            owner_mode=payload.demo_stacking_owner_mode or "SAME_CUSTOMER",
+        )
+    else:
+        stacking_policy = None
     if stacking_policy and payload.demo_stacking_owner_mode:
         stacking_policy = stacking_policy.model_copy(update={"owner_mode": payload.demo_stacking_owner_mode})
-    stacks = DemoStacks(stacking_policy, request.vehicles) if stacking_policy else None
-    solver_request = request.model_copy(update={
-        "orders": stacks.bundle_orders(request.orders) if stacks else request.orders,
-        "demo_stacking": stacking_policy,
-    })
+    solver_request = request.model_copy(update={"demo_stacking": stacking_policy})
     optimizer = MultiStartFleetOptimizer(solver_request)
     batch = optimizer.solve(max_candidates=3)
-    if stacks:
-        batch = stacks.expand_batch(batch)
 
     # Đính kèm thông tin depot và baseline route_geometry cho từng route
     vehicle_map = {v.id: v for v in request.vehicles}

@@ -86,3 +86,11 @@ class Trial(BaseModel):
         if self.objective_profile == LEGACY_PROFILE:
             return "extra_order_trips", "routes", "operating_cost_vnd"
         return "extra_order_trips", "routes", "selection_score_vnd", "operating_cost_vnd", "physical_vehicles"
+
+
+def audited_quality(row: dict) -> tuple[int, ...]:
+    if row["cost_vnd"] is not None:
+        trial = Trial.model_validate(row)
+        if trial.audit_valid:
+            return (0, -trial.served_requests, -trial.delivered_packages, *trial.key)
+    return (1,)

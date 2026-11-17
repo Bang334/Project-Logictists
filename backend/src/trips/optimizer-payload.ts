@@ -1,10 +1,16 @@
 import type { CargoKind } from '@prisma/client';
 import { PackageMeasurements, packageTotals } from '../orders/package-measurements';
+import {
+  FloorOrientation,
+  isFloorRotationLocked,
+  normalizeAllowedOrientations,
+} from '../orders/package-orientations';
 export type PhysicalPackageLine = {
   id: string; orderId: string; description: string; quantity: number;
   packages: Array<PackageMeasurements & {
     id: string; orderItemId: string | null; cargoKind?: CargoKind;
     allowUpperTier?: boolean; noTopLoadRequested?: boolean; maxTopLoadG?: number | null;
+    allowedOrientations?: unknown;
   }>;
 };
 export type OptimizerCargoUnit = {
@@ -18,6 +24,7 @@ export type OptimizerCargoUnit = {
   height_cm: number;
   weight_kg: number;
   can_rotate: boolean;
+  allowed_orientations?: FloorOrientation[] | null;
   cargo_kind?: CargoKind;
   allow_upper_tier?: boolean;
   no_top_load_requested?: boolean;
@@ -33,11 +40,14 @@ export function packagesToCargoUnits(items: PhysicalPackageLine[], customerId?: 
       if (p.orderItemId !== item.id || seen.has(p.id)) throw new Error('ID kiện trùng hoặc sai dòng hàng');
       if (p.weightG > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Khối lượng vượt độ chính xác contract optimizer');
       seen.add(p.id);
+      const allowedOrientations = normalizeAllowedOrientations(p.allowedOrientations);
+      const canRotate = !isFloorRotationLocked(allowedOrientations);
       return {
         id: p.id, order_id: item.orderId, order_item_id: item.id, description: item.description,
         ...(customerId ? { customer_id: customerId } : {}),
         length_cm: p.lengthMm / 10, width_cm: p.widthMm / 10, height_cm: p.heightMm / 10,
-        weight_kg: Number(p.weightG) / 1000, can_rotate: true as const,
+        weight_kg: Number(p.weightG) / 1000, can_rotate: canRotate,
+        ...(allowedOrientations ? { allowed_orientations: allowedOrientations } : {}),
         ...(p.cargoKind && p.cargoKind !== 'UNCLASSIFIED' ? {
           cargo_kind: p.cargoKind, allow_upper_tier: p.allowUpperTier,
           no_top_load_requested: p.noTopLoadRequested, max_top_load_g: p.maxTopLoadG,

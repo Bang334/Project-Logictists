@@ -82,3 +82,17 @@ def test_customer_demo_modes_use_same_route_but_different_supports():
     assert all(item.z == 0 for state in same.spatial_validation.step_states for item in state.placed_items)
     assert any(item.item_id == "KIEN-B" and item.support_item_id == "KIEN-A"
                for state in any_customer.spatial_validation.step_states for item in state.placed_items)
+
+
+def test_custom_json_request_can_enable_demo_stacking():
+    payload = get_demo_case_payload("scenario_stack_cost_comparison")
+    payload["demo_stacking"] = None
+    batch = run_demo_case(DemoRunRequest(
+        custom_request=payload,
+        demo_stacking_enabled=True,
+        demo_stacking_owner_mode="ANY_CUSTOMER",
+        time_budget_seconds=5,
+    ))
+    result = batch.candidates[0].result
+    assert result.status == "SUCCESS" and len(result.routes) == 1
+    assert any((item.z or 0) > 0 for state in result.routes[0].spatial_validation.step_states for item in state.placed_items)

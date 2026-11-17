@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsEnum,
   IsISO8601,
   IsInt,
@@ -17,6 +18,11 @@ export class RunAutomaticOptimizationDto {
   @IsOptional()
   @IsUUID()
   deliveryBatchId?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  replanWithFleet?: boolean;
+
   @IsUUID()
   idempotencyKey!: string;
 

@@ -1,4 +1,4 @@
-import { IsEnum, IsISO8601, IsInt, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsEnum, IsISO8601, IsInt, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min } from 'class-validator';
 
 export class ProposeDeliveryBatchDto {
   @IsUUID() jobId!: string;
@@ -21,4 +21,5 @@ export class RespondDeliveryAppointmentDto {
 export class OptimizeDeliveryBatchDto {
   @IsUUID() idempotencyKey!: string;
   @IsOptional() @IsInt() @Min(1) @Max(120) searchBudgetSeconds?: number;
+  @IsOptional() @IsBoolean() replanWithFleet?: boolean;
 }

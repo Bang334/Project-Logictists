@@ -12,6 +12,7 @@ export class PackageInputDto {
   @IsOptional() @IsBoolean() allowUpperTier?: boolean;
   @IsOptional() @IsBoolean() noTopLoadRequested?: boolean;
   @IsOptional() @IsInt() @Min(1) @Max(2147483647) maxTopLoadG?: number | null;
+  @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayMaxSize(2) @IsIn(['LWH', 'WLH', 'DEFAULT'], { each: true }) allowedOrientations?: string[] | null;
 }
 export class CreateOrderItemDto {
   @IsOptional() @IsUUID() id?: string;

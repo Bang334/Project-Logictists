@@ -9,6 +9,10 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { ConfirmOrderDto, UpdateOrderDto } from './dto/update-order.dto';
 import { assertDispatchableOrder, assertPackageManifest, orderFieldError, orderInclude, OrderRecord, serializeOrder, validateOrderInput } from './order-contract';
 import { packageTotals } from './package-measurements';
+import {
+  normalizeAllowedOrientations,
+  parseAllowedOrientationsInput,
+} from './package-orientations';
 import { hasOptionalTopLoadProtection, readTopLoadProtectionFee, TOP_LOAD_PROTECTION_CHARGE } from './top-load-protection';
 
 function json(value: unknown): Prisma.InputJsonValue { return JSON.parse(JSON.stringify(value)); }
@@ -116,12 +120,19 @@ export class OrdersService {
         ...dto,
         items: dto.items.map(item => ({ ...item, packages: item.packages.map(pkg => {
           const previous = pkg.id ? existingPackages.get(pkg.id) : undefined;
-          if (!previous || (pkg.cargoKind != null && pkg.cargoKind !== previous.cargoKind)) return pkg;
+          const preservedOrientations =
+            pkg.allowedOrientations === undefined && previous
+              ? normalizeAllowedOrientations(previous.allowedOrientations)
+              : pkg.allowedOrientations;
+          if (!previous || (pkg.cargoKind != null && pkg.cargoKind !== previous.cargoKind)) {
+            return { ...pkg, allowedOrientations: preservedOrientations };
+          }
           return {
             ...pkg, cargoKind: previous.cargoKind,
             allowUpperTier: pkg.allowUpperTier ?? previous.allowUpperTier,
             noTopLoadRequested: pkg.noTopLoadRequested ?? previous.noTopLoadRequested,
             maxTopLoadG: pkg.maxTopLoadG === undefined ? previous.maxTopLoadG : pkg.maxTopLoadG,
+            allowedOrientations: preservedOrientations,
           };
         }) })),
       };
@@ -142,7 +153,7 @@ export class OrdersService {
       const order = await this.lockedOrder(tx, id, user, dto.version);
       if (order.status !== 'DRAFT') throw new ConflictException({ code: 'ORDER_NOT_DRAFT', message: 'Chỉ xác nhận đơn nháp' });
       assertPackageManifest(order);
-      validateOrderInput({ ...order, notes: order.notes ?? undefined, stops: order.stops.map(s => ({ ...s, type: s.type === 'PICKUP' ? 'PICKUP' : 'DELIVERY', windowStart: s.windowStart?.toISOString(), windowEnd: s.windowEnd?.toISOString() })), items: order.items.map(i => ({ ...i, sku: i.sku ?? undefined, packages: i.packages.map(p => ({ ...p, weightG: p.weightG.toString() })) })) }, true);
+      validateOrderInput({ ...order, notes: order.notes ?? undefined, stops: order.stops.map(s => ({ ...s, type: s.type === 'PICKUP' ? 'PICKUP' : 'DELIVERY', windowStart: s.windowStart?.toISOString(), windowEnd: s.windowEnd?.toISOString() })), items: order.items.map(i => ({ ...i, sku: i.sku ?? undefined, packages: i.packages.map(p => ({ ...p, weightG: p.weightG.toString(), allowedOrientations: normalizeAllowedOrientations(p.allowedOrientations) })) })) }, true);
       await this.access.branch(user, 'orders.write', order.branchId, tx);
       await this.access.customer(user, order.customerId, order.branchId, tx);
       const charge = order.charges?.[0];
@@ -192,14 +203,16 @@ export class OrdersService {
       const data = { orderId, sku: item.sku ?? null, description: item.description.trim(), packageType: item.packageType, quantity: totals.totalPackages, weightKg: Number(totals.weightG) / 1000, volumeM3: Number(totals.volumeMm3) / 1e9, lengthCm: null, widthCm: null, heightCm: null };
       const line = item.id ? await tx.orderItem.update({ where: { id: item.id }, data }) : await tx.orderItem.create({ data });
       for (const p of item.packages) {
+        const normalizedOrientations = parseAllowedOrientationsInput(p.allowedOrientations);
         const data = {
           lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: BigInt(p.weightG),
           cargoKind: p.cargoKind ?? 'UNCLASSIFIED', allowUpperTier: p.allowUpperTier ?? false,
           noTopLoadRequested: p.noTopLoadRequested ?? false, maxTopLoadG: p.maxTopLoadG ?? null,
-          measurementSource: 'USER_DECLARED', status,
-        } as const;
+          allowedOrientations: normalizedOrientations === null ? Prisma.DbNull : normalizedOrientations,
+          measurementSource: 'USER_DECLARED' as const, status,
+        };
         if (p.id) await tx.package.update({ where: { id: p.id }, data: { ...data, version: { increment: 1 } } });
-        else await tx.package.create({ data: { ...data, orderItemId: line.id, packageCode: 'PKG-' + randomUUID().toUpperCase(), allowedOrientations: Prisma.DbNull } });
+        else await tx.package.create({ data: { ...data, orderItemId: line.id, packageCode: 'PKG-' + randomUUID().toUpperCase() } });
       }
     }
     const totals = packageTotals(dto.items.flatMap(i => i.packages.map(p => ({ ...p, weightG: BigInt(p.weightG) }))));

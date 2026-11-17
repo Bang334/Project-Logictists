@@ -1,4 +1,7 @@
 import type { PackageHandling } from './orders';
+import type { WeightBalanceMetrics } from '../utils/weightBalance';
+
+export type { WeightBalanceMetrics };
 
 export interface User {
   role?: 'ADMIN' | 'DISPATCHER' | 'STAFF' | 'CUSTOMER' | 'DRIVER';
@@ -266,6 +269,9 @@ export interface PlacedItemUI {
   width_cm: number;
   height_cm: number;
   weight_kg: number;
+  cargo_kind?: 'UNCLASSIFIED' | 'STANDARD' | 'FRAGILE' | null;
+  no_top_load_requested?: boolean | null;
+  floor_rotation_locked?: boolean | null;
 }
 
 export interface PackageAccessPathUI {
@@ -286,6 +292,7 @@ export interface FloorStepStateUI {
   floor_area_cm2: number;
   weight_utilization_percent: number;
   area_utilization_percent: number;
+  weight_balance?: WeightBalanceMetrics | null;
   is_valid: boolean;
   unload_sequence?: string[];
   package_access_paths?: PackageAccessPathUI[];
@@ -298,6 +305,7 @@ export interface SpatialValidationUI {
   error_message?: string;
   max_weight_kg: number;
   max_area_cm2: number;
+  max_lateral_imbalance_percent?: number;
   step_states: FloorStepStateUI[];
 }
 
@@ -355,6 +363,7 @@ export interface OptimizedRouteUI {
   plate_number: string;
   vehicle_length_cm: number;
   vehicle_width_cm: number;
+  vehicle_height_cm?: number;
   driver_id?: string;
   driver_name?: string;
   driver_license_class?: string;
@@ -579,6 +588,7 @@ export interface DemoCaseSummaryUI {
 }
 
 export interface RunDemoOptimizationPayloadUI {
+  branchId?: string;
   demoStackingEnabled?: boolean;
   demoStackingOwnerMode?: DemoStackingOwnerMode;
   caseId?: string;

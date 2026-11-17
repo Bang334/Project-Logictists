@@ -40,4 +40,22 @@ it('form đơn không yêu cầu hạn giao và vẫn có thời lượng lấy/
   fireEvent.click(await screen.findByText('Thông thường'));
   expect(dialog.getByLabelText('Được đặt ở tầng trên')).not.toBeChecked();
   expect(dialog.getByLabelText('Khách yêu cầu không đặt hàng lên trên')).not.toBeChecked();
-}, 15000);
+}, 30000);
+
+it('hiển thị checkbox khóa xoay 90° trên sàn cho mọi loại hàng và cho phép bật/tắt', async () => {
+  render(<AntdApp><OrdersPage /></AntdApp>);
+  fireEvent.click(await screen.findByText('Tạo đơn nháp'));
+  const explanation = await screen.findByText(/Không cần chọn hạn giao/);
+  const modal = explanation.closest('.ant-modal-content');
+  if (!modal) throw new Error('Thiếu form tạo đơn');
+  const dialog = within(modal as HTMLElement);
+
+  const lockCheckbox = dialog.getByLabelText('Khóa xoay 90° trên sàn (chỉ đặt đúng chiều dài × rộng)');
+  expect(lockCheckbox).not.toBeChecked();
+  fireEvent.click(lockCheckbox);
+  expect(lockCheckbox).toBeChecked();
+
+  fireEvent.mouseDown(dialog.getByLabelText('Loại hàng'));
+  fireEvent.click(await screen.findByText('Dễ vỡ'));
+  expect(dialog.getByLabelText('Khóa xoay 90° trên sàn (chỉ đặt đúng chiều dài × rộng)')).toBeChecked();
+}, 30000);

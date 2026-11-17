@@ -106,7 +106,11 @@ def solve_greedy(
 
             # Keep a cheap conservative seed; layout search remains available
             # in the improvement neighborhoods without replacing this fallback.
-            checker = FastPackingChecker(vehicle, allow_layout_search=False)
+            checker = FastPackingChecker(
+                vehicle,
+                allow_layout_search=False,
+                demo_stacking=getattr(policy, "demo_stacking", None),
+            )
 
             depot_idx = node_id_to_index.get(vehicle.depot.id, 0)
 

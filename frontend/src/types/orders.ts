@@ -5,6 +5,7 @@ export interface PackageHandling {
   allowUpperTier?: boolean;
   noTopLoadRequested?: boolean;
   maxTopLoadG?: number | null;
+  allowedOrientations?: string[] | null;
 }
 export interface PackageInput extends PackageHandling { id?: string; lengthMm: number; widthMm: number; heightMm: number; weightG: string }
 export interface OrderLineInput { id?: string; description: string; packageType: string; sku?: string; packages: PackageInput[] }
@@ -34,6 +35,7 @@ function assertOrder(x: unknown): asserts x is Order {
       && (p.allowUpperTier === undefined || typeof p.allowUpperTier === 'boolean')
       && (p.noTopLoadRequested === undefined || typeof p.noTopLoadRequested === 'boolean')
       && (p.maxTopLoadG == null || (numeric(p.maxTopLoadG) && Number.isSafeInteger(p.maxTopLoadG) && p.maxTopLoadG > 0))
+      && (p.allowedOrientations === undefined || p.allowedOrientations === null || (Array.isArray(p.allowedOrientations) && p.allowedOrientations.every(v => typeof v === 'string')))
       && (x.packageDataStatus === 'LEGACY_REVIEW' || ([p.lengthMm, p.widthMm, p.heightMm].every(v => Number.isSafeInteger(v) && v > 0) && /^[1-9][0-9]*$/.test(p.weightG)))
       && nullableString(p.pickupStopId) && nullableString(p.deliveryStopId)))) throw new Error('Phản hồi đơn hàng không đúng hợp đồng dữ liệu');
 

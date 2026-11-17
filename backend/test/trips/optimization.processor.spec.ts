@@ -1,3 +1,5 @@
+import { BadRequestException, GatewayTimeoutException } from '@nestjs/common';
+import { UnrecoverableError } from 'bullmq';
 import { Role } from '@prisma/client';
 import { OptimizationProcessor } from '../../src/trips/optimization.processor';
 
@@ -310,6 +312,57 @@ describe('OptimizationProcessor', () => {
       data: expect.objectContaining({
         status: 'RETRYING',
         errorCode: 'OPTIMIZATION_FAILED',
+      }),
+    });
+  });
+
+  it('marks HTTP timeout as TIMEOUT and stops BullMQ retries with UnrecoverableError', async () => {
+    prisma.optimizationJob.findUnique.mockResolvedValue(persistedJob());
+    prisma.optimizationJob.updateMany.mockResolvedValue({ count: 1 });
+    trips.executeAutomaticOptimization.mockRejectedValue(
+      new GatewayTimeoutException('timeout of 120000ms exceeded'),
+    );
+
+    await expect(processor.process(queueJob() as never)).rejects.toThrow(
+      UnrecoverableError,
+    );
+    expect(prisma.optimizationJob.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 'job-1',
+        status: 'RUNNING',
+        leaseOwner: expect.any(String),
+      }),
+      data: expect.objectContaining({
+        status: 'TIMEOUT',
+        errorCode: 'OPTIMIZER_HTTP_TIMEOUT',
+        completedAt: expect.any(Date),
+      }),
+    });
+    expect(events.emitOptimizationJobUpdate).toHaveBeenCalledWith(
+      'branch-1',
+      expect.objectContaining({ jobId: 'job-1', status: 'TIMEOUT' }),
+    );
+  });
+
+  it('marks BadRequestException as FAILED immediately without retry', async () => {
+    prisma.optimizationJob.findUnique.mockResolvedValue(persistedJob());
+    prisma.optimizationJob.updateMany.mockResolvedValue({ count: 1 });
+    trips.executeAutomaticOptimization.mockRejectedValue(
+      new BadRequestException('Invalid snapshot'),
+    );
+
+    await expect(processor.process(queueJob() as never)).rejects.toThrow(
+      UnrecoverableError,
+    );
+    expect(prisma.optimizationJob.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 'job-1',
+        status: 'RUNNING',
+      }),
+      data: expect.objectContaining({
+        status: 'FAILED',
+        errorCode: 'HTTP_400',
+        completedAt: expect.any(Date),
       }),
     });
   });

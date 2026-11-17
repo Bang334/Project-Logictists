@@ -13,6 +13,7 @@ const OrdersPage = lazy(() => import('./pages/OrdersPage'));
 const FleetPage = lazy(() => import('./pages/FleetPage'));
 const DispatchPage = lazy(() => import('./pages/DispatchPage'));
 const AutomaticDispatchPage = lazy(() => import('./pages/AutomaticDispatchPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 
 const CustomerDeliveryInbox = lazy(() => import('./components/DeliveryAppointments').then(module => ({ default: module.CustomerDeliveryInbox })));
 
@@ -59,7 +60,9 @@ const MainLayout: React.FC = () => {
         return <DispatchPage />;
       case 'dispatch-auto':
       case 'tracking-demo':
-        return <AutomaticDispatchPage />;
+        return <AutomaticDispatchPage onNavigate={setCurrentTab} />;
+      case 'settings':
+        return <SettingsPage />;
       default:
         return <DashboardPage onNavigate={setCurrentTab} />;
     }

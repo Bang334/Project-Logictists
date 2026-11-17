@@ -20,6 +20,7 @@ from .models import (
     BenchmarkComparisonResponse,
     BenchmarkMetric,
     CargoItem,
+    DemoStackingPolicy,
     FloorState,
     FleetOptimizationRequest,
     FleetOptimizationResponse,
@@ -37,6 +38,7 @@ from .models import (
     can_driver_drive_vehicle,
 )
 from .planning_objective import calendar_salary_for_span
+from .packing_rules import resolve_can_rotate
 from .route_costing import (
     calculate_driver_cost,
     calculate_late_delivery_penalty,
@@ -45,13 +47,19 @@ from .route_costing import (
 from .request_preprocessor import split_infeasible_orders_across_fleet
 from .hybrid_alns.packing_checker import bounded_spatial_fallback
 from .spatial_validator import SpatialValidator
+from .stacking import (
+    fast_validate_stacked_route,
+    sync_route_stacking_unloads,
+    validate_stop_actions,
+)
 
 
 class FastLIFOPackingChecker:
     """Microsecond-fast non-stackable 2D floor packing with LIFO door clearance check."""
 
-    def __init__(self, vehicle: FleetVehicle):
+    def __init__(self, vehicle: FleetVehicle, *, demo_stacking: Optional[DemoStackingPolicy] = None):
         self.vehicle = vehicle
+        self.demo_stacking = demo_stacking
         self.bed_l = vehicle.length_cm
         self.bed_w = vehicle.width_cm
         self.bed_area = self.bed_l * self.bed_w
@@ -62,6 +70,14 @@ class FastLIFOPackingChecker:
         candidate_stops: List[ScheduledStop],
         cargo_by_id: Dict[str, CargoItem],
     ) -> Tuple[bool, str]:
+        if self.demo_stacking is not None:
+            return fast_validate_stacked_route(
+                self.vehicle,
+                candidate_stops,
+                cargo_by_id,
+                self.demo_stacking,
+                allow_layout_search=False,
+            )
         placed_boxes: List[Dict] = []
         onboard_weight = 0.0
 
@@ -126,7 +142,7 @@ class FastLIFOPackingChecker:
             return None
 
         orientations = [(item.length_cm, item.width_cm)]
-        if item.can_rotate and abs(item.length_cm - item.width_cm) > 0.1:
+        if resolve_can_rotate(item) and abs(item.length_cm - item.width_cm) > 0.1:
             orientations.append((item.width_cm, item.length_cm))
 
         candidate_positions = [(0.0, 0.0)]
@@ -196,7 +212,7 @@ class ALNSFleetOptimizer:
             for index, order in enumerate(self.orders)
         }
 
-        self.checkers = [FastLIFOPackingChecker(v) for v in self.vehicles]
+        self.checkers = [FastLIFOPackingChecker(v, demo_stacking=request.demo_stacking) for v in self.vehicles]
         self._packing_cache: Dict[
             Tuple[Tuple[object, ...], Tuple[Tuple[str, str], ...]], bool
         ] = {}
@@ -311,7 +327,9 @@ class ALNSFleetOptimizer:
 
         valid, _ = self.checkers[v_idx].validate_route_stops(cand_stops, self.cargo_by_id)
         if not valid and getattr(self, "_allow_layout_search", True):
-            valid = bounded_spatial_fallback(v, cand_stops, self.cargo_by_id)
+            valid = bounded_spatial_fallback(
+                v, cand_stops, self.cargo_by_id, demo_stacking=self.request.demo_stacking
+            )
         self._packing_cache[cache_key] = valid
         return valid
 
@@ -558,6 +576,17 @@ class ALNSFleetOptimizer:
                 )
 
                 if len(curr_stops) == 0:
+                    max_routes = getattr(self.request.policy, "max_routes_per_day", None)
+                    if (
+                        max_routes is not None
+                        and sum(
+                            1
+                            for idx, stops in enumerate(routes_stops)
+                            if stops and self.vehicles[idx].service_day_index == v.service_day_index
+                        )
+                        >= max_routes
+                    ):
+                        continue
                     v_type = (
                         v.payload_limit_kg,
                         v.length_cm,
@@ -735,9 +764,12 @@ class ALNSFleetOptimizer:
             if max_time_seconds is not None
             else {}
         )
-        return SpatialValidator(
-            self.vehicles[vehicle_index], **validator_kwargs
-        ).validate_plan(actions)
+        return validate_stop_actions(
+            self.request.demo_stacking,
+            self.vehicles[vehicle_index],
+            actions,
+            **validator_kwargs,
+        )
 
     def _build_final_response(
         self,
@@ -898,7 +930,12 @@ class ALNSFleetOptimizer:
 
                 action_items_load = [
                     self.cargo_by_id[item_id].model_copy(
-                        update={"can_rotate": True}
+                        update={
+                            "can_rotate": resolve_can_rotate(
+                                self.cargo_by_id[item_id],
+                                d11_default=True if self.request.demo_stacking is None else None,
+                            )
+                        }
                     )
                     for item_id in st.items_loaded
                     if item_id in self.cargo_by_id
@@ -956,6 +993,8 @@ class ALNSFleetOptimizer:
                 stop_actions,
                 max_time_seconds=spatial_route_budget,
             )
+            if self.request.demo_stacking is not None:
+                formatted_stops = sync_route_stacking_unloads(formatted_stops, spatial_res)
             remaining_route_count -= 1
             if not spatial_res.is_valid:
                 final_unassigned_ids.extend(
@@ -1005,6 +1044,7 @@ class ALNSFleetOptimizer:
                 plate_number=v.plate_number,
                 vehicle_length_cm=v.length_cm,
                 vehicle_width_cm=v.width_cm,
+                vehicle_height_cm=v.height_cm,
                 service_day_index=v.service_day_index,
                 start_time_sec=route_start_sec,
                 end_time_sec=route_end_sec,
@@ -1056,6 +1096,17 @@ class ALNSFleetOptimizer:
             for empty_v_idx, v in enumerate(self.vehicles):
                 if empty_v_idx in used_v_indices:
                     continue
+                max_routes = getattr(self.request.policy, "max_routes_per_day", None)
+                if (
+                    max_routes is not None
+                    and sum(
+                        1
+                        for idx in used_v_indices
+                        if self.vehicles[idx].service_day_index == v.service_day_index
+                    )
+                    >= max_routes
+                ):
+                    continue
                 current_salvaged_stops: List[ScheduledStop] = []
                 for oid in unassigned_candidates:
                     if oid in salvaged_order_ids:
@@ -1100,7 +1151,14 @@ class ALNSFleetOptimizer:
                     test_actions = []
                     for s_idx, st in enumerate(sched_test[0], start=1):
                         items_load = [
-                            self.cargo_by_id[item_id].model_copy(update={"can_rotate": True})
+                            self.cargo_by_id[item_id].model_copy(
+                                update={
+                                    "can_rotate": resolve_can_rotate(
+                                        self.cargo_by_id[item_id],
+                                        d11_default=True if self.request.demo_stacking is None else None,
+                                    )
+                                }
+                            )
                             for item_id in st.items_loaded
                             if item_id in self.cargo_by_id
                         ]
@@ -1144,7 +1202,14 @@ class ALNSFleetOptimizer:
                             )
                             f_stops.append(f_st)
                             action_load = [
-                                self.cargo_by_id[item_id].model_copy(update={"can_rotate": True})
+                                self.cargo_by_id[item_id].model_copy(
+                                    update={
+                                        "can_rotate": resolve_can_rotate(
+                                            self.cargo_by_id[item_id],
+                                            d11_default=True if self.request.demo_stacking is None else None,
+                                        )
+                                    }
+                                )
                                 for item_id in st.items_loaded
                                 if item_id in self.cargo_by_id
                             ]
@@ -1162,6 +1227,8 @@ class ALNSFleetOptimizer:
                         r_start = max(v.available_start_sec, f_st0.arrival_time_sec - f_st0.travel_time_sec)
                         r_dur = round((r_end - r_start) / 60.0, 1)
                         sp_final = self._validate_spatial_actions(empty_v_idx, s_actions, max_time_seconds=2.0)
+                        if self.request.demo_stacking is not None:
+                            f_stops = sync_route_stacking_unloads(f_stops, sp_final)
                         b_fuel, l_fuel, h_cost, t_km, t_hrs = calculate_route_economic_metrics(
                             self.request, nodes, order_by_id, v, f_stops
                         )
@@ -1194,6 +1261,7 @@ class ALNSFleetOptimizer:
                             plate_number=v.plate_number,
                             vehicle_length_cm=v.length_cm,
                             vehicle_width_cm=v.width_cm,
+                            vehicle_height_cm=v.height_cm,
                             service_day_index=v.service_day_index,
                             start_time_sec=r_start,
                             end_time_sec=r_end,

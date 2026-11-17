@@ -21,6 +21,7 @@ from .models import (
 from .planning_objective import calendar_salary_for_span
 from .route_costing import build_route_cost_breakdown
 from .spatial_validator import SpatialValidator
+from .stacking import effective_floor_capacity_cm2, sync_route_stacking_unloads, validate_stop_actions
 
 DIRECT_DESCRIPTION = "Mỗi chuyến chở một đơn. Xe và tài xế có thể chạy nhiều chuyến nối tiếp trong ca."
 
@@ -191,7 +192,7 @@ class BaselineCostCalculator:
                 for action in actions
                 for item in action.items_to_load
             }
-            vehicle_floor_area = vehicle.length_cm * vehicle.width_cm
+            vehicle_floor_area = effective_floor_capacity_cm2(vehicle, self.request.demo_stacking)
             for action in actions:
                 current_area += sum(item.length_cm * item.width_cm for item in action.items_to_load)
                 current_area -= sum(item_area_by_id.get(item_id, 0.0) for item_id in action.items_to_unload)
@@ -220,8 +221,15 @@ class BaselineCostCalculator:
                 vehicle.door_position,
             )
             if cache_key not in self._spatial_cache:
-                self._spatial_cache[cache_key] = SpatialValidator(vehicle, max_search_nodes=2000).validate_plan(actions)
+                self._spatial_cache[cache_key] = validate_stop_actions(
+                    self.request.demo_stacking,
+                    vehicle,
+                    actions,
+                    max_search_nodes=2000,
+                )
             spatial = self._spatial_cache[cache_key]
+            if self.request.demo_stacking is not None:
+                scheduled = sync_route_stacking_unloads(scheduled, spatial)
             if not spatial.is_valid:
                 violations.append(f"SPATIAL:{spatial.error_message or spatial.violation_code or 'Bố trí xếp/dỡ không hợp lệ'}")
         return _EvaluatedRoute(
@@ -493,6 +501,7 @@ class BaselineCostCalculator:
                     plate_number=vehicle.plate_number,
                     vehicle_length_cm=vehicle.length_cm,
                     vehicle_width_cm=vehicle.width_cm,
+                    vehicle_height_cm=vehicle.height_cm,
                     driver_id=driver.source_driver_id or driver.id,
                     driver_name=driver.full_name,
                     driver_license_class=driver.license_class,

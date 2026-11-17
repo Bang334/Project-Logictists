@@ -343,3 +343,98 @@ def test_optimizer_prunes_service_day_slots_that_cannot_serve_any_order():
         [702, 707, 708],
         [802, 807, 808],
     ]
+
+
+def test_is_fully_served_enforces_max_routes_per_day():
+    plan = _mock_plan("j-max-routes", "SUCCESS", 200_000, ["o1"])
+    second_route = plan.routes[0].model_copy(
+        update={"route_id": "veh-2", "vehicle_id": "veh-2", "plate_number": "79C-002"}
+    )
+    second_route.stops = [
+        stop.model_copy(
+            update={
+                "order_id": "o2",
+                "allocation_id": "o2",
+                "items_loaded": ["o2-it"] if stop.stop_type == "PICKUP" else [],
+                "items_unloaded": ["o2-it"] if stop.stop_type == "DELIVERY" else [],
+            }
+        )
+        for stop in second_route.stops
+    ]
+    two_route_plan = plan.model_copy(update={"routes": [plan.routes[0], second_route]})
+    assert is_fully_served(two_route_plan, {"o1", "o2"}, max_routes_per_day=None) is True
+    assert is_fully_served(two_route_plan, {"o1", "o2"}, max_routes_per_day=2) is True
+    assert is_fully_served(two_route_plan, {"o1", "o2"}, max_routes_per_day=1) is False
+
+
+def test_optimizer_respects_max_routes_per_day_cap():
+    depot = LocationPoint(id="depot", name="Kho", latitude=10.77, longitude=106.70)
+    vehicles = [
+        FleetVehicle(
+            id=f"veh-{idx}",
+            source_vehicle_id=f"veh-{idx}",
+            service_day_index=0,
+            plate_number=f"51C-00{idx}",
+            length_cm=220,
+            width_cm=150,
+            height_cm=150,
+            payload_limit_kg=1000,
+            depot=depot,
+            available_start_sec=0,
+            available_end_sec=40_000,
+            fuel_consumption_liters_per_100_km=12,
+            fixed_operating_cost_vnd=100_000,
+        )
+        for idx in (1, 2)
+    ]
+    drivers = [
+        DriverOption(
+            id=f"drv-{idx}",
+            source_driver_id=f"drv-{idx}",
+            service_day_index=0,
+            full_name=f"Tài xế {idx}",
+            fixed_salary_monthly_vnd=10_000_000,
+            trip_base_pay_vnd=100_000,
+            per_km_pay_vnd=1_000,
+        )
+        for idx in (1, 2)
+    ]
+    orders = [
+        OrderPair(
+            id=f"ord-{idx}",
+            order_number=f"ORD-{idx}",
+            pickup_location=LocationPoint(id=f"p-{idx}", name=f"P{idx}", latitude=10.78, longitude=106.71),
+            delivery_location=LocationPoint(id=f"d-{idx}", name=f"D{idx}", latitude=10.79, longitude=106.72),
+            items=[CargoItem(id=f"item-{idx}", order_id=f"ord-{idx}", length_cm=180, width_cm=130, height_cm=100, weight_kg=600)],
+            pickup_window_start_sec=0,
+            pickup_window_end_sec=450,
+            delivery_window_start_sec=0,
+            delivery_window_end_sec=2200,
+            service_time_sec=600,
+        )
+        for idx in (1, 2)
+    ]
+    size = len(vehicles) + 2 * len(orders)
+    distances = [[0 if i == j else 2000 for j in range(size)] for i in range(size)]
+    durations = [[0 if i == j else 300 for j in range(size)] for i in range(size)]
+    request = FleetOptimizationRequest(
+        job_id="max-routes-cap-test",
+        vehicles=vehicles,
+        drivers=drivers,
+        orders=orders,
+        policy=CostPolicy(
+            fuel_price_per_liter_vnd=23_500,
+            monthly_working_minutes=10_560,
+            max_routes_per_day=1,
+        ),
+        max_time_seconds=10,
+        distance_matrix_meters=distances,
+        duration_matrix_seconds=durations,
+    )
+
+    batch = MultiStartFleetOptimizer(request).solve(max_candidates=2)
+    assert len(batch.candidates) >= 1
+    assert all(len([r for r in candidate.result.routes if r.service_day_index == 0]) <= 1 for candidate in batch.candidates)
+    result = batch.candidates[0].result
+    assert len([r for r in result.routes if r.service_day_index == 0]) <= 1
+    assert len(result.unassigned_orders) == 1

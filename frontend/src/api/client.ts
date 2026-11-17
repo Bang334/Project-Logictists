@@ -2,6 +2,14 @@ import { OrderInput, OrderQuery, parseOrder, parseOrderPage } from '../types/ord
 import axios, { CanceledError, InternalAxiosRequestConfig } from 'axios';
 import { AccountQuery, CreateAccount, parseAccount, parseAccountList } from '../types/accounts';
 import {
+  EffectiveSettings,
+  ResetBranchOverridesPayload,
+  ScopedSettingsResponse,
+  SettingAuditLogsResponse,
+  UpdateBranchSettingsPayload,
+  UpdateCompanySettingsPayload,
+} from '../types/settings';
+import {
   Branch,
   ApplyOptimizationResponseUI,
   AutomaticOptimizationResponseUI,
@@ -266,4 +274,22 @@ export const mapboxApi = {
   getDrivingRouteThrough,
   getDrivingRoute: (startLng: number, startLat: number, endLng: number, endLat: number) =>
     getDrivingRouteThrough([[startLng, startLat], [endLng, endLat]]),
+};
+
+export const settingsApi = {
+  getCompany: () => apiClient.get<ScopedSettingsResponse>('/settings/company'),
+  updateCompany: (data: UpdateCompanySettingsPayload) =>
+    apiClient.put<ScopedSettingsResponse>('/settings/company', data),
+  getBranch: (branchId: string) =>
+    apiClient.get<ScopedSettingsResponse>(`/settings/branches/${branchId}`),
+  updateBranch: (branchId: string, data: UpdateBranchSettingsPayload) =>
+    apiClient.put<ScopedSettingsResponse>(`/settings/branches/${branchId}`, data),
+  resetBranchOverrides: (branchId: string, data: ResetBranchOverridesPayload) =>
+    apiClient.delete<ScopedSettingsResponse>(`/settings/branches/${branchId}/overrides`, { data }),
+  getEffective: (branchId?: string) =>
+    apiClient.get<EffectiveSettings>('/settings/effective', {
+      params: branchId ? { branchId } : undefined,
+    }),
+  getAuditLogs: (params?: { branchId?: string; page?: number; pageSize?: number }) =>
+    apiClient.get<SettingAuditLogsResponse>('/settings/audit-logs', { params }),
 };

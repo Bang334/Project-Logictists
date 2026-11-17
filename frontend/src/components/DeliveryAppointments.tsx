@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, DatePicker, Empty, Form, Input, InputNumber, List, Modal, Pagination, Space, Spin, Tag, Typography } from 'antd';
-import type { Dayjs } from 'dayjs';
+import dayjs, { type Dayjs } from 'dayjs';
 import { apiClient, apiErrorMessage } from '../api/client';
 import { getRealtimeSocket } from '../api/realtime';
 
@@ -78,8 +78,8 @@ export const CustomerDeliveryInbox: React.FC = () => {
     <Modal title="Yêu cầu đổi khung nhận hàng" open={!!changing} onCancel={() => { if (!busy) setChanging(null); }} onOk={() => form.submit()} confirmLoading={!!busy}>
       <Typography.Paragraph>Doanh nghiệp sẽ kiểm tra lại tuyến và năng lực trước khi gửi một đề xuất mới. Chỗ của khung cũ được giải phóng khi bạn gửi yêu cầu đổi.</Typography.Paragraph>
       <Form form={form} layout="vertical" onFinish={values => changing && void respond(changing, 'CHANGE_REQUESTED', values)}>
-        <Form.Item name="requestedStart" label="Có thể nhận từ (tùy chọn)"><DatePicker showTime format="DD/MM/YYYY HH:mm" /></Form.Item>
-        <Form.Item name="requestedEnd" label="Có thể nhận đến (tùy chọn)"><DatePicker showTime format="DD/MM/YYYY HH:mm" /></Form.Item>
+        <Form.Item name="requestedStart" label="Có thể nhận từ (tùy chọn)"><DatePicker showTime format="DD/MM/YYYY HH:mm" defaultPickerValue={changing ? dayjs(changing.windowStart) : undefined} /></Form.Item>
+        <Form.Item name="requestedEnd" label="Có thể nhận đến (tùy chọn)"><DatePicker showTime format="DD/MM/YYYY HH:mm" defaultPickerValue={changing ? dayjs(changing.windowEnd) : undefined} /></Form.Item>
         <Form.Item name="note" label="Ghi chú"><Input.TextArea maxLength={500} /></Form.Item>
       </Form>
     </Modal>
@@ -112,7 +112,9 @@ export const DispatcherDeliveryPlanning: React.FC<{ branchId: string; jobId?: st
   const pendingCount = activeAppointments.filter(row => appointmentStatus(row) === 'PENDING').length;
   const changeCount = activeAppointments.filter(row => row.status === 'CHANGE_REQUESTED').length;
   const hasResponsesToTrack = confirmedCount + pendingCount + changeCount > 0;
-  const showProposal = canPropose && !!jobId && !batches.some(batch => batch.finalOptimizationJobId === jobId);
+  const showProposal = canPropose && !!jobId && !batches.some(
+    batch => batch.finalOptimizationJobId === jobId && (batch.status !== 'OFFERING' || !batch.appointments.some(row => row.status === 'CHANGE_REQUESTED')),
+  );
   const openDialog = (next: 'propose' | 'responses') => { setError(''); setDialog(next); };
   const closeDialog = () => { if (!busy) setDialog(null); };
   const propose = async (values: { windowMinutes: number; expiresAt: Dayjs }) => {
@@ -132,17 +134,21 @@ export const DispatcherDeliveryPlanning: React.FC<{ branchId: string; jobId?: st
     catch (failure) { setError(apiErrorMessage(failure)); }
     finally { setBusy(false); }
   };
-  const optimize = async (batch: DeliveryBatch) => {
+  const optimize = async (batch: DeliveryBatch, replanWithFleet = false) => {
     if (busy) return;
     setBusy(true); setError('');
     try {
-      if (batch.finalOptimizationJobId) {
+      const cacheKey = `${batch.id}:${replanWithFleet ? 'replan' : 'confirm'}`;
+      if (batch.finalOptimizationJobId && !replanWithFleet) {
         const previous = await apiClient.get<{ status: string }>(`/trips/automatic-optimization/jobs/${batch.finalOptimizationJobId}`);
         if (!['FAILED','CANCELLED','INFEASIBLE','TIMEOUT','PARTIAL'].includes(previous.data.status)) { await onJob(batch.finalOptimizationJobId); setDialog(null); return; }
-        optimizeKeys.current.delete(batch.id);
+        optimizeKeys.current.delete(cacheKey);
       }
-      const key = optimizeKeys.current.get(batch.id) ?? crypto.randomUUID(); optimizeKeys.current.set(batch.id, key);
-      const response = await apiClient.post<{ id: string }>(`/delivery-planning/batches/${batch.id}/optimize`, { idempotencyKey: key });
+      const key = optimizeKeys.current.get(cacheKey) ?? crypto.randomUUID(); optimizeKeys.current.set(cacheKey, key);
+      const response = await apiClient.post<{ id: string }>(
+        `/delivery-planning/batches/${batch.id}/optimize`,
+        { idempotencyKey: key, ...(replanWithFleet ? { replanWithFleet: true } : {}) },
+      );
       await onJob(response.data.id); setDialog(null); await refresh();
     } catch (failure) { setError(apiErrorMessage(failure)); }
     finally { setBusy(false); }
@@ -162,12 +168,16 @@ export const DispatcherDeliveryPlanning: React.FC<{ branchId: string; jobId?: st
       <List dataSource={batches} locale={{ emptyText: 'Chưa có đợt hẹn giao' }} renderItem={batch => {
         const pending = batch.appointments.filter(row => appointmentStatus(row) === 'PENDING').length;
         const confirmed = batch.appointments.filter(row => row.status === 'CONFIRMED').length;
+        const changed = batch.appointments.filter(row => row.status === 'CHANGE_REQUESTED').length;
         return <List.Item key={batch.id}><Space direction="vertical" style={{ width: '100%' }}>
           <Space wrap>
             <Tag>{labels[batch.status] ?? batch.status}</Tag>
-            <Typography.Text>Hạn phản hồi {dateTime(batch.expiresAt)} · {confirmed} xác nhận · {pending} đang chờ</Typography.Text>
-            {batch.status === 'OFFERING' && <Button disabled={pending > 0 || confirmed === 0 || busy} loading={busy} onClick={() => void optimize(batch)}>
-              {batch.finalOptimizationJobId ? 'Xem lượt tối ưu chốt' : 'Tối ưu chốt các đơn đã xác nhận'}
+            <Typography.Text>Hạn phản hồi {dateTime(batch.expiresAt)} · {confirmed} xác nhận · {pending} đang chờ{changed > 0 ? ` · ${changed} yêu cầu đổi khung` : ''}</Typography.Text>
+            {batch.status === 'OFFERING' && <Button disabled={pending > 0 || confirmed === 0 || busy} loading={busy} onClick={() => void optimize(batch, false)}>
+              {batch.finalOptimizationJobId && changed === 0 ? 'Xem lượt tối ưu chốt' : 'Tối ưu chốt các đơn đã xác nhận'}
+            </Button>}
+            {batch.status === 'OFFERING' && changed > 0 && <Button type="primary" disabled={pending > 0 || busy} loading={busy} onClick={() => void optimize(batch, true)}>
+              Tối ưu lại cùng xe & đơn khác
             </Button>}
           </Space>
           {batch.appointments.map(row => <div key={row.id}>

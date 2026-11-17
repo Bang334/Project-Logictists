@@ -1,6 +1,9 @@
-import { IsBoolean, IsIn, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsNumber, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
 
 export class RunDemoOptimizationDto {
+  @IsOptional()
+  @IsUUID()
+  branchId?: string;
   @IsOptional()
   @IsBoolean()
   demoStackingEnabled?: boolean;

@@ -211,6 +211,18 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
                         max_w = w
             for tgt_i in empty_indices:
                 tgt_v = self.vehicles[tgt_i]
+                max_routes = getattr(self.request.policy, "max_routes_per_day", None)
+                if (
+                    max_routes is not None
+                    and tgt_v.service_day_index != src_v.service_day_index
+                    and sum(
+                        1
+                        for idx, r in enumerate(routes)
+                        if r and self.vehicles[idx].service_day_index == tgt_v.service_day_index
+                    )
+                    >= max_routes
+                ):
+                    continue
                 if (
                     tgt_v.service_day_index >= src_v.service_day_index
                     and tgt_v.fixed_operating_cost_vnd >= src_v.fixed_operating_cost_vnd

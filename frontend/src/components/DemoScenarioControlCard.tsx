@@ -34,6 +34,7 @@ interface DemoScenarioControlCardProps {
   onChangeStacking: (enabled: boolean) => void;
   stackingOwnerMode?: DemoStackingOwnerMode;
   onChangeStackingOwnerMode?: (mode: DemoStackingOwnerMode) => void;
+  allowOverride?: boolean;
   stackingComparison?: Partial<Record<'off' | 'on', OptimizationCandidateSummaryUI>>;
   cases: DemoCaseSummaryUI[];
   loadingCases: boolean;
@@ -56,6 +57,7 @@ export const DemoScenarioControlCard: React.FC<DemoScenarioControlCardProps> = (
   onChangeStacking,
   stackingOwnerMode = 'SAME_CUSTOMER',
   onChangeStackingOwnerMode,
+  allowOverride = true,
   stackingComparison,
   cases,
   loadingCases,
@@ -134,6 +136,87 @@ export const DemoScenarioControlCard: React.FC<DemoScenarioControlCardProps> = (
     return false;
   };
 
+  const renderBudgetAndStackingControls = (stackedLayout: boolean) => (
+    <>
+      <Col xs={24} md={stackedLayout ? 6 : 12} lg={6}>
+        <Text type="secondary" style={{ display: 'block', marginBottom: 4, fontWeight: 600, fontSize: 12 }}>
+          NGÂN SÁCH TÌM KIẾM
+        </Text>
+        <Space align="center">
+          <InputNumber
+            min={1}
+            max={120}
+            precision={0}
+            value={timeBudgetSeconds}
+            onChange={(v) => onChangeTimeBudget(v || 6)}
+            addonAfter="giây"
+            disabled={running || !allowOverride}
+            style={{ width: 140 }}
+          />
+          {!isCustomUpload && selectedCase && (
+            <Tooltip title="Khuyến nghị thời gian chạy tối ưu cho bài toán này">
+              <Tag color="purple" style={{ margin: 0, borderRadius: 6 }}>
+                Gợi ý: {selectedCase.suggested_time_limit_sec}s
+              </Tag>
+            </Tooltip>
+          )}
+        </Space>
+        {(isCustomUpload || selectedCase?.supports_stacking) && (
+          <div style={{ marginTop: 8 }}>
+            <Checkbox
+              checked={stackingEnabled}
+              disabled={running || !allowOverride}
+              onChange={(event) => onChangeStacking(event.target.checked)}
+            >
+              Cho phép xếp chồng demo
+            </Checkbox>
+            {stackingEnabled && (
+              <Select<DemoStackingOwnerMode>
+                aria-label="Chế độ xếp chồng theo khách hàng"
+                size="small"
+                value={stackingOwnerMode}
+                disabled={running || !allowOverride}
+                onChange={onChangeStackingOwnerMode}
+                style={{ marginTop: stackedLayout ? 6 : 0, width: stackedLayout ? '100%' : undefined }}
+                options={[
+                  { value: 'SAME_CUSTOMER', label: 'Chỉ kiện cùng khách hàng' },
+                  { value: 'ANY_CUSTOMER', label: 'Cho phép kiện khác khách hàng' },
+                ]}
+              />
+            )}
+            {!allowOverride && (
+              <Tag color="default" style={{ marginTop: 6 }}>
+                Khóa theo Cấu hình chung
+              </Tag>
+            )}
+          </div>
+        )}
+      </Col>
+
+      <Col xs={24} md={stackedLayout ? 6 : 24} lg={stackedLayout ? 6 : 8} style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'flex-end' }}>
+        <Button
+          type="primary"
+          size="large"
+          icon={<ThunderboltOutlined style={{ fontSize: 18, color: '#fbbf24' }} />}
+          loading={running}
+          onClick={onRunDemo}
+          style={{
+            background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
+            borderColor: '#6d28d9',
+            height: 44,
+            padding: '0 28px',
+            fontWeight: 700,
+            fontSize: 15,
+            borderRadius: 8,
+            boxShadow: '0 4px 14px rgba(109, 40, 217, 0.3)',
+          }}
+        >
+          Chạy tối ưu Demo
+        </Button>
+      </Col>
+    </>
+  );
+
   return (
     <Card
       bordered={false}
@@ -200,24 +283,29 @@ export const DemoScenarioControlCard: React.FC<DemoScenarioControlCardProps> = (
 
       {isCustomUpload ? (
         <div style={{ padding: '16px', background: '#ffffff', borderRadius: 10, border: '1px dashed #7c3aed', marginBottom: 16 }}>
-          <Space direction="vertical" style={{ width: '100%' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Text strong style={{ color: '#5b21b6' }}>
-                <FileTextOutlined style={{ marginRight: 6 }} />
-                Nạp tệp JSON cấu hình FleetOptimizationRequest riêng:
-              </Text>
-              <Upload beforeUpload={handleFileUpload} showUploadList={false} accept=".json">
-                <Button icon={<UploadOutlined />} type="dashed" style={{ borderColor: '#7c3aed', color: '#6d28d9' }}>
-                  Chọn tệp JSON từ máy tính
-                </Button>
-              </Upload>
-            </div>
-            {customFileName && (
-              <Tag color="success" style={{ padding: '4px 10px', fontSize: 13, borderRadius: 6 }}>
-                ✓ Đã nạp tệp: <strong>{customFileName}</strong>
-              </Tag>
-            )}
-          </Space>
+          <Row gutter={[16, 12]} align="middle">
+            <Col xs={24} md={12}>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                  <Text strong style={{ color: '#5b21b6' }}>
+                    <FileTextOutlined style={{ marginRight: 6 }} />
+                    Nạp tệp JSON cấu hình FleetOptimizationRequest riêng:
+                  </Text>
+                  <Upload beforeUpload={handleFileUpload} showUploadList={false} accept=".json">
+                    <Button icon={<UploadOutlined />} type="dashed" style={{ borderColor: '#7c3aed', color: '#6d28d9' }}>
+                      Chọn tệp JSON từ máy tính
+                    </Button>
+                  </Upload>
+                </div>
+                {customFileName && (
+                  <Tag color="success" style={{ padding: '4px 10px', fontSize: 13, borderRadius: 6 }}>
+                    ✓ Đã nạp tệp: <strong>{customFileName}</strong>
+                  </Tag>
+                )}
+              </Space>
+            </Col>
+            {renderBudgetAndStackingControls(true)}
+          </Row>
         </div>
       ) : (
         <Row gutter={[16, 16]} align="middle" style={{ marginBottom: 16 }}>
@@ -243,64 +331,7 @@ export const DemoScenarioControlCard: React.FC<DemoScenarioControlCardProps> = (
               options={selectOptions}
             />
           </Col>
-
-          <Col xs={24} md={12} lg={6}>
-            <Text type="secondary" style={{ display: 'block', marginBottom: 4, fontWeight: 600, fontSize: 12 }}>
-              NGÂN SÁCH TÌM KIẾM
-            </Text>
-            <Space align="center">
-              <InputNumber
-                min={1}
-                max={120}
-                precision={0}
-                value={timeBudgetSeconds}
-                onChange={(v) => onChangeTimeBudget(v || 6)}
-                addonAfter="giây"
-                disabled={running}
-                style={{ width: 140 }}
-              />
-              {selectedCase && (
-                <Tooltip title="Khuyến nghị thời gian chạy tối ưu cho bài toán này">
-                  <Tag color="purple" style={{ margin: 0, borderRadius: 6 }}>
-                    Gợi ý: {selectedCase.suggested_time_limit_sec}s
-                  </Tag>
-                </Tooltip>
-              )}
-            </Space>
-            {selectedCase?.supports_stacking && <div style={{ marginTop: 8 }}>
-              <Checkbox checked={stackingEnabled} disabled={running} onChange={event => onChangeStacking(event.target.checked)}>
-                Cho phép xếp chồng demo
-              </Checkbox>
-              {stackingEnabled && <Select<DemoStackingOwnerMode> aria-label="Chế độ xếp chồng theo khách hàng"
-                size="small" value={stackingOwnerMode} disabled={running} onChange={onChangeStackingOwnerMode}
-                options={[
-                  { value: 'SAME_CUSTOMER', label: 'Chỉ kiện cùng khách hàng' },
-                  { value: 'ANY_CUSTOMER', label: 'Cho phép kiện khác khách hàng' },
-                ]} />}
-            </div>}
-          </Col>
-
-          <Col xs={24} md={24} lg={8} style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'flex-end' }}>
-            <Button
-              type="primary"
-              size="large"
-              icon={<ThunderboltOutlined style={{ fontSize: 18, color: '#fbbf24' }} />}
-              loading={running}
-              onClick={onRunDemo}
-              style={{
-                background: 'linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%)',
-                borderColor: '#6d28d9',
-                height: 44,
-                padding: '0 28px',
-                fontWeight: 700,
-                fontSize: 15,
-                borderRadius: 8,
-                boxShadow: '0 4px 14px rgba(109, 40, 217, 0.3)',
-              }}
-            >
-              Chạy tối ưu Demo
-            </Button>
-          </Col>
+          {renderBudgetAndStackingControls(false)}
         </Row>
       )}
 
@@ -377,7 +408,7 @@ export const DemoScenarioControlCard: React.FC<DemoScenarioControlCardProps> = (
           type="info"
           showIcon
           message="Đang hiển thị kết quả từ Chế độ Demo (Benchmark)"
-          description="Toàn bộ bản đồ lộ trình, danh sách điểm dừng, sơ đồ xếp dỡ 2D thùng xe và bảng đối chuẩn 4 thuật toán đều hiển thị đầy đủ bên dưới. Phương án demo không ghi đè dữ liệu chuyến thực tế trong cơ sở dữ liệu."
+          description="Toàn bộ bản đồ lộ trình, danh sách điểm dừng, sơ đồ xếp dỡ 2D/3D thùng xe và bảng đối chuẩn 4 thuật toán đều hiển thị đầy đủ bên dưới. Phương án demo không ghi đè dữ liệu chuyến thực tế trong cơ sở dữ liệu."
           style={{ marginTop: 14, borderRadius: 8, borderColor: '#c4b5fd', background: '#f5f3ff' }}
         />
       )}

@@ -12,6 +12,8 @@ from .models import (
     VehicleFloor,
 )
 from .spatial_validator import SpatialValidator
+from .packing_rules import resolve_can_rotate
+from .stacking import effective_floor_capacity_cm2, validate_stop_actions
 
 
 _GEOMETRY_TOLERANCE = 0.01
@@ -108,13 +110,17 @@ def prune_unserviceable_virtual_resources(
     return FleetOptimizationRequest(**payload), removed_count
 
 
-def _cargo_fits_vehicle(cargo: CargoItem, vehicle: FleetVehicle) -> bool:
+def _cargo_fits_vehicle(
+    cargo: CargoItem,
+    vehicle: FleetVehicle,
+    demo_stacking: Optional[object] = None,
+) -> bool:
     if cargo.weight_kg > vehicle.payload_limit_kg + _GEOMETRY_TOLERANCE:
         return False
     if cargo.height_cm > vehicle.height_cm + _GEOMETRY_TOLERANCE:
         return False
     orientations = [(cargo.length_cm, cargo.width_cm)]
-    if cargo.can_rotate:
+    if resolve_can_rotate(cargo, d11_default=True if demo_stacking is None else None):
         orientations.append((cargo.width_cm, cargo.length_cm))
     return any(
         length <= vehicle.length_cm + _GEOMETRY_TOLERANCE
@@ -137,11 +143,12 @@ def _allocate_cargo_to_vehicles(
     physical_vehicles: List[FleetVehicle],
     fits_set_fn,
     min_bins_override: int = 1,
+    demo_stacking: Optional[object] = None,
 ) -> Optional[List[Tuple[FleetVehicle, List[CargoItem]]]]:
     bins: List[Tuple[FleetVehicle, List[CargoItem]]] = sorted(
         [(v, []) for v in physical_vehicles],
         key=lambda pair: (
-            -(pair[0].length_cm * pair[0].width_cm),
+            -effective_floor_capacity_cm2(pair[0], demo_stacking),
             -pair[0].payload_limit_kg,
         ),
     )
@@ -151,7 +158,7 @@ def _allocate_cargo_to_vehicles(
     sorted_cargo = sorted(
         items,
         key=lambda c: (
-            sum(1 for v in physical_vehicles if _cargo_fits_vehicle(c, v)),
+            sum(1 for v in physical_vehicles if _cargo_fits_vehicle(c, v, demo_stacking)),
             -(c.length_cm * c.width_cm),
             -c.weight_kg,
             c.id,
@@ -162,7 +169,7 @@ def _allocate_cargo_to_vehicles(
     if (
         total_weight > sum(v.payload_limit_kg for v, _ in bins) + _GEOMETRY_TOLERANCE
         or total_area
-        > sum(v.length_cm * v.width_cm for v, _ in bins) + _GEOMETRY_TOLERANCE
+        > sum(effective_floor_capacity_cm2(v, demo_stacking) for v, _ in bins) + _GEOMETRY_TOLERANCE
     ):
         return None
 
@@ -172,7 +179,7 @@ def _allocate_cargo_to_vehicles(
             total_weight, [v.payload_limit_kg for v, _ in bins]
         ),
         _minimum_bin_count_for_total(
-            total_area, [v.length_cm * v.width_cm for v, _ in bins]
+            total_area, [effective_floor_capacity_cm2(v, demo_stacking) for v, _ in bins]
         ),
     )
     if min_vehicles > len(bins):
@@ -285,7 +292,7 @@ def split_infeasible_orders_across_fleet(
     def cargo_set_fits_vehicle(items: List[CargoItem], vehicle: FleetVehicle) -> Optional[bool]:
         if not items:
             return True
-        if not all(_cargo_fits_vehicle(item, vehicle) for item in items):
+        if not all(_cargo_fits_vehicle(item, vehicle, request.demo_stacking) for item in items):
             return False
         total_weight = sum(item.weight_kg for item in items)
         if total_weight > vehicle.payload_limit_kg + _GEOMETRY_TOLERANCE:
@@ -293,7 +300,7 @@ def split_infeasible_orders_across_fleet(
         total_area = sum(item.length_cm * item.width_cm for item in items)
         if (
             total_area
-            > vehicle.length_cm * vehicle.width_cm + _GEOMETRY_TOLERANCE
+            > effective_floor_capacity_cm2(vehicle, request.demo_stacking) + _GEOMETRY_TOLERANCE
         ):
             return False
         if len(items) == 1:
@@ -313,27 +320,21 @@ def split_infeasible_orders_across_fleet(
                         round(it.height_cm, 2),
                         round(it.weight_kg, 2),
                         it.can_rotate,
+                        tuple(it.allowed_orientations) if it.allowed_orientations is not None else None,
+                        it.cargo_kind,
+                        it.allow_upper_tier,
+                        it.no_top_load_requested,
+                        it.max_top_load_g,
+                        it.customer_id or it.order_id,
                     )
                     for it in items
                 )
             ),
+            request.demo_stacking.model_dump_json() if request.demo_stacking else None,
         )
         if cache_key in fit_cache:
             return fit_cache[cache_key]
 
-        validator = SpatialValidator(
-            VehicleFloor(
-                id=vehicle.id,
-                plate_number=vehicle.plate_number,
-                length_cm=vehicle.length_cm,
-                width_cm=vehicle.width_cm,
-                height_cm=vehicle.height_cm,
-                payload_limit_kg=vehicle.payload_limit_kg,
-                door_position=vehicle.door_position,
-            ),
-            max_search_nodes=2_500,
-            max_time_seconds=0.5,
-        )
         stops = [
             StopAction(
                 stop_id="pickup",
@@ -356,7 +357,13 @@ def split_infeasible_orders_across_fleet(
                 items_to_unload=[item.id for item in items],
             ),
         ]
-        result = validator.validate_plan(stops)
+        result = validate_stop_actions(
+            request.demo_stacking,
+            vehicle,
+            stops,
+            max_search_nodes=2_500,
+            max_time_seconds=0.5,
+        )
         # A search limit leaves feasibility unknown. It must neither force an
         # extra order trip nor count as a verified packing for a split bin.
         fit = None if result.violation_code == "PLACEMENT_SEARCH_LIMIT_REACHED" else result.is_valid
@@ -398,7 +405,7 @@ def split_infeasible_orders_across_fleet(
             continue
 
         if any(
-            not any(_cargo_fits_vehicle(item, vehicle) for vehicle in candidate_vehicles)
+            not any(_cargo_fits_vehicle(item, vehicle, request.demo_stacking) for vehicle in candidate_vehicles)
             for item in order.items
         ):
             new_orders.append(order)
@@ -410,6 +417,7 @@ def split_infeasible_orders_across_fleet(
             candidate_vehicles,
             lambda items, vehicle: cargo_set_fits_vehicle(items, vehicle) is True,
             min_bins_override=2 if force_split else 1,
+            demo_stacking=request.demo_stacking,
         )
         if not used_bins or len(used_bins) <= 1:
             new_orders.append(order)

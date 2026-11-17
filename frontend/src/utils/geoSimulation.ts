@@ -110,7 +110,6 @@ export function interpolateAlongRoute(
   bearing: number;
   segmentIndex: number;
   traveledKm: number;
-  traveledCoordinates: [number, number][];
 } {
   const { coordinates, cumulativeDistances, totalDistanceKm } = profile;
 
@@ -120,7 +119,6 @@ export function interpolateAlongRoute(
       bearing: 0,
       segmentIndex: 0,
       traveledKm: 0,
-      traveledCoordinates: [],
     };
   }
 
@@ -130,28 +128,21 @@ export function interpolateAlongRoute(
       bearing: 0,
       segmentIndex: 0,
       traveledKm: 0,
-      traveledCoordinates: [coordinates[0]],
     };
   }
 
   const clampedProgress = Math.max(0, Math.min(1, progress));
   const targetDistance = clampedProgress * totalDistanceKm;
 
-  // Find the segment where targetDistance falls
-  let segIndex = 0;
-  for (let i = 0; i < cumulativeDistances.length - 1; i++) {
-    if (
-      targetDistance >= cumulativeDistances[i] &&
-      targetDistance <= cumulativeDistances[i + 1]
-    ) {
-      segIndex = i;
-      break;
-    }
+  // Find the first segment ending at or beyond the current distance.
+  let low = 1;
+  let high = coordinates.length - 1;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (cumulativeDistances[middle] < targetDistance) low = middle + 1;
+    else high = middle;
   }
-
-  if (targetDistance >= totalDistanceKm) {
-    segIndex = coordinates.length - 2;
-  }
+  const segIndex = targetDistance >= totalDistanceKm ? coordinates.length - 2 : low - 1;
 
   const startCoord = coordinates[segIndex];
   const endCoord = coordinates[segIndex + 1];
@@ -172,15 +163,12 @@ export function interpolateAlongRoute(
   );
 
   const currentPoint: [number, number] = [interpolatedLng, interpolatedLat];
-  const traveledCoords = coordinates.slice(0, segIndex + 1);
-  traveledCoords.push(currentPoint);
 
   return {
     coord: currentPoint,
     bearing,
     segmentIndex: segIndex,
     traveledKm: targetDistance,
-    traveledCoordinates: traveledCoords,
   };
 }
 
@@ -345,10 +333,9 @@ export function getStepIndexForDistance(
 ): number {
   if (!milestonesKm || milestonesKm.length === 0) return 0;
 
-  // Nếu xe chưa chạm tới Stop 1 (dung sai 0.15 km): xe vẫn đang ở Bước 0 (Xuất bến, xe rỗng)
   let activeStep = 0;
   for (let i = 0; i < milestonesKm.length; i++) {
-    if (traveledKm >= milestonesKm[i] - 0.15) {
+    if (traveledKm + 1e-9 >= milestonesKm[i]) {
       activeStep = i + 1;
     } else {
       break;

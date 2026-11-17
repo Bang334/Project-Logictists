@@ -25,6 +25,7 @@ from app.models import (
     can_driver_drive_vehicle,
 )
 from app.spatial_validator import SpatialValidator
+from app.packing_rules import resolve_can_rotate
 from app.hybrid_alns.models import (
     CargoItem as HybridCargo,
     CostPolicy as HybridPolicy,
@@ -168,7 +169,11 @@ def convert_request_to_hybrid(
                         width_cm=float(item.width_cm),
                         height_cm=float(item.height_cm),
                         weight_kg=float(item.weight_kg),
-                        can_rotate=True,
+                        can_rotate=resolve_can_rotate(
+                            item,
+                            d11_default=True if getattr(request, "demo_stacking", None) is None else None,
+                        ),
+                        allowed_orientations=getattr(item, "allowed_orientations", None),
                         description=item.description or "",
                     )
                     for item in order.items

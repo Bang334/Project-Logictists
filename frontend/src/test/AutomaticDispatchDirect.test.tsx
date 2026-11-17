@@ -40,15 +40,17 @@ beforeAll(() => {
   Object.defineProperty(window, 'matchMedia', { configurable: true, value: () => ({
     matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {},
   }) });
+  Element.prototype.scrollIntoView = vi.fn();
 });
 afterEach(cleanup);
 
-it('chọn Chuyến đơn lẻ trong Demo và mô phỏng đúng xe của phương án đã chọn', async () => {
+it('chỉ mô phỏng tuyến đã chọn và dừng khi về tổng quan hoặc đổi phương án', async () => {
   const hybridRoute: OptimizedRouteUI = {
     route_id: 'hybrid-1', vehicle_id: 'vehicle-1', plate_number: 'HYBRID-01',
     driver_name: 'Tài xế A', service_day_index: 0, start_time_sec: 28_800, end_time_sec: 29_400,
     total_distance_km: 3, total_duration_minutes: 10, stops: [], vehicle_length_cm: 400, vehicle_width_cm: 200,
     depot: { id: 'depot', name: 'Kho', longitude: 105, latitude: 21 },
+    route_geometry: { type: 'LineString', coordinates: [[105, 21], [105.01, 21.01]] },
     spatial_validation: { is_valid: true, step_states: [], max_area_cm2: 0, max_weight_kg: 0 },
   };
   const directRoute: OptimizedRouteUI = {
@@ -98,6 +100,14 @@ it('chọn Chuyến đơn lẻ trong Demo và mô phỏng đúng xe của phươ
   render(<App><AutomaticDispatchPage /></App>);
   fireEvent.click(screen.getByText(/Thử nghiệm Demo Kịch bản mẫu/));
   await act(async () => { fireEvent.click(screen.getByText('Chạy tối ưu Demo')); });
+  expect(screen.getByText('Mô phỏng xe').closest('button')).toBeDisabled();
+  fireEvent.click(screen.getByText('Xem trên bản đồ ↑'));
+  fireEvent.click(screen.getByText('Mô phỏng xe'));
+  expect(screen.getByLabelText('Trạng thái bản đồ')).toHaveTextContent('HYBRID-01 đang chạy');
+  fireEvent.click(screen.getByText('Xem tất cả'));
+  expect(screen.getByLabelText('Trạng thái bản đồ')).not.toHaveTextContent('đang chạy');
+  expect(screen.getByText('Mô phỏng xe').closest('button')).toBeDisabled();
+
   await act(async () => { fireEvent.click(screen.getByLabelText('So sánh Chuyến đơn lẻ')); });
   expect(screen.getByLabelText('Trạng thái bản đồ')).toHaveTextContent('DIRECT-02 đang xem');
   expect(screen.getByText('Không tải được tuyến đường từ Mapbox.')).toBeInTheDocument();
@@ -113,5 +123,6 @@ it('chọn Chuyến đơn lẻ trong Demo và mô phỏng đúng xe của phươ
   expect(screen.getByLabelText('Trạng thái bản đồ')).toHaveAttribute('data-coordinates', JSON.stringify(roadCoordinates));
 
   fireEvent.click(screen.getByLabelText('So sánh phương án #1'));
-  expect(screen.getByLabelText('Trạng thái bản đồ')).toHaveTextContent('HYBRID-01 đang xem');
+  expect(screen.getByLabelText('Trạng thái bản đồ')).toHaveTextContent('đang xem');
+  expect(screen.getByText('Mô phỏng xe').closest('button')).toBeDisabled();
 }, 20_000);

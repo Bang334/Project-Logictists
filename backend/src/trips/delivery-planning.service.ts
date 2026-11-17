@@ -83,9 +83,25 @@ export class DeliveryPlanningService implements OnApplicationBootstrap, OnModule
         await tx.$queryRaw`SELECT id FROM optimization_jobs WHERE id = ${dto.jobId} FOR UPDATE`;
         const currentJob = await tx.optimizationJob.findUniqueOrThrow({ where: { id: dto.jobId } });
         if (!['SUCCEEDED','PARTIAL'].includes(currentJob.status)) throw new ConflictException('Job không còn sẵn sàng để gửi đề xuất');
-        const trips = await this.trips.validateDeliveryPlanningCandidate(proposal, signature, user, tx);
+        const supersededBatch = await tx.deliveryPlanningBatch.findUnique({ where: { finalOptimizationJobId: dto.jobId }, include: { appointments: true } });
+        if (supersededBatch) {
+          await tx.$queryRaw`SELECT id FROM delivery_planning_batches WHERE id = ${supersededBatch.id} FOR UPDATE`;
+        }
+        const ownBatchId = supersededBatch?.status === 'OFFERING' ? supersededBatch.id : undefined;
+        const trips = await this.trips.validateDeliveryPlanningCandidate(proposal, signature, user, tx, ownBatchId);
         const orders = await tx.order.findMany({ where: { id: { in: offers.map(row => row.orderId) } }, include: { customer: { include: { userAccounts: { where: { active: true } } } } } });
         if (orders.some(order => !order.customer.userId && !order.customer.userAccounts.length)) throw new BadRequestException('Có khách chưa liên kết tài khoản app; cần liên kết trước khi gửi đề xuất');
+        const previouslyConfirmed = new Map(
+          (supersededBatch?.status === 'OFFERING' ? supersededBatch.appointments : [])
+            .filter(row => row.status === 'CONFIRMED')
+            .map(row => [row.orderId, row]),
+        );
+        if (ownBatchId) {
+          await tx.deliveryCapacityHold.updateMany({ where: { batchId: ownBatchId, status: 'HELD' }, data: { status: 'RELEASED' } });
+          await tx.deliveryPlanningBatch.update({ where: { id: ownBatchId }, data: { status: 'CANCELLED', version: { increment: 1 } } });
+          await tx.deliveryAppointment.updateMany({ where: { batchId: ownBatchId, status: 'CONFIRMED' }, data: { status: 'CANCELLED', version: { increment: 1 } } });
+        }
+        const epochMs = Date.parse(proposal.planningEpochIso);
         const batch = await tx.deliveryPlanningBatch.create({ data: {
           branchId: proposal.branchId, sourceJobId: dto.jobId, candidateNumber: dto.candidateNumber,
           createdById: user.id, idempotencyKey: dto.idempotencyKey, requestHash: fingerprint,
@@ -94,13 +110,35 @@ export class DeliveryPlanningService implements OnApplicationBootstrap, OnModule
         for (const offer of offers) {
           const order = orders.find(row => row.id === offer.orderId);
           if (!order) throw new ConflictException('Đơn đã thay đổi');
-          const appointment = await tx.deliveryAppointment.create({ data: { ...offer, batchId: batch.id, customerId: order.customerId, expiresAt: batch.expiresAt } });
+          const confirmedPrior = previouslyConfirmed.get(offer.orderId);
+          const orderDeliveries = offerWitness.result.routes.flatMap(route =>
+            route.stops.filter(stop => stop.stop_type === 'DELIVERY' && stop.order_id === offer.orderId),
+          );
+          const preserveConfirmed = Boolean(
+            confirmedPrior &&
+            orderDeliveries.length > 0 &&
+            orderDeliveries.every(stop => {
+              const arrivalMs = epochMs + stop.arrival_time_sec * 1000;
+              return arrivalMs >= confirmedPrior.windowStart.getTime() && arrivalMs <= confirmedPrior.windowEnd.getTime();
+            }),
+          );
+          const appointment = await tx.deliveryAppointment.create({ data: {
+            orderId: offer.orderId,
+            windowStart: preserveConfirmed && confirmedPrior ? confirmedPrior.windowStart : offer.windowStart,
+            windowEnd: preserveConfirmed && confirmedPrior ? confirmedPrior.windowEnd : offer.windowEnd,
+            status: preserveConfirmed ? 'CONFIRMED' : 'PENDING',
+            respondedAt: preserveConfirmed && confirmedPrior ? confirmedPrior.respondedAt : null,
+            batchId: batch.id,
+            customerId: order.customerId,
+            expiresAt: batch.expiresAt,
+          } });
           await this.event(tx, appointment.id, order.customerId, appointment.version);
         }
         await tx.deliveryCapacityHold.createMany({ data: trips.map((trip, routeIndex) => ({ ...trip, routeIndex })).filter(trip => trip.orderIds.some(id => tomorrowOrders.has(id))).map((trip) => ({
           batchId: batch.id, routeIndex: trip.routeIndex, vehicleId: trip.vehicleId, driverId: trip.driverId,
           orderIds: trip.orderIds.filter(id => tomorrowOrders.has(id)), startsAt: trip.plannedStartTime, endsAt: trip.plannedEndTime, expiresAt: batch.expiresAt,
         })) });
+        if (previouslyConfirmed.size > 0) await refreshBatchHolds(tx, batch.id);
         return batch.id;
       }, { timeout: 30000 });
     } catch (error) {
@@ -174,9 +212,20 @@ export class DeliveryPlanningService implements OnApplicationBootstrap, OnModule
     await this.expire();
     const batch = await this.getBatch(user, id);
     if (batch.status !== 'OFFERING' || batch.appointments.some(row => row.status === 'PENDING')) throw new ConflictException('Cần nhận đủ phản hồi hoặc chờ hết hạn trước khi tối ưu chốt');
-    if (!batch.appointments.some(row => row.status === 'CONFIRMED')) throw new ConflictException('Chưa có khách xác nhận');
+    if (dto.replanWithFleet) {
+      if (!batch.appointments.some(row => row.status === 'CONFIRMED' || row.status === 'CHANGE_REQUESTED')) {
+        throw new ConflictException('Chưa có khách xác nhận hoặc yêu cầu đổi khung để tối ưu lại');
+      }
+    } else if (!batch.appointments.some(row => row.status === 'CONFIRMED')) {
+      throw new ConflictException('Chưa có khách xác nhận');
+    }
     const full = await this.prisma.deliveryPlanningBatch.findUniqueOrThrow({ where: { id } });
-    return this.jobs.create(user, { ...dto, branchId: full.branchId, deliveryBatchId: id });
+    return this.jobs.create(user, {
+      ...dto,
+      branchId: full.branchId,
+      deliveryBatchId: id,
+      ...(dto.replanWithFleet ? { replanWithFleet: true } : {}),
+    });
   }
   private event(tx: Prisma.TransactionClient, appointmentId: string, customerId: string, version: number) {
     return this.outbox.enqueue({ aggregateType: 'DeliveryAppointment', aggregateId: appointmentId, aggregateVersion: version,

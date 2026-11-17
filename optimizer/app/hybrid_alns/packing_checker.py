@@ -2,15 +2,17 @@
 
 from typing import Dict, List, Mapping, Optional, Sequence, Tuple, Union
 from .models import CargoItem, FleetVehicle, PlacedItem, ScheduledStop
-from ..models import CargoItem as ProductionCargo, FleetVehicle as ProductionVehicle
+from ..models import CargoItem as ProductionCargo, DemoStackingPolicy, FleetVehicle as ProductionVehicle
 from ..models import ScheduledStop as ProductionStop, StopAction, VehicleFloor
-from ..spatial_validator import SpatialValidator
+from ..packing_rules import resolve_can_rotate, score_candidate_balance_and_fragility
+from ..stacking import fast_validate_stacked_route, validate_stop_actions
 
 
 def bounded_spatial_fallback(
     vehicle: Union[FleetVehicle, ProductionVehicle],
     stops: Sequence[Union[ScheduledStop, ProductionStop]],
     cargo: Mapping[str, Union[CargoItem, ProductionCargo]],
+    demo_stacking: Optional[DemoStackingPolicy] = None,
 ) -> bool:
     """Recover small greedy false negatives without accepting an unchecked plan.
 
@@ -23,18 +25,30 @@ def bounded_spatial_fallback(
         return False
     actions = [StopAction(stop_id=f"{i}:{stop.location_id}", sequence=i+1,
         stop_type=stop.stop_type,
-        items_to_load=[ProductionCargo(id=cargo[cid].id, order_id=cargo[cid].order_id,
-            length_cm=cargo[cid].length_cm, width_cm=cargo[cid].width_cm,
-            height_cm=cargo[cid].height_cm, weight_kg=cargo[cid].weight_kg,
-            can_rotate=cargo[cid].can_rotate) for cid in stop.items_loaded],
+        items_to_load=[ProductionCargo(
+            id=cargo[cid].id,
+            order_id=cargo[cid].order_id,
+            customer_id=getattr(cargo[cid], "customer_id", None),
+            description=getattr(cargo[cid], "description", ""),
+            length_cm=cargo[cid].length_cm,
+            width_cm=cargo[cid].width_cm,
+            height_cm=cargo[cid].height_cm,
+            weight_kg=cargo[cid].weight_kg,
+            can_rotate=resolve_can_rotate(cargo[cid]),
+            allowed_orientations=getattr(cargo[cid], "allowed_orientations", None),
+            cargo_kind=getattr(cargo[cid], "cargo_kind", "UNCLASSIFIED"),
+            allow_upper_tier=bool(getattr(cargo[cid], "allow_upper_tier", False)),
+            no_top_load_requested=bool(getattr(cargo[cid], "no_top_load_requested", False)),
+            max_top_load_g=getattr(cargo[cid], "max_top_load_g", None),
+        ) for cid in stop.items_loaded],
         items_to_unload=list(stop.items_unloaded)) for i,stop in enumerate(stops)]
-    floor = VehicleFloor(id=vehicle.id, plate_number=vehicle.plate_number,
-        length_cm=vehicle.length_cm, width_cm=vehicle.width_cm,
-        height_cm=vehicle.height_cm, payload_limit_kg=vehicle.payload_limit_kg,
-        door_position=vehicle.door_position,
-        door_width_cm=getattr(vehicle, "door_width_cm", None))
-    return SpatialValidator(floor, max_search_nodes=256,
-        max_time_seconds=0.01).validate_plan(actions).is_valid
+    return validate_stop_actions(
+        demo_stacking,
+        vehicle,
+        actions,
+        max_search_nodes=256,
+        max_time_seconds=0.02 if demo_stacking is not None else 0.01,
+    ).is_valid
 
 
 def is_box_overlap(
@@ -75,9 +89,16 @@ def is_path_to_door_clear(
 class FastPackingChecker:
     """Evaluates 2D packing feasibility for a sequence of stops on a vehicle."""
 
-    def __init__(self, vehicle: FleetVehicle, *, allow_layout_search: bool = True):
+    def __init__(
+        self,
+        vehicle: FleetVehicle,
+        *,
+        allow_layout_search: bool = True,
+        demo_stacking: Optional[DemoStackingPolicy] = None,
+    ):
         self.vehicle = vehicle
         self.allow_layout_search = allow_layout_search
+        self.demo_stacking = demo_stacking
         self.L = vehicle.length_cm
         self.W = vehicle.width_cm
 
@@ -94,7 +115,7 @@ class FastPackingChecker:
             return None
 
         orientations = [(item.length_cm, item.width_cm)]
-        if item.can_rotate and abs(item.length_cm - item.width_cm) > 0.01:
+        if resolve_can_rotate(item) and abs(item.length_cm - item.width_cm) > 0.01:
             orientations.append((item.width_cm, item.length_cm))
 
         candidate_points = {(0.0, 0.0)}
@@ -117,6 +138,10 @@ class FastPackingChecker:
 
         best_candidate: Optional[PlacedItem] = None
         best_score = float("inf")
+        cargo_kind_by_id = {
+            p.item_id: getattr(p, "cargo_kind", "UNCLASSIFIED") for p in current_placed
+        }
+        item_kind = getattr(item, "cargo_kind", "UNCLASSIFIED")
 
         for l, w in orientations:
             if item.height_cm > self.vehicle.height_cm + 0.01:
@@ -139,6 +164,8 @@ class FastPackingChecker:
                     y=y,
                     length_cm=l,
                     width_cm=w,
+                    weight_kg=float(item.weight_kg),
+                    cargo_kind=item_kind,
                 )
 
                 ingress_clear, _ = is_path_to_door_clear(
@@ -164,9 +191,21 @@ class FastPackingChecker:
                 if blocked_order:
                     continue
 
-                # Evaluate corridor clearance to rear door: prefer wall-hugging positions
+                # Evaluate corridor clearance, lateral weight balance, and fragile separation.
+                lat_imb, fragile_adj = score_candidate_balance_and_fragility(
+                    cand_x=x,
+                    cand_y=y,
+                    cand_l=l,
+                    cand_w=w,
+                    cand_weight_kg=float(item.weight_kg),
+                    cand_cargo_kind=item_kind,
+                    current_placed=current_placed,
+                    cargo_kind_by_id=cargo_kind_by_id,
+                    floor_length_cm=self.L,
+                    floor_width_cm=self.W,
+                )
                 corridor_penalty = 150.0 if (y > 0.01 and y + w < self.W - 0.01) else 0.0
-                score = x * 1000 + y + corridor_penalty
+                score = x * 1000.0 + corridor_penalty + lat_imb * 120.0 + fragile_adj * 140.0 + y * 0.05
                 if score < best_score:
                     best_score = score
                     best_candidate = cand
@@ -176,6 +215,14 @@ class FastPackingChecker:
     def validate_route_stops(
         self, stops: List[ScheduledStop], cargo_items_by_id: Dict[str, CargoItem],
     ) -> Tuple[bool, str]:
+        if self.demo_stacking is not None:
+            return fast_validate_stacked_route(
+                self.vehicle,
+                stops,
+                cargo_items_by_id,
+                self.demo_stacking,
+                allow_layout_search=self.allow_layout_search,
+            )
         valid, reason = self._validate_greedy_route_stops(stops, cargo_items_by_id)
         if valid:
             return valid, reason
@@ -238,7 +285,7 @@ class FastPackingChecker:
             return None
 
         orientations = [(item.length_cm, item.width_cm)]
-        if item.can_rotate and abs(item.length_cm - item.width_cm) > 0.01:
+        if resolve_can_rotate(item) and abs(item.length_cm - item.width_cm) > 0.01:
             orientations.append((item.width_cm, item.length_cm))
 
         candidate_positions = {(0.0, 0.0)}
@@ -312,6 +359,8 @@ class FastPackingChecker:
                         delivery_ranks.get(
                             cargo_items_by_id[i_id].order_id if i_id in cargo_items_by_id else "", -1
                         ),
+                        0 if (i_id in cargo_items_by_id and getattr(cargo_items_by_id[i_id], "cargo_kind", "UNCLASSIFIED") == "FRAGILE") else 1,
+                        cargo_items_by_id[i_id].weight_kg if i_id in cargo_items_by_id else 0.0,
                         cargo_items_by_id[i_id].length_cm * cargo_items_by_id[i_id].width_cm if i_id in cargo_items_by_id else 0,
                     ),
                     reverse=True,

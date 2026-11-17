@@ -5,6 +5,75 @@ export interface DeliveryWindowWitness {
   result: { status: string; unassigned_orders: unknown[]; routes: Array<{ stops: Array<{ stop_type: string; order_id: string; arrival_time_sec: number }> }> };
 }
 
+export interface DeliveryWindowConstraint {
+  windowStart: Date;
+  windowEnd: Date;
+  kind?: 'CONFIRMED' | 'CHANGE_REQUESTED';
+}
+
+export function resolveDeliveryWindowConstraints(input: {
+  planningEpoch: Date;
+  confirmedAppointments?: Array<{ orderId: string; windowStart: Date; windowEnd: Date }>;
+  changeRequestedAppointments?: Array<{
+    orderId: string;
+    windowStart: Date;
+    windowEnd: Date;
+    requestedStart?: Date | null;
+    requestedEnd?: Date | null;
+    strict?: boolean;
+  }>;
+  horizonSeconds?: number;
+}): Map<string, DeliveryWindowConstraint> {
+  const horizonSeconds = input.horizonSeconds ?? 604800;
+  const epochMs = input.planningEpoch.getTime();
+  const horizonEndMs = epochMs + horizonSeconds * 1000;
+  const constraints = new Map<string, DeliveryWindowConstraint>();
+
+  for (const row of input.confirmedAppointments ?? []) {
+    constraints.set(row.orderId, {
+      windowStart: row.windowStart,
+      windowEnd: row.windowEnd,
+      kind: 'CONFIRMED',
+    });
+  }
+
+  for (const row of input.changeRequestedAppointments ?? []) {
+    if (constraints.has(row.orderId)) continue;
+    if (row.requestedStart && row.requestedEnd) {
+      const startSec = Math.max(0, Math.ceil((row.requestedStart.getTime() - epochMs) / 1000));
+      const endSec = Math.min(horizonSeconds, Math.floor((row.requestedEnd.getTime() - epochMs) / 1000));
+      if (
+        endSec < startSec ||
+        row.requestedEnd.getTime() <= epochMs ||
+        row.requestedStart.getTime() >= horizonEndMs
+      ) {
+        if (row.strict) {
+          throw new ConflictException(
+            'Khung giờ khách yêu cầu đổi nằm ngoài lịch đang lập; hãy kiểm tra lại thời gian yêu cầu',
+          );
+        }
+        continue;
+      }
+      constraints.set(row.orderId, {
+        windowStart: new Date(epochMs + startSec * 1000),
+        windowEnd: new Date(epochMs + endSec * 1000),
+        kind: 'CHANGE_REQUESTED',
+      });
+    } else if (row.strict) {
+      const shiftedStartSec = Math.max(0, Math.ceil((row.windowEnd.getTime() - epochMs) / 1000));
+      if (shiftedStartSec < horizonSeconds) {
+        constraints.set(row.orderId, {
+          windowStart: new Date(epochMs + shiftedStartSec * 1000),
+          windowEnd: new Date(horizonEndMs),
+          kind: 'CHANGE_REQUESTED',
+        });
+      }
+    }
+  }
+
+  return constraints;
+}
+
 export function proposedDeliveryWindows(proposal: DeliveryWindowWitness, minutes: number, expiresAt: Date, openSec: number, closeSec: number, now = new Date()) {
   if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440 || !Number.isFinite(expiresAt.getTime()) || expiresAt <= now) {
     throw new BadRequestException('Độ rộng khung và hạn phản hồi không hợp lệ');

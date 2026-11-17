@@ -75,35 +75,19 @@ def optimize(request: OptimizationRequest):
     """
     Chạy bài toán tối ưu tuyến (OR-Tools VRPPDTW) kết hợp thẩm định hình học động.
     """
-    if request.demo_stacking is None:
-        return OrToolsRoutingSolver(request).solve()
-    stacks = DemoStacks(request.demo_stacking, [request.vehicle])
-    result = OrToolsRoutingSolver(request.model_copy(update={"orders": stacks.bundle_orders(request.orders)})).solve()
-    stops = stacks.expand_stops(result.stops)
-    return result.model_copy(update={
-        "stops": stops,
-        "spatial_validation": stacks.improve_route_layout(stops, stacks.expand_layout(result.spatial_validation), request.vehicle) if result.spatial_validation else None,
-    })
+    return OrToolsRoutingSolver(request).solve()
 
 
 @app.post("/optimize-fleet", response_model=FleetOptimizationResponse)
 def optimize_fleet(request: FleetOptimizationRequest):
     """Tự chọn xe, tài xế và tuyến cho toàn bộ đơn trong snapshot của một chi nhánh."""
-    if request.demo_stacking is None:
-        return FleetRoutingSolver(request).solve()
-    stacks = DemoStacks(request.demo_stacking, request.vehicles)
-    result = FleetRoutingSolver(request.model_copy(update={"orders": stacks.bundle_orders(request.orders)})).solve()
-    return stacks.expand_fleet(result)
+    return FleetRoutingSolver(request).solve()
 
 
 @app.post("/optimize-fleet/candidates", response_model=FleetOptimizationBatchResponse)
 def optimize_fleet_candidates(request: FleetOptimizationRequest):
     """Chạy Hybrid-first, OR-Tools fallback và trả tối đa 3 phương án đã kiểm chứng."""
-    if request.demo_stacking is None:
-        return MultiStartFleetOptimizer(request).solve(max_candidates=3)
-    stacks = DemoStacks(request.demo_stacking, request.vehicles)
-    batch = MultiStartFleetOptimizer(request.model_copy(update={"orders": stacks.bundle_orders(request.orders)})).solve(max_candidates=3)
-    return stacks.expand_batch(batch)
+    return MultiStartFleetOptimizer(request).solve(max_candidates=3)
 
 if __name__ == "__main__":
     import uvicorn

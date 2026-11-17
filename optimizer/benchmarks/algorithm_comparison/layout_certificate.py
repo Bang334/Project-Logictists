@@ -1,9 +1,11 @@
-"""Verify fixed floor layouts without searching for another packing solution."""
+"""Check floor certificates and verify published demo stacks against a policy replay."""
 import math
 from typing import Optional, Protocol, Sequence
 
-from app.models import FleetVehicle, PlacedItem, StopAction, VehicleFloor
+from app.models import DemoStackingPolicy, FleetVehicle, PlacedItem, StopAction, VehicleFloor
+from app.packing_rules import resolve_can_rotate
 from app.spatial_validator import SpatialValidator
+from app.stacking import validate_stop_actions
 
 
 class LayoutItem(Protocol):
@@ -17,15 +19,24 @@ class LayoutItem(Protocol):
 def verify_layout_certificate(
     vehicle: FleetVehicle, actions: Sequence[StopAction],
     layouts: Sequence[Sequence[LayoutItem]], unload_sequences: Sequence[Sequence[str]],
+    *, demo_stacking: Optional[DemoStackingPolicy] = None,
 ) -> Optional[str]:
     """Check identity, geometry, fixed survivors and every ingress/egress.
 
     Solver validity flags and reported utilization are deliberately unused.
     Reverse removal of new packages proves a loading order: removing a box
     cannot obstruct any of the packages that remain at their fixed positions.
+    Elevated demo layouts must also match a successful policy replay.
     """
     if len(layouts) != len(actions) or len(unload_sequences) != len(actions):
         return "certificate step count"
+    if any(
+        getattr(item, "z", 0.0) != 0 or getattr(item, "support_item_id", None) is not None
+        for layout in layouts for item in layout
+    ):
+        if demo_stacking is None:
+            return "certificate stacking policy required"
+        return _verify_demo_stack_replay(vehicle, list(actions), layouts, unload_sequences, demo_stacking)
     cargo = {item.id: item for action in actions for item in action.items_to_load}
     floor = VehicleFloor(id=vehicle.id, plate_number=vehicle.plate_number,
         length_cm=vehicle.length_cm, width_cm=vehicle.width_cm, height_cm=vehicle.height_cm,
@@ -54,16 +65,21 @@ def verify_layout_certificate(
             actual = cargo.get(item.item_id)
             if actual is None:
                 return "certificate unknown package"
-            if any(not math.isfinite(reported) or abs(reported-expected_value) > tolerance
+            reported_height = getattr(item, "height_cm", None)
+            reported_weight = getattr(item, "weight_kg", None)
+            if any(
+                not math.isfinite(reported) or abs(reported - expected_value) > tolerance
                 for reported, expected_value in [
-                    (getattr(item, "height_cm", actual.height_cm), actual.height_cm),
-                    (getattr(item, "weight_kg", actual.weight_kg), actual.weight_kg)]):
+                    (actual.height_cm if reported_height is None else reported_height, actual.height_cm),
+                    (actual.weight_kg if reported_weight is None else reported_weight, actual.weight_kg),
+                ]
+            ):
                 return "certificate package metadata"
             footprint = (item.x, item.y, item.length_cm, item.width_cm)
             if not all(math.isfinite(value) for value in footprint):
                 return "certificate nonfinite geometry"
             orientations = [(actual.length_cm, actual.width_cm)]
-            if actual.can_rotate:
+            if resolve_can_rotate(actual):
                 orientations.append((actual.width_cm, actual.length_cm))
             if not any(abs(item.length_cm-length) <= tolerance and abs(item.width_cm-width) <= tolerance
                 for length, width in orientations):
@@ -101,13 +117,51 @@ def verify_layout_certificate(
                 del remaining[item_id]
         else:
             remaining = dict(current)
-            pending = set(loads)
+            # Removing any accessible new package preserves paths that were
+            # already clear. Try the packages nearest the rear opening first.
+            pending = sorted(
+                loads, key=lambda item_id: (
+                    -(current[item_id].x + current[item_id].length_cm), item_id,
+                ),
+            )
             while pending:
-                accessible = next((item_id for item_id in sorted(pending)
-                    if geometry.is_path_to_door_clear(remaining[item_id], list(remaining.values()))[0]), None)
+                obstacles = list(remaining.values())
+                accessible = next((item_id for item_id in pending
+                    if geometry.is_path_to_door_clear(remaining[item_id], obstacles)[0]), None)
                 if accessible is None:
                     return "certificate blocked pickup"
                 pending.remove(accessible)
                 del remaining[accessible]
         previous = current
     return "certificate cargo remains onboard" if previous else None
+
+
+def _verify_demo_stack_replay(
+    vehicle: FleetVehicle,
+    actions: list[StopAction],
+    layouts: Sequence[Sequence[LayoutItem]],
+    unload_sequences: Sequence[Sequence[str]],
+    policy: DemoStackingPolicy,
+) -> Optional[str]:
+    """Require the published stack geometry to match a validated policy replay."""
+    replay = validate_stop_actions(policy, vehicle, actions, max_time_seconds=3.0)
+    if not replay.is_valid or len(replay.step_states) != len(actions):
+        return "certificate stack replay could not verify plan"
+    for reported, unload_order, state in zip(layouts, unload_sequences, replay.step_states):
+        by_id = {item.item_id: item for item in reported}
+        expected = {item.item_id: item for item in state.placed_items}
+        if len(by_id) != len(reported) or by_id.keys() != expected.keys():
+            return "certificate stack onboard manifest"
+        if list(unload_order) != state.unload_sequence:
+            return "certificate stack unload sequence"
+        for item_id, placement in expected.items():
+            witness = by_id[item_id]
+            if getattr(witness, "support_item_id", None) != placement.support_item_id:
+                return "certificate stack support"
+            if any(
+                not math.isclose(getattr(witness, field, math.nan), getattr(placement, field),
+                                 rel_tol=0.0, abs_tol=1e-6)
+                for field in ("x", "y", "z", "length_cm", "width_cm", "height_cm", "weight_kg")
+            ):
+                return "certificate stack geometry"
+    return None

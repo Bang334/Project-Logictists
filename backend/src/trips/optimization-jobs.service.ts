@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Prisma } from '@prisma/client';
@@ -14,6 +15,7 @@ import { resolveBranchScope } from '../auth/branch-scope';
 import { RunAutomaticOptimizationDto } from './dto/run-automatic-optimization.dto';
 import { TripsService } from './trips.service';
 import { OutboxService } from '../common/services/outbox.service';
+import { SettingsService } from '../settings/settings.service';
 import * as ExcelJS from 'exceljs';
 import { OPTIMIZATION_PROGRESS_STAGES } from './optimization-progress';
 
@@ -69,12 +71,21 @@ export class OptimizationJobsService {
     @InjectQueue(OPTIMIZATION_QUEUE) private readonly queue: Queue,
     private readonly tripsService: TripsService,
     private readonly outbox: OutboxService,
+    @Optional() private readonly settingsService?: SettingsService,
   ) {}
 
   async create(user: JobUser, dto: RunAutomaticOptimizationDto) {
     const branchId = resolveBranchScope(user, dto.branchId);
+    const effectiveSettings = this.settingsService
+      ? await this.settingsService.resolveEffectiveSettings(branchId)
+      : null;
+    const effectiveSearchBudget =
+      dto.searchBudgetSeconds ??
+      effectiveSettings?.optimization.defaultSearchBudgetSeconds ??
+      null;
     const request = {
       ...(dto.deliveryBatchId ? { deliveryBatchId: dto.deliveryBatchId } : {}),
+      ...(dto.replanWithFleet ? { replanWithFleet: true } : {}),
       branchId,
       scheduleMode: dto.scheduleMode ?? null,
       customStartTime: dto.customStartTime ?? null,
@@ -107,12 +118,21 @@ export class OptimizationJobsService {
         if (dto.deliveryBatchId) {
           await tx.$queryRaw`SELECT id FROM delivery_planning_batches WHERE id = ${dto.deliveryBatchId} FOR UPDATE`;
           const batch = await tx.deliveryPlanningBatch.findUnique({ where: { id: dto.deliveryBatchId }, include: { appointments: true } });
-          if (!batch || batch.branchId !== branchId || batch.status !== 'OFFERING' || batch.appointments.some(row => row.status === 'PENDING') || !batch.appointments.some(row => row.status === 'CONFIRMED')) {
+          const hasEligibleAppointments = dto.replanWithFleet
+            ? batch?.appointments.some(row => row.status === 'CONFIRMED' || row.status === 'CHANGE_REQUESTED')
+            : batch?.appointments.some(row => row.status === 'CONFIRMED');
+          if (!batch || batch.branchId !== branchId || batch.status !== 'OFFERING' || batch.appointments.some(row => row.status === 'PENDING') || !hasEligibleAppointments) {
             throw new ConflictException('Đợt đề xuất chưa đủ điều kiện chốt hoặc ngoài chi nhánh');
           }
           if (batch.finalOptimizationJobId) {
             const running = await tx.optimizationJob.findUnique({ where: { id: batch.finalOptimizationJobId } });
-            if (running && !['FAILED','CANCELLED','INFEASIBLE','TIMEOUT','PARTIAL'].includes(running.status)) throw new ConflictException('Đợt này đã có lượt tối ưu chốt; hãy sử dụng job đó');
+            if (running && !['FAILED','CANCELLED','INFEASIBLE','TIMEOUT','PARTIAL'].includes(running.status)) {
+              const runningParams = running.parameters && typeof running.parameters === 'object' && !Array.isArray(running.parameters) ? running.parameters as Record<string, unknown> : {};
+              const sameMode = Boolean(runningParams.replanWithFleet) === Boolean(dto.replanWithFleet);
+              if (sameMode || ['PENDING', 'RUNNING', 'RETRYING', 'APPLYING', 'APPLIED'].includes(running.status)) {
+                throw new ConflictException('Đợt này đã có lượt tối ưu chốt; hãy sử dụng job đó');
+              }
+            }
           }
         }
         const created = await tx.optimizationJob.create({
@@ -122,10 +142,13 @@ export class OptimizationJobsService {
             createdById: user.id,
             idempotencyKey: dto.idempotencyKey,
             requestHash,
-            requestSnapshot: request,
+            requestSnapshot: { ...request, searchBudgetSeconds: effectiveSearchBudget },
             schemaVersion: '2',
+            policyVersion: effectiveSettings?.policyVersion ?? null,
             parameters: {
               ...request,
+              searchBudgetSeconds: effectiveSearchBudget,
+              policyVersion: effectiveSettings?.policyVersion ?? null,
               progress: {
                 stage: 'QUEUED',
                 details: {},

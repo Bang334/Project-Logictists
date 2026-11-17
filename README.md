@@ -20,7 +20,7 @@ Mô hình giả định cửa sau cao bằng lòng thùng, thiết bị nâng ch
 
 `TMS_TOP_LOAD_PROTECTION_FEE_VND` tùy chọn là phụ phí cố định mỗi đơn demo. Có phí khi ít nhất một kiện thường đã khai báo sức chịu tải và khách chọn không đặt hàng lên trên. Mức phí được lưu trên đơn nháp, hiển thị trước xác nhận và chỉ chốt khi điều phối ghi nhận khách đồng ý. Để biến này chưa cấu hình nếu chỉ cần thử quy tắc bảo vệ kiện.
 
-Ở **Điều phối tự động → Demo**, chọn **So sánh chi phí xếp chồng ba tầng**. Chạy một lượt tắt và một lượt bật **Cho phép xếp chồng demo** với cùng ngân sách tìm kiếm để xem chi phí, số xe và quãng đường cạnh nhau. Ma trận đường và chi phí của kịch bản là dữ liệu giả lập. Trong sơ đồ chuyến, chọn điểm giao và bấm **Dỡ kiện tiếp theo** để xem kiện biến mất theo thứ tự đã kiểm tra.
+Ở **Điều phối tự động → Demo**, chọn **So sánh chi phí xếp chồng ba tầng**. Chạy một lượt tắt và một lượt bật **Cho phép xếp chồng demo** với cùng ngân sách tìm kiếm để xem chi phí, số xe và quãng đường cạnh nhau. Ma trận đường và chi phí của kịch bản là dữ liệu giả lập. Chọn tuyến xe trên bản đồ để mở sơ đồ. Sơ đồ mặc định hiển thị bố trí sau điểm dừng. Tại điểm giao, bấm **Xem dỡ từ đầu** rồi **Dỡ kiện tiếp theo** để xem số kiện, tải và bố trí cập nhật theo thứ tự đã kiểm tra.
 
 Kịch bản **Xếp chồng cùng khách và khác khách** cho thấy kiện của khách thứ hai nằm trên kiện của khách thứ nhất khi chọn **Cho phép kiện khác khách hàng**. Chọn **Chỉ kiện cùng khách hàng** để xem hai kiện nằm riêng trên sàn trong cùng tuyến.
 

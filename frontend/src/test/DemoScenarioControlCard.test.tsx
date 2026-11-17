@@ -118,4 +118,33 @@ describe('DemoScenarioControlCard', () => {
     fireEvent.click(screen.getByLabelText('Cho phép xếp chồng demo'));
     expect(toggleStacking).toHaveBeenCalledWith(false);
   });
+
+  it('hiển thị nút chạy và tùy chọn xếp chồng khi tải JSON tùy chỉnh', () => {
+    const handleRun = vi.fn();
+    render(
+      <DemoScenarioControlCard
+        stackingEnabled={true}
+        onChangeStacking={vi.fn()}
+        cases={mockCases}
+        loadingCases={false}
+        selectedCaseId="novel_1_mekong_hub_spoke"
+        onSelectCaseId={vi.fn()}
+        timeBudgetSeconds={8}
+        onChangeTimeBudget={vi.fn()}
+        running={false}
+        onRunDemo={handleRun}
+        onClearDemo={vi.fn()}
+        hasResult={false}
+        isCustomUpload={true}
+        onToggleCustomUpload={vi.fn()}
+        customFileName="custom-demo.json"
+        onCustomJsonLoaded={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText('Cho phép xếp chồng demo')).toBeInTheDocument();
+    expect(screen.getByText(/custom-demo\.json/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Chạy tối ưu Demo/i }));
+    expect(handleRun).toHaveBeenCalledTimes(1);
+  }, 15000);
 });

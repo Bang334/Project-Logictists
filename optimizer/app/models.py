@@ -101,6 +101,7 @@ class CostPolicy(StrictContractModel):
         "NONE", "FIXED_PER_DAY", "PERCENT_ORDER_VALUE_PER_DAY"
     ] = "NONE"
     late_delivery_penalty_value: float = Field(default=0, ge=0)
+    max_routes_per_day: Optional[int] = Field(default=None, ge=1, le=500)
 
     @model_validator(mode="after")
     def validate_late_delivery_penalty(self):
@@ -123,10 +124,25 @@ class CargoItem(StrictContractModel):
     height_cm: float = Field(gt=0)
     weight_kg: float = Field(gt=0)
     can_rotate: bool = True
+    allowed_orientations: Optional[List[Literal["LWH", "WLH"]]] = None
     cargo_kind: Literal["UNCLASSIFIED", "STANDARD", "FRAGILE"] = "UNCLASSIFIED"
     allow_upper_tier: bool = False
     no_top_load_requested: bool = False
     max_top_load_g: Optional[int] = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_allowed_orientations(self):
+        if self.allowed_orientations is not None:
+            deduped: List[Literal["LWH", "WLH"]] = []
+            for entry in self.allowed_orientations:
+                if entry not in deduped:
+                    deduped.append(entry)
+            if not deduped:
+                raise ValueError("allowed_orientations cannot be empty")
+            self.allowed_orientations = deduped
+            if "WLH" not in deduped:
+                self.can_rotate = False
+        return self
 
 
 class PlacedItem(StrictContractModel):
@@ -140,6 +156,26 @@ class PlacedItem(StrictContractModel):
     weight_kg: float
     z: float = Field(default=0, ge=0)
     support_item_id: Optional[str] = None
+    cargo_kind: Optional[Literal["UNCLASSIFIED", "STANDARD", "FRAGILE"]] = None
+    no_top_load_requested: Optional[bool] = None
+    floor_rotation_locked: Optional[bool] = None
+
+
+class WeightBalanceMetrics(StrictContractModel):
+    total_weight_kg: float = 0.0
+    cg_x_cm: float = 0.0
+    cg_y_cm: float = 0.0
+    cg_x_percent: float = 50.0
+    cg_y_percent: float = 50.0
+    lateral_offset_cm: float = 0.0
+    longitudinal_offset_cm: float = 0.0
+    lateral_imbalance_percent: float = 0.0
+    longitudinal_imbalance_percent: float = 0.0
+    left_weight_kg: float = 0.0
+    right_weight_kg: float = 0.0
+    front_weight_kg: float = 0.0
+    rear_weight_kg: float = 0.0
+    status: Literal["EMPTY", "BALANCED", "MODERATE", "IMBALANCED"] = "EMPTY"
 
 
 class MovementPoint(StrictContractModel):
@@ -180,6 +216,7 @@ class FloorState(StrictContractModel):
     is_valid: bool
     unload_sequence: List[str] = Field(default_factory=list)
     package_access_paths: List[PackageAccessPath] = Field(default_factory=list)
+    weight_balance: Optional[WeightBalanceMetrics] = None
     error_code: Optional[str] = None
     error_message: Optional[str] = None
 
@@ -197,6 +234,7 @@ class SpatialValidationResult(StrictContractModel):
     error_message: Optional[str] = None
     max_weight_kg: float = 0.0
     max_area_cm2: float = 0.0
+    max_lateral_imbalance_percent: Optional[float] = None
     step_states: List[FloorState] = Field(default_factory=list)
     demo_stacking: Optional[DemoStackingPolicy] = None
 
@@ -326,6 +364,7 @@ class OptimizedRoute(StrictContractModel):
     plate_number: str
     vehicle_length_cm: float
     vehicle_width_cm: float
+    vehicle_height_cm: Optional[float] = None
     driver_id: Optional[str] = None
     driver_name: Optional[str] = None
     driver_license_class: Optional[str] = None

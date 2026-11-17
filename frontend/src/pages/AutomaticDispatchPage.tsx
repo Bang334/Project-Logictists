@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DispatcherDeliveryPlanning } from '../components/DeliveryAppointments';
 import {
   Alert,
@@ -50,8 +50,9 @@ import {
   DeleteOutlined,
   ReloadOutlined,
   ExperimentOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
-import { branchesApi, driversApi, mapboxApi, ordersApi, tripsApi, vehiclesApi } from '../api/client';
+import { branchesApi, driversApi, mapboxApi, ordersApi, settingsApi, tripsApi, vehiclesApi } from '../api/client';
 import { getRealtimeSocket } from '../api/realtime';
 import MapboxMap, { MAP_ROUTE_COLORS, MapMarker } from '../components/MapboxMap';
 import FloorPackingVisualizer from '../components/FloorPackingVisualizer';
@@ -78,6 +79,7 @@ import {
   RunAutomaticOptimizationPayloadUI,
   Vehicle,
 } from '../types';
+import { EffectiveSettings, STACKING_OWNER_MODE_LABELS } from '../types/settings';
 import { useAuth } from '../context/AuthContext';
 import {
   calculateStopMilestonesKm,
@@ -99,9 +101,13 @@ const currency = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: '
 const getRouteKey = (route: OptimizedRouteUI) => route.route_id;
 const DIRECT_COMPARISON = 0;
 
-const AutomaticDispatchPage: React.FC = () => {
+interface AutomaticDispatchPageProps {
+  onNavigate?: (tab: string) => void;
+}
+
+const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigate }) => {
   const { message } = AntdApp.useApp();
-  const { user, can, branchId, setBranchId } = useAuth();
+  const { user, can, branchId, setBranchId, scopeVersion } = useAuth();
   const [branches, setBranches] = useState<Branch[]>([]);
   const selectedBranchId = branchId;
   const setSelectedBranchId = setBranchId;
@@ -142,6 +148,7 @@ const AutomaticDispatchPage: React.FC = () => {
   const [demoTimeBudgetSeconds, setDemoTimeBudgetSeconds] = useState<number>(6);
   const [demoStackingEnabled, setDemoStackingEnabled] = useState(true);
   const [demoStackingOwnerMode, setDemoStackingOwnerMode] = useState<DemoStackingOwnerMode>('SAME_CUSTOMER');
+  const [effectiveSettings, setEffectiveSettings] = useState<EffectiveSettings | null>(null);
   const [demoStackingRuns, setDemoStackingRuns] = useState<Record<string, Partial<Record<'off' | DemoStackingOwnerMode, OptimizationCandidateSummaryUI>>>>({});
   const demoComparisonKey = `${selectedDemoCaseId}:${demoTimeBudgetSeconds}`;
   const demoComparison = demoStackingRuns[demoComparisonKey];
@@ -273,6 +280,28 @@ const AutomaticDispatchPage: React.FC = () => {
   }, [user?.id]);
 
   useEffect(() => {
+    if (!settingsApi?.getEffective) return;
+    let active = true;
+    settingsApi
+      .getEffective(selectedBranchId)
+      .then((response) => {
+        if (!active) return;
+        setEffectiveSettings(response.data);
+        setDemoStackingEnabled(response.data.stacking.enabled);
+        setDemoStackingOwnerMode(response.data.stacking.ownerMode);
+        if (!response.data.optimization.demoAllowOverride) {
+          setDemoTimeBudgetSeconds(response.data.optimization.defaultSearchBudgetSeconds);
+        }
+      })
+      .catch(() => {
+        if (active) setEffectiveSettings(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedBranchId, scopeVersion]);
+
+  useEffect(() => {
     if (!selectedBranchId) {
       setLoadingCounts(false);
       setOptimization(null);
@@ -306,6 +335,7 @@ const AutomaticDispatchPage: React.FC = () => {
     setSelectedCandidateNumber(1);
     setSelectedCandidateResult(null);
     setSelectedVehicleForMap('ALL');
+    setEnableSim(false);
     setActiveStepIndex(0);
   }, [activeOptimizationJobId]);
 
@@ -606,12 +636,27 @@ const AutomaticDispatchPage: React.FC = () => {
       setActiveStepIndex(0);
       setEnableSim(false);
 
+      const supportsStacking =
+        isCustomDemoUpload ||
+        Boolean(demoCases.find((c) => c.id === selectedDemoCaseId)?.supports_stacking);
+      const allowDemoOverride = effectiveSettings?.optimization.demoAllowOverride ?? true;
+      const effectiveDemoStacking = allowDemoOverride
+        ? demoStackingEnabled
+        : (effectiveSettings?.stacking.enabled ?? demoStackingEnabled);
+      const effectiveDemoOwnerMode = allowDemoOverride
+        ? demoStackingOwnerMode
+        : (effectiveSettings?.stacking.ownerMode ?? demoStackingOwnerMode);
+      const effectiveDemoBudget = allowDemoOverride
+        ? demoTimeBudgetSeconds
+        : (effectiveSettings?.optimization.defaultSearchBudgetSeconds ?? demoTimeBudgetSeconds);
       const payload: RunDemoOptimizationPayloadUI = {
+        ...(selectedBranchId ? { branchId: selectedBranchId } : {}),
         caseId: isCustomDemoUpload ? undefined : selectedDemoCaseId,
         customRequest: isCustomDemoUpload ? customDemoJson : undefined,
-        timeBudgetSeconds: demoTimeBudgetSeconds,
-        demoStackingEnabled: !isCustomDemoUpload && demoCases.find(c => c.id === selectedDemoCaseId)?.supports_stacking ? demoStackingEnabled : undefined,
-        demoStackingOwnerMode: demoStackingEnabled && !isCustomDemoUpload && demoCases.find(c => c.id === selectedDemoCaseId)?.supports_stacking ? demoStackingOwnerMode : undefined,
+        timeBudgetSeconds: effectiveDemoBudget,
+        demoStackingEnabled: supportsStacking ? effectiveDemoStacking : undefined,
+        demoStackingOwnerMode:
+          effectiveDemoStacking && supportsStacking ? effectiveDemoOwnerMode : undefined,
       };
 
       const res = await tripsApi.runDemoOptimization(payload);
@@ -846,18 +891,13 @@ const AutomaticDispatchPage: React.FC = () => {
   const currentDirectRoad = directRoad?.route === selectedRouteInfo && directRoad.attempt === directRoadAttempt
     ? directRoad : undefined;
   const loadingDirectRoad = showingDirect && Boolean(selectedRouteInfo) && !currentDirectRoad;
-  const canSimulate = !showingDirect || Boolean(currentDirectRoad?.coordinates);
-  const selectMapRoute = (routeKey: string) => {
+  const selectMapRoute = (routeKey: string, stepIndex = 0) => {
     setSelectedVehicleForMap(routeKey);
-    setActiveStepIndex(0);
-    if (showingDirect) setEnableSim(false);
+    setActiveStepIndex(stepIndex);
+    setEnableSim(false);
   };
 
-  // Tuyến xe đang được theo dõi diễn biến mô phỏng và hàng hóa
-  const currentActiveRoute = useMemo(
-    () => selectedRouteInfo || (result?.routes.length ? result.routes[0] : null),
-    [selectedRouteInfo, result],
-  );
+  const currentActiveRoute = selectedRouteInfo;
 
   const resolveDepot = useCallback((route: OptimizedRouteUI) => {
     if (route.depot) return route.depot;
@@ -883,7 +923,11 @@ const AutomaticDispatchPage: React.FC = () => {
       const coords: [number, number][] = [];
       if (depot) coords.push([depot.longitude, depot.latitude]);
       (route.stops || []).forEach((s) => coords.push([s.longitude, s.latitude]));
-      if (depot && coords.length > 0) coords.push([depot.longitude, depot.latitude]);
+      const end = route.end_location ?? ((route.return_travel_time_sec ?? 0) > 0 ? depot : null);
+      const last = coords[coords.length - 1];
+      if (end && (!last || last[0] !== end.longitude || last[1] !== end.latitude)) {
+        coords.push([end.longitude, end.latitude]);
+      }
       return coords;
     },
     [showingDirect, currentDirectRoad, resolveDepot],
@@ -896,11 +940,23 @@ const AutomaticDispatchPage: React.FC = () => {
     return buildRouteProfile(coords);
   }, [currentActiveRoute, getRouteCoordinates]);
 
+  const canSimulate = (routeProfileForSim?.totalDistanceKm ?? 0) > 0;
+  const isSimulating = enableSim && canSimulate;
+  const stopSimulation = useCallback(() => setEnableSim(false), []);
+
   // Cột mốc cự ly (km) cho từng điểm dừng: đảm bảo chỉ khi xe thực sự chạm điểm dừng mới chất/dỡ hàng
   const stopMilestonesKm = useMemo(() => {
     if (!routeProfileForSim || !currentActiveRoute?.stops) return [];
     return calculateStopMilestonesKm(routeProfileForSim, currentActiveRoute.stops);
   }, [routeProfileForSim, currentActiveRoute]);
+
+  const hasReturnLeg = (currentActiveRoute?.return_travel_time_sec ?? 0) > 0;
+  const syncSimulationStep = useCallback((progress: number, _coordinate: [number, number], _speed: number, traveledKm: number) => {
+    const step = progress === 1 && hasReturnLeg
+      ? stopMilestonesKm.length + 1
+      : getStepIndexForDistance(stopMilestonesKm, traveledKm);
+    startTransition(() => setActiveStepIndex(step));
+  }, [hasReturnLeg, stopMilestonesKm]);
 
   const mapMarkers = useMemo(() => {
     const depotMarkers = new Map<string, MapMarker>();
@@ -940,7 +996,7 @@ const AutomaticDispatchPage: React.FC = () => {
 
       stopMarkers.push(
         ...route.stops.map((stop) => ({
-          id: `${getRouteKey(route)}-${stop.location_id}`,
+          id: `${getRouteKey(route)}-${stop.sequence}-${stop.location_id}`,
           latitude: stop.latitude,
           longitude: stop.longitude,
           title: `${route.plate_number} (${route.driver_name}) · ${stop.stop_type === 'PICKUP' ? 'Nhận' : 'Giao'} hàng`,
@@ -1653,7 +1709,7 @@ const AutomaticDispatchPage: React.FC = () => {
                 className="driver-schedule-timeline"
                 mode="left"
                 items={schedule.items.map((item) => {
-                  const isStopActive = isThisRouteActive && item.stopIndex !== undefined && activeStepIndex === item.stopIndex;
+                  const isStopActive = isThisRouteActive && item.stopIndex !== undefined && activeStepIndex === item.stopIndex + 1;
                   return {
                     label: (
                       <div style={{ fontSize: 12, fontWeight: 600, color: '#1e40af', textAlign: 'right' }}>
@@ -1689,8 +1745,7 @@ const AutomaticDispatchPage: React.FC = () => {
                       <div
                         onClick={() => {
                           if (item.stopIndex !== undefined) {
-                            selectMapRoute(routeKey);
-                            setActiveStepIndex(item.stopIndex);
+                            selectMapRoute(routeKey, item.stopIndex + 1);
                             const targetEl = document.getElementById('floor-visualizer-section') || document.getElementById('map-card-section');
                             targetEl?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                           }
@@ -1756,13 +1811,12 @@ const AutomaticDispatchPage: React.FC = () => {
             <Table
               size="small"
               pagination={false}
-              rowKey="location_id"
+              rowKey="sequence"
               dataSource={route.stops}
               onRow={(_, index) => ({
                 onClick: () => {
                   if (index !== undefined) {
-                    selectMapRoute(routeKey);
-                    setActiveStepIndex(index);
+                    selectMapRoute(routeKey, index + 1);
                     const targetEl = document.getElementById('floor-visualizer-section') || document.getElementById('map-card-section');
                     targetEl?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                   }
@@ -1770,8 +1824,8 @@ const AutomaticDispatchPage: React.FC = () => {
                 style: {
                   cursor: 'pointer',
                   backgroundColor:
-                    isThisRouteActive && activeStepIndex === index ? '#eff6ff' : undefined,
-                  fontWeight: isThisRouteActive && activeStepIndex === index ? 600 : 'normal',
+                    isThisRouteActive && activeStepIndex === (index ?? -1) + 1 ? '#eff6ff' : undefined,
+                  fontWeight: isThisRouteActive && activeStepIndex === (index ?? -1) + 1 ? 600 : 'normal',
                 },
               })}
               columns={[
@@ -2474,7 +2528,7 @@ const AutomaticDispatchPage: React.FC = () => {
                   <ExperimentOutlined style={{ fontSize: 16, color: '#7c3aed' }} />
                   <span style={{ fontWeight: 700, color: '#6d28d9' }}>Thử nghiệm Demo Kịch bản mẫu (Benchmarks)</span>
                   <Tag color="purple" style={{ margin: 0, borderRadius: 10, fontWeight: 700 }}>
-                    17 kịch bản
+                    {demoCases.length || 19} kịch bản
                   </Tag>
                 </Space>
               ),
@@ -2489,6 +2543,7 @@ const AutomaticDispatchPage: React.FC = () => {
           onChangeStacking={setDemoStackingEnabled}
           stackingOwnerMode={demoStackingOwnerMode}
           onChangeStackingOwnerMode={setDemoStackingOwnerMode}
+          allowOverride={effectiveSettings?.optimization.demoAllowOverride ?? true}
           stackingComparison={demoComparison ? { off: demoComparison.off, on: demoComparison[demoStackingOwnerMode] } : undefined}
           cases={demoCases}
           loadingCases={loadingDemoCases}
@@ -2740,6 +2795,44 @@ const AutomaticDispatchPage: React.FC = () => {
           )}
         </Space>
       </div>
+      )}
+
+      {pageMode === 'BRANCH' && effectiveSettings && (
+        <Card size="small" style={{ marginBottom: 16, background: '#f8fafc' }}>
+          <Space wrap size={[8, 8]} style={{ width: '100%', justifyContent: 'space-between' }}>
+            <Space wrap size={[8, 6]}>
+              <Text strong style={{ fontSize: 13 }}>
+                Cấu hình hiệu lực:
+              </Text>
+              <Tag color={effectiveSettings.stacking.enabled ? 'green' : 'default'}>
+                {effectiveSettings.stacking.enabled
+                  ? `Xếp chồng: Bật · ${STACKING_OWNER_MODE_LABELS[effectiveSettings.stacking.ownerMode]} · Tối đa ${effectiveSettings.stacking.maxTiers} tầng`
+                  : 'Xếp chồng: Tắt (chỉ xếp 1 lớp)'}
+              </Tag>
+              <Tag color="blue">
+                Ngân sách: {effectiveSettings.optimization.defaultSearchBudgetSeconds}s (trần {effectiveSettings.optimization.maxTimeSeconds}s)
+              </Tag>
+              <Tag color="purple">
+                {effectiveSettings.optimization.maxRoutesPerDay !== null
+                  ? `Tối đa ${effectiveSettings.optimization.maxRoutesPerDay} chuyến/ngày`
+                  : 'Không giới hạn số chuyến/ngày'}
+              </Tag>
+              <Tag color={effectiveSettings.sources.stacking === 'BRANCH' || effectiveSettings.sources.optimization === 'BRANCH' ? 'gold' : 'geekblue'}>
+                {effectiveSettings.policyVersion}
+              </Tag>
+            </Space>
+            {onNavigate && can('settings.read') && (
+              <Button
+                size="small"
+                type="link"
+                icon={<SettingOutlined />}
+                onClick={() => onNavigate('settings')}
+              >
+                Mở Cấu hình chung
+              </Button>
+            )}
+          </Space>
+        </Card>
       )}
 
       {pageMode === 'BRANCH' && !loadingBranches && branches.length === 0 && (
@@ -3234,7 +3327,7 @@ const AutomaticDispatchPage: React.FC = () => {
                     <Select
                       aria-label="Chọn tuyến xe hiển thị trên bản đồ"
                       value={selectedVehicleForMap}
-                      onChange={selectMapRoute}
+                      onChange={(routeKey) => selectMapRoute(routeKey)}
                       size="small"
                       popupMatchSelectWidth={false}
                       options={[
@@ -3262,22 +3355,20 @@ const AutomaticDispatchPage: React.FC = () => {
                     />
                   </div>
                   <Button
-                    type={enableSim ? 'default' : 'primary'}
-                    icon={enableSim ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                    type={isSimulating ? 'default' : 'primary'}
+                    icon={isSimulating ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
                     loading={loadingDirectRoad}
                     disabled={!canSimulate}
                     onClick={() => {
-                      if (!enableSim && selectedVehicleForMap === 'ALL' && result.routes.length > 0) {
-                        setSelectedVehicleForMap(getRouteKey(result.routes[0]));
-                      }
-                      setEnableSim(!enableSim);
+                      if (!isSimulating) setActiveStepIndex(0);
+                      setEnableSim(!isSimulating);
                     }}
                   >
-                    {enableSim ? 'Dừng mô phỏng' : 'Mô phỏng xe'}
+                    {isSimulating ? 'Dừng mô phỏng' : 'Mô phỏng xe'}
                   </Button>
                 </div>
 
-                {showingDirect && !selectedRouteInfo && <Alert type="info" showIcon message="Chọn một tuyến xe để tải đường đi và mô phỏng." />}
+                {!selectedRouteInfo && <Alert type="info" showIcon message="Chọn một tuyến xe để xem sơ đồ xếp dỡ và mô phỏng." />}
                 {showingDirect && currentDirectRoad?.coordinates === null && (
                   <Alert type="error" showIcon message="Không tải được tuyến đường từ Mapbox."
                     action={<Button size="small" onClick={() => setDirectRoadAttempt(attempt => attempt + 1)}>Thử lại</Button>} />
@@ -3322,7 +3413,7 @@ const AutomaticDispatchPage: React.FC = () => {
                         <span
                           className={`journey-node journey-node-depot ${activeStepIndex === 0 ? 'journey-node-active' : ''}`}
                           style={{ cursor: 'pointer' }}
-                          onClick={() => setActiveStepIndex(0)}
+                          onClick={() => selectMapRoute(getRouteKey(selectedRouteInfo))}
                         >
                           <BankOutlined />
                           <span>{showingDirect ? 'Xuất phát' : 'Công ty'}</span>
@@ -3335,14 +3426,14 @@ const AutomaticDispatchPage: React.FC = () => {
                             <span
                               className={`journey-node ${stop.stop_type === 'PICKUP' ? 'journey-node-pickup' : 'journey-node-delivery'} ${activeStepIndex === stop.sequence ? 'journey-node-active' : ''}`}
                               style={{ cursor: 'pointer' }}
-                              onClick={() => setActiveStepIndex(stop.sequence)}
+                              onClick={() => selectMapRoute(getRouteKey(selectedRouteInfo), stop.sequence)}
                             >
                               {stop.sequence}
                             </span>
                           </Tooltip>
                         </React.Fragment>
                       ))}
-                      {(!showingDirect || (selectedRouteInfo.return_travel_time_sec ?? 0) > 0) && <>
+                      {hasReturnLeg && <>
                         <ArrowRightOutlined className="journey-arrow" aria-hidden="true" />
                         <span
                           className={`journey-node journey-node-return ${activeStepIndex > selectedRouteInfo.stops.length ? 'journey-node-active' : ''}`}
@@ -3358,40 +3449,44 @@ const AutomaticDispatchPage: React.FC = () => {
                   markers={mapMarkers}
                   routeGeometry={routeGeometry}
                   height={mapLayoutMode === 'FULL' ? 640 : 560}
-                  enableSimulation={enableSim && canSimulate}
-                  autoPlaySimulation={enableSim && canSimulate}
-                  vehiclePlate={currentActiveRoute?.plate_number || '29C-678.92'}
-                  driverName={currentActiveRoute?.driver_name || 'Tài xế'}
-                  onSimulationProgress={(_prog, _coord, _speed, traveledKm) => {
-                    if (stopMilestonesKm.length > 0) {
-                      const stepIdx = getStepIndexForDistance(stopMilestonesKm, traveledKm);
-                      setActiveStepIndex(stepIdx);
-                    }
-                  }}
-                  onSimulationStop={() => setEnableSim(false)}
+                  enableSimulation={isSimulating}
+                  autoPlaySimulation={isSimulating}
+                  vehiclePlate={currentActiveRoute?.plate_number}
+                  driverName={currentActiveRoute?.driver_name}
+                  onSimulationProgress={syncSimulationStep}
+                  onSimulationStop={stopSimulation}
                 />
               </Card>
             </Col>
             <Col xs={24} xl={mapLayoutMode === 'FULL' ? 0 : 12} style={{ display: mapLayoutMode === 'FULL' ? 'none' : 'block' }}>
-              <FloorPackingVisualizer
+              {currentActiveRoute ? <FloorPackingVisualizer
+                key={JSON.stringify([activeOptimizationJobId, selectedCandidateNumber, showingDirect, currentActiveRoute.route_id])}
                 route={currentActiveRoute}
+                vehicle={availableVehicles.find(vehicle => vehicle.id === currentActiveRoute.vehicle_id)}
                 allRoutes={result.routes}
-                onSelectRoute={selectMapRoute}
+                onSelectRoute={(routeKey) => selectMapRoute(routeKey)}
                 vehicleDimensions={{
-                  lengthCm: currentActiveRoute?.vehicle_length_cm || 430,
-                  widthCm: currentActiveRoute?.vehicle_width_cm || 190,
+                  lengthCm: currentActiveRoute.vehicle_length_cm || 0,
+                  widthCm: currentActiveRoute.vehicle_width_cm || 0,
+                  heightCm:
+                    currentActiveRoute.vehicle_height_cm ||
+                    availableVehicles.find((vehicle) => vehicle.id === currentActiveRoute.vehicle_id)
+                      ?.heightCm ||
+                    undefined,
                 }}
-                stepStates={currentActiveRoute?.spatial_validation?.step_states || []}
-                isValid={currentActiveRoute?.spatial_validation?.is_valid ?? true}
+                stepStates={currentActiveRoute.spatial_validation?.step_states || []}
+                isValid={currentActiveRoute.spatial_validation?.is_valid ?? true}
                 violations={
-                  currentActiveRoute?.spatial_validation?.error_message
+                  currentActiveRoute.spatial_validation?.error_message
                     ? [currentActiveRoute.spatial_validation.error_message]
                     : []
                 }
                 selectedStepIndex={activeStepIndex}
-                onStepChange={(stepIdx) => setActiveStepIndex(stepIdx)}
-                isSimulating={enableSim && canSimulate}
-              />
+                onStepChange={setActiveStepIndex}
+                isSimulating={isSimulating}
+              /> : <Card title="Sơ đồ xếp dỡ thùng xe" className="card-elevation">
+                <Empty description="Chọn một tuyến xe trên bản đồ để xem hàng trên xe." />
+              </Card>}
             </Col>
           </Row>
 
