@@ -35,7 +35,7 @@ const validResult = () => ({
       },
     },
   ],
-  unassigned_orders: [] as any[],
+  unassigned_orders: [] as Array<Record<string, unknown>>,
   total_distance_km: 10,
   total_duration_minutes: 20,
   total_cost_vnd: 300,
@@ -479,4 +479,21 @@ describe('assertFleetOptimizationBatchResult', () => {
     placed.cargo_kind = 'INVALID_KIND';
     expect(() => assertFleetOptimizationResult(result)).toThrow('cargo_kind');
   });
+});
+
+it('accepts an explicitly unknown lateral imbalance from the Python contract', () => {
+  const result = validResult();
+  Object.assign(result.routes[0].spatial_validation, { max_lateral_imbalance_percent: null });
+  expect(() => assertFleetOptimizationResult(result)).not.toThrow();
+});
+
+it.each([-1, NaN, Infinity, 'unknown'])('rejects invalid lateral imbalance %s', value => {
+  const result = validResult();
+  Object.assign(result.routes[0].spatial_validation, { max_lateral_imbalance_percent: value });
+  expect(() => assertFleetOptimizationResult(result)).toThrow('max_lateral_imbalance_percent');
+});
+
+it('accepts null when the optimizer omitted optional benchmark calculation', () => {
+  const result = { ...validResult(), benchmarks: null };
+  expect(() => assertFleetOptimizationResult(result)).not.toThrow();
 });

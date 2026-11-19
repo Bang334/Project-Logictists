@@ -17,6 +17,7 @@ def extract_ortools_seed_pool(
     strategy_keys: Sequence[str] = ("parallel-insertion-gls",),
     routing_seconds: float = 0.75,
     stagnation_seconds: float = 0.18,
+    should_split_orders: bool = True,
 ) -> Tuple[List[List[List[ScheduledStop]]], Dict[str, object]]:
     """Build the OR-Tools routing model once and extract PDPTW seed routes without heavy auditing."""
     started = time.perf_counter()
@@ -35,6 +36,7 @@ def extract_ortools_seed_pool(
         time_budget_seconds=max(0.2, routing_seconds),
         stagnation_seconds=stagnation_seconds,
         enable_hybrid_fallback=False,
+        should_split_orders=should_split_orders,
     )
     if not solver.driver_safe_vehicle_indices:
         return [], {

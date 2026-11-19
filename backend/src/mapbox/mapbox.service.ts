@@ -7,6 +7,12 @@ import {
 } from '@nestjs/common';
 import axios from 'axios';
 
+export class MapboxMatrixRateLimitException extends ServiceUnavailableException {
+  constructor() {
+    super('Mapbox Matrix vẫn giới hạn lượt gọi sau 3 lần thử; vui lòng thử lại sau.');
+  }
+}
+
 export interface GeocodeResult {
   address: string;
   latitude: number;
@@ -31,6 +37,40 @@ export class MapboxService {
   private readonly logger = new Logger(MapboxService.name);
   private readonly accessToken = process.env.MAPBOX_ACCESS_TOKEN || '';
   private readonly baseUrl = 'https://api.mapbox.com';
+  private matrixQueue: Promise<unknown> = Promise.resolve();
+  private nextMatrixRequestAt = 0;
+
+  private matrixGet(url: string, params: Record<string, string>) {
+    const request = this.matrixQueue.then(async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const delay = Math.max(0, this.nextMatrixRequestAt - Date.now());
+        if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+        this.nextMatrixRequestAt = Date.now() + 1100;
+        try {
+          return await axios.get(url, { params, timeout: 12000 });
+        } catch (error: unknown) {
+          if (!axios.isAxiosError(error) || error.response?.status !== 429) throw error;
+          const headers = error.response.headers;
+          const retryAfter = headers['retry-after'];
+          const seconds = Number(retryAfter);
+          const retryDate = typeof retryAfter === 'string' ? Date.parse(retryAfter) : NaN;
+          const reset = Number(headers['x-rate-limit-reset']) * 1000;
+          const retryAt = Number.isFinite(seconds) && seconds > 0
+            ? Date.now() + seconds * 1000
+            : Number.isFinite(retryDate) ? retryDate : 0;
+          const waitUntil = Math.max(Date.now() + 2000 * 2 ** attempt, retryAt,
+            Number.isFinite(reset) ? reset : 0);
+          this.nextMatrixRequestAt = Math.max(this.nextMatrixRequestAt, waitUntil);
+          if (attempt === 2 || waitUntil - Date.now() > 120000) {
+            throw new MapboxMatrixRateLimitException();
+          }
+        }
+      }
+      throw new MapboxMatrixRateLimitException();
+    });
+    this.matrixQueue = request.catch(() => undefined);
+    return request;
+  }
 
   /**
    * Geocode một địa chỉ thành tọa độ GPS (kinh độ, vĩ độ)
@@ -74,6 +114,29 @@ export class MapboxService {
       };
     }
 
+    if (coordinates.length > 25) {
+      const parts: DirectionsResult[] = [];
+      for (let start = 0; start < coordinates.length - 1; start += 24) {
+        parts.push(await this.getRoute(coordinates.slice(start, start + 25)));
+      }
+      return {
+        distanceKm: Math.round(parts.reduce((sum, part) => sum + part.distanceKm, 0) * 10) / 10,
+        durationMinutes: parts.reduce((sum, part) => sum + part.durationMinutes, 0),
+        geometry: {
+          type: 'LineString',
+          coordinates: parts.flatMap((part, index) =>
+            index === 0 ? part.geometry.coordinates : part.geometry.coordinates.slice(1)),
+          ...(parts.every(part => Array.isArray(part.geometry.waypoint_indices)) ? {
+            waypoint_indices: parts.flatMap((part, index) => {
+              const offset = parts.slice(0, index).reduce((sum, previous) => sum + previous.geometry.coordinates.length - 1, 0);
+              return part.geometry.waypoint_indices.slice(index === 0 ? 0 : 1).map((point: number) => point + offset);
+            }),
+          } : {}),
+        },
+        waypoints: parts.flatMap((part, index) => index === 0 ? part.waypoints : part.waypoints.slice(1)),
+      };
+    }
+
     try {
       // Coordinates format for Mapbox: lng,lat;lng,lat;...
       const coordsString = coordinates.map((c) => `${c[0]},${c[1]}`).join(';');
@@ -86,13 +149,28 @@ export class MapboxService {
       }
 
       const route = response.data.routes[0];
+      // Step geometries preserve the exact visit order even when a road or depot is revisited.
+      const legPaths: [number, number][][] = Array.isArray(route.legs)
+        ? route.legs.map((leg: { steps?: { geometry?: { coordinates?: [number, number][] } }[] }) =>
+          leg.steps?.flatMap(step => step.geometry?.coordinates ?? []) ?? [])
+        : [];
+      let geometry = route.geometry;
+      if (legPaths.length === coordinates.length - 1 && legPaths.every(path => path.length >= 2)) {
+        const points: [number, number][] = [];
+        const waypointIndices = [0];
+        for (const path of legPaths) {
+          points.push(...path);
+          waypointIndices.push(points.length - 1);
+        }
+        geometry = { type: 'LineString', coordinates: points, waypoint_indices: waypointIndices };
+      }
       const distanceKm = Math.round((route.distance / 1000) * 10) / 10;
       const durationMinutes = Math.round(route.duration / 60);
 
       return {
         distanceKm,
         durationMinutes,
-        geometry: route.geometry,
+        geometry,
         waypoints: response.data.waypoints || [],
       };
     } catch (error) {
@@ -115,14 +193,33 @@ export class MapboxService {
       return { distancesMeters: [[0]], durationsSeconds: [[0]] };
     }
 
+    const unique: [number, number][] = [];
+    const indices = new Map<string, number>();
+    const mapping = coordinates.map(coordinate => {
+      const key = JSON.stringify(coordinate);
+      let index = indices.get(key);
+      if (index === undefined) {
+        index = unique.length;
+        indices.set(key, index);
+        unique.push(coordinate);
+      }
+      return index;
+    });
+    if (unique.length < coordinates.length) {
+      const matrix = await this.getRoadMatrix(unique);
+      return {
+        distancesMeters: mapping.map(a => mapping.map(b => matrix.distancesMeters[a][b])),
+        durationsSeconds: mapping.map(a => mapping.map(b => matrix.durationsSeconds[a][b])),
+      };
+    }
+
     // Nếu số lượng tọa độ <= 25, gọi 1 request trực tiếp tới Mapbox Matrix API
     if (coordinates.length <= 25) {
       const coordsString = coordinates.map(([lng, lat]) => `${lng},${lat}`).join(';');
       const url = `${this.baseUrl}/directions-matrix/v1/mapbox/driving/${coordsString}`;
       try {
-        const response = await axios.get(url, {
-          params: { annotations: 'distance,duration', access_token: this.accessToken },
-          timeout: 12000,
+        const response = await this.matrixGet(url, {
+          annotations: 'distance,duration', access_token: this.accessToken,
         });
         if (response.data?.code !== 'Ok') {
           throw new Error(response.data?.message || response.data?.code || 'Matrix response invalid');
@@ -147,6 +244,7 @@ export class MapboxService {
           durationsSeconds: durations as number[][],
         };
       } catch (error) {
+        if (error instanceof MapboxMatrixRateLimitException) throw error;
         this.logger.error(`Matrix API error: ${error.message}`);
         throw new BadGatewayException(
           `Mapbox Matrix không khả dụng: ${error.response?.data?.message || error.message}`,
@@ -172,7 +270,7 @@ export class MapboxService {
       }
     }
 
-    const concurrency = 5;
+    const concurrency = 1;
     let taskIndex = 0;
     const unreachable: string[] = [];
 
@@ -192,9 +290,8 @@ export class MapboxService {
           }
           const blockCoords = sChunk.map(([lng, lat]) => `${lng},${lat}`).join(';');
           const url = `${this.baseUrl}/directions-matrix/v1/mapbox/driving/${blockCoords}`;
-          const res = await axios.get(url, {
-            params: { annotations: 'distance,duration', access_token: this.accessToken },
-            timeout: 12000,
+          const res = await this.matrixGet(url, {
+            annotations: 'distance,duration', access_token: this.accessToken,
           });
           if (res.data?.code !== 'Ok') {
             throw new Error(res.data?.message || res.data?.code || 'Matrix chunk response invalid');
@@ -218,14 +315,11 @@ export class MapboxService {
           const sIndices = sChunk.map((_, idx) => idx).join(';');
           const dIndices = dChunk.map((_, idx) => sChunk.length + idx).join(';');
           const url = `${this.baseUrl}/directions-matrix/v1/mapbox/driving/${blockCoords}`;
-          const res = await axios.get(url, {
-            params: {
-              sources: sIndices,
-              destinations: dIndices,
-              annotations: 'distance,duration',
-              access_token: this.accessToken,
-            },
-            timeout: 12000,
+          const res = await this.matrixGet(url, {
+            sources: sIndices,
+            destinations: dIndices,
+            annotations: 'distance,duration',
+            access_token: this.accessToken,
           });
           if (res.data?.code !== 'Ok') {
             throw new Error(res.data?.message || res.data?.code || 'Matrix chunk response invalid');
@@ -260,6 +354,7 @@ export class MapboxService {
         durationsSeconds: fullDurations,
       };
     } catch (error) {
+      if (error instanceof MapboxMatrixRateLimitException) throw error;
       this.logger.error(`Matrix API error (chunked): ${error.message}`);
       throw new BadGatewayException(
         `Mapbox Matrix không khả dụng: ${error.response?.data?.message || error.message}`,

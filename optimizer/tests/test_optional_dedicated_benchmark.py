@@ -7,6 +7,16 @@ from app.ils_engine import PackingAwareILSOptimizer
 from test_benchmark_contract import comparison_request
 
 
+def test_expired_comparison_budget_reports_timeout_before_solving(monkeypatch):
+    calculator = BaselineCostCalculator(comparison_request(), [], deadline=0)
+    def unexpected_solve(*args):
+        pytest.fail("Started a baseline routing search after the deadline")
+    monkeypatch.setattr(calculator, "_solve_direct_schedule", unexpected_solve)
+    metric = calculator.compute_direct_dedicated()
+    assert not metric.routes
+    assert metric.violations[0].startswith("TIMEOUT:")
+
+
 @pytest.mark.parametrize("engine_type", [PackingAwareHybridALNSOptimizer, PackingAwareILSOptimizer])
 def test_disabling_dedicated_report_keeps_actual_plan_and_spatial_audit(engine_type, monkeypatch):
     calls = []

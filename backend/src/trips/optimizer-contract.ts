@@ -68,7 +68,7 @@ export type OptimizedRouteResult = {
     error_message?: string;
     max_weight_kg: number;
     max_area_cm2: number;
-    max_lateral_imbalance_percent?: number;
+    max_lateral_imbalance_percent?: number | null;
     step_states: Array<{
       step_index: number;
       stop_id: string;
@@ -181,7 +181,7 @@ export type FleetOptimizationResult = {
     physical_vehicle_count?: number;
     delivery_visit_count?: number;
   };
-  benchmarks?: BenchmarkComparison;
+  benchmarks?: BenchmarkComparison | null;
   diagnostics: string[];
 };
 
@@ -407,6 +407,7 @@ export function assertFleetOptimizationResult(
     }
     if (
       route.spatial_validation.max_lateral_imbalance_percent !== undefined &&
+      route.spatial_validation.max_lateral_imbalance_percent !== null &&
       (!isFiniteNumber(route.spatial_validation.max_lateral_imbalance_percent) ||
         Number(route.spatial_validation.max_lateral_imbalance_percent) < 0)
     ) {
@@ -585,7 +586,7 @@ export function assertFleetOptimizationResult(
       throw new Error('Optimizer trả unassigned_orders không hợp lệ');
     }
   }
-  if (value.benchmarks !== undefined) {
+  if (value.benchmarks !== undefined && value.benchmarks !== null) {
     if (!isRecord(value.benchmarks)) {
       throw new Error('Optimizer benchmarks phải là object');
     }

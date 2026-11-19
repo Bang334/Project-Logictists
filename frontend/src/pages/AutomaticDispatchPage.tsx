@@ -947,8 +947,9 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   // Cột mốc cự ly (km) cho từng điểm dừng: đảm bảo chỉ khi xe thực sự chạm điểm dừng mới chất/dỡ hàng
   const stopMilestonesKm = useMemo(() => {
     if (!routeProfileForSim || !currentActiveRoute?.stops) return [];
-    return calculateStopMilestonesKm(routeProfileForSim, currentActiveRoute.stops);
-  }, [routeProfileForSim, currentActiveRoute]);
+    return calculateStopMilestonesKm(routeProfileForSim, currentActiveRoute.stops,
+      showingDirect ? undefined : currentActiveRoute.route_geometry?.waypoint_indices);
+  }, [routeProfileForSim, currentActiveRoute, showingDirect]);
 
   const hasReturnLeg = (currentActiveRoute?.return_travel_time_sec ?? 0) > 0;
   const syncSimulationStep = useCallback((progress: number, _coordinate: [number, number], _speed: number, traveledKm: number) => {
@@ -3455,6 +3456,12 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                   driverName={currentActiveRoute?.driver_name}
                   onSimulationProgress={syncSimulationStep}
                   onSimulationStop={stopSimulation}
+                  onMarkerClick={(marker) => {
+                    const route = result.routes[marker.routeIndex ?? -1];
+                    if (route && marker.sequence !== undefined) {
+                      selectMapRoute(getRouteKey(route), marker.sequence);
+                    }
+                  }}
                 />
               </Card>
             </Col>
@@ -3572,7 +3579,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
               message={
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                   <Text strong>{result.unassigned_orders.length} đơn chưa được xếp tuyến</Text>
-                  <Tag color="orange">Chi tiết lý do từ chối</Tag>
+                  <Tag color="orange">Chi tiết đơn chưa xếp tuyến</Tag>
                 </div>
               }
               description={

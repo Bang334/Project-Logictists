@@ -1,0 +1,176 @@
+{
+  "policy": {
+    "max_tiers": 3,
+    "lift_clearance_cm": 5,
+    "owner_mode": "SAME_CUSTOMER"
+  },
+  "inventory_columns": [
+    "file",
+    "items",
+    "upper_allowed",
+    "top_load_declared"
+  ],
+  "inventory": [
+    [
+      "db_danang_30_orders.json",
+      30,
+      0,
+      0
+    ],
+    [
+      "db_hanoi_16_orders.json",
+      268,
+      0,
+      0
+    ],
+    [
+      "db_nhatrang_2_orders.json",
+      9,
+      0,
+      0
+    ],
+    [
+      "db_songthan_4_orders.json",
+      85,
+      0,
+      0
+    ],
+    [
+      "novel_1_mekong_hub_spoke.json",
+      30,
+      0,
+      0
+    ],
+    [
+      "novel_2_long_narrow_timber.json",
+      24,
+      0,
+      0
+    ],
+    [
+      "novel_3_three_shift_relay.json",
+      18,
+      0,
+      0
+    ],
+    [
+      "novel_4_3tier_asymmetric_fleet.json",
+      16,
+      0,
+      0
+    ],
+    [
+      "novel_5_rolling_3day_horizon.json",
+      18,
+      0,
+      0
+    ],
+    [
+      "scenario_1_multi_item.json",
+      170,
+      0,
+      0
+    ],
+    [
+      "scenario_2_heavy_cargo.json",
+      23,
+      0,
+      0
+    ],
+    [
+      "scenario_3_dispersed.json",
+      57,
+      0,
+      0
+    ],
+    [
+      "scenario_4_tight_windows.json",
+      48,
+      0,
+      0
+    ],
+    [
+      "scenario_5_heterogeneous_fleet.json",
+      52,
+      0,
+      0
+    ],
+    [
+      "scenario_6_dynamic_reuse.json",
+      28,
+      0,
+      0
+    ],
+    [
+      "scenario_7_multi_depot_overnight.json",
+      65,
+      0,
+      0
+    ],
+    [
+      "scenario_8_dense_fragmentation.json",
+      119,
+      0,
+      0
+    ],
+    [
+      "scenario_stack_cost_comparison.json",
+      3,
+      2,
+      2
+    ],
+    [
+      "scenario_stack_customer_modes.json",
+      2,
+      1,
+      2
+    ]
+  ],
+  "runs": [
+    {
+      "case": "db_danang_30_orders",
+      "orders": 30,
+      "slots": 42,
+      "http": 200,
+      "elapsed": 50.62,
+      "status": "SUCCESS",
+      "delivered_orders": 30,
+      "routes": 13,
+      "upper_ids": [],
+      "diagnostics": [
+        "Hybrid-first: đã nhận 2/2 nghiệm Hybrid có tuyến; độ phức tạp 46.2, ngân sách tổng 66 giây, 33 giây/seed.",
+        "Đã tìm thấy 2 lượt giao đủ 100% đơn, trong đó có 2 phương án có lộ trình khác biệt."
+      ]
+    },
+    {
+      "case": "db_hanoi_16_orders",
+      "orders": 16,
+      "slots": 21,
+      "http": 200,
+      "elapsed": 62.75,
+      "status": "SUCCESS",
+      "delivered_orders": 16,
+      "routes": 5,
+      "upper_ids": [],
+      "diagnostics": [
+        "Hybrid-first: đã nhận 2/2 nghiệm Hybrid có tuyến; độ phức tạp 62.15, ngân sách tổng 86 giây, 43 giây/seed.",
+        "Đã tìm thấy 2 lượt giao đủ 100% đơn, trong đó có 2 phương án có lộ trình khác biệt."
+      ]
+    },
+    {
+      "case": "synthetic_100_10",
+      "orders": 100,
+      "slots": 10,
+      "http": 200,
+      "elapsed": 37.25,
+      "status": "SUCCESS",
+      "delivered_orders": 100,
+      "routes": 2,
+      "upper_ids": [],
+      "diagnostics": [
+        "Hybrid-first: đã nhận 2/2 nghiệm Hybrid có tuyến; độ phức tạp 133.5, ngân sách tổng 60 giây, 30 giây/seed.",
+        "Đã tìm thấy 2 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ]
+    }
+  ]
+}

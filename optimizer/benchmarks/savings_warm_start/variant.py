@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import bisect
 import concurrent.futures
 from concurrent.futures.process import BrokenProcessPool
 import contextlib
@@ -55,7 +56,10 @@ __all__ = [
 
 _ORTOOLS_SEED_STRATEGIES = ("parallel-insertion-gls", "path-cheapest-arc-gls")
 _MIN_PORTFOLIO_BUDGET_SECONDS = 6.0
-_MIN_TIMED_SPAWN_BUDGET_SECONDS = 8.0 if os.name == "nt" else 6.0
+# Windows process creation ("spawn") incurs ~4-6s of parallel import overhead;
+# below ~14s of remaining wall time, an uncontended in-process search completes
+# more ALNS + polish iterations than 4 cold-booted workers.
+_MIN_TIMED_SPAWN_BUDGET_SECONDS = 14.0 if os.name == "nt" else 6.0
 _MIN_PORTFOLIO_ORDERS = 4
 _PORTFOLIO_WORKERS = 3
 _RAW_VALIDATE_STOP_ACTIONS = stacking.validate_stop_actions
@@ -381,6 +385,21 @@ def _fast_packing_context(
 
     setattr(_bounded_repair_and_audit, "_is_variant_cache_wrapper", True)
 
+    rot_cache: Dict[Tuple[Any, ...], bool] = {}
+
+    def _item_can_rotate(item: Any) -> bool:
+        allowed = getattr(item, "allowed_orientations", None)
+        cache_key = (
+            tuple(allowed) if allowed is not None else None,
+            bool(getattr(item, "can_rotate", True)),
+        )
+        cached = rot_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        res = ("WLH" in allowed) if allowed is not None else cache_key[1]
+        rot_cache[cache_key] = res
+        return res
+
     def _fast_place_box(
         self_checker: Any,
         item: Any,
@@ -392,7 +411,7 @@ def _fast_packing_context(
             return None
 
         orientations = [(item.length_cm, item.width_cm)]
-        if alns_engine_mod.resolve_can_rotate(item) and abs(item.length_cm - item.width_cm) > 0.1:
+        if _item_can_rotate(item) and abs(item.length_cm - item.width_cm) > 0.1:
             orientations.append((item.width_cm, item.length_cm))
 
         edges = [(b["x"], b["y"], b["x"] + b["l"], b["y"] + b["w"]) for b in placed_boxes]
@@ -439,10 +458,152 @@ def _fast_packing_context(
                         }
         return None
 
+    def _fast_validate_lifo_route_stops(
+        self_checker: Any,
+        candidate_stops: Sequence[Any],
+        cargo_by_id: Dict[str, Any],
+    ) -> Tuple[bool, str]:
+        if self_checker.demo_stacking is not None:
+            return _cached_fast_validate_stacked_route(
+                self_checker.vehicle,
+                candidate_stops,
+                cargo_by_id,
+                self_checker.demo_stacking,
+                allow_layout_search=False,
+            )
+
+        bed_l = self_checker.bed_l
+        bed_w = self_checker.bed_w
+        limit_l = bed_l + 0.01
+        limit_w = bed_w + 0.01
+        bed_area_eps = self_checker.bed_area + 0.01
+        payload_eps = self_checker.payload + 0.01
+
+        placed: List[Tuple[float, float, float, float, float, float, str, float]] = []
+        onboard_ids: set[str] = set()
+        onboard_weight = 0.0
+        used_area = 0.0
+        corners_set: set[Tuple[float, float]] = {(0.0, 0.0)}
+        sorted_corners: List[Tuple[float, float]] = [(0.0, 0.0)]
+        min_corner_by_ori: Dict[Tuple[float, float], Tuple[float, float]] = {}
+
+        for stop in candidate_stops:
+            stop_type = stop.stop_type
+            if stop_type == "PICKUP":
+                for item_id in stop.items_loaded:
+                    item = cargo_by_id.get(item_id)
+                    if not item:
+                        continue
+                    w_kg = item.weight_kg
+                    onboard_weight += w_kg
+                    if onboard_weight > payload_eps:
+                        return False, "Vượt tải trọng xe"
+
+                    il = item.length_cm
+                    iw = item.width_cm
+                    box_area = il * iw
+                    if used_area + box_area > bed_area_eps:
+                        return False, "Không đủ diện tích sàn hoặc bị kẹt góc"
+
+                    orientations = [(il, iw)]
+                    if _item_can_rotate(item) and abs(il - iw) > 0.1:
+                        orientations.append((iw, il))
+
+                    placed_box = False
+                    for l_dim, w_dim in orientations:
+                        if l_dim > bed_l or w_dim > bed_w:
+                            continue
+                        ori_key = (l_dim, w_dim)
+                        max_x = limit_l - l_dim
+                        start_corner = min_corner_by_ori.get(ori_key, (0.0, 0.0))
+                        idx = bisect.bisect_left(sorted_corners, start_corner)
+                        n_corners = len(sorted_corners)
+                        while idx < n_corners:
+                            x_cand, y_cand = sorted_corners[idx]
+                            idx += 1
+                            if x_cand > max_x + 1e-9:
+                                break
+                            end_y = y_cand + w_dim
+                            if end_y > limit_w:
+                                continue
+                            end_x = x_cand + l_dim
+                            if end_x > limit_l:
+                                continue
+                            overlap = False
+                            for ox, oy, orx, ory, _ol, _ow, _oid, _owg in placed:
+                                if not (
+                                    end_x <= ox + 0.01
+                                    or x_cand >= orx - 0.01
+                                    or end_y <= oy + 0.01
+                                    or y_cand >= ory - 0.01
+                                ):
+                                    overlap = True
+                                    break
+                            if not overlap:
+                                min_corner_by_ori[ori_key] = (x_cand, y_cand)
+                                placed.append(
+                                    (x_cand, y_cand, end_x, end_y, l_dim, w_dim, item_id, w_kg)
+                                )
+                                onboard_ids.add(item_id)
+                                used_area += box_area
+                                c1 = (end_x, y_cand)
+                                c2 = (x_cand, end_y)
+                                for c in (c1, c2):
+                                    if c not in corners_set:
+                                        corners_set.add(c)
+                                        bisect.insort(sorted_corners, c)
+                                        for k, mv in min_corner_by_ori.items():
+                                            if c < mv:
+                                                min_corner_by_ori[k] = c
+                                placed_box = True
+                                break
+                        if placed_box:
+                            break
+                        min_corner_by_ori[ori_key] = (max_x + 1.0, 0.0)
+                    if not placed_box:
+                        return False, "Không đủ diện tích sàn hoặc bị kẹt góc"
+
+            elif stop_type == "DELIVERY":
+                unload_list = stop.items_unloaded
+                if not unload_list:
+                    continue
+                for iid in unload_list:
+                    if iid not in onboard_ids:
+                        return False, "Dỡ kiện chưa có trên xe"
+                unload_set = set(unload_list)
+                target_boxes = [b for b in placed if b[6] in unload_set]
+                target_boxes.sort(key=lambda b: b[2], reverse=True)
+                remaining = placed
+                for tx, ty, _trx, try_, _tl, _tw, tid, tweight in target_boxes:
+                    for ox, oy, _orx, ory, _ol, _ow, oid, _owg in remaining:
+                        if oid != tid and ox > tx + 0.01 and not (
+                            ory <= ty + 0.01 or oy >= try_ - 0.01
+                        ):
+                            return False, "Bị hàng dỡ sau chặn lối ra cửa đuôi"
+                    remaining = [b for b in remaining if b[6] != tid]
+                    onboard_ids.discard(tid)
+                    onboard_weight = max(0.0, onboard_weight - tweight)
+                if target_boxes:
+                    placed = remaining
+                    min_corner_by_ori.clear()
+                    used_area = sum(b[4] * b[5] for b in placed)
+                    corners_set = {(0.0, 0.0)}
+                    for px, py, prx, pry, *_ in placed:
+                        corners_set.add((prx, py))
+                        corners_set.add((px, pry))
+                    sorted_corners = sorted(corners_set)
+
+        return True, "Hợp lệ"
+
     with (
         patch.object(greedy_insertion, "FastPackingChecker", FastDynamicPackingChecker),
         patch.object(route_evaluator, "FastPackingChecker", FastDynamicPackingChecker),
         patch.object(alns_engine_mod.FastLIFOPackingChecker, "_place_box", _fast_place_box),
+        patch.object(
+            alns_engine_mod.FastLIFOPackingChecker,
+            "validate_route_stops",
+            _fast_validate_lifo_route_stops,
+        ),
         patch.object(solution_validator, "validate_stop_actions", _cached_validate_stop_actions),
         patch.object(packing_checker, "validate_stop_actions", _cached_validate_stop_actions),
         patch.object(packing_checker, "fast_validate_stacked_route", _cached_fast_validate_stacked_route),
@@ -595,23 +756,20 @@ def _adaptive_polish_reserve(
     *,
     has_ortools_seed: bool = False,
 ) -> float:
-    """Scale reserve between initial search and post-audit polish by problem and budget."""
-    if has_ortools_seed:
-        # Warm OR-Tools seeds still benefit from ~78-80% search time to escape route counts,
-        # while keeping enough reserve for post-audit multi-step consolidation and cross-route exchange.
-        polish_share = max(0.18, 0.22 - 0.03 * packing_intensity)
-        return min(remaining * 0.25, max(1.6, min(4.5, remaining * polish_share)))
-    polish_share = max(0.29, 0.34 - 0.05 * packing_intensity)
-    size_cap = max(
-        3.5,
-        1.2 + 0.14 * len(request.orders) + 0.03 * len(request.vehicles),
+    """Scale reserve between initial search and post-audit polish purely from budget and workload."""
+    base_share = 0.29 if has_ortools_seed else 0.31
+    polish_share = base_share - 0.04 * packing_intensity
+    order_weight = min(0.05, 0.002 * len(request.orders) + 0.0005 * len(request.vehicles))
+    scaled_share = min(0.36, polish_share + order_weight)
+    desired_polish = min(
+        remaining * 0.36,
+        max(remaining * 0.26, remaining * scaled_share),
     )
-    scaled_cap = max(size_cap, remaining * polish_share)
-    min_floor = min(remaining * 0.30, max(1.2, 1.0 + 0.8 * (1.0 - packing_intensity)))
-    return min(
-        remaining * 0.40,
-        max(min_floor, min(scaled_cap, remaining * polish_share)),
-    )
+    # Never starve initial search + spatial verification below the minimum floor
+    # needed to discover a complete multi-item plan on tight wall budgets.
+    min_search_floor = 1.5 + 1.8 * packing_intensity
+    max_polish_budget = max(remaining * 0.12, remaining - min_search_floor)
+    return min(desired_polish, max_polish_budget)
 
 
 def _measured_polish_deadlines(
@@ -620,10 +778,10 @@ def _measured_polish_deadlines(
 ) -> tuple[float, float, float]:
     """Derive polish/exit deadlines from measured audit+serialize runtime."""
     rem = max(0.0, publish_deadline - time.perf_counter())
-    eval_margin = max(0.45, min(rem * 0.35, eval_seconds * 2.2 + 0.28))
+    eval_margin = min(rem * 0.35, max(rem * 0.08, eval_seconds * 3.0))
     polish_deadline = publish_deadline - eval_margin
-    validation_deadline = polish_deadline + min(0.15, eval_margin * 0.30)
-    refine_eval_guard = max(0.08, min(rem * 0.20, eval_seconds * 1.15))
+    validation_deadline = polish_deadline + eval_margin * 0.30
+    refine_eval_guard = min(rem * 0.22, max(rem * 0.04, eval_seconds * 1.5))
     return polish_deadline, validation_deadline, refine_eval_guard
 
 
@@ -746,9 +904,15 @@ def _run_portfolio_worker(task: Dict[str, Any]) -> Dict[str, Any]:
                 )
                 solve_deadline = min(deadline, publish_deadline - polish_reserve)
                 optimizer._validation_deadline = max(
-                    time.perf_counter() + 0.5, publish_deadline - 0.35
+                    time.perf_counter() + 0.5, solve_deadline - 0.12
                 )
+        optimizer._solve_has_valid_response = False
+        optimizer._in_polish_phase = False
         plan = optimizer.solve(hard_deadline=solve_deadline)
+        if checkpoint_path is not None:
+            optimizer._validation_deadline = publish_deadline - max(
+                0.05, max(0.0, publish_deadline - time.perf_counter()) * 0.05
+            )
         eval_started = time.perf_counter()
         result = evaluate(plan)
         eval_sec = max(0.02, time.perf_counter() - eval_started)
@@ -860,6 +1024,8 @@ class VariantHybridALNSOptimizer(PackingAwareHybridALNSOptimizer):
         self._validation_deadline: Optional[float] = None
         self._variant_publish_deadline: Optional[float] = None
         self._defer_vehicle_search = False
+        self._solve_has_valid_response = False
+        self._in_polish_phase = False
         self._candidate_rank_cache: dict[tuple, tuple[int, ...]] = {}
         self._route_schedule_cache: dict[tuple, Optional[list[ScheduledStop]]] = {}
         self._route_eval_cache: dict[tuple, tuple[int, float]] = {}
@@ -906,18 +1072,62 @@ class VariantHybridALNSOptimizer(PackingAwareHybridALNSOptimizer):
         include_benchmarks: bool = True,
         spatial_time_budget_seconds: Optional[float] = None,
     ) -> FleetOptimizationResponse:
-        if self._validation_deadline is not None:
-            rem_val = max(0.15, self._validation_deadline - time.perf_counter())
-            spatial_time_budget_seconds = (
-                rem_val
-                if spatial_time_budget_seconds is None
-                else min(spatial_time_budget_seconds, rem_val)
-            )
-        with self._raw_policy_context():
-            response = super()._build_final_response(
-                routes_stops, unassigned_ids, include_benchmarks=include_benchmarks,
-                spatial_time_budget_seconds=spatial_time_budget_seconds,
-            )
+        prev_val_deadline = self._validation_deadline
+        try:
+            if self._validation_deadline is not None:
+                now_bfr = time.perf_counter()
+                eff_val_deadline = self._validation_deadline
+                if (
+                    self._variant_publish_deadline is not None
+                    and self._variant_publish_deadline > now_bfr
+                ):
+                    rem_pub = self._variant_publish_deadline - now_bfr
+                    exit_guard = rem_pub * 0.12
+                    if not getattr(self, "_in_polish_phase", False):
+                        if not getattr(self, "_solve_has_valid_response", False):
+                            audit_floor = rem_pub * 0.50
+                            audit_cap = rem_pub * 0.85
+                            if (eff_val_deadline - now_bfr) < audit_floor or (
+                                spatial_time_budget_seconds is not None
+                                and spatial_time_budget_seconds < audit_floor
+                            ):
+                                audit_span = min(
+                                    audit_cap,
+                                    max(
+                                        eff_val_deadline - now_bfr,
+                                        spatial_time_budget_seconds or 0.0,
+                                        audit_floor,
+                                    ),
+                                )
+                                eff_val_deadline = now_bfr + max(0.05, audit_span)
+                                self._validation_deadline = eff_val_deadline
+                                spatial_time_budget_seconds = audit_span
+                    elif eff_val_deadline <= now_bfr:
+                        audit_span = (
+                            rem_pub * 0.50
+                            if spatial_time_budget_seconds is None
+                            else min(rem_pub - exit_guard, spatial_time_budget_seconds)
+                        )
+                        eff_val_deadline = min(
+                            self._variant_publish_deadline - exit_guard,
+                            now_bfr + max(0.0, audit_span),
+                        )
+                        self._validation_deadline = eff_val_deadline
+                rem_val = max(0.05, eff_val_deadline - now_bfr)
+                spatial_time_budget_seconds = (
+                    rem_val
+                    if spatial_time_budget_seconds is None
+                    else min(spatial_time_budget_seconds, rem_val)
+                )
+            with self._raw_policy_context():
+                response = super()._build_final_response(
+                    routes_stops, unassigned_ids, include_benchmarks=include_benchmarks,
+                    spatial_time_budget_seconds=spatial_time_budget_seconds,
+                )
+        finally:
+            self._validation_deadline = prev_val_deadline
+        if response.routes and len(response.unassigned_orders) <= len(unassigned_ids):
+            self._solve_has_valid_response = True
         if self._checkpoint_callback is not None:
             self._checkpoint_callback(response)
         return response
@@ -1282,14 +1492,16 @@ class VariantHybridALNSOptimizer(PackingAwareHybridALNSOptimizer):
         self,
         routes: List[List[ScheduledStop]],
         unassigned: List[str],
+        deadline: Optional[float] = None,
     ):
         if self._defer_vehicle_search:
             return None
-        deadline = (
+        variant_deadline = (
             self._variant_audit_deadline
             if self._variant_audit_deadline is not None
             else time.perf_counter() + 1.5
         )
+        deadline = min(deadline, variant_deadline) if deadline is not None else variant_deadline
         if time.perf_counter() >= deadline:
             return None
         return bounded_vehicle_reassignment(self, routes, unassigned, deadline)
@@ -1298,17 +1510,37 @@ class VariantHybridALNSOptimizer(PackingAwareHybridALNSOptimizer):
         self,
         routes: List[List[ScheduledStop]],
         unassigned: List[str],
+        deadline: Optional[float] = None,
     ):
         if self._defer_vehicle_search:
             return None
-        deadline = (
+        variant_deadline = (
             self._variant_audit_deadline
             if self._variant_audit_deadline is not None
             else time.perf_counter() + 2.0
         )
+        deadline = min(deadline, variant_deadline) if deadline is not None else variant_deadline
         if time.perf_counter() >= deadline:
             return None
         return bounded_optimize_production_vehicles(self, routes, unassigned, deadline)
+
+    def _select_audit_candidates(
+        self,
+        candidates,
+        limit: int = 6,
+        max_per_route_count: int = 4,
+        fallback=None,
+    ):
+        """Cap initial multi-candidate auditing when post-audit polish will refine the winner."""
+        if getattr(self, "_defer_vehicle_search", False):
+            limit = min(limit, 3)
+            max_per_route_count = min(max_per_route_count, 2)
+        return super()._select_audit_candidates(
+            candidates,
+            limit=limit,
+            max_per_route_count=max_per_route_count,
+            fallback=fallback,
+        )
 
     def _base_polish_audited_response(
         self, response: FleetOptimizationResponse, deadline: float,
@@ -1321,6 +1553,7 @@ class VariantHybridALNSOptimizer(PackingAwareHybridALNSOptimizer):
         prev_policy = self.policy
         prev_audit_deadline = self._variant_audit_deadline
         prev_layout_search = getattr(self, "_allow_layout_search", True)
+        prev_in_polish = getattr(self, "_in_polish_phase", False)
         self.policy = self._search_policy
         self._variant_audit_deadline = deadline
         self._allow_layout_search = True
@@ -1330,6 +1563,7 @@ class VariantHybridALNSOptimizer(PackingAwareHybridALNSOptimizer):
                 return response
             if self._defer_vehicle_search:
                 return response
+            self._in_polish_phase = True
             best = response
             rem_polish = max(0.0, deadline - now)
             min_slice = min(0.20, max(0.08, rem_polish * 0.12))
@@ -1350,6 +1584,7 @@ class VariantHybridALNSOptimizer(PackingAwareHybridALNSOptimizer):
             self.policy = prev_policy
             self._variant_audit_deadline = prev_audit_deadline
             self._allow_layout_search = prev_layout_search
+            self._in_polish_phase = prev_in_polish
 
     def _build_hybrid_initial_solution(
         self,
@@ -1369,13 +1604,14 @@ class VariantHybridALNSOptimizer(PackingAwareHybridALNSOptimizer):
         total_remaining = max(0.0, effective_deadline - now)
         if self.warm_sa_fraction <= 0.0 or not hasattr(self, "_hybrid_model_context"):
             capped_deadline = effective_deadline
-            if total_remaining >= 2.5 and not self._ortools_seed_pool:
-                share = 0.22
-                base_cap = 2.2
-                min_cap = min(total_remaining * 0.35, 0.8)
+            if total_remaining >= 0.8 and not self._ortools_seed_pool:
+                pack_int = request_packing_intensity(self.request)
+                share = max(0.09, 0.17 - 0.08 * pack_int)
+                base_cap = 1.4
+                min_cap = min(total_remaining * 0.22, 0.45)
                 max_cap = max(base_cap, total_remaining * share)
                 cap_sec = min(
-                    total_remaining * 0.35,
+                    total_remaining * 0.26,
                     min(max_cap, max(min_cap, total_remaining * share)),
                 )
                 capped_deadline = min(effective_deadline, now + cap_sec)
@@ -1517,9 +1753,13 @@ class VariantHybridALNSOptimizer(PackingAwareHybridALNSOptimizer):
         self._candidate_rank_cache.clear()
         total_budget = self._effective_budget(hard_deadline)
         solve_started = time.perf_counter()
-        self._post_audit_budget_sec = max(
-            self._post_audit_budget_sec, min(1.25, total_budget * 0.10)
-        )
+        if self._defer_vehicle_search:
+            # Outer polish owns post-audit refinement when deferred; avoid reserving twice in super().solve().
+            self._post_audit_budget_sec = 0.0
+        else:
+            self._post_audit_budget_sec = max(
+                self._post_audit_budget_sec, total_budget * 0.10
+            )
         packing_intensity = request_packing_intensity(self.request)
         relax_dense_deadline = (
             self.enable_portfolio
@@ -1758,9 +1998,14 @@ class VariantHybridALNSOptimizer(PackingAwareHybridALNSOptimizer):
                     )
                     solve_deadline = min(publish_deadline, publish_deadline - polish_reserve)
                     self._validation_deadline = max(
-                        time.perf_counter() + 0.5, publish_deadline - 0.35
+                        time.perf_counter() + 0.5, solve_deadline - 0.12
                     )
+                self._solve_has_valid_response = False
+                self._in_polish_phase = False
                 plan = super().solve(hard_deadline=solve_deadline)
+                self._validation_deadline = publish_deadline - max(
+                    0.05, max(0.0, publish_deadline - time.perf_counter()) * 0.05
+                )
                 eval_started = time.perf_counter()
                 result = evaluate_inprocess(plan)
                 eval_sec = max(0.02, time.perf_counter() - eval_started)
@@ -1813,8 +2058,16 @@ class VariantHybridALNSOptimizer(PackingAwareHybridALNSOptimizer):
             "sa_construction_fraction": 0.45,
             "defer_vehicle_search": True,
         }
+        rem_wall = max(0.0, (deadline - decode_guard) - time.perf_counter())
+        # When Windows spawn overhead leaves moderate search time, run 2 complementary
+        # streams (direct + OR-Tools) rather than 4 competing cold processes.
+        selected_tasks = (
+            [direct, tasks[0]]
+            if os.name == "nt" and rem_wall < 22.0
+            else [direct, *tasks]
+        )
         results, errors, timed_out = run_timed_workers(
-            _run_portfolio_worker, [direct, *tasks], deadline - decode_guard,
+            _run_portfolio_worker, selected_tasks, deadline - decode_guard,
         )
         evaluations = []
         for result in results:

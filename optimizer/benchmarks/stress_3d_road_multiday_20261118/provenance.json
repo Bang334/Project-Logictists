@@ -1,0 +1,12 @@
+{
+  "matrix_source": "benchmarks\\cases\\db_danang_30_orders.json",
+  "matrix_method": "Submatrix and repeated nodes from preserved operational snapshot. No new provider requests.",
+  "location_pairs": 30,
+  "orders_per_location_pair": 4,
+  "physical_vehicles": 20,
+  "vehicle_day_slots": 140,
+  "days": 7,
+  "cargo_items": 1260,
+  "cost_parameters": "Unchanged synthetic benchmark costs",
+  "search_budget_seconds": 30
+}

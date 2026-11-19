@@ -1,0 +1,30 @@
+{
+  "orders": 120,
+  "packages": 1260,
+  "physical_vehicles": 20,
+  "days": 7,
+  "old_volume_m3": 220.83900000000006,
+  "volume_m3": 1156.719999999998,
+  "volume_multiplier": 5.237842953463825,
+  "dimensions_cm": {
+    "length": [
+      100,
+      120,
+      150
+    ],
+    "width": [
+      80,
+      100,
+      120
+    ],
+    "height": [
+      65,
+      70,
+      75,
+      80
+    ]
+  },
+  "delivery_locations": 11,
+  "max_depot_round_direction_km": 12.2143,
+  "matrix_source": "Preserved db_danang_30_orders.json, exact node remapping"
+}

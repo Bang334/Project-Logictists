@@ -1,3 +1,4 @@
+from math import isfinite
 from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -314,10 +315,16 @@ class FleetOptimizationRequest(StrictContractModel):
         ):
             if len(matrix) != expected or any(len(row) != expected for row in matrix):
                 raise ValueError(f"{name} must be a {expected}x{expected} matrix")
-            if any(value < 0 for row in matrix for value in row):
-                raise ValueError(f"{name} cannot contain negative values")
-        if len(self.vehicles) > len(self.drivers):
-            raise ValueError("Each candidate vehicle requires an available driver")
+            if any(not isfinite(value) or value < 0 for row in matrix for value in row):
+                raise ValueError(f"{name} must contain finite nonnegative values")
+        for name, identifiers in (
+            ("orders", [order.id for order in self.orders]),
+            ("vehicles", [vehicle.id for vehicle in self.vehicles]),
+            ("drivers", [driver.id for driver in self.drivers]),
+            ("items", [item.id for order in self.orders for item in order.items]),
+        ):
+            if len(identifiers) != len(set(identifiers)):
+                raise ValueError(f"{name} must have unique IDs")
         return self
 
 

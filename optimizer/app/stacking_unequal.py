@@ -221,7 +221,7 @@ class _SearchBudget:
         if self.visited >= self.max_nodes:
             self.limit_reached = True
             return False
-        if (self.visited & 31 == 0) and (time.monotonic() - self.start_time) >= self.max_time_seconds:
+        if (self.visited & 7 == 0) and (time.monotonic() - self.start_time) >= self.max_time_seconds:
             self.limit_reached = True
             return False
         self.visited += 1

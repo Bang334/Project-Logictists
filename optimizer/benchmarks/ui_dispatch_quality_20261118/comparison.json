@@ -1,0 +1,32 @@
+{
+  "baseline_job": "e18f0a0d-ddbd-44bf-9c25-1dafca0d178f",
+  "baseline_search_seconds": 10,
+  "baseline_routes": 69,
+  "baseline_cost": 173131288,
+  "baseline_distance_km": 28384.17,
+  "baseline_score": 313892652,
+  "longer_search_seconds": 60,
+  "longer_elapsed_seconds": 45.15260830000079,
+  "longer_candidates": [
+    {
+      "rank": 1,
+      "status": "SUCCESS",
+      "routes": 67,
+      "unassigned": 0,
+      "cost": 167299036,
+      "km": 27345.14,
+      "score": 303710506,
+      "days": 3
+    },
+    {
+      "rank": 2,
+      "status": "SUCCESS",
+      "routes": 69,
+      "unassigned": 0,
+      "cost": 173393494,
+      "km": 28639.56,
+      "score": 315148095,
+      "days": 3
+    }
+  ]
+}

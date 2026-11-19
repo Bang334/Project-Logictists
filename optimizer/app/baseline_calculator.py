@@ -1,5 +1,6 @@
 from collections import defaultdict
 from dataclasses import dataclass, field
+import time
 from typing import Dict, List, Optional, Tuple
 
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
@@ -40,7 +41,8 @@ class _EvaluatedRoute:
 class BaselineCostCalculator:
     """Build comparable baselines using the production feasibility rules."""
 
-    def __init__(self, request: FleetOptimizationRequest, nodes: List[dict]):
+    def __init__(self, request: FleetOptimizationRequest, nodes: List[dict], *, deadline: Optional[float] = None):
+        self.deadline = deadline
         self.request = request
         self.nodes = nodes
         self.vehicles = request.vehicles
@@ -49,6 +51,14 @@ class BaselineCostCalculator:
         self.order_by_id = {order.id: order for order in request.orders}
         self.node_idx_by_id = {node["id"]: idx for idx, node in enumerate(nodes)}
         self._spatial_cache: Dict[Tuple, SpatialValidationResult] = {}
+
+    def _remaining_seconds(self) -> Optional[float]:
+        if self.deadline is None:
+            return None
+        remaining = self.deadline - time.perf_counter()
+        if remaining <= 0:
+            raise TimeoutError("Hết thời gian tính phương án đối chuẩn")
+        return remaining
 
     @staticmethod
     def _actions_for_order(order: OrderPair) -> List[StopAction]:
@@ -83,6 +93,7 @@ class BaselineCostCalculator:
         start_time_sec: Optional[int] = None,
         return_to_depot: bool = True,
     ) -> _EvaluatedRoute:
+        remaining = self._remaining_seconds()
         current_node = vehicle_index if start_node_index is None else start_node_index
         start_time = vehicle.available_start_sec if start_time_sec is None else start_time_sec
         current_time = start_time
@@ -226,6 +237,7 @@ class BaselineCostCalculator:
                     vehicle,
                     actions,
                     max_search_nodes=2000,
+                    max_time_seconds=remaining,
                 )
             spatial = self._spatial_cache[cache_key]
             if self.request.demo_stacking is not None:
@@ -466,7 +478,8 @@ class BaselineCostCalculator:
         params = pywrapcp.DefaultRoutingSearchParameters()
         params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
         params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-        params.time_limit.FromMilliseconds(1500)
+        remaining = self._remaining_seconds()
+        params.time_limit.FromMilliseconds(1500 if remaining is None else max(1, min(1500, int(remaining * 1000))))
         solution = routing.SolveWithParameters(params)
         if solution is None:
             return None
@@ -528,7 +541,12 @@ class BaselineCostCalculator:
         routes = None
         # Try the first shift day before widening the search to all supplied days.
         for day_limit in days[:2] + (days[-1:] if len(days) > 2 else []):
-            routes = self._solve_direct_schedule([slot for slot in slots if slot[1].service_day_index <= day_limit])
+            try:
+                self._remaining_seconds()
+                routes = self._solve_direct_schedule([slot for slot in slots if slot[1].service_day_index <= day_limit])
+                self._remaining_seconds()
+            except TimeoutError:
+                return self._unavailable_direct("TIMEOUT:Hết thời gian tính phương án đối chuẩn.")
             if routes:
                 break
         if not routes:

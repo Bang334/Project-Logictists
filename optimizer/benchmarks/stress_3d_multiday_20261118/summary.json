@@ -1,0 +1,15 @@
+{
+  "elapsed": 97.5490233999999,
+  "status": "SUCCESS",
+  "served_orders": 120,
+  "delivered_items": 1260,
+  "unassigned": 0,
+  "routes": 2,
+  "days": [
+    0
+  ],
+  "upper": 798,
+  "spatial_valid": true,
+  "balanced": true,
+  "unique": true
+}

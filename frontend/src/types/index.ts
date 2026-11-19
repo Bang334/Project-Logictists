@@ -381,7 +381,7 @@ export interface OptimizedRouteUI {
   stops: OptimizedStopUI[];
   spatial_validation: SpatialValidationUI;
   cost?: RouteCostBreakdownUI;
-  route_geometry?: { type: 'LineString'; coordinates: [number, number][] };
+  route_geometry?: { type: 'LineString'; coordinates: [number, number][]; waypoint_indices?: number[] };
 }
 
 export interface BenchmarkMetricUI {

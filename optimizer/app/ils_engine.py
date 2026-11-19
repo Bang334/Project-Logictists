@@ -26,12 +26,14 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
         time_budget_seconds: Optional[float] = None,
         random_seed: int = 0,
         include_benchmarks: bool = True,
+        should_split_orders: bool = True,
     ) -> None:
         super().__init__(
             request,
             max_iterations=max_iterations,
             time_budget_seconds=time_budget_seconds,
             random_seed=random_seed,
+            should_split_orders=should_split_orders,
         )
         self.include_benchmarks = include_benchmarks
 
@@ -190,6 +192,7 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
         self,
         routes: List[List[ScheduledStop]],
         unassigned: List[str],
+        deadline: Optional[float] = None,
     ) -> Optional[Tuple[int, List[List[ScheduledStop]], List[str]]]:
         current_cost, _, _ = self._evaluate_plan_cost(routes, unassigned)
         current_key = self._candidate_key(routes, unassigned)
@@ -210,6 +213,8 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
                     if w > max_w:
                         max_w = w
             for tgt_i in empty_indices:
+                if deadline is not None and time.perf_counter() >= deadline:
+                    break
                 tgt_v = self.vehicles[tgt_i]
                 max_routes = getattr(self.request.policy, "max_routes_per_day", None)
                 if (
@@ -238,9 +243,9 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
                 ):
                     continue
                 if self._schedule_stops(tgt_i, stops) is not None and self._validate_stops_cached(tgt_i, stops):
-                    cand_routes = copy.deepcopy(routes)
+                    cand_routes = list(routes)
                     cand_routes[src_i] = []
-                    cand_routes[tgt_i] = copy.deepcopy(stops)
+                    cand_routes[tgt_i] = stops
                     c_cost, _, _ = self._evaluate_plan_cost(cand_routes, unassigned)
                     c_key = self._candidate_key(cand_routes, unassigned)
                     if c_key < current_key:

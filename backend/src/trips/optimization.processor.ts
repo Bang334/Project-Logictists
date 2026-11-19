@@ -1,3 +1,4 @@
+import { MapboxMatrixRateLimitException } from '../mapbox/mapbox.service';
 import { AuthService } from '../auth/auth.service';
 import {
   BadRequestException,
@@ -267,7 +268,7 @@ export class OptimizationProcessor extends WorkerHost {
           await tx.optimizationResult.createMany({ data: candidateRows });
         }
         return true;
-      }, { timeout: 30_000 });
+      }, { timeout: 120_000 });
       if (!stored) return;
       this.logger.log(
         JSON.stringify({
@@ -284,7 +285,8 @@ export class OptimizationProcessor extends WorkerHost {
       this.emitStatus(optimizationJob.branchId, optimizationJob.id, status);
     } catch (error) {
       const isHttpTimeout = error instanceof GatewayTimeoutException;
-      const isNonRetryable = isHttpTimeout || error instanceof BadRequestException;
+      const isNonRetryable = isHttpTimeout || error instanceof BadRequestException
+        || error instanceof MapboxMatrixRateLimitException;
       const finalAttempt =
         isNonRetryable || job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
       const status = isHttpTimeout

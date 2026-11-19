@@ -8,6 +8,24 @@ from app.models import FleetOptimizationResponse, UnassignedOrder
 from app.multi_start import MultiStartFleetOptimizer
 
 
+def test_expired_audit_leaves_salvage_orders_unassigned(monkeypatch):
+    request = comparison_request()
+    engine = PackingAwareHybridALNSOptimizer(request, time_budget_seconds=10, random_seed=0)
+
+    def unexpected_validation(*args, **kwargs):
+        raise AssertionError("Started a salvage packing search after the audit deadline")
+
+    monkeypatch.setattr(engine, "_validate_spatial_actions", unexpected_validation)
+    result = engine._build_final_response(
+        [[] for _ in engine.vehicles], [order.id for order in engine.orders],
+        include_benchmarks=False, spatial_time_budget_seconds=0,
+    )
+    assert not result.routes
+    assert result.status == "TIMEOUT"
+    assert all("hết thời gian" in order.reason_message for order in result.unassigned_orders)
+    assert {order.order_id for order in result.unassigned_orders} == {"parent-order"}
+
+
 def test_hybrid_solve_returns_timeout_when_hard_deadline_already_exhausted(monkeypatch):
     request = comparison_request()
     engine = PackingAwareHybridALNSOptimizer(request, time_budget_seconds=10, random_seed=0)

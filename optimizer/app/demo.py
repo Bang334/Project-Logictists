@@ -25,6 +25,20 @@ router = APIRouter(prefix="/demo", tags=["Demo Benchmarks"])
 CASES_DIR = Path(__file__).resolve().parent.parent / "benchmarks" / "cases"
 
 CASE_METADATA: Dict[str, Dict[str, Any]] = {
+    "stress_3d_danang_dense_120_orders": {
+        "name": "Đà Nẵng — kiện cồng kềnh, giao gần, 120 đơn",
+        "category": "SCENARIO",
+        "category_name": "Kịch bản demo",
+        "description": "1.260 kiện, tổng thể tích 1.157 m³, 20 xe vật lý và 7 ngày. Lấy tại 36 điểm trên địa bàn Đà Nẵng, giao 11 điểm cách bãi tối đa khoảng 12,2 km. Ma trận đường bộ Mapbox; giá vận hành giả lập.",
+        "suggested_time_limit_sec": 60.0,
+    },
+    "stress_3d_danang_120_orders": {
+        "name": "Đà Nẵng — 120 đơn, 1.260 kiện, 20 xe, 7 ngày",
+        "category": "SCENARIO",
+        "category_name": "Kịch bản demo",
+        "description": "120 đơn với 1–20 kiện mỗi đơn, xếp tối đa 3 tầng. 20 xe vật lý có 140 slot xe-ngày trong 7 ngày, ca 08:00–17:00. Điểm nhận được tách ra nhiều địa điểm tại Đà Nẵng và miền Trung trên ma trận đường bộ Mapbox. Giá vận hành giả lập.",
+        "suggested_time_limit_sec": 30.0,
+    },
     "scenario_stack_customer_modes": {
         "name": "Xếp chồng cùng khách và khác khách",
         "category": "SCENARIO",

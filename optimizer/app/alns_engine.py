@@ -190,9 +190,11 @@ class ALNSFleetOptimizer:
         max_iterations: int = 150,
         time_budget_seconds: Optional[float] = None,
         random_seed: int = 0,
+        should_split_orders: bool = True,
     ):
         self.objective_request = request
-        request, _ = split_infeasible_orders_across_fleet(request)
+        if should_split_orders:
+            request, _ = split_infeasible_orders_across_fleet(request)
         self.request = request
         self.vehicles = request.vehicles
         self.drivers = request.drivers
@@ -785,6 +787,7 @@ class ALNSFleetOptimizer:
         total_cost_vnd = 0
         final_unassigned_ids = list(dict.fromkeys(unassigned_ids))
         diagnostics: List[str] = []
+        salvage_budget_exhausted = False
 
         split_groups: Dict[str, Set[str]] = {}
         for o in self.orders:
@@ -844,6 +847,16 @@ class ALNSFleetOptimizer:
         spatial_deadline = (
             time.perf_counter() + spatial_time_budget_seconds
             if spatial_time_budget_seconds is not None
+            else None
+        )
+        salvage_reserve = (
+            min(4.0, spatial_time_budget_seconds * 0.25)
+            if spatial_time_budget_seconds is not None and spatial_time_budget_seconds >= 6.0
+            else 0.0
+        )
+        route_audit_deadline = (
+            spatial_deadline - salvage_reserve
+            if spatial_deadline is not None
             else None
         )
         remaining_route_count = sum(bool(stops) for stops in routes_stops)
@@ -980,13 +993,16 @@ class ALNSFleetOptimizer:
 
             # Spatial validation using production validator
             spatial_route_budget = None
-            if spatial_deadline is not None:
+            if route_audit_deadline is not None:
                 remaining_seconds = max(
-                    0.01, spatial_deadline - time.perf_counter()
+                    0.01, route_audit_deadline - time.perf_counter()
                 )
-                spatial_route_budget = max(
-                    0.01,
-                    remaining_seconds / max(1, remaining_route_count),
+                spatial_route_budget = min(
+                    1.2,
+                    max(
+                        0.35,
+                        remaining_seconds / max(1, min(remaining_route_count, 8)),
+                    ),
                 )
             spatial_res = self._validate_spatial_actions(
                 v_idx,
@@ -1093,7 +1109,19 @@ class ALNSFleetOptimizer:
                 if unassigned_members and not unassigned_members.issubset(set(unassigned_candidates)):
                     incomplete_split_groups.add(gid)
 
-            for empty_v_idx, v in enumerate(self.vehicles):
+            empty_vehicle_order = sorted(
+                range(len(self.vehicles)),
+                key=lambda idx: (
+                    self.vehicles[idx].payload_limit_kg,
+                    self.vehicles[idx].length_cm * self.vehicles[idx].width_cm * self.vehicles[idx].height_cm,
+                ),
+                reverse=True,
+            )
+            for empty_v_idx in empty_vehicle_order:
+                v = self.vehicles[empty_v_idx]
+                if spatial_deadline is not None and time.perf_counter() >= spatial_deadline:
+                    salvage_budget_exhausted = True
+                    break
                 if empty_v_idx in used_v_indices:
                     continue
                 max_routes = getattr(self.request.policy, "max_routes_per_day", None)
@@ -1108,7 +1136,12 @@ class ALNSFleetOptimizer:
                 ):
                     continue
                 current_salvaged_stops: List[ScheduledStop] = []
+                validated_schedule = None
+                consecutive_failures = 0
                 for oid in unassigned_candidates:
+                    if spatial_deadline is not None and time.perf_counter() >= spatial_deadline:
+                        salvage_budget_exhausted = True
+                        break
                     if oid in salvaged_order_ids:
                         continue
                     order_obj = self.order_by_id[oid]
@@ -1171,114 +1204,100 @@ class ALNSFleetOptimizer:
                                 items_to_unload=st.items_unloaded,
                             )
                         )
-                    sp_test = self._validate_spatial_actions(empty_v_idx, test_actions, max_time_seconds=2.0)
+                    per_try_cap = 0.4 if current_salvaged_stops else 0.8
+                    remaining = per_try_cap if spatial_deadline is None else min(per_try_cap, spatial_deadline - time.perf_counter())
+                    if remaining <= 0:
+                        salvage_budget_exhausted = True
+                        break
+                    sp_test = self._validate_spatial_actions(empty_v_idx, test_actions, max_time_seconds=remaining)
                     if sp_test.is_valid:
                         current_salvaged_stops = list(sched_test[0])
+                        validated_schedule = (sched_test, sp_test)
                         salvaged_order_ids.add(oid)
+                        consecutive_failures = 0
+                    elif current_salvaged_stops:
+                        consecutive_failures += 1
+                        if consecutive_failures >= 2:
+                            break
 
-                if current_salvaged_stops:
+                if validated_schedule is not None:
                     used_v_indices.add(empty_v_idx)
-                    sched_res = self._schedule_stops(empty_v_idx, current_salvaged_stops)
-                    if sched_res is not None:
-                        s_stops, r_end, r_ret = sched_res
-                        curr_w = 0.0
-                        f_stops: List[ScheduledStop] = []
-                        s_actions: List[StopAction] = []
-                        for st in s_stops:
-                            if st.stop_type == "PICKUP":
-                                curr_w += sum(it.weight_kg for it in order_by_id[st.allocation_id or st.order_id].items)
-                            else:
-                                curr_w = max(0.0, curr_w - sum(it.weight_kg for it in order_by_id[st.allocation_id or st.order_id].items))
-                            f_st = st.model_copy(
-                                update={
-                                    "order_id": order_by_id[st.allocation_id or st.order_id].source_order_id or st.order_id,
-                                    "order_stop_id": (
-                                        order_by_id[st.allocation_id or st.order_id].pickup_location.source_location_id
-                                        if st.stop_type == "PICKUP"
-                                        else order_by_id[st.allocation_id or st.order_id].delivery_location.source_location_id
-                                    ) or st.order_stop_id or st.location_id,
-                                    "current_weight_kg": round(curr_w, 2),
-                                }
-                            )
-                            f_stops.append(f_st)
-                            action_load = [
-                                self.cargo_by_id[item_id].model_copy(
-                                    update={
-                                        "can_rotate": resolve_can_rotate(
-                                            self.cargo_by_id[item_id],
-                                            d11_default=True if self.request.demo_stacking is None else None,
-                                        )
-                                    }
-                                )
-                                for item_id in st.items_loaded
-                                if item_id in self.cargo_by_id
-                            ]
-                            s_actions.append(
-                                StopAction(
-                                    stop_id=st.location_id,
-                                    sequence=st.sequence,
-                                    stop_type=st.stop_type,
-                                    items_to_load=action_load,
-                                    items_to_unload=st.items_unloaded,
-                                )
-                            )
-                        r_dist = self._calc_route_distance_km(empty_v_idx, f_stops)
-                        f_st0 = f_stops[0]
-                        r_start = max(v.available_start_sec, f_st0.arrival_time_sec - f_st0.travel_time_sec)
-                        r_dur = round((r_end - r_start) / 60.0, 1)
-                        sp_final = self._validate_spatial_actions(empty_v_idx, s_actions, max_time_seconds=2.0)
-                        if self.request.demo_stacking is not None:
-                            f_stops = sync_route_stacking_unloads(f_stops, sp_final)
-                        b_fuel, l_fuel, h_cost, t_km, t_hrs = calculate_route_economic_metrics(
-                            self.request, nodes, order_by_id, v, f_stops
+                    (s_stops, r_end, r_ret), sp_final = validated_schedule
+                    curr_w = 0.0
+                    f_stops: List[ScheduledStop] = []
+                    for st in s_stops:
+                        if st.stop_type == "PICKUP":
+                            curr_w += sum(it.weight_kg for it in order_by_id[st.allocation_id or st.order_id].items)
+                        else:
+                            curr_w = max(0.0, curr_w - sum(it.weight_kg for it in order_by_id[st.allocation_id or st.order_id].items))
+                        f_st = st.model_copy(
+                            update={
+                                "order_id": order_by_id[st.allocation_id or st.order_id].source_order_id or st.order_id,
+                                "order_stop_id": (
+                                    order_by_id[st.allocation_id or st.order_id].pickup_location.source_location_id
+                                    if st.stop_type == "PICKUP"
+                                    else order_by_id[st.allocation_id or st.order_id].delivery_location.source_location_id
+                                ) or st.order_stop_id or st.location_id,
+                                "current_weight_kg": round(curr_w, 2),
+                            }
                         )
-                        fuel_c = b_fuel + l_fuel
-                        l_pen = sum(
-                            calculate_late_delivery_penalty(
-                                order_by_id[st.allocation_id or st.order_id],
-                                st.arrival_time_sec,
-                                self.policy,
-                            )
-                            for st in f_stops
-                            if st.stop_type == "DELIVERY" and (st.allocation_id or st.order_id) in order_by_id
+                        f_stops.append(f_st)
+                    r_dist = self._calc_route_distance_km(empty_v_idx, f_stops)
+                    f_st0 = f_stops[0]
+                    r_start = max(v.available_start_sec, f_st0.arrival_time_sec - f_st0.travel_time_sec)
+                    r_dur = round((r_end - r_start) / 60.0, 1)
+                    if self.request.demo_stacking is not None:
+                        f_stops = sync_route_stacking_unloads(f_stops, sp_final)
+                    b_fuel, l_fuel, h_cost, t_km, t_hrs = calculate_route_economic_metrics(
+                        self.request, nodes, order_by_id, v, f_stops
+                    )
+                    fuel_c = b_fuel + l_fuel
+                    l_pen = sum(
+                        calculate_late_delivery_penalty(
+                            order_by_id[st.allocation_id or st.order_id],
+                            st.arrival_time_sec,
+                            self.policy,
                         )
-                        c_bd = RouteCostBreakdown(
-                            base_fuel_cost_vnd=b_fuel,
-                            load_fuel_surcharge_vnd=l_fuel,
-                            fuel_cost_vnd=fuel_c,
-                            cargo_holding_cost_vnd=h_cost,
-                            late_delivery_penalty_vnd=l_pen,
-                            cargo_distance_ton_km=t_km,
-                            cargo_time_ton_hours=t_hrs,
-                            vehicle_fixed_cost_vnd=v.fixed_operating_cost_vnd,
-                            driver_fixed_salary_allocation_vnd=0,
-                            driver_trip_pay_vnd=0,
-                            total_cost_vnd=fuel_c + v.fixed_operating_cost_vnd + h_cost + l_pen,
-                        )
-                        opt_r = OptimizedRoute(
-                            route_id=v.id,
-                            vehicle_id=v.source_vehicle_id or v.id,
-                            plate_number=v.plate_number,
-                            vehicle_length_cm=v.length_cm,
-                            vehicle_width_cm=v.width_cm,
-                            vehicle_height_cm=v.height_cm,
-                            service_day_index=v.service_day_index,
-                            start_time_sec=r_start,
-                            end_time_sec=r_end,
-                            total_distance_km=round(r_dist, 2),
-                            total_duration_minutes=r_dur,
-                            return_travel_time_sec=r_ret,
-                            return_waiting_time_sec=0,
-                            stops=f_stops,
-                            spatial_validation=sp_final,
-                            cost=c_bd,
-                        )
-                        optimized_routes.append(opt_r)
-                        total_dist_km += r_dist
-                        total_dur_min += r_dur
-                        diagnostics.append(
-                            f"Đã mở thêm xe trống {v.plate_number} cứu thành công {len(s_stops)//2} đơn hàng."
-                        )
+                        for st in f_stops
+                        if st.stop_type == "DELIVERY" and (st.allocation_id or st.order_id) in order_by_id
+                    )
+                    c_bd = RouteCostBreakdown(
+                        base_fuel_cost_vnd=b_fuel,
+                        load_fuel_surcharge_vnd=l_fuel,
+                        fuel_cost_vnd=fuel_c,
+                        cargo_holding_cost_vnd=h_cost,
+                        late_delivery_penalty_vnd=l_pen,
+                        cargo_distance_ton_km=t_km,
+                        cargo_time_ton_hours=t_hrs,
+                        vehicle_fixed_cost_vnd=v.fixed_operating_cost_vnd,
+                        driver_fixed_salary_allocation_vnd=0,
+                        driver_trip_pay_vnd=0,
+                        total_cost_vnd=fuel_c + v.fixed_operating_cost_vnd + h_cost + l_pen,
+                    )
+                    opt_r = OptimizedRoute(
+                        route_id=v.id,
+                        vehicle_id=v.source_vehicle_id or v.id,
+                        plate_number=v.plate_number,
+                        vehicle_length_cm=v.length_cm,
+                        vehicle_width_cm=v.width_cm,
+                        vehicle_height_cm=v.height_cm,
+                        service_day_index=v.service_day_index,
+                        start_time_sec=r_start,
+                        end_time_sec=r_end,
+                        total_distance_km=round(r_dist, 2),
+                        total_duration_minutes=r_dur,
+                        return_travel_time_sec=r_ret,
+                        return_waiting_time_sec=0,
+                        stops=f_stops,
+                        spatial_validation=sp_final,
+                        cost=c_bd,
+                    )
+                    optimized_routes.append(opt_r)
+                    total_dist_km += r_dist
+                    total_dur_min += r_dur
+                    diagnostics.append(
+                        f"Đã mở thêm xe trống {v.plate_number} cứu thành công {len(s_stops)//2} đơn hàng."
+                    )
 
             final_unassigned_ids = [oid for oid in final_unassigned_ids if oid not in salvaged_order_ids]
 
@@ -1344,7 +1363,11 @@ class ALNSFleetOptimizer:
                     order_id=source_id,
                     order_number=num_str,
                     reason_code="UNASSIGNED",
-                    reason_message="Không tìm thấy phương án ghép xe thỏa mãn thời gian hoặc không gian LIFO",
+                    reason_message=(
+                        "Chưa có tuyến đã kiểm chứng cho đơn này. Lượt thử ghép các đơn còn lại đã hết thời gian."
+                        if salvage_budget_exhausted
+                        else "Chưa có tuyến đã kiểm chứng cho đơn này. Chưa xác định được ràng buộc cụ thể."
+                    ),
                 )
             )
 
@@ -1353,6 +1376,8 @@ class ALNSFleetOptimizer:
             if not unassigned_objects
             else "PARTIAL"
             if optimized_routes
+            else "TIMEOUT"
+            if salvage_budget_exhausted
             else "INFEASIBLE"
         )
 

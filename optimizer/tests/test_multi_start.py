@@ -62,6 +62,25 @@ def _mock_plan(
                 service_time_sec=30,
             )
         )
+    for stop in stops:
+        stop.items_loaded = [f"{stop.order_id}-it"]
+    for oid in order_ids:
+        previous = stops[-1].departure_time_sec
+        stops.append(ScheduledStop(
+            sequence=len(stops) + 1,
+            location_id=f"delivery-{oid}",
+            location_name=f"Delivery {oid}",
+            latitude=21.0,
+            longitude=105.8,
+            stop_type="DELIVERY",
+            order_id=oid,
+            items_unloaded=[f"{oid}-it"],
+            arrival_time_sec=previous + 100,
+            departure_time_sec=previous + 130,
+            travel_time_sec=100,
+            waiting_time_sec=0,
+            service_time_sec=30,
+        ))
     route = OptimizedRoute(
         vehicle_id="veh-1",
         start_time_sec=0,
@@ -438,3 +457,11 @@ def test_optimizer_respects_max_routes_per_day_cap():
     result = batch.candidates[0].result
     assert len([r for r in result.routes if r.service_day_index == 0]) <= 1
     assert len(result.unassigned_orders) == 1
+
+def test_pickup_only_and_missing_requested_item_are_rejected():
+    plan = _mock_plan("regression", "SUCCESS", 100, ["o1"])
+    assert is_fully_served(plan, {"o1"}, expected_items={"o1": {"o1-it"}})
+    assert not is_fully_served(plan, {"o1"}, expected_items={"o1": {"o1-it", "missing"}})
+    plan.routes[0].stops = plan.routes[0].stops[:1]
+    plan.routes[0].end_time_sec = plan.routes[0].stops[-1].departure_time_sec
+    assert not is_fully_served(plan, {"o1"})

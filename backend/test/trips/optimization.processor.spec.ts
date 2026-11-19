@@ -2,6 +2,7 @@ import { BadRequestException, GatewayTimeoutException } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
 import { Role } from '@prisma/client';
 import { OptimizationProcessor } from '../../src/trips/optimization.processor';
+import { MapboxMatrixRateLimitException } from '../../src/mapbox/mapbox.service';
 
 function persistedJob(status = 'PENDING') {
   return {
@@ -49,6 +50,16 @@ describe('OptimizationProcessor', () => {
       trips as never,
       events as never,
     );
+  });
+
+  it('stops queue retries after bounded Mapbox rate-limit retries are exhausted', async () => {
+    prisma.optimizationJob.findUnique.mockResolvedValue(persistedJob());
+    prisma.optimizationJob.updateMany.mockResolvedValue({ count: 1 });
+    trips.executeAutomaticOptimization.mockRejectedValue(new MapboxMatrixRateLimitException());
+    await expect(processor.process(queueJob() as never)).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(prisma.optimizationJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'FAILED', errorCode: 'HTTP_503' }),
+    }));
   });
 
   it('allows only one worker to claim the PostgreSQL job', async () => {

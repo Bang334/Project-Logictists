@@ -284,6 +284,7 @@ export const HANOI_DEMO_STOPS = [
 export function calculateStopMilestonesKm(
   profile: RouteProfile,
   stops: Array<{ latitude: number; longitude: number }>,
+  waypointIndices?: number[],
 ): number[] {
   if (!stops || stops.length === 0) return [];
   if (!profile || profile.coordinates.length < 2) {
@@ -292,6 +293,11 @@ export function calculateStopMilestonesKm(
   }
 
   const { coordinates, cumulativeDistances, totalDistanceKm } = profile;
+  if (waypointIndices && waypointIndices.length >= stops.length + 1
+    && waypointIndices.every((index, i) => Number.isInteger(index) && index >= 0
+      && index < coordinates.length && (i === 0 || index >= waypointIndices[i - 1]))) {
+    return stops.map((_, i) => cumulativeDistances[waypointIndices[i + 1]]);
+  }
   const milestones: number[] = [];
 
   let lastIndex = 0;
@@ -309,6 +315,9 @@ export function calculateStopMilestonesKm(
         bestDist = d;
         bestIdx = c;
       }
+      // Older saved plans have no waypoint indices. Keep the first nearby
+      // visit when the route later returns to the same address.
+      if (bestDist < 0.05 && c > bestIdx && d > bestDist + 0.005) break;
     }
 
     const distAlongRoute = cumulativeDistances[bestIdx] || 0;

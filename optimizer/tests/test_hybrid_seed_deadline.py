@@ -1,10 +1,33 @@
 """A separate ILS seed budget must survive slow initial construction."""
 import copy
+import time
 import pytest
 
 from app.hybrid_alns_engine import PackingAwareHybridALNSOptimizer
 from benchmarks.algorithm_comparison.common import convert_request_to_hybrid
 from test_benchmark_contract import comparison_request
+
+
+def test_append_cycles_reuses_empty_floor_and_respects_vehicle_restriction():
+    request = comparison_request()
+    for order in request.orders:
+        order.split_group_id = None
+        order.source_order_id = None
+        order.items[0].length_cm = request.vehicles[0].length_cm
+    blocked = request.orders[1].model_copy(update={
+        "id": "blocked", "allowed_source_vehicle_ids": ["other-vehicle"],
+        "items": [request.orders[1].items[0].model_copy(update={"id": "blocked-pkg", "order_id": "blocked"})],
+    })
+    request.orders.append(blocked)
+    request.duration_matrix_seconds = [[0] * 7 for _ in range(7)]
+    request.distance_matrix_meters = [[0] * 7 for _ in range(7)]
+    engine = PackingAwareHybridALNSOptimizer(request, should_split_orders=False)
+    routes = [[]]
+    missing = engine._append_delivery_cycles(routes, [0], time.perf_counter() + 2)
+    assert missing == ["blocked"]
+    assert [(s.order_id, s.stop_type) for s in routes[0]] == [
+        (o.id, action) for o in request.orders[:2] for action in ("PICKUP", "DELIVERY")
+    ]
 
 
 def test_slow_greedy_does_not_expire_the_new_ils_repair_budget(monkeypatch):

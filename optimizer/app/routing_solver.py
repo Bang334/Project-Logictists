@@ -75,9 +75,14 @@ class FleetRoutingSolver:
         validation_budget_share: float = VALIDATION_BUDGET_SHARE,
         consolidation_budget_share: float = CONSOLIDATION_BUDGET_SHARE,
         enable_hybrid_fallback: bool = True,
+        should_split_orders: bool = True,
     ):
         self.objective_request = request
-        request, _ = split_infeasible_orders_across_fleet(request)
+        request, _ = (
+            split_infeasible_orders_across_fleet(request)
+            if should_split_orders
+            else (request, 0)
+        )
         self.request = request
         self.search_strategy = search_strategy
         self.uses_adaptive_total_budget = time_budget_seconds is not None
@@ -697,6 +702,7 @@ class FleetRoutingSolver:
                     self.request,
                     time_budget_seconds=hybrid_budget_seconds,
                     initial_plan=plan,
+                    should_split_orders=False,
                 )
                 hybrid_plan = hybrid.solve()
                 hybrid_served = len(self.request.orders) - len(hybrid_plan.unassigned_orders)

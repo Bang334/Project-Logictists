@@ -212,3 +212,18 @@ def test_cross_order_tight_van_stacks_under_any_customer_and_splits_under_same_c
 
     same_res = run_mode("SAME_CUSTOMER")
     assert same_res["status"] == "SUCCESS" and len(same_res["routes"]) == 2
+
+
+def test_spare_vehicle_can_be_selected_with_one_driver():
+    body = minimal_fleet_request()
+    small = body["vehicles"][0]
+    large = dict(small, id="large-vehicle", plate_number="TEST-LARGE")
+    small.update(length_cm=10, width_cm=10)
+    body["vehicles"].append(large)
+    for key in ("duration_matrix_seconds", "distance_matrix_meters"):
+        body[key] = [[0 if a == b else 1 for b in range(4)] for a in range(4)]
+    response = TestClient(app).post("/optimize-fleet/candidates", json=body)
+    assert response.status_code == 200, response.text
+    plans = [candidate["result"] for candidate in response.json()["candidates"]]
+    assert any(plan["status"] == "SUCCESS" and not plan["unassigned_orders"] for plan in plans)
+    assert all(route["vehicle_id"] == "large-vehicle" for plan in plans for route in plan["routes"])

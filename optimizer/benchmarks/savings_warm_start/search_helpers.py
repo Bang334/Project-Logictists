@@ -10,7 +10,11 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from app.alns_engine import calendar_salary_for_span
 from app.models import FleetOptimizationResponse, OrderPair, ScheduledStop
 from app.packing_rules import resolve_can_rotate
-from app.planning_objective import apply_planning_objective, plan_lexicographic_key
+from app.planning_objective import (
+    apply_planning_objective,
+    operational_late_daily_weight_vnd,
+    plan_lexicographic_key,
+)
 from app.route_costing import calculate_late_delivery_penalty
 from app.stacking import effective_floor_capacity_cm2
 
@@ -492,9 +496,8 @@ def _try_pair_route_consolidation(
     if len(active_indices) < 2:
         return None
     centroids = {idx: _route_centroid(optimizer, current[idx]) for idx in active_indices}
+    pair_specs: List[Tuple[List[List[ScheduledStop]], List[str], List[Tuple[int, Set[int]]]]] = []
     for victim_idx in active_indices[:4]:
-        if time.perf_counter() >= deadline:
-            break
         victim_orders = _route_order_ids(current[victim_idx])
         remaining_active = [idx for idx in active_indices if idx != victim_idx]
         partners = sorted(
@@ -506,8 +509,6 @@ def _try_pair_route_consolidation(
             ),
         )[:4]
         for partner_idx in partners:
-            if time.perf_counter() >= deadline:
-                break
             partner_orders = _route_order_ids(current[partner_idx])
             combined_orders = list(dict.fromkeys([*victim_orders, *partner_orders]))
             pair_base = copy.deepcopy(current)
@@ -542,11 +543,9 @@ def _try_pair_route_consolidation(
                 )
             )
             keep_candidates.extend(upgrade_slots[:2])
-
             pair_base_empty = _empty_vehicle_indices(pair_base)
+            valid_keeps: List[Tuple[int, Set[int]]] = []
             for keep_slot in keep_candidates:
-                if time.perf_counter() >= deadline:
-                    break
                 keep_v = optimizer.vehicles[keep_slot]
                 if (
                     keep_v.service_day_index != partner_v.service_day_index
@@ -555,19 +554,27 @@ def _try_pair_route_consolidation(
                     )
                 ):
                     continue
-                excluded = pair_base_empty - {keep_slot}
-                for repair_op in ("regret3", "regret2"):
-                    if time.perf_counter() >= deadline:
-                        break
-                    cand_routes, failed = optimizer._repair(
-                        copy.deepcopy(pair_base),
-                        combined_orders,
-                        repair_op,
-                        deadline,
-                        excluded_vehicle_indices=excluded,
-                    )
-                    if not failed:
-                        return cand_routes
+                valid_keeps.append((keep_slot, pair_base_empty - {keep_slot}))
+            if valid_keeps:
+                pair_specs.append((pair_base, combined_orders, valid_keeps))
+
+    # Try regret3 across all (victim, partner) pairs before regret2 so broad coverage runs first.
+    for repair_op in ("regret3", "regret2"):
+        for pair_base, combined_orders, valid_keeps in pair_specs:
+            if time.perf_counter() >= deadline:
+                return None
+            for _, excluded in valid_keeps:
+                if time.perf_counter() >= deadline:
+                    return None
+                cand_routes, failed = optimizer._repair(
+                    copy.deepcopy(pair_base),
+                    combined_orders,
+                    repair_op,
+                    deadline,
+                    excluded_vehicle_indices=excluded,
+                )
+                if not failed:
+                    return cand_routes
     return None
 
 
@@ -580,34 +587,32 @@ def _try_multi_route_ripple_consolidation(
     """Eliminate a victim route by re-routing edge orders across remaining routes."""
     if len(active_indices) < 3:
         return None
-    edge_k = max(2, min(6, max(2, len(optimizer.orders) // 3)))
+    edge_k = max(2, round(len(optimizer.orders) * 0.30))
     destroy_ops = (optimizer._destroy_related, optimizer._destroy_worst)
+    ripple_plans: List[Tuple[List[List[ScheduledStop]], List[str], Set[int]]] = []
     for victim_idx in active_indices[:3]:
-        if time.perf_counter() >= deadline:
-            break
         victim_orders = _route_order_ids(current[victim_idx])
         base = copy.deepcopy(current)
         base[victim_idx] = []
         forbidden_empty = _empty_vehicle_indices(base)
         for destroy_fn in destroy_ops:
-            if time.perf_counter() >= deadline:
-                break
             destroyed, extra_removed = destroy_fn(copy.deepcopy(base), edge_k)
             pool = list(dict.fromkeys([*victim_orders, *extra_removed]))
-            if not pool:
-                continue
-            for repair_op in ("regret3", "regret2"):
-                if time.perf_counter() >= deadline:
-                    break
-                cand_routes, failed = optimizer._repair(
-                    copy.deepcopy(destroyed),
-                    pool,
-                    repair_op,
-                    deadline,
-                    excluded_vehicle_indices=forbidden_empty,
-                )
-                if not failed:
-                    return cand_routes
+            if pool:
+                ripple_plans.append((destroyed, pool, forbidden_empty))
+    for repair_op in ("regret3", "regret2"):
+        for destroyed, pool, forbidden_empty in ripple_plans:
+            if time.perf_counter() >= deadline:
+                return None
+            cand_routes, failed = optimizer._repair(
+                copy.deepcopy(destroyed),
+                pool,
+                repair_op,
+                deadline,
+                excluded_vehicle_indices=forbidden_empty,
+            )
+            if not failed:
+                return cand_routes
     return None
 
 
@@ -647,6 +652,60 @@ def _is_pure_empty_cycles(stops: Sequence[ScheduledStop]) -> Optional[List[str]]
     return cyc
 
 
+def _can_chain_empty_cycles(
+    optimizer: Any,
+    order_ids: Sequence[str],
+    target_k: int,
+) -> bool:
+    """Return True unless wall-clock time windows prove k-1 [P, D] chains impossible."""
+    n = len(order_ids)
+    if n <= target_k:
+        return True
+    stop_templates = getattr(optimizer, "_stop_templates_by_order_id", None)
+    order_node_indices = getattr(optimizer, "order_node_indices", None)
+    dur_matrix = getattr(optimizer.request, "duration_matrix_seconds", None)
+    if not stop_templates or dur_matrix is None:
+        return True
+
+    bounds: List[Tuple[int, int, float, int]] = []
+    for oid in order_ids:
+        order = optimizer.order_by_id.get(oid)
+        tmpl = stop_templates.get(oid)
+        if (
+            order is None
+            or order.split_group_id
+            or tmpl is None
+            or len(tmpl) != 2
+            or (tmpl[0].stop_type, tmpl[1].stop_type) != ("PICKUP", "DELIVERY")
+        ):
+            return True
+        if order_node_indices is not None and oid in order_node_indices:
+            p_node, d_node = order_node_indices[oid]
+        else:
+            p_node = optimizer._stop_node_index(tmpl[0])
+            d_node = optimizer._stop_node_index(tmpl[1])
+            if p_node is None or d_node is None:
+                return True
+        earliest_d_start = max(
+            float(order.delivery_window_start_sec),
+            float(order.pickup_window_start_sec)
+            + float(order.service_seconds("PICKUP"))
+            + float(dur_matrix[p_node][d_node]),
+        )
+        earliest_d_finish = earliest_d_start + float(order.service_seconds("DELIVERY"))
+        bounds.append((p_node, d_node, earliest_d_finish, int(order.pickup_window_end_sec)))
+
+    followers = 0
+    needed_followers = n - target_k
+    for b_idx, (p_b, _, _, p_end_b) in enumerate(bounds):
+        limit_b = float(p_end_b) + 2.0
+        for a_idx, (_, d_a, fin_a, _) in enumerate(bounds):
+            if a_idx != b_idx and fin_a + float(dur_matrix[d_a][p_b]) <= limit_b:
+                followers += 1
+                break
+    return followers >= needed_followers
+
+
 def _try_empty_cycle_consolidation(
     optimizer: Any,
     current: List[List[ScheduledStop]],
@@ -666,11 +725,13 @@ def _try_empty_cycle_consolidation(
     )
     if not expected_order_ids:
         return None
+    if not _can_chain_empty_cycles(optimizer, expected_order_ids, len(active_indices) - 1):
+        return None
 
     # 3a) Fast pairwise empty-load cycle merge on existing active routes.
     if hasattr(optimizer, "_refine_pairwise_empty_cycles"):
         rem_pair = deadline - time.perf_counter()
-        pair_deadline = min(deadline, time.perf_counter() + min(0.28, rem_pair * 0.25))
+        pair_deadline = min(deadline, time.perf_counter() + rem_pair * 0.25)
         pairwise = optimizer._refine_pairwise_empty_cycles(copy.deepcopy(current), pair_deadline)
         if pairwise:
             active_pair = [r for r in pairwise if r]
@@ -1569,6 +1630,14 @@ def _min_route_clique_lower_bound(optimizer: Any) -> int:
     return best_clique
 
 
+def _audit_budget_remaining(optimizer: Any, fallback_rem: float) -> float:
+    """Return validation budget remaining up to optimizer._validation_deadline when active."""
+    val_deadline = getattr(optimizer, "_validation_deadline", None)
+    if val_deadline is not None:
+        return max(fallback_rem, val_deadline - time.perf_counter())
+    return fallback_rem
+
+
 def intra_route_cost_polish(
     optimizer: Any,
     best_response: FleetOptimizationResponse,
@@ -1592,6 +1661,24 @@ def intra_route_cost_polish(
         return True
 
     use_fast_sched = hasattr(optimizer, "_can_schedule_stops")
+    order_nodes = getattr(optimizer, "order_node_indices", None)
+    dist_matrix = getattr(optimizer.request, "distance_matrix_meters", None)
+
+    def _tour_dist_m(v_idx: int, stops: Sequence[ScheduledStop]) -> int:
+        if order_nodes is None or dist_matrix is None:
+            return 0
+        prev_n = v_idx
+        total = 0
+        for st in stops:
+            oid = st.allocation_id or st.order_id or ""
+            pair_n = order_nodes.get(oid)
+            if pair_n is None:
+                return 0
+            node = pair_n[0 if st.stop_type == "PICKUP" else 1]
+            total += int(dist_matrix[prev_n][node])
+            prev_n = node
+        return total + int(dist_matrix[prev_n][v_idx])
+
     while time.perf_counter() + 0.04 < deadline:
         routes = optimizer._routes_from_audited_response(best)
         if routes is None or best.unassigned_orders:
@@ -1599,90 +1686,88 @@ def intra_route_cost_polish(
         incumbent_rank = optimizer._rank_candidate_for_audit(routes, [])
         best_move: Optional[Tuple[Tuple[int, ...], int, List[ScheduledStop]]] = None
 
-        max_m = 16 if optimizer.request.demo_stacking is not None else 20
-        for v_idx, route in enumerate(routes):
-            if time.perf_counter() >= deadline:
+        active_intra = [idx for idx, r in enumerate(routes) if len(r) >= 4]
+        for r_pos, v_idx in enumerate(active_intra):
+            route = routes[v_idx]
+            route_now = time.perf_counter()
+            if route_now >= deadline:
                 break
             m = len(route)
-            if m < 4 or m > max_m:
-                continue
+            rem_routes = max(1, len(active_intra) - r_pos)
+            route_slice = (deadline - route_now) / rem_routes
+            route_deadline = min(deadline, route_now + route_slice)
+            eval_deadline = min(route_deadline, route_now + route_slice * 0.65)
             base_sig = route_stop_signature(route)
             seen_sigs: Set[Tuple[Tuple[str, str], ...]] = {base_sig}
-            neighbors: List[List[ScheduledStop]] = []
+            neighbors: List[Tuple[int, int, List[ScheduledStop]]] = []
 
-            # Move self-contained (order-closed) P-D sub-blocks when 3D stacking is not active
-            # (or on compact routes): un-nesting LIFO chains cuts holding/load costs without
-            # spending Step 2/LNS budget on heavy 3D validation across long stacking routes.
-            if optimizer.request.demo_stacking is None or m <= 10:
-                first_pos: Dict[str, int] = {}
-                last_pos: Dict[str, int] = {}
-                for idx_s, st in enumerate(route):
-                    oid_s = st.allocation_id or st.order_id or ""
-                    if not oid_s:
+            # Order all candidate intra-route moves by surrogate distance first so both short
+            # and long routes explore best-detour + holding/surcharge reorganizations anytime.
+            first_pos: Dict[str, int] = {}
+            last_pos: Dict[str, int] = {}
+            for idx_s, st in enumerate(route):
+                oid_s = st.allocation_id or st.order_id or ""
+                if not oid_s:
+                    continue
+                if oid_s not in first_pos:
+                    first_pos[oid_s] = idx_s
+                last_pos[oid_s] = idx_s
+            for a in range(m):
+                oid_a = route[a].allocation_id or route[a].order_id or ""
+                if not oid_a or first_pos.get(oid_a) != a:
+                    continue
+                max_end = last_pos[oid_a]
+                for k in range(a, m):
+                    oid_k = route[k].allocation_id or route[k].order_id or ""
+                    if first_pos.get(oid_k, -1) < a:
+                        break
+                    max_end = max(max_end, last_pos.get(oid_k, -1))
+                    if k == max_end and 2 <= (k - a + 1) < m:
+                        block = route[a : k + 1]
+                        reduced_blk = route[:a] + route[k + 1 :]
+                        for dst in range(len(reduced_blk) + 1):
+                            if dst == a:
+                                continue
+                            cand = reduced_blk[:dst] + block + reduced_blk[dst:]
+                            sig = route_stop_signature(cand)
+                            if sig in seen_sigs:
+                                continue
+                            seen_sigs.add(sig)
+                            neighbors.append((_tour_dist_m(v_idx, cand), 0, cand))
+
+            for src in range(m):
+                moved = route[src]
+                reduced = route[:src] + route[src + 1 :]
+                for dst in range(m):
+                    if dst == src:
                         continue
-                    if oid_s not in first_pos:
-                        first_pos[oid_s] = idx_s
-                    last_pos[oid_s] = idx_s
-                for a in range(m):
-                    oid_a = route[a].allocation_id or route[a].order_id or ""
-                    if not oid_a or first_pos.get(oid_a) != a:
+                    cand = reduced[:dst] + [moved] + reduced[dst:]
+                    if not _precedence_valid(cand):
                         continue
-                    max_end = last_pos[oid_a]
-                    ok_block = True
-                    for k in range(a, m):
-                        oid_k = route[k].allocation_id or route[k].order_id or ""
-                        if first_pos.get(oid_k, -1) < a:
-                            ok_block = False
-                            break
-                        max_end = max(max_end, last_pos.get(oid_k, -1))
-                        if k == max_end and 2 <= (k - a + 1) < m:
-                            block = route[a : k + 1]
-                            reduced_blk = route[:a] + route[k + 1 :]
-                            for dst in range(len(reduced_blk) + 1):
-                                if dst == a:
-                                    continue
-                                cand = reduced_blk[:dst] + block + reduced_blk[dst:]
-                                sig = route_stop_signature(cand)
-                                if sig in seen_sigs:
-                                    continue
-                                seen_sigs.add(sig)
-                                neighbors.append(cand)
-                    if not ok_block:
+                    sig = route_stop_signature(cand)
+                    if sig in seen_sigs:
                         continue
+                    seen_sigs.add(sig)
+                    neighbors.append((_tour_dist_m(v_idx, cand), 0, cand))
 
-            if m <= max_m:
-                for src in range(m):
-                    moved = route[src]
-                    reduced = route[:src] + route[src + 1 :]
-                    for dst in range(m):
-                        if dst == src:
-                            continue
-                        cand = reduced[:dst] + [moved] + reduced[dst:]
-                        if not _precedence_valid(cand):
-                            continue
-                        sig = route_stop_signature(cand)
-                        if sig in seen_sigs:
-                            continue
-                        seen_sigs.add(sig)
-                        neighbors.append(cand)
+            for i in range(m):
+                for j in range(i + 1, m):
+                    if route[i].stop_type != route[j].stop_type:
+                        continue
+                    cand = list(route)
+                    cand[i], cand[j] = cand[j], cand[i]
+                    if not _precedence_valid(cand):
+                        continue
+                    sig = route_stop_signature(cand)
+                    if sig in seen_sigs:
+                        continue
+                    seen_sigs.add(sig)
+                    neighbors.append((_tour_dist_m(v_idx, cand), 1, cand))
 
-                for i in range(m):
-                    for j in range(i + 1, m):
-                        if route[i].stop_type != route[j].stop_type:
-                            continue
-                        cand = list(route)
-                        cand[i], cand[j] = cand[j], cand[i]
-                        if not _precedence_valid(cand):
-                            continue
-                        sig = route_stop_signature(cand)
-                        if sig in seen_sigs:
-                            continue
-                        seen_sigs.add(sig)
-                        neighbors.append(cand)
-
+            neighbors.sort(key=lambda item: (item[0], item[1]))
             scored_cands: List[Tuple[Tuple[int, ...], List[ScheduledStop]]] = []
-            for cand in neighbors:
-                if time.perf_counter() >= deadline:
+            for _, _, cand in neighbors:
+                if time.perf_counter() >= eval_deadline:
                     break
                 if use_fast_sched and not optimizer._can_schedule_stops(v_idx, cand):
                     continue
@@ -1696,8 +1781,8 @@ def intra_route_cost_polish(
                     scored_cands.append((cand_rank, sched[0]))
 
             scored_cands.sort(key=lambda item: item[0])
-            for cand_rank, sched_stops in scored_cands[:6]:
-                if time.perf_counter() >= deadline:
+            for cand_rank, sched_stops in scored_cands:
+                if time.perf_counter() >= route_deadline:
                     break
                 if best_move is not None and cand_rank >= best_move[0]:
                     break
@@ -1707,7 +1792,7 @@ def intra_route_cost_polish(
 
         if best_move is None:
             break
-        rem_t = deadline - time.perf_counter()
+        rem_t = _audit_budget_remaining(optimizer, deadline - time.perf_counter())
         if rem_t <= 0.04:
             break
         cand_routes = list(routes)
@@ -1956,10 +2041,19 @@ def _try_cross_route_order_exchange(
 
         econ_entry_fn = getattr(optimizer, "_scheduled_route_economic_entry", None)
         raw_obj_policy = getattr(optimizer, "_raw_policy", optimizer.policy)
+        op_daily_wt = (
+            operational_late_daily_weight_vnd(optimizer.objective_request)
+            if hasattr(optimizer, "objective_request")
+            and getattr(raw_obj_policy, "late_delivery_penalty_mode", None) == "NONE"
+            else 0
+        )
+        grace_sec = int(getattr(raw_obj_policy, "delivery_grace_days", 0)) * SECONDS_PER_DAY
+        per_km_rates = [float(getattr(d, "per_km_pay_vnd", 1200)) for d in getattr(optimizer, "drivers", ())]
+        driver_rate_spread = (max(per_km_rates) - min(per_km_rates)) if len(per_km_rates) >= 2 else 0.0
         single_cost_cache: Dict[Tuple[int, Tuple[Tuple[str, str], ...]], int] = {}
 
         def _single_route_proxy_cost(v_idx: int, sched_stops: List[ScheduledStop]) -> int:
-            if econ_entry_fn is None:
+            if not sched_stops or econ_entry_fn is None:
                 return 0
             sig = route_stop_signature(sched_stops)
             ckey = (v_idx, sig)
@@ -1976,7 +2070,11 @@ def _try_cross_route_order_exchange(
                     oid = getattr(st, "allocation_id", None) or getattr(st, "order_id", None) or ""
                     ord_pair = optimizer.order_by_id.get(oid)
                     if ord_pair is not None:
-                        late_vnd += calculate_late_delivery_penalty(ord_pair, st.arrival_time_sec, raw_obj_policy)
+                        if op_daily_wt > 0:
+                            late_sec = max(0, st.arrival_time_sec - (ord_pair.ordered_at_sec + grace_sec))
+                            late_vnd += round(op_daily_wt * late_sec / SECONDS_PER_DAY)
+                        else:
+                            late_vnd += calculate_late_delivery_penalty(ord_pair, st.arrival_time_sec, raw_obj_policy)
             total = int(entry[0]) + int(late_vnd)
             single_cost_cache[ckey] = total
             return total
@@ -2006,24 +2104,19 @@ def _try_cross_route_order_exchange(
                 out.append((est_d, sched[0]))
                 if len(out) >= 12:
                     break
-            if len(out) > 5 and econ_entry_fn is not None:
-                # Keep top 4 schedules by single-route (operating + lateness) plus #1 distance option,
-                # cutting pairwise 1-1 fleet audits from 144 down to <= 25 without losing surcharge/TW winners.
-                ranked = sorted(
-                    out,
-                    key=lambda item: (_single_route_proxy_cost(v_idx, item[1]), item[0]),
-                )
-                picked = ranked[:4]
-                if out[0] not in picked:
-                    picked.append(out[0])
-                out = picked
-            elif len(out) > 6:
-                out = out[:6]
+            if len(out) > 1 and econ_entry_fn is not None:
+                # Rank schedule-valid options by single-route (operating + exact lateness) cost
+                # without discarding feasible backups, so cheaper/3D-valid positions are tried first.
+                out.sort(key=lambda item: (_single_route_proxy_cost(v_idx, item[1]), item[0]))
             sched_cache[key] = out
             return out
 
-        # Enumerate promising 1-0 cross-route order relocations before 1-1 swaps,
-        # capping positive-detour 1-0 checks and time so 1-1 swaps keep >= 55% budget.
+        cur_route_proxies = {
+            v_idx: _single_route_proxy_cost(v_idx, routes[v_idx]) for v_idx in active
+        }
+
+        # Enumerate all feasible 1-0 cross-route order relocations ordered by detour,
+        # reserving >= 55% of the phase budget for 1-1 swaps purely via clock time.
         reloc_queue: List[Tuple[Tuple[int, int], int, str, int]] = []
         for i in active:
             for o_a in route_orders[i]:
@@ -2035,23 +2128,20 @@ def _try_cross_route_order_exchange(
                     ins_j = _top_insert_positions(j, "", o_a)
                     if not ins_j:
                         continue
-                    surrogate_delta = (dist_red_i + ins_j[0][0]) - (route_dists[i] + route_dists[j])
-                    if not empties_i and surrogate_delta > 1200:
-                        continue
-                    bucket = -1 if empties_i else (0 if surrogate_delta < -50 else 1)
+                    base_ij_dist = route_dists[i] + route_dists[j]
+                    surrogate_delta = (dist_red_i + ins_j[0][0]) - base_ij_dist
+                    bucket = -1 if empties_i else (0 if surrogate_delta <= 0 else 1)
                     reloc_queue.append(((bucket, surrogate_delta), i, o_a, j))
         reloc_queue.sort(key=lambda item: item[0])
 
         improved = False
-        reloc_checks = 0
-        pos_reloc_checks = 0
         reloc_now = time.perf_counter()
-        reloc_deadline = min(deadline, reloc_now + max(0.30, (deadline - reloc_now) * 0.45))
-        for (reloc_bucket, _), i, o_a, j in reloc_queue[:48]:
-            if time.perf_counter() >= reloc_deadline or reloc_checks >= 36:
+        reloc_deadline = min(deadline, reloc_now + (deadline - reloc_now) * 0.45)
+        pos_reloc_deadline = min(reloc_deadline, reloc_now + (reloc_deadline - reloc_now) * 0.55)
+        for (reloc_bucket, _), i, o_a, j in reloc_queue:
+            cur_reloc_limit = pos_reloc_deadline if reloc_bucket == 1 else reloc_deadline
+            if time.perf_counter() >= cur_reloc_limit:
                 break
-            if reloc_bucket == 1 and pos_reloc_checks >= 16:
-                continue
             red_i = route_reduced[(i, o_a)][0]
             if not red_i:
                 sched_i: List[ScheduledStop] = []
@@ -2069,12 +2159,21 @@ def _try_cross_route_order_exchange(
             best_reloc_rank = incumbent_rank
             sig_i = (i, route_stop_signature(sched_i)) if sched_i else None
             validated_i: Optional[bool] = True if not sched_i else spatial_cache.get(sig_i)
-            for _, sched_j in opts_j:
-                if time.perf_counter() >= reloc_deadline or reloc_checks >= 36:
+            p_i = _single_route_proxy_cost(i, sched_i) if sched_i else 0
+            ed_i = route_reduced[(i, o_a)][2] if sched_i else 0
+            cur_reloc_proxy = cur_route_proxies[i] + cur_route_proxies[j]
+            cur_reloc_dist = route_dists[i] + route_dists[j]
+            for ed_j, sched_j in opts_j:
+                if time.perf_counter() >= cur_reloc_limit:
                     break
                 sig_j = (j, route_stop_signature(sched_j))
                 if sig_j in spatial_cache and not spatial_cache[sig_j]:
                     continue
+                if sched_i and econ_entry_fn is not None:
+                    p_j = _single_route_proxy_cost(j, sched_j)
+                    driver_slack = round(driver_rate_spread * abs(ed_i + ed_j - cur_reloc_dist) / 1000.0)
+                    if p_i + p_j >= cur_reloc_proxy + driver_slack and ed_i + ed_j >= cur_reloc_dist:
+                        continue
                 cand_routes = list(routes)
                 cand_routes[i] = sched_i
                 cand_routes[j] = sched_j
@@ -2082,23 +2181,18 @@ def _try_cross_route_order_exchange(
                 if cand_rank >= best_reloc_rank:
                     continue
                 if validated_i is None:
-                    reloc_checks += 1
-                    if reloc_bucket == 1:
-                        pos_reloc_checks += 1
                     validated_i = _validate_cached(i, sched_i)
                 if not validated_i:
                     break
-                if sig_j not in spatial_cache:
-                    reloc_checks += 1
-                    if reloc_bucket == 1:
-                        pos_reloc_checks += 1
                 if not _validate_cached(j, sched_j):
                     continue
                 best_reloc_rank = cand_rank
                 best_reloc_cand = cand_routes
+                if demo_stacking is None:
+                    break
             if best_reloc_cand is not None:
-                rem_t = deadline - time.perf_counter()
-                if rem_t <= 0.04:
+                rem_t = _audit_budget_remaining(optimizer, deadline - time.perf_counter())
+                if rem_t <= 0.02:
                     return best
                 audited = optimizer._build_final_response(
                     best_reloc_cand,
@@ -2131,78 +2225,91 @@ def _try_cross_route_order_exchange(
                             continue
                         surrogate_delta = (ins_i[0][0] + ins_j[0][0]) - base_pair_dist
                         w_b = float(optimizer.order_by_id[o_b].total_weight_kg)
-                        bucket = 0 if surrogate_delta < -50 else (1 if surrogate_delta <= 2500 else 2)
+                        bucket = 0 if surrogate_delta <= 0 else 1
                         pair_queue.append(
                             ((bucket, surrogate_delta, -abs(w_a - w_b)), i, o_a, j, o_b)
                         )
 
         pair_queue.sort(key=lambda item: item[0])
-        swap_checks = 0
         best_pass_cand: Optional[List[List[ScheduledStop]]] = None
         best_pass_rank = incumbent_rank
         pass_lookahead_deadline: Optional[float] = None
-        pairs_after_improve = 0
-        for (bucket, _, _), i, o_a, j, o_b in pair_queue[:120]:
+        for _, i, o_a, j, o_b in pair_queue:
             now_swap = time.perf_counter()
-            if now_swap >= deadline or swap_checks >= 192:
+            if now_swap >= deadline:
                 break
             if best_pass_cand is not None:
-                pairs_after_improve += 1
                 if (
-                    pairs_after_improve > 16
-                    or now_swap >= deadline - 0.10
+                    now_swap >= deadline - max(0.04, (deadline - now_swap) * 0.05)
                     or (pass_lookahead_deadline is not None and now_swap >= pass_lookahead_deadline)
                 ):
                     break
-            if bucket == 2 and swap_checks >= 64:
-                continue
             opts_i = _scheduled_insert_options(i, o_a, o_b)
             if not opts_i:
                 continue
             opts_j = _scheduled_insert_options(j, o_b, o_a)
             if not opts_j:
                 continue
-            best_swap_cand: Optional[List[List[ScheduledStop]]] = None
-            best_swap_rank = best_pass_rank
-            loop_end = (deadline - 0.10) if best_pass_cand is not None else deadline
-            for _, sched_i in opts_i:
-                if time.perf_counter() >= loop_end or swap_checks >= 192:
-                    break
+            cur_pair_proxy = cur_route_proxies[i] + cur_route_proxies[j]
+            cur_pair_dist = route_dists[i] + route_dists[j]
+            pair_combos: List[Tuple[int, int, List[ScheduledStop], List[ScheduledStop]]] = []
+            for idx_i, (ed_i, sched_i) in enumerate(opts_i):
                 sig_i = (i, route_stop_signature(sched_i))
                 if sig_i in spatial_cache and not spatial_cache[sig_i]:
                     continue
-                validated_i: Optional[bool] = spatial_cache.get(sig_i)
-                for _, sched_j in opts_j:
-                    if time.perf_counter() >= loop_end or swap_checks >= 192:
-                        break
+                p_i = _single_route_proxy_cost(i, sched_i)
+                for idx_j, (ed_j, sched_j) in enumerate(opts_j):
                     sig_j = (j, route_stop_signature(sched_j))
                     if sig_j in spatial_cache and not spatial_cache[sig_j]:
                         continue
-                    cand_routes = list(routes)
-                    cand_routes[i] = sched_i
-                    cand_routes[j] = sched_j
-                    cand_rank = optimizer._rank_candidate_for_audit(cand_routes, [])
-                    if cand_rank >= best_swap_rank:
+                    p_j = _single_route_proxy_cost(j, sched_j)
+                    driver_slack = round(driver_rate_spread * abs(ed_i + ed_j - cur_pair_dist) / 1000.0)
+                    # Sound dominance pruning: skip swaps worse in both cost+lateness (even with max driver spread) and distance.
+                    if econ_entry_fn is not None and p_i + p_j >= cur_pair_proxy + driver_slack and ed_i + ed_j >= cur_pair_dist:
                         continue
-                    if validated_i is None:
-                        swap_checks += 1
-                        validated_i = _validate_cached(i, sched_i)
-                    if not validated_i:
-                        break
-                    if sig_j not in spatial_cache:
-                        swap_checks += 1
-                    if not _validate_cached(j, sched_j):
-                        continue
-                    best_swap_rank = cand_rank
-                    best_swap_cand = cand_routes
+                    pair_combos.append((p_i + p_j, ed_i + ed_j, sched_i, sched_j))
+            pair_combos.sort(key=lambda item: (item[0], item[1]))
+            best_swap_cand: Optional[List[List[ScheduledStop]]] = None
+            best_swap_rank = best_pass_rank
+            loop_end = pass_lookahead_deadline if pass_lookahead_deadline is not None else deadline
+            ranked_evals = 0
+            for _, _, sched_i, sched_j in pair_combos:
+                if time.perf_counter() >= loop_end:
+                    break
+                # When 3D stacking is inactive, all schedule-valid combos are spatially feasible;
+                # single-route exact cost additive property makes checking beyond top-2 redundant.
+                if demo_stacking is None and ranked_evals >= 2 and best_swap_cand is None:
+                    break
+                sig_i = (i, route_stop_signature(sched_i))
+                sig_j = (j, route_stop_signature(sched_j))
+                if (sig_i in spatial_cache and not spatial_cache[sig_i]) or (
+                    sig_j in spatial_cache and not spatial_cache[sig_j]
+                ):
+                    continue
+                cand_routes = list(routes)
+                cand_routes[i] = sched_i
+                cand_routes[j] = sched_j
+                cand_rank = optimizer._rank_candidate_for_audit(cand_routes, [])
+                ranked_evals += 1
+                if cand_rank >= best_swap_rank:
+                    continue
+                if not _validate_cached(i, sched_i):
+                    continue
+                if not _validate_cached(j, sched_j):
+                    continue
+                best_swap_rank = cand_rank
+                best_swap_cand = cand_routes
+                if demo_stacking is not None:
+                    break
             if best_swap_cand is not None:
                 best_pass_rank = best_swap_rank
                 best_pass_cand = best_swap_cand
                 if pass_lookahead_deadline is None:
-                    pass_lookahead_deadline = min(deadline - 0.10, time.perf_counter() + 0.25)
+                    rem_after_hit = max(0.0, deadline - time.perf_counter())
+                    pass_lookahead_deadline = time.perf_counter() + rem_after_hit * 0.25
         if best_pass_cand is not None:
-            rem_t = deadline - time.perf_counter()
-            if rem_t <= 0.04:
+            rem_t = _audit_budget_remaining(optimizer, deadline - time.perf_counter())
+            if rem_t <= 0.02:
                 return best
             audited = optimizer._build_final_response(
                 best_pass_cand,
@@ -2219,6 +2326,85 @@ def _try_cross_route_order_exchange(
         if not improved:
             break
     return best
+
+
+def _sorted_active_route_indices(
+    optimizer: Any, routes: Sequence[List[ScheduledStop]]
+) -> List[int]:
+    """Order active route indices from fewest orders / lightest load upward."""
+    return sorted(
+        (idx for idx, r in enumerate(routes) if r),
+        key=lambda idx: (
+            len({s.order_id for s in routes[idx] if s.order_id}),
+            sum(
+                optimizer.order_by_id[s.allocation_id or s.order_id].total_weight_kg
+                for s in routes[idx]
+                if s.stop_type == "PICKUP" and (s.allocation_id or s.order_id) in optimizer.order_by_id
+            ),
+        ),
+    )
+
+
+def _upgrade_routes_onto_larger_empty(
+    optimizer: Any,
+    routes: List[List[ScheduledStop]],
+    deadline: float,
+) -> Optional[List[List[ScheduledStop]]]:
+    """Re-home smaller active routes onto strictly larger idle same-day vehicles."""
+    demo_stacking = optimizer.request.demo_stacking
+    cur_empty = {
+        idx
+        for idx, r in enumerate(routes)
+        if not r and optimizer._vehicle_has_compatible_driver(optimizer.vehicles[idx])
+    }
+    if not cur_empty:
+        return None
+    active = sorted(
+        (idx for idx, r in enumerate(routes) if r),
+        key=lambda idx: (
+            optimizer.vehicles[idx].payload_limit_kg,
+            effective_floor_capacity_cm2(optimizer.vehicles[idx], demo_stacking),
+        ),
+    )
+    working: Optional[List[List[ScheduledStop]]] = None
+    for target_idx in active:
+        if time.perf_counter() >= deadline or not cur_empty:
+            break
+        cur_v = optimizer.vehicles[target_idx]
+        cur_area = effective_floor_capacity_cm2(cur_v, demo_stacking)
+        same_day_empty = sorted(
+            (
+                idx
+                for idx in cur_empty
+                if optimizer.vehicles[idx].service_day_index == cur_v.service_day_index
+            ),
+            key=lambda idx: (
+                -optimizer.vehicles[idx].payload_limit_kg,
+                -effective_floor_capacity_cm2(optimizer.vehicles[idx], demo_stacking),
+            ),
+        )
+        src_stops = (working or routes)[target_idx]
+        for up_idx in same_day_empty:
+            if time.perf_counter() >= deadline:
+                break
+            up_v = optimizer.vehicles[up_idx]
+            up_area = effective_floor_capacity_cm2(up_v, demo_stacking)
+            if up_v.payload_limit_kg < cur_v.payload_limit_kg - 1.0 or up_area < cur_area - 1.0:
+                continue
+            if up_v.payload_limit_kg <= cur_v.payload_limit_kg + 1.0 and up_area <= cur_area + 1.0:
+                continue
+            if not _all_orders_allow_vehicle(optimizer, src_stops, up_v):
+                continue
+            scheduled = optimizer._schedule_stops(up_idx, src_stops)
+            if scheduled is None or not optimizer._validate_stops_cached(up_idx, scheduled[0]):
+                continue
+            if working is None:
+                working = copy.deepcopy(routes)
+            working[target_idx] = []
+            working[up_idx] = scheduled[0]
+            cur_empty.remove(up_idx)
+            break
+    return working
 
 
 def consolidate_with_vehicle_upgrade(
@@ -2238,17 +2424,7 @@ def consolidate_with_vehicle_upgrade(
     while time.perf_counter() < deadline:
         if max_steps is not None and steps_done >= max_steps:
             break
-        active_indices = sorted(
-            (idx for idx, r in enumerate(current) if r),
-            key=lambda idx: (
-                len({s.order_id for s in current[idx] if s.order_id}),
-                sum(
-                    optimizer.order_by_id[s.allocation_id or s.order_id].total_weight_kg
-                    for s in current[idx]
-                    if s.stop_type == "PICKUP" and (s.allocation_id or s.order_id) in optimizer.order_by_id
-                ),
-            ),
-        )
+        active_indices = _sorted_active_route_indices(optimizer, current)
         if len(active_indices) <= max(1, lower_bound):
             break
 
@@ -2256,35 +2432,32 @@ def consolidate_with_vehicle_upgrade(
         best_step_rank: Optional[Tuple[int, ...]] = None
 
         rem_step = max(0.0, deadline - time.perf_counter())
-        has_empty_cycle_route = any(
-            _is_pure_empty_cycles(current[idx]) is not None for idx in active_indices
+        empty_cycle_count = sum(
+            1 for idx in active_indices if _is_pure_empty_cycles(current[idx]) is not None
         )
+        empty_cycle_frac = empty_cycle_count / max(1, len(active_indices))
         # 0) Fast heterogeneous empty-cycle bin packing consolidation across k-1 slots first.
-        if time.perf_counter() + 0.08 < deadline:
-            cycle_slice = (
-                min(1.2, max(0.40, rem_step * 0.70))
-                if has_empty_cycle_route
-                else min(0.30, max(0.10, rem_step * 0.25))
-            )
+        if time.perf_counter() + 0.04 < deadline:
+            cycle_slice = rem_step * (0.08 + 0.14 * empty_cycle_frac)
             cycle_deadline = min(deadline, time.perf_counter() + cycle_slice)
             merged_step = _try_empty_cycle_consolidation(optimizer, current, active_indices, cycle_deadline)
 
-        # 1) Direct elimination across all candidate victim routes first (capped so it cannot starve remaining stages).
+        # 1) Direct elimination across candidate victim routes (regret3 across all victims first).
         rem_stage1 = max(0.0, deadline - time.perf_counter())
-        stage1_deadline = min(deadline, time.perf_counter() + min(0.14, max(0.05, rem_stage1 * 0.10)))
+        stage1_deadline = min(deadline, time.perf_counter() + rem_stage1 * 0.25)
         if merged_step is None and time.perf_counter() < stage1_deadline:
-            for victim_idx in active_indices:
-                if time.perf_counter() >= stage1_deadline:
+            for repair_op in ("regret3", "regret2", "greedy"):
+                if time.perf_counter() >= stage1_deadline or merged_step is not None:
                     break
-                victim_orders = _route_order_ids(current[victim_idx])
-                base = copy.deepcopy(current)
-                base[victim_idx] = []
-                empty_set = _empty_vehicle_indices(base)
-                for repair_op in ("regret3", "regret2", "greedy"):
+                for victim_idx in active_indices:
                     if time.perf_counter() >= stage1_deadline:
                         break
+                    victim_orders = _route_order_ids(current[victim_idx])
+                    base = copy.deepcopy(current)
+                    base[victim_idx] = []
+                    empty_set = _empty_vehicle_indices(base)
                     cand_routes, failed = optimizer._repair(
-                        copy.deepcopy(base),
+                        base,
                         victim_orders,
                         repair_op,
                         stage1_deadline,
@@ -2296,12 +2469,25 @@ def consolidate_with_vehicle_upgrade(
                             best_step_rank = rank
                             merged_step = cand_routes
                         break
-                if merged_step is not None:
-                    break
 
         # 2) Only if no direct elimination succeeded, try upgrading a remaining active route first.
         rem_stage2 = max(0.0, deadline - time.perf_counter())
-        stage2_deadline = min(deadline, time.perf_counter() + min(0.14, max(0.05, rem_stage2 * 0.10)))
+        demo_stacking = optimizer.request.demo_stacking
+        has_larger_empty = any(
+            not current[up_i]
+            and optimizer._vehicle_has_compatible_driver(optimizer.vehicles[up_i])
+            and any(
+                optimizer.vehicles[up_i].service_day_index == optimizer.vehicles[act_i].service_day_index
+                and (
+                    optimizer.vehicles[up_i].payload_limit_kg > optimizer.vehicles[act_i].payload_limit_kg + 1.0
+                    or effective_floor_capacity_cm2(optimizer.vehicles[up_i], demo_stacking)
+                    > effective_floor_capacity_cm2(optimizer.vehicles[act_i], demo_stacking) + 1.0
+                )
+                for act_i in active_indices
+            )
+            for up_i in range(len(current))
+        )
+        stage2_deadline = min(deadline, time.perf_counter() + rem_stage2 * (0.28 if has_larger_empty else 0.15))
         if merged_step is None and time.perf_counter() < stage2_deadline:
             for victim_idx in active_indices:
                 if time.perf_counter() >= stage2_deadline or merged_step is not None:
@@ -2377,12 +2563,26 @@ def consolidate_with_vehicle_upgrade(
                         if merged_step is not None:
                             break
 
-        # 3) Rebalance two routes jointly (or one victim + edge orders across remaining routes).
-        if merged_step is None and time.perf_counter() + 0.12 < deadline:
-            pair_deadline = min(deadline, time.perf_counter() + max(0.25, (deadline - time.perf_counter()) * 0.60))
-            merged_step = _try_pair_route_consolidation(optimizer, current, active_indices, pair_deadline)
-        if merged_step is None and len(active_indices) >= 3 and time.perf_counter() + 0.12 < deadline:
-            merged_step = _try_multi_route_ripple_consolidation(optimizer, current, active_indices, deadline)
+        # 3) Rebalance two routes jointly (50% remaining) and ripple edge orders across all active routes (remaining 50%).
+        if merged_step is None and time.perf_counter() < deadline:
+            rem_stage3 = max(0.0, deadline - time.perf_counter())
+            stage3_current = (
+                _upgrade_routes_onto_larger_empty(
+                    optimizer,
+                    current,
+                    min(deadline, time.perf_counter() + min(0.15, rem_stage3 * 0.12)),
+                )
+                or current
+            )
+            stage3_active = _sorted_active_route_indices(optimizer, stage3_current)
+            rem_after_up = max(0.0, deadline - time.perf_counter())
+            pair_deadline = min(
+                deadline,
+                time.perf_counter() + (rem_after_up * 0.50 if len(stage3_active) >= 3 else rem_after_up),
+            )
+            merged_step = _try_pair_route_consolidation(optimizer, stage3_current, stage3_active, pair_deadline)
+            if merged_step is None and len(stage3_active) >= 3 and time.perf_counter() < deadline:
+                merged_step = _try_multi_route_ripple_consolidation(optimizer, stage3_current, stage3_active, deadline)
 
         if merged_step is None:
             break
@@ -2518,6 +2718,38 @@ def spare_budget_lns_polish(
         _emit_improve(best)
         return True
 
+    def _fleet_is_heterogeneous() -> bool:
+        by_day: Dict[int, Set[Tuple[float, float, float, int, int]]] = {}
+        for v in optimizer.vehicles:
+            if not optimizer._vehicle_has_compatible_driver(v):
+                continue
+            by_day.setdefault(v.service_day_index, set()).add(
+                (
+                    round(float(v.fixed_operating_cost_vnd or 0.0), 2),
+                    round(float(v.fuel_consumption_liters_per_100_km or 0.0), 2),
+                    round(float(v.payload_limit_kg), 2),
+                    int(v.length_cm),
+                    int(v.width_cm),
+                )
+            )
+        return any(len(profiles) > 1 for profiles in by_day.values())
+
+    has_hetero_fleet = _fleet_is_heterogeneous()
+
+    def _try_hetero_vehicle_reopt(*, max_share: float = 0.25) -> None:
+        if not has_hetero_fleet or best.unassigned_orders:
+            return
+        rem_now = deadline - time.perf_counter()
+        if rem_now <= 0.18:
+            return
+        veh_slice = min(total_polish_budget * 0.15, max(rem_now * 0.08, rem_now * max_share))
+        veh_dl = min(deadline - 0.08, time.perf_counter() + veh_slice)
+        reassigned = bounded_optimize_production_vehicles(
+            optimizer, incumbent_routes, [], veh_dl
+        )
+        if reassigned is not None:
+            _try_accept_routes(reassigned[1], [], run_vehicle_opt=False)
+
     def _run_local_stop_polish(budget_share: float, *, max_cap_sec: Optional[float] = None) -> bool:
         cur_sig = _plan_signature(incumbent_routes)
         rem_t = deadline - time.perf_counter()
@@ -2534,6 +2766,7 @@ def spare_budget_lns_polish(
         sub_best = optimizer._base_polish_audited_response(best, local_deadline)
         _record_local_sig_outcome(last_polished_budget, cur_sig, local_deadline, planned_sec)
         if _record_best(sub_best):
+            _try_hetero_vehicle_reopt(max_share=0.22)
             return True
         return False
 
@@ -2560,6 +2793,7 @@ def spare_budget_lns_polish(
         )
         _record_local_sig_outcome(last_intra_cost_budget, cur_sig, intra_deadline, planned_sec)
         if _record_best(intra_best):
+            _try_hetero_vehicle_reopt(max_share=0.22)
             return True
         return False
 
@@ -2586,15 +2820,7 @@ def spare_budget_lns_polish(
         )
         _record_local_sig_outcome(last_exchanged_budget, cur_sig, ex_deadline, planned_sec)
         if _record_best(ex_best):
-            if time.perf_counter() + 0.18 < deadline:
-                reassigned = bounded_optimize_production_vehicles(
-                    optimizer,
-                    incumbent_routes,
-                    [],
-                    min(deadline - 0.08, time.perf_counter() + min(0.60, max(0.15, (deadline - time.perf_counter()) * 0.30))),
-                )
-                if reassigned is not None:
-                    _try_accept_routes(reassigned[1], [], run_vehicle_opt=False)
+            _try_hetero_vehicle_reopt(max_share=0.30)
             return True
         return False
 
@@ -2620,7 +2846,7 @@ def spare_budget_lns_polish(
         cand_rank = optimizer._rank_candidate_for_audit(cand_routes, unassigned_ids)
         if cand_rank >= incumbent_key:
             return False
-        remaining = deadline - time.perf_counter()
+        remaining = _audit_budget_remaining(optimizer, deadline - time.perf_counter())
         if remaining <= 0.10:
             return False
         audited = optimizer._build_final_response(
@@ -2639,7 +2865,7 @@ def spare_budget_lns_polish(
                 )
                 if reassigned is not None:
                     tuned_rank = optimizer._rank_candidate_for_audit(reassigned[1], [])
-                    rem_tune = deadline - time.perf_counter()
+                    rem_tune = _audit_budget_remaining(optimizer, deadline - time.perf_counter())
                     if tuned_rank < incumbent_key and rem_tune > 0.10:
                         tuned_audited = optimizer._build_final_response(
                             reassigned[1], [], include_benchmarks=False,
@@ -2673,7 +2899,10 @@ def spare_budget_lns_polish(
             last_consolidated_sig = src_sig
         if consolidated is not None:
             return _try_accept_routes(consolidated, [], run_vehicle_opt=True)
-        failed_consolidation_budgets[part_sig] = max(prev_budget or 0.0, step_budget)
+        if time.perf_counter() + 0.02 < step_deadline:
+            failed_consolidation_budgets[part_sig] = float("inf")
+        else:
+            failed_consolidation_budgets[part_sig] = max(prev_budget or 0.0, step_budget)
         k_active = sum(bool(r) for r in source_routes)
         failed_route_count_cons[k_active] = max(failed_route_count_cons.get(k_active, 0.0), step_budget)
         return False
@@ -2684,48 +2913,56 @@ def spare_budget_lns_polish(
     has_stacking_policy = optimizer.request.demo_stacking is not None
     now_t = time.perf_counter()
     rem_cons = deadline - now_t
-    cons_guard = min(0.30, max(0.08, rem_cons * 0.12))
+    total_polish_budget = max(0.5, rem_cons)
+    cons_guard = rem_cons * 0.10
     cons_improved = False
+    was_partial_at_start = bool(best.unassigned_orders)
+    cons_attempted_on_complete = False
     if (
         not best.unassigned_orders
         and sum(bool(r) for r in incumbent_routes) > max(1, min_routes_lb)
-        and rem_cons > cons_guard + 0.15
+        and rem_cons > cons_guard
     ):
-        init_routes = sum(bool(r) for r in incumbent_routes)
-        cons_cap = max(2.2, min(5.5, 0.28 * total_orders))
-        if has_stacking_policy:
-            first_cons_cap = max(1.4, min(2.6, 0.16 * total_orders))
-            cons_deadline = min(deadline - cons_guard, now_t + min(first_cons_cap, rem_cons * 0.45))
-        elif init_routes <= 3:
-            first_cons_cap = max(1.2, min(2.0, 0.14 * total_orders))
-            cons_deadline = min(deadline - cons_guard, now_t + min(first_cons_cap, rem_cons * 0.40))
-        else:
-            cons_budget = max(0.65, min(cons_cap, rem_cons * (0.62 if rem_cons >= 3.0 else 0.50)))
-            cons_deadline = min(deadline - cons_guard, now_t + cons_budget)
+        cons_attempted_on_complete = True
+        first_share = 0.28 if has_stacking_policy else 0.36
+        cons_deadline = min(deadline - cons_guard, now_t + rem_cons * first_share)
         while (
             not best.unassigned_orders
             and sum(bool(r) for r in incumbent_routes) > max(1, min_routes_lb)
-            and time.perf_counter() + 0.12 < cons_deadline
+            and time.perf_counter() + 0.05 < cons_deadline
         ):
             if not _run_consolidation(incumbent_routes, cons_deadline):
                 break
             cons_improved = True
-            if has_stacking_policy:
-                rem_loop = deadline - time.perf_counter()
-                cons_deadline = min(deadline - cons_guard, time.perf_counter() + min(cons_cap, rem_loop * 0.50))
+            rem_loop = deadline - time.perf_counter()
+            cons_deadline = min(deadline - cons_guard, time.perf_counter() + rem_loop * 0.45)
     if (
         not cons_improved
         and not best.unassigned_orders
-        and time.perf_counter() + 0.25 < deadline
+        and time.perf_counter() < deadline - total_polish_budget * 0.08
     ):
         _try_accept_routes(incumbent_routes, [], run_vehicle_opt=True)
 
-    # 2. Run stop/pair/route local polish + cost-aware intra polish + cross-route exchange.
-    _run_local_stop_polish(0.24, max_cap_sec=0.55)
-    _run_intra_cost_polish(0.20, max_cap_sec=0.45)
-    if _run_cross_exchange(0.62, max_cap_sec=1.80):
-        _run_local_stop_polish(0.25, max_cap_sec=0.45)
-        _run_intra_cost_polish(0.20, max_cap_sec=0.40)
+    # 2. Run stop/pair/route local polish + cost-aware intra polish + cross-route exchange,
+    #    preserving >= 30% of polish budget for multi-basin LNS whenever N > 2.
+    step3_reserve = (total_polish_budget * 0.30) if total_orders > 2 else 0.0
+    step2_end = deadline - step3_reserve
+    step2_min_slice = max(0.08, total_polish_budget * 0.03)
+    def _step2_cap(frac: float) -> float:
+        return min(total_polish_budget * frac, max(0.0, step2_end - time.perf_counter()))
+
+    if time.perf_counter() + step2_min_slice < step2_end:
+        _run_local_stop_polish(0.24, max_cap_sec=_step2_cap(0.10))
+    if time.perf_counter() + step2_min_slice < step2_end:
+        _run_intra_cost_polish(0.20, max_cap_sec=_step2_cap(0.09))
+    if (
+        time.perf_counter() + step2_min_slice < step2_end
+        and _run_cross_exchange(0.58, max_cap_sec=_step2_cap(0.28))
+    ):
+        if time.perf_counter() + step2_min_slice < step2_end:
+            _run_local_stop_polish(0.22, max_cap_sec=_step2_cap(0.08))
+        if time.perf_counter() + step2_min_slice < step2_end:
+            _run_intra_cost_polish(0.18, max_cap_sec=_step2_cap(0.07))
 
     # 3. Anytime multi-basin VNS/LNS ruin-and-recreate using remaining spare time.
     if total_orders <= 2 and not best.unassigned_orders:
@@ -2740,7 +2977,8 @@ def spare_budget_lns_polish(
     min_rem = min(max_removable, max(2 if total_orders > 2 else 1, round(total_orders * 0.15)))
     max_rem = max(min_rem, min(max_removable, round(total_orders * 0.35)))
     stall_max_rem = max(max_rem, min(max_removable, round(total_orders * 0.50)))
-    iter_guard = min(0.24, max(0.08, (deadline - time.perf_counter()) * 0.04))
+    iter_guard = min(total_polish_budget * 0.05, max(0.04, (deadline - time.perf_counter()) * 0.04))
+    lay_timeouts = 0
     anchor_routes = copy.deepcopy(incumbent_routes)
     destroy_ops = (
         optimizer._destroy_related,
@@ -2758,14 +2996,15 @@ def spare_budget_lns_polish(
             ):
                 break
             cur_active_cnt = sum(bool(r) for r in incumbent_routes)
+            rem_esc = deadline - time.perf_counter()
+            esc_slice = rem_esc * 0.35
             if (
                 not best.unassigned_orders
                 and cur_active_cnt > max(1, min_routes_lb)
-                and not (cur_active_cnt <= 3 and failed_route_count_cons.get(cur_active_cnt, 0.0) >= 1.2)
-                and time.perf_counter() + 0.30 < deadline
+                and esc_slice > failed_route_count_cons.get(cur_active_cnt, 0.0) * 1.15
+                and rem_esc > iter_guard * 2.0
             ):
-                rem_esc = deadline - time.perf_counter()
-                esc_deadline = min(deadline - iter_guard, time.perf_counter() + min(2.4, rem_esc * 0.45))
+                esc_deadline = min(deadline - iter_guard, time.perf_counter() + esc_slice)
                 if _plan_signature(incumbent_routes) != last_consolidated_sig:
                     if _run_consolidation(incumbent_routes, esc_deadline):
                         anchor_routes = copy.deepcopy(incumbent_routes)
@@ -2777,16 +3016,16 @@ def spare_budget_lns_polish(
                         cycle_stalls = 0
                         continue
             if not best.unassigned_orders:
-                if _run_local_stop_polish(0.24, max_cap_sec=0.80):
+                if _run_local_stop_polish(0.24, max_cap_sec=total_polish_budget * 0.14):
                     anchor_routes = copy.deepcopy(incumbent_routes)
                     cycle_stalls = 0
                     continue
-                if _run_intra_cost_polish(0.20, max_cap_sec=0.45):
+                if _run_intra_cost_polish(0.20, max_cap_sec=total_polish_budget * 0.08):
                     anchor_routes = copy.deepcopy(incumbent_routes)
                     cycle_stalls = 0
                     continue
-                if _run_cross_exchange(0.36, max_cap_sec=1.15):
-                    _run_local_stop_polish(0.20, max_cap_sec=0.50)
+                if _run_cross_exchange(0.36, max_cap_sec=total_polish_budget * 0.20):
+                    _run_local_stop_polish(0.20, max_cap_sec=total_polish_budget * 0.10)
                     anchor_routes = copy.deepcopy(incumbent_routes)
                     cycle_stalls = 0
                     continue
@@ -2803,10 +3042,11 @@ def spare_budget_lns_polish(
             pool_k = list(dict.fromkeys([*kick_missing, *removed_k]))
             rem_now = deadline - time.perf_counter()
             if pool_k and rem_now > iter_guard * 1.5:
-                kick_deadline = min(deadline - 0.05, time.perf_counter() + min(max(0.35, rem_now * 0.35), 1.2))
+                kick_deadline = min(deadline - iter_guard, time.perf_counter() + rem_now * 0.30)
                 repair_k = kick_repairs[restarts % len(kick_repairs)]
+                kick_use_layout = has_stacking_policy and lay_timeouts < 3
                 kicked, failed_k = _with_layout_search(
-                    has_stacking_policy,
+                    kick_use_layout,
                     lambda: optimizer._repair(destroyed_k, pool_k, repair_k, kick_deadline),
                 )
                 if time.perf_counter() < deadline:
@@ -2831,9 +3071,6 @@ def spare_budget_lns_polish(
 
         lns_iter += 1
         rem_lns = deadline - time.perf_counter()
-        step_cap = max(0.25, 0.15 + 0.025 * total_orders)
-        step_budget = min(max(0.15, rem_lns * 0.45), step_cap, max(0.12, rem_lns - 0.12))
-        step_deadline = min(deadline - 0.08, time.perf_counter() + step_budget)
         base_routes = copy.deepcopy(anchor_routes)
         active = [i for i, r in enumerate(base_routes) if r]
         if not active:
@@ -2849,7 +3086,33 @@ def spare_budget_lns_polish(
             else max_rem
         )
         remove_count = min(len(served_ids), round(min_rem + (eff_max_rem - min_rem) * eff_ratio))
+        use_layout = (
+            has_stacking_policy
+            and (
+                (
+                    lay_timeouts < 2
+                    and (
+                        lns_iter % 2 == 0
+                        or remove_count <= max(2, round(total_orders * 0.25))
+                    )
+                )
+                or (
+                    lay_timeouts == 2
+                    and lns_iter % 3 == 0
+                    and remove_count <= max(2, round(total_orders * 0.30))
+                )
+            )
+        )
+        step_share = 0.18 if use_layout else 0.12
+        step_budget = min(rem_lns * 0.45, total_polish_budget * step_share)
+        step_deadline = min(deadline - iter_guard, time.perf_counter() + step_budget)
+
         op_kind = lns_iter % 5
+        preserve_routes_excl = (
+            _empty_vehicle_indices(base_routes)
+            if (not missing_ids and lns_iter % 2 == 1)
+            else None
+        )
         if lns_iter == 1 and missing_ids:
             destroyed = base_routes
             removed = []
@@ -2857,39 +3120,44 @@ def spare_budget_lns_polish(
             excluded = None
         elif op_kind == 0 and not missing_ids and len(active) >= 2:
             destroyed, removed = optimizer._destroy_route(base_routes, remove_count)
+            if (
+                len(removed) < remove_count
+                and ((lns_iter // 5) % 2 == 1 or cycle_stalls >= 1)
+            ):
+                destroyed, extra_rem = optimizer._destroy_related(
+                    destroyed, remove_count - len(removed)
+                )
+                removed = list(dict.fromkeys([*removed, *extra_rem]))
             repair_op = "regret3" if (lns_iter // 5) % 2 == 0 else "regret2"
             base_part_check = failed_consolidation_budgets.get(_partition_sig(base_routes), 0.0)
-            low_k_exhausted = len(active) <= 3 and failed_route_count_cons.get(len(active), 0.0) >= 1.2
             excluded = (
                 _empty_vehicle_indices(destroyed)
                 if len(active) > max(1, min_routes_lb)
                 and base_part_check < float("inf")
-                and not low_k_exhausted
-                else None
+                else preserve_routes_excl
             )
         elif op_kind == 1:
             destroyed, removed = optimizer._destroy_worst(base_routes, remove_count)
             repair_op = "regret3" if (lns_iter // 5) % 2 == 0 else "regret2"
-            excluded = None
+            excluded = preserve_routes_excl
         elif op_kind == 2:
             destroyed, removed = optimizer._destroy_related(base_routes, remove_count)
             repair_op = "regret2" if (lns_iter // 5) % 2 == 0 else "regret3"
-            excluded = None
+            excluded = preserve_routes_excl
         elif op_kind == 3:
             destroyed, removed = optimizer._destroy_string(base_routes, remove_count)
             repair_op = ("regret3", "regret2", "greedy")[(lns_iter // 5) % 3]
-            excluded = None
+            excluded = preserve_routes_excl
         else:
             destroyed, removed = optimizer._destroy_cluster(base_routes, remove_count)
             repair_op = "regret3" if (lns_iter // 5) % 2 == 0 else "regret2"
-            excluded = None
+            excluded = preserve_routes_excl
 
         repair_pool = list(dict.fromkeys([*missing_ids, *removed]))
         if not repair_pool:
             cycle_stalls += 1
             continue
 
-        use_layout = has_stacking_policy and (lns_iter % 3 == 0 or cycle_stalls >= max(1, cycle_limit - 1))
         repaired, failed = _with_layout_search(
             use_layout,
             lambda: optimizer._repair(
@@ -2900,18 +3168,25 @@ def spare_budget_lns_polish(
                 excluded_vehicle_indices=excluded,
             ),
         )
+        if use_layout and failed and time.perf_counter() + 0.01 >= step_deadline:
+            lay_timeouts += 1
+        elif use_layout and not failed:
+            lay_timeouts = 0
         # If forced route-elimination failed on active-only routes, try multi-route/vehicle-upgrade consolidation
         # only when this partition hasn't failed at >= budget and low-k route drops haven't already failed.
         base_part_sig = _partition_sig(base_routes)
         base_cons_budget = max(0.0, step_deadline - time.perf_counter())
         prev_base_budget = failed_consolidation_budgets.get(base_part_sig)
-        low_k_cons_done = len(active) <= 3 and failed_route_count_cons.get(len(active), 0.0) >= 1.2
+        k_cons_done = base_cons_budget <= failed_route_count_cons.get(len(active), 0.0) * 1.15
         if (
             failed
             and excluded is not None
             and not missing_ids
             and len(active) > max(1, min_routes_lb)
-            and not low_k_cons_done
+            and (
+                not k_cons_done
+                or (prev_base_budget is None and len(failed_consolidation_budgets) < 4)
+            )
             and (
                 prev_base_budget is None
                 or (
@@ -2961,22 +3236,35 @@ def spare_budget_lns_polish(
             if total_orders <= 2 and not best.unassigned_orders:
                 break
             if (
+                was_partial_at_start
+                and not cons_attempted_on_complete
+                and not best.unassigned_orders
+                and sum(bool(r) for r in incumbent_routes) > max(1, min_routes_lb)
+                and (deadline - time.perf_counter()) > iter_guard * 4.0
+            ):
+                cons_attempted_on_complete = True
+                rem_comp = deadline - time.perf_counter()
+                _run_consolidation(
+                    incumbent_routes,
+                    min(deadline - iter_guard * 2.0, time.perf_counter() + rem_comp * 0.35),
+                )
+            if (
                 not best.unassigned_orders
                 and (deadline - time.perf_counter()) > iter_guard * 3.0
             ):
-                _run_local_stop_polish(0.20, max_cap_sec=0.55)
-                _run_intra_cost_polish(0.15, max_cap_sec=0.30)
-                if _run_cross_exchange(0.28, max_cap_sec=1.05):
-                    _run_local_stop_polish(0.18, max_cap_sec=0.45)
-                    _run_intra_cost_polish(0.14, max_cap_sec=0.25)
+                _run_local_stop_polish(0.20, max_cap_sec=total_polish_budget * 0.10)
+                _run_intra_cost_polish(0.15, max_cap_sec=total_polish_budget * 0.07)
+                if _run_cross_exchange(0.28, max_cap_sec=total_polish_budget * 0.18):
+                    _run_local_stop_polish(0.18, max_cap_sec=total_polish_budget * 0.08)
+                    _run_intra_cost_polish(0.14, max_cap_sec=total_polish_budget * 0.06)
                 anchor_routes = copy.deepcopy(incumbent_routes)
         else:
             cycle_stalls += 1
 
-    if not best.unassigned_orders and time.perf_counter() + 0.15 < deadline:
+    if not best.unassigned_orders and time.perf_counter() + iter_guard < deadline:
         _run_local_stop_polish(0.50)
-        _run_intra_cost_polish(0.40, max_cap_sec=0.45)
-        if time.perf_counter() + 0.15 < deadline and _run_cross_exchange(0.55, max_cap_sec=1.20):
-            _run_local_stop_polish(0.50, max_cap_sec=0.80)
-            _run_intra_cost_polish(0.45, max_cap_sec=0.45)
+        _run_intra_cost_polish(0.40, max_cap_sec=total_polish_budget * 0.12)
+        if time.perf_counter() + iter_guard < deadline and _run_cross_exchange(0.55, max_cap_sec=total_polish_budget * 0.25):
+            _run_local_stop_polish(0.50, max_cap_sec=total_polish_budget * 0.15)
+            _run_intra_cost_polish(0.45, max_cap_sec=total_polish_budget * 0.12)
     return best

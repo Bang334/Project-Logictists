@@ -1699,11 +1699,16 @@ export class TripsService {
       : readDemoStackingPolicy(process.env);
     const resolvedSearchBudget =
       searchBudgetSeconds ?? effectiveSettings?.optimization.defaultSearchBudgetSeconds;
+    const baseMaxTimeSeconds = effectiveSettings?.optimization.maxTimeSeconds ?? 120;
     const effectiveMaxTimeSeconds =
-      effectiveSettings?.optimization.maxTimeSeconds ?? 120;
+      orders.length >= 50 ? Math.max(baseMaxTimeSeconds, 120) : baseMaxTimeSeconds;
+    const largeBatchFloorSeconds = orders.length >= 50 ? 48 : 0;
     const boundedSearchBudgetSeconds =
-      resolvedSearchBudget !== undefined
-        ? Math.min(resolvedSearchBudget, effectiveMaxTimeSeconds)
+      resolvedSearchBudget !== undefined || largeBatchFloorSeconds > 0
+        ? Math.min(
+            effectiveMaxTimeSeconds,
+            Math.max(resolvedSearchBudget ?? largeBatchFloorSeconds, largeBatchFloorSeconds),
+          )
         : undefined;
     const latestChangeRequests = (!deliveryBatchId || replanWithFleet) && orders.length > 0 && this.prisma.deliveryAppointment?.findMany
       ? await this.prisma.deliveryAppointment.findMany({

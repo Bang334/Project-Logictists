@@ -70,7 +70,7 @@ class _SearchContext:
         if self.visited_nodes >= self.max_nodes:
             self.limit_reached = True
             return False
-        if (self.visited_nodes & 63 == 0) and (time.monotonic() - self.start_time) >= self.max_time_seconds:
+        if (self.visited_nodes & 7 == 0) and (time.monotonic() - self.start_time) >= self.max_time_seconds:
             self.limit_reached = True
             return False
         self.visited_nodes += 1

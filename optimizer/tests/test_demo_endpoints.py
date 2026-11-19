@@ -9,7 +9,7 @@ from app.demo import (
 
 def test_list_demo_cases():
     cases = list_demo_cases()
-    assert len(cases) == 19
+    assert len(cases) == 21
     ids = {c.id for c in cases}
     assert "novel_1_mekong_hub_spoke" in ids
     assert "novel_2_long_narrow_timber" in ids
@@ -96,3 +96,24 @@ def test_custom_json_request_can_enable_demo_stacking():
     result = batch.candidates[0].result
     assert result.status == "SUCCESS" and len(result.routes) == 1
     assert any((item.z or 0) > 0 for state in result.routes[0].spatial_validation.step_states for item in state.placed_items)
+
+def test_danang_stress_case_is_available_with_seven_day_slots():
+    case = next(c for c in list_demo_cases() if c.id == "stress_3d_danang_120_orders")
+    assert case.orders_count == 120
+    assert case.supports_stacking
+    payload = get_demo_case_payload(case.id)
+    assert sum(len(order["items"]) for order in payload["orders"]) == 1260
+    assert len({vehicle["source_vehicle_id"] for vehicle in payload["vehicles"]}) == 20
+    assert {vehicle["service_day_index"] for vehicle in payload["vehicles"]} == set(range(7))
+    assert payload["search_time_seconds"] == 30
+
+def test_bulky_danang_case_has_nearby_delivery_points():
+    payload = get_demo_case_payload("stress_3d_danang_dense_120_orders")
+    vehicles = len(payload["vehicles"])
+    assert len(payload["orders"]) == 120
+    assert sum(len(o["items"]) for o in payload["orders"]) == 1260
+    for index, order in enumerate(payload["orders"]):
+        assert all(item["height_cm"] >= 65 for item in order["items"])
+        delivery_node = vehicles + 2 * index + 1
+        assert payload["distance_matrix_meters"][0][delivery_node] <= 12300
+        assert payload["distance_matrix_meters"][delivery_node][0] <= 12300
