@@ -2355,7 +2355,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                             if not self._segment_fits_floor_bound(index, segment):
                                 continue
                             if self._validate_stops_cached(index, segment) or self._validate_exact_route(
-                                index, segment, min(0.15, deadline - time.perf_counter())
+                                index, segment, min(0.25, deadline - time.perf_counter())
                             ):
                                 proposed = list(best)
                                 proposed[index] = candidate
