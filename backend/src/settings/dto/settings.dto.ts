@@ -44,14 +44,26 @@ export class OptimizationSettingsInputDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(120)
+  @Max(1000)
   defaultSearchBudgetSeconds?: number;
 
   @IsOptional()
   @IsInt()
   @Min(5)
-  @Max(600)
+  @Max(1000)
   maxTimeSeconds?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(20)
+  hybridSeedCount?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(1000)
+  earlyStopPatience?: number;
 
   @IsOptional()
   @IsNumber()

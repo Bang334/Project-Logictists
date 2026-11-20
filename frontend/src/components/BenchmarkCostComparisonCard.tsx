@@ -172,7 +172,11 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
     </Tag>
   ) : (
     <Tooltip title={metric.violations.join('\n') || metric.description}>
-      <Tag color="error" icon={<WarningOutlined />}>Không hợp lệ</Tag>
+      {metric.violations.some((violation) => violation.startsWith('TIMEOUT:')) ? (
+        <Tag color="warning" icon={<WarningOutlined />}>Hết thời gian đối chuẩn</Tag>
+      ) : (
+        <Tag color="error" icon={<WarningOutlined />}>Không hợp lệ</Tag>
+      )}
     </Tooltip>
   );
 

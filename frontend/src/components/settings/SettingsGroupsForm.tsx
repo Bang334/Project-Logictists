@@ -91,6 +91,9 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
     scopeType === 'BRANCH' && !draft.overrides.costPenalty
       ? companyDefaults.costPenalty
       : draft.costPenalty;
+  const penaltyMode = displayedCostPenalty.lateDeliveryPenaltyMode;
+  const isPercentagePenalty = penaltyMode === 'PERCENT_ORDER_VALUE_PER_DAY';
+  const penaltyRateLabel = isPercentagePenalty ? 'Tỷ lệ phạt mỗi ngày trễ' : 'Mức phạt mỗi ngày trễ';
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -238,12 +241,12 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
         <Row gutter={[16, 16]}>
           <Col xs={24} md={8}>
             <Text strong style={{ display: 'block', marginBottom: 6 }}>
-              Ngân sách tìm kiếm mặc định (giây)
+              Ngân sách tìm kiếm khởi đầu
             </Text>
             <InputNumber
               aria-label="Ngân sách tìm kiếm mặc định"
               min={1}
-              max={120}
+              max={1000}
               precision={0}
               addonAfter="giây"
               style={{ width: '100%' }}
@@ -263,12 +266,12 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
 
           <Col xs={24} md={8}>
             <Text strong style={{ display: 'block', marginBottom: 6 }}>
-              Trần thời gian tối ưu tối đa (giây)
+              Trần thời gian tìm kiếm
             </Text>
             <InputNumber
               aria-label="Trần thời gian tối ưu tối đa"
               min={5}
-              max={600}
+              max={1000}
               precision={0}
               addonAfter="giây"
               style={{ width: '100%' }}
@@ -284,6 +287,60 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
                 }))
               }
             />
+          </Col>
+
+          <Col xs={24} md={8}>
+            <Text strong style={{ display: 'block', marginBottom: 6 }}>
+              Số seed Hybrid ALNS
+            </Text>
+            <Select<number>
+              aria-label="Số seed Hybrid ALNS"
+              showSearch
+              optionFilterProp="label"
+              style={{ width: '100%' }}
+              value={displayedOptimization.hybridSeedCount ?? 0}
+              disabled={!isOptimizationEditable}
+              options={[
+                { value: 0, label: 'Tự động' },
+                ...Array.from({ length: 20 }, (_, index) => ({
+                  value: index + 1,
+                  label: `${index + 1} seed`,
+                })),
+              ]}
+              onChange={(hybridSeedCount) =>
+                onChangeDraft((prev) => ({
+                  ...prev,
+                  optimization: { ...prev.optimization, hybridSeedCount },
+                }))
+              }
+            />
+            <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+              Tối đa 3 seed chạy cùng lúc trong ngân sách tìm kiếm. Kết quả giữ tối đa 3 phương án khác nhau.
+            </Text>
+          </Col>
+
+          <Col xs={24} md={8}>
+            <Text strong style={{ display: 'block', marginBottom: 6 }}>
+              Số phương án không cải thiện trước khi dừng một seed
+            </Text>
+            <InputNumber
+              aria-label="Ngưỡng dừng sớm"
+              min={0}
+              max={1000}
+              precision={0}
+              style={{ width: '100%' }}
+              value={displayedOptimization.earlyStopPatience ?? 30}
+              disabled={!isOptimizationEditable}
+              onChange={(value) =>
+                onChangeDraft((prev) => ({
+                  ...prev,
+                  optimization: { ...prev.optimization, earlyStopPatience: value ?? 30 },
+                }))
+              }
+            />
+            <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+              Mỗi seed có bộ đếm riêng, chỉ tính phương án giao đủ đơn và qua kiểm tra xếp dỡ. Nhập 0 để dùng ngân sách cố định.
+            </Text>
           </Col>
 
           <Col xs={24} md={8}>
@@ -385,7 +442,7 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
       <Card
         title={
           <Space wrap>
-            <span>3. Chi phí & Phạt trễ vận hành</span>
+            <span>3. Chi phí, hạn giao hàng và phạt trễ</span>
             {renderScopeBadge(scopeType, draft.overrides.costPenalty)}
           </Space>
         }
@@ -513,9 +570,19 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
             />
           </Col>
 
-          <Col xs={24} md={12}>
+          <Col span={24}>
+            <Divider style={{ margin: 0 }} />
+          </Col>
+          <Col span={24}>
+            <Text strong>Hạn giao hàng và phạt trễ</Text>
+            <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+              Hạn giao được tính từ thời điểm đặt đơn. Optimizer tính tiền phạt dự kiến cho phần thời gian quá hạn.
+            </Text>
+          </Col>
+
+          <Col xs={24} md={8}>
             <Text strong style={{ display: 'block', marginBottom: 6 }}>
-              Số ngày ân hạn giao hàng mặc định (0 - 365 ngày)
+              Hạn giao sau khi đặt đơn
             </Text>
             <InputNumber
               aria-label="Số ngày ân hạn giao hàng"
@@ -535,13 +602,13 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
             />
           </Col>
 
-          <Col xs={24} md={12}>
+          <Col xs={24} md={8}>
             <Text strong style={{ display: 'block', marginBottom: 6 }}>
               Hình thức phạt giao trễ
             </Text>
             <Select<LateDeliveryPenaltyMode>
               aria-label="Hình thức phạt giao trễ"
-              value={displayedCostPenalty.lateDeliveryPenaltyMode}
+              value={penaltyMode}
               disabled={!isCostEditable}
               style={{ width: '100%' }}
               onChange={(mode) =>
@@ -560,34 +627,25 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
                 { value: 'FIXED_PER_DAY', label: LATE_PENALTY_MODE_LABELS.FIXED_PER_DAY },
                 {
                   value: 'PERCENT_ORDER_VALUE_PER_DAY',
-                  label: LATE_PENALTY_MODE_LABELS.PERCENT_ORDER_VALUE_PER_DAY,
+                  label: 'Phần trăm giá trị đơn mỗi ngày trễ',
                 },
               ]}
             />
           </Col>
 
-          <Col xs={24} md={12}>
+          {penaltyMode !== 'NONE' && <Col xs={24} md={8}>
             <Text strong style={{ display: 'block', marginBottom: 6 }}>
-              Giá trị phạt giao trễ
+              {penaltyRateLabel}
             </Text>
             <InputNumber
-              aria-label="Giá trị phạt giao trễ"
+              aria-label={penaltyRateLabel}
               min={0}
-              max={
-                displayedCostPenalty.lateDeliveryPenaltyMode === 'PERCENT_ORDER_VALUE_PER_DAY'
-                  ? 100
-                  : 1_000_000_000
-              }
-              addonAfter={
-                displayedCostPenalty.lateDeliveryPenaltyMode === 'PERCENT_ORDER_VALUE_PER_DAY'
-                  ? '% / ngày'
-                  : 'VNĐ / ngày'
-              }
+              max={isPercentagePenalty ? 100 : 1_000_000_000}
+              precision={4}
+              addonAfter={isPercentagePenalty ? '% / ngày' : 'VNĐ / ngày'}
               style={{ width: '100%' }}
               value={displayedCostPenalty.lateDeliveryPenaltyValue}
-              disabled={
-                !isCostEditable || displayedCostPenalty.lateDeliveryPenaltyMode === 'NONE'
-              }
+              disabled={!isCostEditable}
               onChange={(value) =>
                 onChangeDraft((prev) => ({
                   ...prev,
@@ -595,6 +653,16 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
                 }))
               }
             />
+          </Col>}
+
+          <Col span={24}>
+            <Text type="secondary">
+              {penaltyMode === 'NONE'
+                ? 'Mức phạt tài chính bằng 0. Optimizer vẫn dùng hạn giao để ưu tiên các đơn sắp quá hạn.'
+                : isPercentagePenalty
+                  ? 'Tiền phạt = giá trị đơn × tỷ lệ phạt mỗi ngày × số ngày trễ. Đơn có giá trị 0 ₫ sẽ có tiền phạt bằng 0.'
+                  : 'Tiền phạt = mức phạt mỗi ngày × số ngày trễ.'}
+            </Text>
           </Col>
         </Row>
         <Divider style={{ margin: '12px 0' }} />

@@ -17,7 +17,7 @@ export class RunDemoOptimizationDto {
   @IsOptional()
   @IsNumber()
   @Min(1)
-  @Max(120)
+  @Max(1000)
   timeBudgetSeconds?: number;
 
   @IsOptional()

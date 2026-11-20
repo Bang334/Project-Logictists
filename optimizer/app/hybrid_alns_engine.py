@@ -2869,13 +2869,16 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             demo_stacking=self.request.demo_stacking,
         )
         self._hybrid_model_context = (orders, policy, node_id_to_index)
+        construction_deadline = search_deadline
+        if self.request.early_stop_patience and self.request.search_time_seconds:
+            construction_deadline = min(search_deadline, solve_started_at + self.request.search_time_seconds)
         initial_solution = self._build_hybrid_initial_solution(
             vehicles,
             drivers,
             original_vehicle_indices,
             pickup_key_by_order,
             delivery_key_by_order,
-            search_deadline=search_deadline,
+            search_deadline=construction_deadline,
         )
 
         operator_weights: Dict[str, Dict[str, float]] = {}
@@ -2889,8 +2892,9 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             and not initial_solution.unassigned_orders
             and len(self.orders) >= 80
             and native_budget < 12.0
+            and not self.request.early_stop_patience
         )
-        if self._native_search_budget_available and native_budget >= 0.05 and not skip_native_for_large_complete_seed:
+        if (self._native_search_budget_available or self.request.early_stop_patience) and native_budget >= 0.05 and not skip_native_for_large_complete_seed:
             effective_max_iterations = (
                 self.max_iterations
                 if self.max_iterations < 800
@@ -2907,6 +2911,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 search_profile="historical_portfolio",
                 final_spatial_time_limit_sec=min(2.0, max(0.05, native_budget * 0.30)),
                 final_repair_time_limit_sec=min(2.5, max(0.05, native_budget * 0.35)),
+                early_stop_patience=self.request.early_stop_patience,
             )
         if "destroy" in operator_weights:
             self.destroy_weights = operator_weights["destroy"]
@@ -3146,5 +3151,10 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 "không chứng minh tối ưu toàn cục."
             ),
         ]
+        if getattr(solution, "_stopped_for_patience", False):
+            result.diagnostics.append(
+                f"Seed {self.random_seed} dừng sớm sau {self.request.early_stop_patience} "
+                "phương án hợp lệ liên tiếp không cải thiện."
+            )
         apply_planning_objective(self.objective_request, result)
         return result

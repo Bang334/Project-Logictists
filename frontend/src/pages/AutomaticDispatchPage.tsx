@@ -88,8 +88,9 @@ import {
 } from '../utils/geoSimulation';
 import {
   clearAutoDispatchState,
+  dismissAutoDispatchState,
   getAutoDispatchState,
-
+  isAutoDispatchJobDismissed,
   saveAutoDispatchState,
   saveLastSelectedBranch,
 } from '../utils/autoDispatchStorage';
@@ -134,6 +135,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     coordinates: [number, number][] | null;
   }>();
   const [activeStepIndex, setActiveStepIndex] = useState<number>(0);
+  const [mapStopSelection, setMapStopSelection] = useState<{ route: OptimizedRouteUI; step: number }>();
   const [mapLayoutMode, setMapLayoutMode] = useState<'HALF' | 'FULL'>('HALF');
   const [scheduleMode, setScheduleMode] = useState<AutomaticDispatchScheduleModeUI>('CURRENT_TIME');
   const [customStartTime, setCustomStartTime] = useState<dayjs.Dayjs | null>(null);
@@ -179,55 +181,49 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   const restoreStateForBranch = useCallback(
     async (branchId: string, reqId: number): Promise<boolean> => {
       const stored = getAutoDispatchState(branchId);
-      if (!stored) {
-        if (restoreRequestIdRef.current === reqId) {
-          setOptimization(null);
-          setAppliedTripCount(null);
-          setIsRestoredFromStorage(false);
+      let job: AutomaticOptimizationResponseUI | null = null;
+      if (stored) {
+        try {
+          const response = await tripsApi.getAutomaticOptimizationJob(stored.optimizationJobId);
+          if (response.data.branchId === branchId) job = response.data;
+        } catch {
+          // Keep the stored pointer if the server is temporarily unavailable.
         }
-        return false;
       }
-      try {
-        const response = await tripsApi.getAutomaticOptimizationJob(
-          stored.optimizationJobId,
-        );
-        // Nếu đã có request đổi chi nhánh mới hơn, hủy bỏ kết quả cũ
-        if (restoreRequestIdRef.current !== reqId) return false;
+      if (restoreRequestIdRef.current !== reqId) return false;
 
-        // BẢO VỆ CHẶT CHẼ: Nếu phương án không thuộc chi nhánh này
-        if (response.data.branchId !== branchId) {
-          clearAutoDispatchState(branchId);
-          setOptimization(null);
-          setAppliedTripCount(null);
-          setIsRestoredFromStorage(false);
+      if (!job) {
+        try {
+          const response = await tripsApi.getLatestAutomaticOptimizationJob(branchId);
+          job = response.data;
+        } catch {
           return false;
         }
-
-        setOptimization(response.data);
-        setAppliedTripCount(stored.appliedTripCount ?? null);
-        if (stored.scheduleMode) {
-          setScheduleMode(stored.scheduleMode);
-        }
-        if (stored.useCustomTime !== undefined) {
-          setUseCustomTime(stored.useCustomTime);
-        }
-        if (stored.customStartTimeStr) {
-          setCustomStartTime(dayjs(stored.customStartTimeStr));
-        }
-        if (stored.selectedVehicleForMap) {
-          setSelectedVehicleForMap(stored.selectedVehicleForMap);
-        }
-        setIsRestoredFromStorage(true);
-        return true;
-      } catch {
-        if (restoreRequestIdRef.current === reqId) {
-          clearAutoDispatchState(branchId);
-          setOptimization(null);
-          setAppliedTripCount(null);
-          setIsRestoredFromStorage(false);
-        }
       }
-      return false;
+      if (restoreRequestIdRef.current !== reqId || !job || job.branchId !== branchId
+        || isAutoDispatchJobDismissed(branchId, job.createdAt)) return false;
+
+      const preferences = stored?.optimizationJobId === job.id ? stored : null;
+      const restoredScheduleMode = preferences?.scheduleMode ?? job.scheduleMode ?? 'CURRENT_TIME';
+      const restoredCustomStart = preferences?.customStartTimeStr ?? null;
+      const restoredUseCustomTime = preferences?.useCustomTime ?? false;
+      setOptimization(job);
+      setAppliedTripCount(preferences?.appliedTripCount ?? null);
+      setScheduleMode(restoredScheduleMode);
+      setUseCustomTime(restoredUseCustomTime);
+      setCustomStartTime(restoredCustomStart ? dayjs(restoredCustomStart) : null);
+      setIsRestoredFromStorage(true);
+      saveAutoDispatchState({
+        branchId,
+        optimizationJobId: job.id,
+        appliedTripCount: preferences?.appliedTripCount ?? null,
+        scheduleMode: restoredScheduleMode,
+        customStartTimeStr: restoredCustomStart,
+        useCustomTime: restoredUseCustomTime,
+        selectedVehicleForMap: preferences?.selectedVehicleForMap,
+        savedAt: new Date().toISOString(),
+      });
+      return true;
     },
     [],
   );
@@ -334,10 +330,13 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   useEffect(() => {
     setSelectedCandidateNumber(1);
     setSelectedCandidateResult(null);
-    setSelectedVehicleForMap('ALL');
+    const stored = activeOptimizationBranchId ? getAutoDispatchState(activeOptimizationBranchId) : null;
+    setSelectedVehicleForMap(stored && stored.optimizationJobId === activeOptimizationJobId
+      ? stored.selectedVehicleForMap ?? 'ALL'
+      : 'ALL');
     setEnableSim(false);
     setActiveStepIndex(0);
-  }, [activeOptimizationJobId]);
+  }, [activeOptimizationBranchId, activeOptimizationJobId]);
 
   useEffect(() => {
     if (!activeOptimizationJobId || !activeOptimizationStatus) return;
@@ -454,6 +453,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       optimizationIdempotencyKeyRef.current = payload.idempotencyKey;
       const response = await tripsApi.runAutomaticOptimization(payload);
       optimizationIdempotencyKeyRef.current = null;
+      restoreRequestIdRef.current += 1;
       setOptimization(response.data);
       setIsRestoredFromStorage(false);
 
@@ -542,10 +542,14 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
 
     // 1. DỌN SẠCH LOCALSTORAGE NGAY LẬP TỨC
     if (selectedBranchId) {
-      clearAutoDispatchState(selectedBranchId);
+      if (optimization?.branchId === selectedBranchId) {
+        dismissAutoDispatchState(selectedBranchId, optimization.createdAt);
+      } else {
+        clearAutoDispatchState(selectedBranchId);
+      }
     }
-    if (optBranchId && optBranchId !== selectedBranchId) {
-      clearAutoDispatchState(optBranchId);
+    if (optimization && optBranchId && optBranchId !== selectedBranchId) {
+      dismissAutoDispatchState(optBranchId, optimization.createdAt);
     }
 
     // 2. DỌN SẠCH TOÀN BỘ REACT STATE
@@ -891,11 +895,13 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   const currentDirectRoad = directRoad?.route === selectedRouteInfo && directRoad.attempt === directRoadAttempt
     ? directRoad : undefined;
   const loadingDirectRoad = showingDirect && Boolean(selectedRouteInfo) && !currentDirectRoad;
-  const selectMapRoute = (routeKey: string, stepIndex = 0) => {
+  const selectMapRoute = useCallback((routeKey: string, stepIndex?: number) => {
     setSelectedVehicleForMap(routeKey);
-    setActiveStepIndex(stepIndex);
+    setActiveStepIndex(stepIndex ?? 0);
     setEnableSim(false);
-  };
+    const route = stepIndex === undefined ? undefined : result?.routes.find(item => getRouteKey(item) === routeKey);
+    setMapStopSelection(route && stepIndex !== undefined ? { route, step: stepIndex } : undefined);
+  }, [result]);
 
   const currentActiveRoute = selectedRouteInfo;
 
@@ -952,12 +958,40 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   }, [routeProfileForSim, currentActiveRoute, showingDirect]);
 
   const hasReturnLeg = (currentActiveRoute?.return_travel_time_sec ?? 0) > 0;
+  const simulationFocus = useMemo(() => {
+    if (!mapStopSelection || mapStopSelection.route !== currentActiveRoute) return undefined;
+    const { route, step } = mapStopSelection;
+    const depot = resolveDepot(route);
+    const location = step === 0 ? depot : route.stops[step - 1] ?? route.end_location ?? depot;
+    if (!location) return undefined;
+
+    const distance = step === 0 ? 0 : stopMilestonesKm[step - 1] ?? routeProfileForSim?.totalDistanceKm ?? 0;
+    const total = routeProfileForSim?.totalDistanceKm ?? 0;
+    return {
+      coordinate: [location.longitude, location.latitude] as [number, number],
+      progress: total > 0 ? distance / total : 0,
+    };
+  }, [mapStopSelection, currentActiveRoute, resolveDepot, routeProfileForSim, stopMilestonesKm]);
+  const showSimulation = isSimulating || Boolean(simulationFocus);
+  const journeyArrowClass = (step: number) => {
+    if (!showSimulation) return 'journey-arrow';
+    if (step <= activeStepIndex) return 'journey-arrow journey-arrow-traveled';
+    if (step === activeStepIndex + 1) return 'journey-arrow journey-arrow-next';
+    return 'journey-arrow';
+  };
+
   const syncSimulationStep = useCallback((progress: number, _coordinate: [number, number], _speed: number, traveledKm: number) => {
     const step = progress === 1 && hasReturnLeg
       ? stopMilestonesKm.length + 1
       : getStepIndexForDistance(stopMilestonesKm, traveledKm);
     startTransition(() => setActiveStepIndex(step));
   }, [hasReturnLeg, stopMilestonesKm]);
+
+  const selectMapMarker = useCallback((marker: MapMarker) => {
+    const route = marker.type === 'DEPOT' ? currentActiveRoute : result?.routes[marker.routeIndex ?? -1];
+    const step = marker.type === 'DEPOT' ? 0 : marker.sequence;
+    if (route && step !== undefined) selectMapRoute(getRouteKey(route), step);
+  }, [currentActiveRoute, result, selectMapRoute]);
 
   const mapMarkers = useMemo(() => {
     const depotMarkers = new Map<string, MapMarker>();
@@ -2811,8 +2845,12 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                   : 'Xếp chồng: Tắt (chỉ xếp 1 lớp)'}
               </Tag>
               <Tag color="blue">
-                Ngân sách: {effectiveSettings.optimization.defaultSearchBudgetSeconds}s (trần {effectiveSettings.optimization.maxTimeSeconds}s)
+                Khởi đầu: {effectiveSettings.optimization.defaultSearchBudgetSeconds}s · Trần: {effectiveSettings.optimization.maxTimeSeconds}s
               </Tag>
+              <Tag>Số seed: {effectiveSettings.optimization.hybridSeedCount || 'Tự động'}</Tag>
+              {effectiveSettings.optimization.earlyStopPatience > 0 && (
+                <Tag>Dừng sớm: {effectiveSettings.optimization.earlyStopPatience} phương án/seed</Tag>
+              )}
               <Tag color="purple">
                 {effectiveSettings.optimization.maxRoutesPerDay !== null
                   ? `Tối đa ${effectiveSettings.optimization.maxRoutesPerDay} chuyến/ngày`
@@ -3356,16 +3394,17 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                     />
                   </div>
                   <Button
-                    type={isSimulating ? 'default' : 'primary'}
-                    icon={isSimulating ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                    type={showSimulation ? 'default' : 'primary'}
+                    icon={showSimulation ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
                     loading={loadingDirectRoad}
-                    disabled={!canSimulate}
+                    disabled={!canSimulate && !showSimulation}
                     onClick={() => {
-                      if (!isSimulating) setActiveStepIndex(0);
-                      setEnableSim(!isSimulating);
+                      setMapStopSelection(undefined);
+                      if (!showSimulation) setActiveStepIndex(0);
+                      setEnableSim(!showSimulation);
                     }}
                   >
-                    {isSimulating ? 'Dừng mô phỏng' : 'Mô phỏng xe'}
+                    {showSimulation ? 'Dừng mô phỏng' : 'Mô phỏng xe'}
                   </Button>
                 </div>
 
@@ -3383,6 +3422,11 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                   <span className="map-legend-item map-legend-sequence">1 · 2 · 3 · … Điểm dừng</span>
                   <span className="map-legend-item map-legend-pickup">Nhận hàng</span>
                   <span className="map-legend-item map-legend-delivery">Giao hàng</span>
+                  {showSimulation && canSimulate && <>
+                    <span className="map-legend-item map-legend-traveled">Đã đi</span>
+                    <span className="map-legend-item map-legend-next-leg">Chặng kế tiếp</span>
+                    <span className="map-legend-item map-legend-pending">Chưa đi</span>
+                  </>}
                 </div>
 
                 {selectedRouteInfo && (
@@ -3411,37 +3455,42 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
 
                     <div className="automatic-route-journey" aria-label="Thứ tự lộ trình">
                       <Tooltip title={selectedRouteInfo.depot?.name || 'Công ty / chi nhánh'}>
-                        <span
+                        <button
+                          type="button"
+                          aria-current={activeStepIndex === 0 ? 'step' : undefined}
                           className={`journey-node journey-node-depot ${activeStepIndex === 0 ? 'journey-node-active' : ''}`}
-                          style={{ cursor: 'pointer' }}
-                          onClick={() => selectMapRoute(getRouteKey(selectedRouteInfo))}
+                          onClick={() => selectMapRoute(getRouteKey(selectedRouteInfo), 0)}
                         >
                           <BankOutlined />
                           <span>{showingDirect ? 'Xuất phát' : 'Công ty'}</span>
-                        </span>
+                        </button>
                       </Tooltip>
                       {selectedRouteInfo.stops.map((stop) => (
                         <React.Fragment key={`${getRouteKey(selectedRouteInfo)}-${stop.sequence}-${stop.location_id}`}>
-                          <ArrowRightOutlined className="journey-arrow" aria-hidden="true" />
+                          <ArrowRightOutlined className={journeyArrowClass(stop.sequence)} aria-hidden="true" />
                           <Tooltip title={`${stop.stop_type === 'PICKUP' ? 'Nhận' : 'Giao'} · ${stop.location_name}`}>
-                            <span
+                            <button
+                              type="button"
+                              aria-current={activeStepIndex === stop.sequence ? 'step' : undefined}
                               className={`journey-node ${stop.stop_type === 'PICKUP' ? 'journey-node-pickup' : 'journey-node-delivery'} ${activeStepIndex === stop.sequence ? 'journey-node-active' : ''}`}
-                              style={{ cursor: 'pointer' }}
                               onClick={() => selectMapRoute(getRouteKey(selectedRouteInfo), stop.sequence)}
                             >
                               {stop.sequence}
-                            </span>
+                            </button>
                           </Tooltip>
                         </React.Fragment>
                       ))}
                       {hasReturnLeg && <>
-                        <ArrowRightOutlined className="journey-arrow" aria-hidden="true" />
-                        <span
+                        <ArrowRightOutlined className={journeyArrowClass(selectedRouteInfo.stops.length + 1)} aria-hidden="true" />
+                        <button
+                          type="button"
+                          aria-current={activeStepIndex > selectedRouteInfo.stops.length ? 'step' : undefined}
                           className={`journey-node journey-node-return ${activeStepIndex > selectedRouteInfo.stops.length ? 'journey-node-active' : ''}`}
+                          onClick={() => selectMapRoute(getRouteKey(selectedRouteInfo), selectedRouteInfo.stops.length + 1)}
                         >
                           <BankOutlined />
                           <span>Về bến</span>
-                        </span>
+                        </button>
                       </>}
                     </div>
                   </div>
@@ -3450,18 +3499,16 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                   markers={mapMarkers}
                   routeGeometry={routeGeometry}
                   height={mapLayoutMode === 'FULL' ? 640 : 560}
-                  enableSimulation={isSimulating}
+                  enableSimulation={showSimulation}
                   autoPlaySimulation={isSimulating}
+                  followSimulationVehicle
+                  simulationFocus={simulationFocus}
+                  simulationMilestonesKm={stopMilestonesKm}
                   vehiclePlate={currentActiveRoute?.plate_number}
                   driverName={currentActiveRoute?.driver_name}
                   onSimulationProgress={syncSimulationStep}
                   onSimulationStop={stopSimulation}
-                  onMarkerClick={(marker) => {
-                    const route = result.routes[marker.routeIndex ?? -1];
-                    if (route && marker.sequence !== undefined) {
-                      selectMapRoute(getRouteKey(route), marker.sequence);
-                    }
-                  }}
+                  onMarkerClick={selectMapMarker}
                 />
               </Card>
             </Col>
@@ -3490,7 +3537,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                 }
                 selectedStepIndex={activeStepIndex}
                 onStepChange={setActiveStepIndex}
-                isSimulating={isSimulating}
+                isSimulating={showSimulation && canSimulate}
               /> : <Card title="Sơ đồ xếp dỡ thùng xe" className="card-elevation">
                 <Empty description="Chọn một tuyến xe trên bản đồ để xem hàng trên xe." />
               </Card>}

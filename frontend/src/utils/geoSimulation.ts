@@ -337,7 +337,7 @@ export function calculateStopMilestonesKm(
  * - Step s + 1: Truck reached Stop s and loaded/unloaded cargo
  */
 export function getStepIndexForDistance(
-  milestonesKm: number[],
+  milestonesKm: readonly number[],
   traveledKm: number,
 ): number {
   if (!milestonesKm || milestonesKm.length === 0) return 0;

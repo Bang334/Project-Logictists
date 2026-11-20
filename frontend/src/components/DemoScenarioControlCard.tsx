@@ -145,7 +145,7 @@ export const DemoScenarioControlCard: React.FC<DemoScenarioControlCardProps> = (
         <Space align="center">
           <InputNumber
             min={1}
-            max={120}
+            max={1000}
             precision={0}
             value={timeBudgetSeconds}
             onChange={(v) => onChangeTimeBudget(v || 6)}

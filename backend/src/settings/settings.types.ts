@@ -12,6 +12,8 @@ export interface StackingSettings {
 export interface OptimizationSettings {
   defaultSearchBudgetSeconds: number;
   maxTimeSeconds: number;
+  hybridSeedCount: number;
+  earlyStopPatience: number;
   unassignedOrderPenaltyVnd: number;
   maxRoutesPerDay: number | null;
   demoAllowOverride: boolean;
@@ -98,6 +100,8 @@ export const COMPANY_SETTING_DEFAULTS: {
   optimization: {
     defaultSearchBudgetSeconds: 10,
     maxTimeSeconds: 120,
+    hybridSeedCount: 0,
+    earlyStopPatience: 30,
     unassignedOrderPenaltyVnd: 1_000_000_000,
     maxRoutesPerDay: null,
     demoAllowOverride: true,

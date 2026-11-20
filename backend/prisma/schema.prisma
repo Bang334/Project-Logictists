@@ -1762,6 +1762,8 @@ model SystemSetting {
   overrideOptimization        Boolean                  @default(false)
   defaultSearchBudgetSeconds  Int?
   maxOptimizationTimeSeconds  Int?
+  hybridSeedCount             Int?
+  earlyStopPatience           Int?
   unassignedOrderPenaltyVnd   BigInt?
   maxRoutesPerDay             Int?
   demoAllowOverride           Boolean?

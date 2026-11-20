@@ -91,6 +91,15 @@ export class TripsController {
     return this.optimizationJobs.list(req.user, branchId);
   }
 
+  @Get('automatic-optimization/jobs/latest')
+  @RequirePermission('trips.plan')
+  getLatestAutomaticOptimizationJob(
+    @Req() req: AuthRequest,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.optimizationJobs.getLatestRestorable(req.user, branchId);
+  }
+
   @Get('automatic-optimization/jobs/:jobId')
   @RequirePermission('trips.plan')
   getAutomaticOptimizationJob(

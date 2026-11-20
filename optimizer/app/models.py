@@ -301,8 +301,10 @@ class FleetOptimizationRequest(StrictContractModel):
     orders: List[OrderPair] = Field(min_length=1)
     demo_stacking: Optional[DemoStackingPolicy] = None
     policy: CostPolicy
-    max_time_seconds: int = Field(default=15, ge=1, le=120)
-    search_time_seconds: Optional[int] = Field(default=None, ge=1, le=120)
+    max_time_seconds: int = Field(default=15, ge=1, le=1000)
+    search_time_seconds: Optional[int] = Field(default=None, ge=1, le=1000)
+    early_stop_patience: int = Field(default=0, ge=0, le=1000)
+    hybrid_seed_count: int = Field(default=0, ge=0, le=20)
     distance_matrix_meters: List[List[float]]
     duration_matrix_seconds: List[List[float]]
 

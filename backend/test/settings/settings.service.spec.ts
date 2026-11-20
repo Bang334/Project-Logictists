@@ -83,6 +83,7 @@ function makeCompanyRow(overrides: Record<string, unknown> = {}) {
     overrideOptimization: false,
     defaultSearchBudgetSeconds: 10,
     maxOptimizationTimeSeconds: 120,
+    hybridSeedCount: null,
     unassignedOrderPenaltyVnd: BigInt(1_000_000_000),
     maxRoutesPerDay: null,
     demoAllowOverride: true,
@@ -111,7 +112,7 @@ describe('SettingsService & TMS DB Policy Integration', () => {
   });
 
   it('merges COMPANY defaults and BRANCH overrides, preserving explicit maxRoutesPerDay=null', async () => {
-    const companyRow = makeCompanyRow({ version: 3, maxRoutesPerDay: 5 });
+    const companyRow = makeCompanyRow({ version: 3, maxRoutesPerDay: 5, hybridSeedCount: 2 });
     const branchRow = {
       ...makeCompanyRow(),
       id: 'setting-b1',
@@ -126,6 +127,7 @@ describe('SettingsService & TMS DB Policy Integration', () => {
       overrideOptimization: true,
       defaultSearchBudgetSeconds: 15,
       maxOptimizationTimeSeconds: 180,
+      hybridSeedCount: 3,
       unassignedOrderPenaltyVnd: BigInt(2_000_000_000),
       maxRoutesPerDay: null,
       demoAllowOverride: false,
@@ -158,6 +160,7 @@ describe('SettingsService & TMS DB Policy Integration', () => {
     });
     // Must stay null (unlimited) instead of inheriting 5 from company
     expect(effective.optimization.maxRoutesPerDay).toBeNull();
+    expect(effective.optimization.hybridSeedCount).toBe(3);
     expect(effective.optimization.demoAllowOverride).toBe(false);
     expect(effective.costPenalty.fuelPricePerLiter).toBe(23_500);
   });

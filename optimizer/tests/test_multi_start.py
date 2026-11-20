@@ -23,6 +23,51 @@ from app.multi_start import (
 from app.search_strategies import SEARCH_STRATEGIES, SearchStrategy
 
 
+@pytest.mark.parametrize("refinement_times_out", [False, True])
+def test_one_seed_ending_does_not_discard_its_checkpoint_or_another_seed(monkeypatch, refinement_times_out):
+    from concurrent.futures import Future
+    import app.multi_start as module
+    from test_benchmark_contract import comparison_request
+
+    seen = []
+
+    class ImmediatePool:
+        def __init__(self, max_workers):
+            assert max_workers == 2
+
+        def submit(self, worker, *args):
+            future = Future()
+            future.set_result(worker(*args))
+            return future
+
+        def shutdown(self, **kwargs):
+            pass
+
+    def worker(request, _objective_request, seed, _budget, warm_plan=None):
+        seen.append((seed, bool(request["early_stop_patience"])))
+        if seed == 0 and warm_plan and refinement_times_out:
+            return seed, None, None, "Hết thời gian tìm sâu"
+        cost = 100 - seed * 10 - (5 if warm_plan and seed == 1 else 0)
+        plan = _mock_plan("contract", "SUCCESS", cost, ["part-0", "part-1"])
+        plan.routes[0].route_id = f"route-{seed}"
+        if seed == 0 and warm_plan:
+            plan.diagnostics = ["Seed 0 dừng sớm sau 1 phương án hợp lệ liên tiếp không cải thiện."]
+        return seed, plan.model_dump(), {"selection_score_vnd": cost}, None
+
+    monkeypatch.setattr(module.concurrent.futures, "ProcessPoolExecutor", ImmediatePool)
+    monkeypatch.setattr(module, "_run_hybrid_seed_worker", worker)
+    monkeypatch.setattr(module, "is_fully_served", lambda plan, *_args, **_kwargs: plan.status == "SUCCESS")
+    monkeypatch.setattr(module, "_candidate_lexicographic_key", lambda candidate: (candidate[2],))
+    request = comparison_request().model_copy(update={"early_stop_patience": 1, "hybrid_seed_count": 2})
+    batch = MultiStartFleetOptimizer(request).solve()
+
+    assert seen == [(0, False), (1, False), (0, True), (1, True)]
+    assert batch.solver_run_count == 2
+    assert batch.candidates[0].search_strategy.endswith("(seed 1)")
+    assert batch.candidates[1].result.total_cost_vnd == 100
+    assert any("dừng sớm" in note for note in batch.candidates[1].result.diagnostics) is not refinement_times_out
+
+
 def _mock_spatial_valid() -> SpatialValidationResult:
     return SpatialValidationResult(
         is_valid=True,

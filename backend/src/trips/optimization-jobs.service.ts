@@ -214,6 +214,19 @@ export class OptimizationJobsService {
     return this.toPublicJob(job, results.map((result) => this.toCandidateSummary(result)));
   }
 
+  async getLatestRestorable(user: JobUser, branchId?: string) {
+    const scopedBranchId = resolveBranchScope(user, branchId);
+    const job = await this.prisma.optimizationJob.findFirst({
+      where: {
+        branchId: scopedBranchId,
+        status: { in: ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED', 'SUCCEEDED', 'PARTIAL', 'APPLIED'] },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { id: true },
+    });
+    return job ? this.get(user, job.id) : null;
+  }
+
   async getCandidate(user: JobUser, id: string, candidateNumber: number) {
     if (!Number.isInteger(candidateNumber) || candidateNumber < 1 || candidateNumber > 10) {
       throw new NotFoundException(`Số thứ tự phương án ${candidateNumber} không hợp lệ`);

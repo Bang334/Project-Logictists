@@ -179,6 +179,11 @@ export const tripsApi = {
     apiClient.get<AutomaticOptimizationResponseUI>(
       `/trips/automatic-optimization/jobs/${jobId}`,
     ),
+  getLatestAutomaticOptimizationJob: (branchId: string) =>
+    apiClient.get<AutomaticOptimizationResponseUI | null>(
+      '/trips/automatic-optimization/jobs/latest',
+      { params: { branchId } },
+    ),
   listAutomaticOptimizationJobs: (branchId: string) =>
     apiClient.get<AutomaticOptimizationResponseUI[]>(
       '/trips/automatic-optimization/jobs',

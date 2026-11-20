@@ -1699,9 +1699,8 @@ export class TripsService {
       : readDemoStackingPolicy(process.env);
     const resolvedSearchBudget =
       searchBudgetSeconds ?? effectiveSettings?.optimization.defaultSearchBudgetSeconds;
-    const baseMaxTimeSeconds = effectiveSettings?.optimization.maxTimeSeconds ?? 120;
-    const effectiveMaxTimeSeconds =
-      orders.length >= 50 ? Math.max(baseMaxTimeSeconds, 120) : baseMaxTimeSeconds;
+    const effectiveMaxTimeSeconds = effectiveSettings?.optimization.maxTimeSeconds ?? 120;
+    const earlyStopPatience = effectiveSettings?.optimization.earlyStopPatience ?? 0;
     const largeBatchFloorSeconds = orders.length >= 50 ? 48 : 0;
     const boundedSearchBudgetSeconds =
       resolvedSearchBudget !== undefined || largeBatchFloorSeconds > 0
@@ -1769,6 +1768,10 @@ export class TripsService {
       },
       planning_epoch_iso: planningEpoch.toISOString(),
       max_time_seconds: effectiveMaxTimeSeconds,
+      ...(earlyStopPatience > 0 ? { early_stop_patience: earlyStopPatience } : {}),
+      ...(effectiveSettings?.optimization.hybridSeedCount
+        ? { hybrid_seed_count: effectiveSettings.optimization.hybridSeedCount }
+        : {}),
       ...(boundedSearchBudgetSeconds !== undefined
         ? { search_time_seconds: boundedSearchBudgetSeconds }
         : {}),
@@ -1869,6 +1872,8 @@ export class TripsService {
       policy: snapshot.policy,
       demo_stacking: demoStacking,
       max_time_seconds: snapshot.max_time_seconds,
+      ...(snapshot.early_stop_patience !== undefined ? { early_stop_patience: snapshot.early_stop_patience } : {}),
+      ...(snapshot.hybrid_seed_count !== undefined ? { hybrid_seed_count: snapshot.hybrid_seed_count } : {}),
       ...(snapshot.search_time_seconds !== undefined
         ? { search_time_seconds: snapshot.search_time_seconds }
         : {}),
@@ -1958,7 +1963,9 @@ export class TripsService {
         {
           timeout: Math.max(
             120000,
-            ((snapshot.search_time_seconds ?? snapshot.max_time_seconds) + 90) * 1000,
+            ((snapshot.early_stop_patience
+              ? snapshot.max_time_seconds
+              : snapshot.search_time_seconds ?? snapshot.max_time_seconds) + 90) * 1000,
           ),
         },
       );
@@ -3551,10 +3558,13 @@ export class TripsService {
       dto.timeBudgetSeconds ??
       effectiveSettings?.optimization.defaultSearchBudgetSeconds ??
       10;
-    const timeBudgetSeconds = allowDemoOverride
+    const resolvedTimeBudget = allowDemoOverride
       ? resolvedBudget
       : Math.min(resolvedBudget, effectiveSettings?.optimization.maxTimeSeconds ?? 120);
-    const timeoutMs = Math.max(60000, (timeBudgetSeconds + 30) * 1000);
+    const earlyStopPatience = effectiveSettings?.optimization.earlyStopPatience ?? 0;
+    const maxTimeSeconds = effectiveSettings?.optimization.maxTimeSeconds ?? 120;
+    const timeBudgetSeconds = earlyStopPatience > 0 ? Math.min(resolvedTimeBudget, maxTimeSeconds) : resolvedTimeBudget;
+    const timeoutMs = Math.max(60000, ((earlyStopPatience > 0 ? maxTimeSeconds : timeBudgetSeconds) + 90) * 1000);
     try {
       const res = await axios.post(
         `${this.optimizerUrl}/demo/run`,
@@ -3563,6 +3573,10 @@ export class TripsService {
           demo_stacking_enabled: demoStackingEnabled,
           demo_stacking_owner_mode: demoStackingOwnerMode,
           time_budget_seconds: timeBudgetSeconds,
+          ...(earlyStopPatience > 0
+            ? { early_stop_patience: earlyStopPatience, max_time_seconds: maxTimeSeconds }
+            : {}),
+          hybrid_seed_count: effectiveSettings?.optimization.hybridSeedCount ?? 0,
           custom_request: dto.customRequest,
         },
         { timeout: timeoutMs },

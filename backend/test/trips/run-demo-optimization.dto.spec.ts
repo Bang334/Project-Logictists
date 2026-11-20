@@ -5,7 +5,7 @@ describe('RunDemoOptimizationDto validation', () => {
   it('chấp nhận DTO hợp lệ với caseId và ngân sách thời gian', async () => {
     const dto = Object.assign(new RunDemoOptimizationDto(), {
       caseId: 'novel_1_mekong_hub_spoke',
-      timeBudgetSeconds: 6,
+      timeBudgetSeconds: 1000,
       demoStackingEnabled: false,
     });
     const errors = await validate(dto);
@@ -21,7 +21,7 @@ describe('RunDemoOptimizationDto validation', () => {
     expect(errors).toHaveLength(0);
   });
 
-  it.each([0, 121])('từ chối thời gian tìm kiếm ngoài giới hạn 1-120s: %s', async (val) => {
+  it.each([0, 1001])('từ chối thời gian tìm kiếm ngoài giới hạn 1-1000s: %s', async (val) => {
     const dto = Object.assign(new RunDemoOptimizationDto(), {
       caseId: 'scenario_1_multi_item',
       timeBudgetSeconds: val,

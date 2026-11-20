@@ -1,7 +1,7 @@
 from collections import defaultdict
 from dataclasses import dataclass, field
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
@@ -49,6 +49,7 @@ class BaselineCostCalculator:
         self.drivers = request.drivers
         self.orders = request.orders
         self.order_by_id = {order.id: order for order in request.orders}
+        self.item_weight_by_id = {item.id: item.weight_kg for order in self.orders for item in order.items}
         self.node_idx_by_id = {node["id"]: idx for idx, node in enumerate(nodes)}
         self._spatial_cache: Dict[Tuple, SpatialValidationResult] = {}
 
@@ -92,6 +93,7 @@ class BaselineCostCalculator:
         start_node_index: Optional[int] = None,
         start_time_sec: Optional[int] = None,
         return_to_depot: bool = True,
+        spatial_time_limit_seconds: Optional[float] = None,
     ) -> _EvaluatedRoute:
         remaining = self._remaining_seconds()
         current_node = vehicle_index if start_node_index is None else start_node_index
@@ -101,11 +103,6 @@ class BaselineCostCalculator:
         total_distance = 0.0
         scheduled: List[ScheduledStop] = []
         violations: List[str] = []
-        item_weight_by_id = {
-            item.id: item.weight_kg
-            for order in self.orders
-            for item in order.items
-        }
 
         for action in actions:
             node_index = self.node_idx_by_id[action.stop_id]
@@ -128,7 +125,7 @@ class BaselineCostCalculator:
 
             current_weight += sum(item.weight_kg for item in action.items_to_load)
             current_weight -= sum(
-                item_weight_by_id.get(item_id, 0.0)
+                self.item_weight_by_id.get(item_id, 0.0)
                 for item_id in action.items_to_unload
             )
             if current_weight > vehicle.payload_limit_kg + 1e-6:
@@ -230,14 +227,19 @@ class BaselineCostCalculator:
                 vehicle.width_cm,
                 vehicle.height_cm,
                 vehicle.door_position,
+                vehicle.door_width_cm,
+                vehicle.payload_limit_kg,
             )
             if cache_key not in self._spatial_cache:
+                time_limit = remaining
+                if spatial_time_limit_seconds is not None:
+                    time_limit = min(time_limit, spatial_time_limit_seconds) if time_limit is not None else spatial_time_limit_seconds
                 self._spatial_cache[cache_key] = validate_stop_actions(
                     self.request.demo_stacking,
                     vehicle,
                     actions,
                     max_search_nodes=2000,
-                    max_time_seconds=remaining,
+                    max_time_seconds=time_limit,
                 )
             spatial = self._spatial_cache[cache_key]
             if self.request.demo_stacking is not None:
@@ -403,9 +405,31 @@ class BaselineCostCalculator:
                 next_driver_start[driver_id] = vehicle.available_start_sec
         return list(reversed(non_overlapping))
 
+    @staticmethod
+    def _floor_profile(vehicle: FleetVehicle) -> Tuple:
+        return (
+            vehicle.length_cm, vehicle.width_cm, vehicle.height_cm, vehicle.payload_limit_kg,
+            vehicle.door_position, vehicle.door_width_cm,
+        )
+
+    def _passes_direct_load_bounds(self, order: OrderPair, vehicle: FleetVehicle) -> bool:
+        if sum(item.weight_kg for item in order.items) > vehicle.payload_limit_kg + 1e-6:
+            return False
+        if sum(item.length_cm * item.width_cm for item in order.items) > effective_floor_capacity_cm2(vehicle, self.request.demo_stacking) + 1e-6:
+            return False
+        return all(
+            item.height_cm <= vehicle.height_cm + 1e-6
+            and (
+                (item.length_cm <= vehicle.length_cm + 1e-6 and item.width_cm <= vehicle.width_cm + 1e-6)
+                or (item.width_cm <= vehicle.length_cm + 1e-6 and item.length_cm <= vehicle.width_cm + 1e-6)
+            )
+            for item in order.items
+        )
+
     def _solve_direct_schedule(
         self,
         paired_slots: List[Tuple[int, FleetVehicle, DriverOption]],
+        rejected_loads: Set[Tuple[str, Tuple]],
     ) -> Optional[List[OptimizedRoute]]:
         if not paired_slots:
             return None
@@ -419,6 +443,13 @@ class BaselineCostCalculator:
         for order, actions in zip(self.orders, order_actions):
             matrix_nodes.extend(self.node_idx_by_id[action.stop_id] for action in actions)
             service_seconds.extend(order.service_seconds(action.stop_type) for action in actions)
+        minimum_work = sum(
+            service_seconds[node] + service_seconds[node + 1]
+            + round(self.request.duration_matrix_seconds[matrix_nodes[node]][matrix_nodes[node + 1]])
+            for node in range(slot_count, len(matrix_nodes), 2)
+        )
+        if minimum_work > sum(vehicle.available_end_sec - vehicle.available_start_sec for _, vehicle, _ in paired_slots):
+            return None
         depot_nodes = list(range(slot_count))
         manager = pywrapcp.RoutingIndexManager(len(matrix_nodes), slot_count, depot_nodes, depot_nodes)
         routing = pywrapcp.RoutingModel(manager)
@@ -452,19 +483,32 @@ class BaselineCostCalculator:
             schedule.CumulVar(end).SetRange(vehicle.available_start_sec, vehicle.available_end_sec)
             routing.AddVariableMinimizedByFinalizer(schedule.CumulVar(end))
 
-        for order_index, (order, actions) in enumerate(zip(self.orders, order_actions)):
+        for order_index, order in enumerate(self.orders):
+            self._remaining_seconds()
             pickup_node = slot_count + order_index * 2
             pickup = manager.NodeToIndex(pickup_node)
             delivery = manager.NodeToIndex(pickup_node + 1)
             allowed = []
-            for slot, (matrix_idx, vehicle, _) in enumerate(paired_slots):
+            profile_eligibility = {}
+            pickup_service = service_seconds[pickup_node]
+            delivery_service = service_seconds[pickup_node + 1]
+            loaded_travel = round(durations[matrix_nodes[pickup_node]][matrix_nodes[pickup_node + 1]])
+            for slot, (_, vehicle, _) in enumerate(paired_slots):
                 vehicle_id = vehicle.source_vehicle_id or vehicle.id
                 if order.allowed_source_vehicle_ids and vehicle_id not in order.allowed_source_vehicle_ids:
                     continue
-                # Validate this load independently of the leg bringing the truck to its pickup.
-                route = self._evaluate_actions(vehicle, matrix_idx, actions,
-                                               start_node_index=matrix_nodes[pickup_node], return_to_depot=False)
-                if not route.violations:
+                earliest_pickup = max(order.pickup_window_start_sec, vehicle.available_start_sec)
+                earliest_delivery = max(order.delivery_window_start_sec, earliest_pickup + pickup_service + loaded_travel)
+                if (earliest_pickup > order.pickup_window_end_sec
+                    or earliest_delivery > order.delivery_window_end_sec
+                    or earliest_delivery + delivery_service > vehicle.available_end_sec):
+                    continue
+                profile = self._floor_profile(vehicle)
+                if (order.id, profile) in rejected_loads:
+                    continue
+                if profile not in profile_eligibility:
+                    profile_eligibility[profile] = self._passes_direct_load_bounds(order, vehicle)
+                if profile_eligibility[profile]:
                     allowed.append(slot)
             if not allowed or order.pickup_window_start_sec > horizon or order.delivery_window_start_sec > horizon:
                 return None
@@ -479,12 +523,14 @@ class BaselineCostCalculator:
         params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
         params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
         remaining = self._remaining_seconds()
-        params.time_limit.FromMilliseconds(1500 if remaining is None else max(1, min(1500, int(remaining * 1000))))
+        routing_budget_ms = 4500 if len(self.orders) >= 80 else 1500
+        params.time_limit.FromMilliseconds(routing_budget_ms if remaining is None else max(1, min(routing_budget_ms, int(remaining * 1000))))
         solution = routing.SolveWithParameters(params)
         if solution is None:
             return None
 
         routes: List[OptimizedRoute] = []
+        has_invalid_load = False
         for slot, (matrix_idx, vehicle, driver) in enumerate(paired_slots):
             index = solution.Value(routing.NextVar(routing.Start(slot)))
             departure = vehicle.available_start_sec
@@ -499,10 +545,17 @@ class BaselineCostCalculator:
                 last_trip = routing.IsEnd(index)
                 trip = self._evaluate_actions(vehicle, matrix_idx, order_actions[order_index],
                                               start_node_index=start_node, start_time_sec=departure,
-                                              return_to_depot=last_trip)
+                                              return_to_depot=last_trip, spatial_time_limit_seconds=0.5)
                 spatial = trip.spatial_validation
                 if trip.violations or spatial is None or not spatial.is_valid:
-                    return None
+                    if not trip.violations or not all(reason.startswith("SPATIAL:") for reason in trip.violations):
+                        return None
+                    rejected_loads.add((order.id, self._floor_profile(vehicle)))
+                    has_invalid_load = True
+                    departure += round(trip.duration_seconds)
+                    start_point = order.delivery_location
+                    start_node = matrix_nodes[pickup_node + 1]
+                    continue
                 end_time = departure + round(trip.duration_seconds)
                 routes.append(OptimizedRoute(
                     route_id=f"direct:{vehicle.id}:{order.id}",
@@ -529,7 +582,7 @@ class BaselineCostCalculator:
                 departure = end_time
                 start_point = order.delivery_location
                 start_node = matrix_nodes[pickup_node + 1]
-        return routes
+        return None if has_invalid_load else routes
 
     def compute_direct_dedicated(self) -> BenchmarkMetric:
         """Schedule sequential single-order trips in the available truck and driver shifts."""
@@ -539,11 +592,17 @@ class BaselineCostCalculator:
         slots = self._pair_vehicles_with_drivers_by_day(list(enumerate(self.vehicles)), self.drivers)
         days = sorted({vehicle.service_day_index for _, vehicle, _ in slots})
         routes = None
+        rejected_loads: Set[Tuple[str, Tuple]] = set()
         # Try the first shift day before widening the search to all supplied days.
         for day_limit in days[:2] + (days[-1:] if len(days) > 2 else []):
             try:
                 self._remaining_seconds()
-                routes = self._solve_direct_schedule([slot for slot in slots if slot[1].service_day_index <= day_limit])
+                day_slots = [slot for slot in slots if slot[1].service_day_index <= day_limit]
+                while True:
+                    prior_rejections = len(rejected_loads)
+                    routes = self._solve_direct_schedule(day_slots, rejected_loads)
+                    if routes or len(rejected_loads) == prior_rejections:
+                        break
                 self._remaining_seconds()
             except TimeoutError:
                 return self._unavailable_direct("TIMEOUT:Hết thời gian tính phương án đối chuẩn.")
@@ -620,8 +679,11 @@ class BaselineCostCalculator:
         ortools_total_duration_minutes: float,
         ortools_is_feasible: bool = True,
         ortools_violations: Optional[List[str]] = None,
+        *,
+        direct_metric: Optional[BenchmarkMetric] = None,
     ) -> BenchmarkComparisonResponse:
-        direct_metric = self.compute_direct_dedicated()
+        if direct_metric is None:
+            direct_metric = self.compute_direct_dedicated()
         ortools_fuel = sum(route.cost.fuel_cost_vnd for route in ortools_routes if route.cost)
         ortools_fixed = sum(
             route.cost.vehicle_fixed_cost_vnd for route in ortools_routes if route.cost

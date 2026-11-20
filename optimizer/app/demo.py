@@ -194,11 +194,14 @@ class DemoCaseSummary(BaseModel):
 class DemoRunRequest(BaseModel):
     case_id: Optional[str] = Field(default=None, description="Mã kịch bản mẫu có sẵn")
     time_budget_seconds: Optional[float] = Field(
-        default=None, ge=1.0, le=180.0, description="Ngân sách thời gian tìm kiếm (giây)"
+        default=None, ge=1.0, le=1000.0, description="Ngân sách thời gian tìm kiếm (giây)"
     )
     custom_request: Optional[FleetOptimizationRequest] = Field(
         default=None, description="Tùy chọn tải lên tệp JSON FleetOptimizationRequest riêng"
     )
+    hybrid_seed_count: Optional[int] = Field(default=None, ge=0, le=20)
+    early_stop_patience: Optional[int] = Field(default=None, ge=0, le=1000)
+    max_time_seconds: Optional[int] = Field(default=None, ge=1, le=1000)
     demo_stacking_enabled: Optional[bool] = None
     demo_stacking_owner_mode: Optional[Literal["SAME_CUSTOMER", "ANY_CUSTOMER"]] = None
 
@@ -302,7 +305,11 @@ def run_demo_case(payload: DemoRunRequest) -> FleetOptimizationBatchResponse:
             status_code=400, detail="Vui lòng cung cấp case_id hoặc custom_request"
         )
 
-    if payload.time_budget_seconds:
+    if payload.max_time_seconds is not None:
+        request.max_time_seconds = payload.max_time_seconds
+        if payload.time_budget_seconds is not None:
+            request.search_time_seconds = min(payload.max_time_seconds, int(round(payload.time_budget_seconds)))
+    elif payload.time_budget_seconds:
         request.max_time_seconds = int(round(payload.time_budget_seconds))
 
     # Chạy trực tiếp qua MultiStartFleetOptimizer (Hybrid ALNS first)
@@ -320,7 +327,11 @@ def run_demo_case(payload: DemoRunRequest) -> FleetOptimizationBatchResponse:
         stacking_policy = None
     if stacking_policy and payload.demo_stacking_owner_mode:
         stacking_policy = stacking_policy.model_copy(update={"owner_mode": payload.demo_stacking_owner_mode})
-    solver_request = request.model_copy(update={"demo_stacking": stacking_policy})
+    solver_request = request.model_copy(update={
+        "demo_stacking": stacking_policy,
+        "hybrid_seed_count": request.hybrid_seed_count if payload.hybrid_seed_count is None else payload.hybrid_seed_count,
+        "early_stop_patience": request.early_stop_patience if payload.early_stop_patience is None else payload.early_stop_patience,
+    })
     optimizer = MultiStartFleetOptimizer(solver_request)
     batch = optimizer.solve(max_candidates=3)
 

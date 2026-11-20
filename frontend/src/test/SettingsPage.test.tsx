@@ -103,6 +103,8 @@ function makeCompanyResponse(overrides: Partial<ScopedSettingsResponse['company'
     optimization: {
       defaultSearchBudgetSeconds: 10,
       maxTimeSeconds: 120,
+      hybridSeedCount: 0,
+      earlyStopPatience: 30,
       unassignedOrderPenaltyVnd: 1_000_000_000,
       maxRoutesPerDay: null,
       demoAllowOverride: true,
@@ -189,10 +191,16 @@ beforeEach(() => {
   });
 });
 
-it('cho phép Admin bật xếp chồng, đổi chế độ chủ hàng và lưu cấu hình toàn công ty', async () => {
+it('cho phép Admin lưu cấu hình xếp chồng và số seed toàn công ty', async () => {
   const saved = makeCompanyResponse({
     version: 2,
     stacking: { enabled: true, ownerMode: 'ANY_CUSTOMER', maxTiers: 2, liftClearanceMm: 50 },
+    optimization: {
+      ...makeCompanyResponse().company.optimization,
+      hybridSeedCount: 20,
+      maxTimeSeconds: 1000,
+      earlyStopPatience: 35,
+    },
   });
   vi.mocked(settingsApi.updateCompany).mockResolvedValue({ ...axiosMeta, data: saved });
 
@@ -204,6 +212,16 @@ it('cho phép Admin bật xếp chồng, đổi chế độ chủ hàng và lưu
 
   const stackSwitch = screen.getByLabelText('Bật xếp chồng hàng hóa');
   fireEvent.click(stackSwitch);
+  const seedCount = screen.getByRole('combobox', { name: 'Số seed Hybrid ALNS' });
+  fireEvent.mouseDown(seedCount);
+  fireEvent.change(seedCount, { target: { value: '20' } });
+  fireEvent.click(await screen.findByText('20 seed'));
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Trần thời gian tối ưu tối đa' }), {
+    target: { value: '1000' },
+  });
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Ngưỡng dừng sớm' }), {
+    target: { value: '35' },
+  });
 
   await waitFor(() => expect(screen.getByText('Lưu thay đổi').closest('button')).not.toBeDisabled());
   fireEvent.click(screen.getByText('Lưu thay đổi'));
@@ -213,10 +231,38 @@ it('cho phép Admin bật xếp chồng, đổi chế độ chủ hàng và lưu
       expect.objectContaining({
         expectedVersion: 1,
         stacking: expect.objectContaining({ enabled: true }),
+        optimization: expect.objectContaining({ hybridSeedCount: 20, maxTimeSeconds: 1000, earlyStopPatience: 35 }),
       }),
     ),
   );
   await waitFor(() => expect(screen.getByText('company:v2')).toBeInTheDocument());
+}, 15_000);
+
+it('lưu hạn giao và tỷ lệ phạt theo ngày', async () => {
+  const costPenalty = {
+    ...makeCompanyResponse().company.costPenalty,
+    deliveryGraceDays: 14,
+    lateDeliveryPenaltyMode: 'PERCENT_ORDER_VALUE_PER_DAY' as const,
+    lateDeliveryPenaltyValue: 1.5,
+  };
+  vi.mocked(settingsApi.updateCompany).mockResolvedValue({
+    ...axiosMeta,
+    data: makeCompanyResponse({ version: 2, costPenalty }),
+  });
+
+  render(<App><SettingsPage /></App>);
+  const deadline = await screen.findByRole('spinbutton', { name: 'Số ngày ân hạn giao hàng' });
+  fireEvent.change(deadline, { target: { value: '14' } });
+  fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Hình thức phạt giao trễ' }));
+  fireEvent.click(await screen.findByText('Phần trăm giá trị đơn mỗi ngày trễ'));
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Tỷ lệ phạt mỗi ngày trễ' }), {
+    target: { value: '1.5' },
+  });
+  fireEvent.click(screen.getByText('Lưu thay đổi'));
+
+  await waitFor(() => expect(settingsApi.updateCompany).toHaveBeenCalledWith(
+    expect.objectContaining({ costPenalty }),
+  ));
 }, 15_000);
 
 it('hiển thị cảnh báo xung đột phiên bản 409 Conflict khi có người cập nhật trước', async () => {

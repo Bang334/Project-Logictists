@@ -20,6 +20,6 @@ export class RespondDeliveryAppointmentDto {
 
 export class OptimizeDeliveryBatchDto {
   @IsUUID() idempotencyKey!: string;
-  @IsOptional() @IsInt() @Min(1) @Max(120) searchBudgetSeconds?: number;
+  @IsOptional() @IsInt() @Min(1) @Max(1000) searchBudgetSeconds?: number;
   @IsOptional() @IsBoolean() replanWithFleet?: boolean;
 }
