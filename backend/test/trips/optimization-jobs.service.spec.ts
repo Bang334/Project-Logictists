@@ -38,6 +38,7 @@ describe('OptimizationJobsService', () => {
   const prisma = {
     optimizationJob: {
       create: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn(),
@@ -319,5 +320,65 @@ describe('OptimizationJobsService', () => {
     expect(workbook.getWorksheet('Chuỗi nghiệm cải thiện')?.getCell('D2').value).toBe(7_796_170);
     expect(workbook.getWorksheet('Chi tiết tuyến')?.getCell('D2').value).toBe('29C-001.23');
     expect(workbook.getWorksheet('Chi tiết tuyến')?.getCell('I2').value).toContain('ORD-001');
+  });
+
+  it('restores the latest restorable job for the scoped branch and skips failed/cancelled jobs', async () => {
+    const user = {
+      id: 'user-1',
+      username: 'dispatcher',
+      fullName: 'Dispatcher',
+      sessionId: 'session',
+      branchId: 'branch-1',
+      role: Role.DISPATCHER,
+      grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH' as const, branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }],
+    };
+    prisma.optimizationJob.findFirst.mockResolvedValue({ id: 'job-latest' });
+    prisma.optimizationJob.findUnique.mockResolvedValue(
+      job({ id: 'job-latest', status: 'SUCCEEDED', result: { proposal: { result: { total_cost_vnd: 123 } }, signature: 'sig' } }),
+    );
+    prisma.optimizationResult.findMany.mockResolvedValue([
+      {
+        candidateNumber: 1,
+        feasibilityStatus: 'FEASIBLE',
+        objectiveBreakdown: { totalCostVnd: 123, routeCount: 1, unassignedOrderCount: 0 },
+      },
+    ]);
+
+    const restored = await service.getLatestRestorable(user, undefined);
+
+    expect(prisma.optimizationJob.findFirst).toHaveBeenCalledWith({
+      where: {
+        branchId: 'branch-1',
+        status: { in: ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED', 'SUCCEEDED', 'PARTIAL', 'APPLIED'] },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { id: true },
+    });
+    expect(restored).toMatchObject({
+      id: 'job-latest',
+      status: 'SUCCEEDED',
+      result: { total_cost_vnd: 123 },
+      candidates: [expect.objectContaining({ candidateNumber: 1, totalCostVnd: 123 })],
+    });
+
+    prisma.optimizationJob.findFirst.mockResolvedValue(null);
+    await expect(service.getLatestRestorable(user, undefined)).resolves.toBeNull();
+  });
+
+  it('rejects getLatestRestorable for a branch outside user scope', async () => {
+    await expect(
+      service.getLatestRestorable(
+        {
+          id: 'user-1',
+          username: 'dispatcher',
+          fullName: 'Dispatcher',
+          sessionId: 'session',
+          branchId: 'branch-1',
+          role: Role.DISPATCHER,
+          grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan'] }],
+        },
+        'branch-2',
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });

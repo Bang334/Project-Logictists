@@ -19,6 +19,7 @@ from .models import (
     StopAction,
     can_driver_drive_vehicle,
 )
+from .packing_rules import resolve_can_rotate
 from .planning_objective import calendar_salary_for_span
 from .route_costing import build_route_cost_breakdown
 from .spatial_validator import SpatialValidator
@@ -421,7 +422,11 @@ class BaselineCostCalculator:
             item.height_cm <= vehicle.height_cm + 1e-6
             and (
                 (item.length_cm <= vehicle.length_cm + 1e-6 and item.width_cm <= vehicle.width_cm + 1e-6)
-                or (item.width_cm <= vehicle.length_cm + 1e-6 and item.length_cm <= vehicle.width_cm + 1e-6)
+                or (
+                    resolve_can_rotate(item)
+                    and item.width_cm <= vehicle.length_cm + 1e-6
+                    and item.length_cm <= vehicle.width_cm + 1e-6
+                )
             )
             for item in order.items
         )
@@ -545,7 +550,7 @@ class BaselineCostCalculator:
                 last_trip = routing.IsEnd(index)
                 trip = self._evaluate_actions(vehicle, matrix_idx, order_actions[order_index],
                                               start_node_index=start_node, start_time_sec=departure,
-                                              return_to_depot=last_trip, spatial_time_limit_seconds=0.5)
+                                              return_to_depot=last_trip, spatial_time_limit_seconds=1.5)
                 spatial = trip.spatial_validation
                 if trip.violations or spatial is None or not spatial.is_valid:
                     if not trip.violations or not all(reason.startswith("SPATIAL:") for reason in trip.violations):

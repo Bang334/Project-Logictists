@@ -39,6 +39,7 @@ export const isAutoDispatchJobDismissed = (branchId: string, jobCreatedAt: strin
  */
 export const saveAutoDispatchState = (state: StoredAutoDispatchState): void => {
   try {
+    localStorage.removeItem(`${DISMISSED_PREFIX}${state.branchId}`);
     localStorage.setItem(
       `${STORAGE_PREFIX}${state.branchId}`,
       JSON.stringify(state),

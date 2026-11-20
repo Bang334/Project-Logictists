@@ -1,4 +1,5 @@
 import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import axios from 'axios';
 import { DispatcherDeliveryPlanning } from '../components/DeliveryAppointments';
 import {
   Alert,
@@ -182,11 +183,19 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     async (branchId: string, reqId: number): Promise<boolean> => {
       const stored = getAutoDispatchState(branchId);
       let job: AutomaticOptimizationResponseUI | null = null;
+      let storedInvalid = false;
       if (stored) {
         try {
           const response = await tripsApi.getAutomaticOptimizationJob(stored.optimizationJobId);
-          if (response.data.branchId === branchId) job = response.data;
-        } catch {
+          if (response.data.branchId === branchId && response.data.status !== 'CANCELLED') {
+            job = response.data;
+          } else {
+            storedInvalid = true;
+          }
+        } catch (error) {
+          if (axios.isAxiosError(error) && (error.response?.status === 404 || error.response?.status === 403)) {
+            storedInvalid = true;
+          }
           // Keep the stored pointer if the server is temporarily unavailable.
         }
       }
@@ -195,7 +204,10 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       if (!job) {
         try {
           const response = await tripsApi.getLatestAutomaticOptimizationJob(branchId);
-          job = response.data;
+          job = response.data || null;
+          if (!job && storedInvalid) {
+            clearAutoDispatchState(branchId);
+          }
         } catch {
           return false;
         }
@@ -424,13 +436,15 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     };
     socket.on('connect', onConnect);
     socket.on('optimization:job-updated', onJobUpdate);
-    if (socket.connected) void reloadSnapshot();
+    if (socket.connected && ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED'].includes(activeOptimizationStatus ?? '')) {
+      void reloadSnapshot();
+    }
     return () => {
       disposed = true;
       socket.off('connect', onConnect);
       socket.off('optimization:job-updated', onJobUpdate);
     };
-  }, [activeOptimizationJobId, selectedBranchId]);
+  }, [activeOptimizationJobId, activeOptimizationStatus, selectedBranchId]);
 
   const startOptimization = async () => {
     if (!selectedBranchId) {
@@ -701,6 +715,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       ? Boolean(optimization && (optimization.branchId === 'demo-branch' || (optimization as any).isDemo))
       : Boolean(optimization && selectedBranchId && optimization.branchId === selectedBranchId),
   );
+  const isApplied = appliedTripCount !== null || (isOptimizationValid && optimization?.status === 'APPLIED');
   const optimizerResult = isOptimizationValid
     ? selectedCandidateResult ?? optimization?.result
     : null;
@@ -2748,14 +2763,16 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
               !result ||
               result.routes.length === 0 ||
               !['SUCCEEDED', 'PARTIAL'].includes(optimization.status) ||
-              appliedTripCount !== null ||
+              isApplied ||
               starting
             }
             onClick={applyOptimization}
           >
-            {showingDirect ? 'Chuyến đơn lẻ · Chỉ xem' : appliedTripCount === null
-              ? `Áp dụng phương án #${selectedCandidateNumber}`
-              : `Đã áp dụng ${appliedTripCount} chuyến`}
+            {showingDirect
+              ? 'Chuyến đơn lẻ · Chỉ xem'
+              : isApplied
+                ? (appliedTripCount !== null ? `Đã áp dụng ${appliedTripCount} chuyến` : 'Đã áp dụng phương án')
+                : `Áp dụng phương án #${selectedCandidateNumber}`}
           </Button>
           {pageMode === 'BRANCH' && selectedBranchId && <DispatcherDeliveryPlanning
             key={selectedBranchId}
@@ -2769,7 +2786,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
               saveAutoDispatchState({ branchId: selectedBranchId, optimizationJobId: id, appliedTripCount: null, scheduleMode, customStartTimeStr: customStartTime?.toISOString() ?? null, useCustomTime, savedAt: new Date().toISOString() });
             }}
           />}
-          {appliedTripCount !== null && (
+          {isApplied && (
             <>
               <Button
                 type="primary"
@@ -2797,7 +2814,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
               </Button>
             </>
           )}
-          {appliedTripCount === null && isOptimizationValid && optimization && pageMode === 'BRANCH' && (
+          {!isApplied && isOptimizationValid && optimization && pageMode === 'BRANCH' && (
             ['FAILED', 'TIMEOUT', 'CANCELLED', 'INFEASIBLE'].includes(optimization.status) ? (
               <Button
                 size="large"
