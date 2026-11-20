@@ -76,6 +76,16 @@ def prune_unserviceable_virtual_resources(
     if removed_count == 0 or not retained_vehicle_indices:
         return request, 0
 
+    reduced = request_with_vehicle_slots(request, retained_vehicle_indices)
+    return (reduced, removed_count) if reduced is not None else (request, 0)
+
+
+def request_with_vehicle_slots(
+    request: FleetOptimizationRequest, retained_vehicle_indices: List[int],
+) -> Optional[FleetOptimizationRequest]:
+    """Keep the matching shift days and the corresponding provider matrix nodes."""
+    if not retained_vehicle_indices:
+        return None
     retained_days = {
         request.vehicles[index].service_day_index
         for index in retained_vehicle_indices
@@ -88,7 +98,7 @@ def prune_unserviceable_virtual_resources(
     if len(retained_drivers) < len(retained_vehicle_indices):
         # Driver matching is checked precisely by FleetRoutingSolver. Avoid a
         # preprocessed request that would violate the public request contract.
-        return request, 0
+        return None
 
     old_vehicle_count = len(request.vehicles)
     retained_node_indices: List[int] = retained_vehicle_indices + list(
@@ -111,7 +121,7 @@ def prune_unserviceable_virtual_resources(
         distance_matrix_meters=slice_matrix(request.distance_matrix_meters),
         duration_matrix_seconds=slice_matrix(request.duration_matrix_seconds),
     )
-    return FleetOptimizationRequest(**payload), removed_count
+    return FleetOptimizationRequest(**payload)
 
 
 def _cargo_fits_vehicle(

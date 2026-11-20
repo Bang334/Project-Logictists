@@ -510,3 +510,55 @@ def test_pickup_only_and_missing_requested_item_are_rejected():
     plan.routes[0].stops = plan.routes[0].stops[:1]
     plan.routes[0].end_time_sec = plan.routes[0].stops[-1].departure_time_sec
     assert not is_fully_served(plan, {"o1"})
+
+def test_direct_span_prefers_two_days_before_truncating_valid_candidates():
+    late = _mock_plan("job", "SUCCESS", 10, ["a", "b"])
+    late.routes[0].service_day_index = 2
+    early = _mock_plan("job", "SUCCESS", 20, ["a"])
+    second = _mock_plan("job", "SUCCESS", 10, ["b"]).routes[0]
+    second.service_day_index = 1
+    early.routes.append(second)
+    runs = [(SEARCH_STRATEGIES[0], late, 10), (SEARCH_STRATEGIES[1], early, 20)]
+    ranked, count, _ = select_ranked_candidates(
+        runs, {"a", "b"}, max_candidates=1, target_span_days=2,
+    )
+    assert count == 2
+    assert ranked[0].result == early
+
+
+def test_direct_horizon_seed_rebuilds_two_days_of_trips_as_valid_hybrid_routes():
+    from test_benchmark_contract import comparison_request
+
+    request = comparison_request()
+    truck, driver = request.vehicles[0], request.drivers[0]
+    for day, order in enumerate(request.orders):
+        order.split_group_id = None
+        order.source_order_id = order.id
+        order.pickup_window_start_sec = day * 86400
+        order.delivery_window_start_sec = day * 86400
+    request.orders[0].pickup_window_end_sec = 3600
+    request.orders[0].delivery_window_end_sec = 3600
+    extra = request.orders[0].model_copy(deep=True)
+    extra.id = extra.source_order_id = "extra"
+    extra.items[0].id = "extra-pkg"
+    extra.items[0].order_id = extra.id
+    request.orders.append(extra)
+    request.vehicles = [truck.model_copy(update={
+        "id": f"truck-{day}", "source_vehicle_id": truck.id, "service_day_index": day,
+        "available_start_sec": day * 86400, "available_end_sec": day * 86400 + 3600,
+    }) for day in range(3)]
+    request.drivers = [driver.model_copy(update={
+        "id": f"driver-{day}", "source_driver_id": driver.id, "service_day_index": day,
+    }) for day in range(3)]
+    size = len(request.vehicles) + 2 * len(request.orders)
+    request.distance_matrix_meters = [[0 if i == j else 100 for j in range(size)] for i in range(size)]
+    request.duration_matrix_seconds = [[0 if i == j else 10 for j in range(size)] for i in range(size)]
+    optimizer = MultiStartFleetOptimizer(request)
+    _, direct = optimizer._direct_benchmark()
+    assert direct.is_feasible and direct.planning_span_days == 2
+    plan = optimizer._search_direct_span([0, 1], direct, time.perf_counter() + 3)
+    assert plan is not None
+    assert is_fully_served(plan, {o.id for o in request.orders},
+                           expected_items={o.id: {i.id for i in o.items} for o in request.orders})
+    assert sorted(route.service_day_index for route in plan.routes) == [0, 1]
+    assert len(direct.routes) == 3

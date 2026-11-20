@@ -103,6 +103,10 @@ const currency = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: '
 const getRouteKey = (route: OptimizedRouteUI) => route.route_id;
 const DIRECT_COMPARISON = 0;
 
+function RouteDetails({ route, render }: { route: OptimizedRouteUI; render: (route: OptimizedRouteUI) => React.ReactNode }) {
+  return <>{render(route)}</>;
+}
+
 interface AutomaticDispatchPageProps {
   onNavigate?: (tab: string) => void;
 }
@@ -118,7 +122,8 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   const [availableOrders, setAvailableOrders] = useState<Order[]>([]);
   const [availableVehicles, setAvailableVehicles] = useState<Vehicle[]>([]);
   const [availableDrivers, setAvailableDrivers] = useState<Driver[]>([]);
-  const [loadingCounts, setLoadingCounts] = useState(true);
+  const [loadingCounts, setLoadingCounts] = useState({ orders: true, vehicles: true, drivers: true });
+  const countRequest = useRef(0);
   const [optimization, setOptimization] = useState<AutomaticOptimizationResponseUI | null>(null);
   const [selectedCandidateNumber, setSelectedCandidateNumber] = useState(1);
   const [selectedCandidateResult, setSelectedCandidateResult] = useState<FleetOptimizationResultUI | null>(null);
@@ -241,28 +246,37 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   );
 
   const loadCounts = useCallback(async (branchId: string, isCurrent: () => boolean) => {
-    try {
-      setLoadingCounts(true);
-      const [orders, vehicles, drivers] = await Promise.all([
-        ordersApi.getAvailableForDispatch(branchId),
-        vehiclesApi.getAvailable(branchId),
-        driversApi.getAvailable(branchId),
-      ]);
-      if (!isCurrent()) return;
-      setAvailableOrders(orders.data);
-      setAvailableVehicles(vehicles.data);
-      setAvailableDrivers(drivers.data);
-      setCounts({
-        orders: orders.data.length,
-        vehicles: vehicles.data.length,
-        drivers: drivers.data.length,
-        packages: orders.data.reduce((sum, order) => sum + order.totalPackages, 0),
-      });
-    } catch {
-      if (isCurrent()) message.error('Không tải được nguồn lực cho tối ưu tự động');
-    } finally {
-      if (isCurrent()) setLoadingCounts(false);
+    const request = ++countRequest.current;
+    const current = () => request === countRequest.current && isCurrent();
+    setLoadingCounts({ orders: true, vehicles: true, drivers: true });
+    async function load<T,>(
+      key: 'orders' | 'vehicles' | 'drivers', label: string,
+      fetch: Promise<{ data: T[] }>, update: (rows: T[]) => void,
+    ) {
+      try {
+        const { data } = await fetch;
+        if (current()) update(data);
+      } catch {
+        if (current()) message.error(`Không tải được ${label} cho tối ưu tự động`);
+      } finally {
+        if (current()) setLoadingCounts(previous => ({ ...previous, [key]: false }));
+      }
     }
+    await Promise.all([
+      load('orders', 'đơn hàng', ordersApi.getAvailableForDispatch(branchId), rows => {
+        setAvailableOrders(rows);
+        setCounts(previous => ({ ...previous, orders: rows.length,
+          packages: rows.reduce((sum, order) => sum + order.totalPackages, 0) }));
+      }),
+      load('vehicles', 'danh sách xe', vehiclesApi.getAvailable(branchId), rows => {
+        setAvailableVehicles(rows);
+        setCounts(previous => ({ ...previous, vehicles: rows.length }));
+      }),
+      load('drivers', 'danh sách tài xế', driversApi.getAvailable(branchId), rows => {
+        setAvailableDrivers(rows);
+        setCounts(previous => ({ ...previous, drivers: rows.length }));
+      }),
+    ]);
   }, [message]);
 
   useEffect(() => {
@@ -311,7 +325,8 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
 
   useEffect(() => {
     if (!selectedBranchId) {
-      setLoadingCounts(false);
+      ++countRequest.current;
+      setLoadingCounts({ orders: false, vehicles: false, drivers: false });
       setOptimization(null);
       setAppliedTripCount(null);
       return;
@@ -2736,6 +2751,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
             loading={starting}
             disabled={
               !selectedBranchId
+              || loadingCounts.orders || loadingCounts.vehicles || loadingCounts.drivers
               || counts.orders === 0
               || applying
             }
@@ -2937,7 +2953,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
         {/* Thẻ 1: Đơn sẵn sàng */}
         <Col xs={12} sm={12} lg={6}>
           <Card
-            loading={loadingCounts}
+            loading={loadingCounts.orders}
             bordered={false}
             style={{
               borderRadius: 12,
@@ -2988,7 +3004,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
         {/* Thẻ 2: Kiện vật lý */}
         <Col xs={12} sm={12} lg={6}>
           <Card
-            loading={loadingCounts}
+            loading={loadingCounts.orders}
             bordered={false}
             style={{
               borderRadius: 12,
@@ -3039,7 +3055,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
         {/* Thẻ 3: Xe khả dụng */}
         <Col xs={12} sm={12} lg={6}>
           <Card
-            loading={loadingCounts}
+            loading={loadingCounts.vehicles}
             bordered={false}
             style={{
               borderRadius: 12,
@@ -3090,7 +3106,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
         {/* Thẻ 4: Tài xế khả dụng */}
         <Col xs={12} sm={12} lg={6}>
           <Card
-            loading={loadingCounts}
+            loading={loadingCounts.drivers}
             bordered={false}
             style={{
               borderRadius: 12,
@@ -3629,7 +3645,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
               items={result.routes.map((route) => ({
                 key: getRouteKey(route),
                 label: `Ngày ${route.service_day_index + 1} · ${route.plate_number} · ${route.driver_name} (Hạng ${route.driver_license_class || 'C'}) · ${currency.format(route.cost?.total_cost_vnd || 0)}`,
-                children: renderRoute(route),
+                children: <RouteDetails route={route} render={renderRoute} />,
               }))}
               defaultActiveKey={result.routes[0] ? [getRouteKey(result.routes[0])] : []}
             />

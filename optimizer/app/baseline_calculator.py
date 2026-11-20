@@ -39,6 +39,10 @@ class _EvaluatedRoute:
     violations: List[str] = field(default_factory=list)
 
 
+class _DirectRoutingTimeout(TimeoutError):
+    """The routing search used its slice before finding a first schedule."""
+
+
 class BaselineCostCalculator:
     """Build comparable baselines using the production feasibility rules."""
 
@@ -51,7 +55,6 @@ class BaselineCostCalculator:
         self.orders = request.orders
         self.order_by_id = {order.id: order for order in request.orders}
         self.item_weight_by_id = {item.id: item.weight_kg for order in self.orders for item in order.items}
-        self.node_idx_by_id = {node["id"]: idx for idx, node in enumerate(nodes)}
         self._spatial_cache: Dict[Tuple, SpatialValidationResult] = {}
 
     def _remaining_seconds(self) -> Optional[float]:
@@ -91,6 +94,7 @@ class BaselineCostCalculator:
         vehicle_index: int,
         actions: List[StopAction],
         *,
+        order_index: int,
         start_node_index: Optional[int] = None,
         start_time_sec: Optional[int] = None,
         return_to_depot: bool = True,
@@ -105,9 +109,10 @@ class BaselineCostCalculator:
         scheduled: List[ScheduledStop] = []
         violations: List[str] = []
 
+        order = self.orders[order_index]
+        pickup_index = len(self.vehicles) + 2 * order_index
         for action in actions:
-            node_index = self.node_idx_by_id[action.stop_id]
-            order = self.nodes[node_index]["order"]
+            node_index = pickup_index if action.stop_type == "PICKUP" else pickup_index + 1
             travel_seconds = round(self.request.duration_matrix_seconds[current_node][node_index])
             leg_start = round(current_time)
             total_distance += self.request.distance_matrix_meters[current_node][node_index]
@@ -435,6 +440,7 @@ class BaselineCostCalculator:
         self,
         paired_slots: List[Tuple[int, FleetVehicle, DriverOption]],
         rejected_loads: Set[Tuple[str, Tuple]],
+        routing_budget_ms: int,
     ) -> Optional[List[OptimizedRoute]]:
         if not paired_slots:
             return None
@@ -445,8 +451,9 @@ class BaselineCostCalculator:
         matrix_nodes = [matrix_idx for matrix_idx, _, _ in paired_slots]
         service_seconds = [0] * slot_count
         order_actions = [self._actions_for_order(order) for order in self.orders]
-        for order, actions in zip(self.orders, order_actions):
-            matrix_nodes.extend(self.node_idx_by_id[action.stop_id] for action in actions)
+        for order_index, (order, actions) in enumerate(zip(self.orders, order_actions)):
+            pickup_index = len(self.vehicles) + 2 * order_index
+            matrix_nodes.extend((pickup_index, pickup_index + 1))
             service_seconds.extend(order.service_seconds(action.stop_type) for action in actions)
         minimum_work = sum(
             service_seconds[node] + service_seconds[node + 1]
@@ -528,10 +535,11 @@ class BaselineCostCalculator:
         params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
         params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
         remaining = self._remaining_seconds()
-        routing_budget_ms = 4500 if len(self.orders) >= 80 else 1500
         params.time_limit.FromMilliseconds(routing_budget_ms if remaining is None else max(1, min(routing_budget_ms, int(remaining * 1000))))
         solution = routing.SolveWithParameters(params)
         if solution is None:
+            if routing.status() == routing_enums_pb2.RoutingSearchStatus.ROUTING_FAIL_TIMEOUT:
+                raise _DirectRoutingTimeout
             return None
 
         routes: List[OptimizedRoute] = []
@@ -548,7 +556,7 @@ class BaselineCostCalculator:
                 delivery_index = solution.Value(routing.NextVar(index))
                 index = solution.Value(routing.NextVar(delivery_index))
                 last_trip = routing.IsEnd(index)
-                trip = self._evaluate_actions(vehicle, matrix_idx, order_actions[order_index],
+                trip = self._evaluate_actions(vehicle, matrix_idx, order_actions[order_index], order_index=order_index,
                                               start_node_index=start_node, start_time_sec=departure,
                                               return_to_depot=last_trip, spatial_time_limit_seconds=1.5)
                 spatial = trip.spatial_validation
@@ -599,21 +607,33 @@ class BaselineCostCalculator:
         routes = None
         rejected_loads: Set[Tuple[str, Tuple]] = set()
         # Try the first shift day before widening the search to all supplied days.
-        for day_limit in days[:2] + (days[-1:] if len(days) > 2 else []):
+        horizons = days[:2] + (days[-1:] if len(days) > 2 else [])
+        search_timed_out = False
+        for index, day_limit in enumerate(horizons):
             try:
                 self._remaining_seconds()
                 day_slots = [slot for slot in slots if slot[1].service_day_index <= day_limit]
                 while True:
                     prior_rejections = len(rejected_loads)
-                    routes = self._solve_direct_schedule(day_slots, rejected_loads)
+                    remaining = self._remaining_seconds()
+                    budget_ms = 4500 if len(self.orders) >= 80 else 1500
+                    if remaining is not None and len(self.orders) >= 80 and index > 0:
+                        # Share the remaining time with later horizons and the cargo audit.
+                        budget_ms = max(1, int(remaining * 800 / (len(horizons) - index)))
+                    routes = self._solve_direct_schedule(day_slots, rejected_loads, budget_ms)
                     if routes or len(rejected_loads) == prior_rejections:
                         break
                 self._remaining_seconds()
+            except _DirectRoutingTimeout:
+                search_timed_out = True
+                continue
             except TimeoutError:
                 return self._unavailable_direct("TIMEOUT:Hết thời gian tính phương án đối chuẩn.")
             if routes:
                 break
         if not routes:
+            if search_timed_out:
+                return self._unavailable_direct("TIMEOUT:Chưa tìm được lịch đơn lẻ trong thời gian tìm kiếm.")
             return self._unavailable_direct("ASSIGNMENT_UNAVAILABLE:Chưa tìm được lịch chuyến đơn lẻ giao đủ trong các ca khả dụng.")
 
         costs = [route.cost for route in routes if route.cost is not None]

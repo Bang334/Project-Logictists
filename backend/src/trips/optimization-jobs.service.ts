@@ -201,30 +201,42 @@ export class OptimizationJobsService {
   }
 
   async get(user: JobUser, id: string) {
-    const job = await this.getAuthorizedJob(user, id);
-    const results = await this.prisma.optimizationResult.findMany({
-      where: { optimizationJobId: id },
-      orderBy: { candidateNumber: 'asc' },
-      select: {
-        candidateNumber: true,
-        feasibilityStatus: true,
-        objectiveBreakdown: true,
-      },
-    });
-    return this.toPublicJob(job, results.map((result) => this.toCandidateSummary(result)));
+    const job = await this.readPublicJob(user, Prisma.sql`WHERE j.id = ${id}`);
+    if (!job) throw new NotFoundException(`Không tìm thấy optimization job ${id}`);
+    return job;
   }
 
   async getLatestRestorable(user: JobUser, branchId?: string) {
-    const scopedBranchId = resolveBranchScope(user, branchId);
-    const job = await this.prisma.optimizationJob.findFirst({
-      where: {
-        branchId: scopedBranchId,
-        status: { in: ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED', 'SUCCEEDED', 'PARTIAL', 'APPLIED'] },
-      },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      select: { id: true },
-    });
-    return job ? this.get(user, job.id) : null;
+    const branch = resolveBranchScope(user, branchId);
+    return this.readPublicJob(user, Prisma.sql`
+      WHERE j."branchId" = ${branch}
+        AND j.status IN ('PENDING','RUNNING','RETRYING','CANCEL_REQUESTED','SUCCEEDED','PARTIAL','APPLIED')
+      ORDER BY j."createdAt" DESC, j.id DESC LIMIT 1
+    `);
+  }
+
+  private async readPublicJob(user: JobUser, filter: Prisma.Sql) {
+    type Row = Parameters<OptimizationJobsService['toPublicJob']>[0] & {
+      summaries: Parameters<OptimizationJobsService['toCandidateSummary']>[0][];
+    };
+    // Status polling needs three snapshot fields, even for multi-megabyte requests.
+    const [job] = await this.prisma.$queryRaw<Row[]>`
+      SELECT j.id, j."branchId", j.status, j."schemaVersion", j.parameters, j.result,
+        j."errorCode", j."errorMessage", j."attemptCount", j."startedAt", j."completedAt",
+        j."createdAt", j."updatedAt",
+        jsonb_build_object(
+          'planningEpochIso', j."requestSnapshot"->'planningEpochIso',
+          'scheduleMode', j."requestSnapshot"->'scheduleMode',
+          'searchBudgetSeconds', j."requestSnapshot"->'searchBudgetSeconds'
+        ) AS "requestSnapshot",
+        COALESCE((SELECT jsonb_agg(jsonb_build_object(
+          'candidateNumber', r."candidateNumber", 'feasibilityStatus', r."feasibilityStatus",
+          'objectiveBreakdown', r."objectiveBreakdown") ORDER BY r."candidateNumber")
+          FROM optimization_results r WHERE r."optimizationJobId" = j.id), '[]'::jsonb) AS summaries
+      FROM optimization_jobs j ${filter}`;
+    if (!job) return null;
+    if (!hasPermission(user, 'trips.plan', job.branchId)) throw new ForbiddenException('Không có quyền truy cập job ngoài chi nhánh');
+    return this.toPublicJob(job, job.summaries.map(result => this.toCandidateSummary(result)));
   }
 
   async getCandidate(user: JobUser, id: string, candidateNumber: number) {

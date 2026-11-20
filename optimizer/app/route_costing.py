@@ -106,6 +106,7 @@ def calculate_route_economic_metrics(
 ) -> Tuple[int, int, int, float, float]:
     """Calculate the same traceable leg costs for every candidate method."""
     node_index_by_id = {node["id"]: index for index, node in enumerate(nodes)}
+    pickup_index_by_order = {order.id: len(request.vehicles) + 2 * i for i, order in enumerate(request.orders)}
     vehicle_index = next(
         (
             index
@@ -126,7 +127,11 @@ def calculate_route_economic_metrics(
     cargo_distance_kg_m = 0.0
 
     for stop in stops:
-        node_index = node_index_by_id[stop.location_id]
+        pickup = pickup_index_by_order.get(stop.allocation_id or stop.order_id)
+        if pickup is None:
+            node_index = node_index_by_id[stop.location_id]
+        else:
+            node_index = pickup if stop.stop_type == "PICKUP" else pickup + 1
         distance_meters = request.distance_matrix_meters[previous_node][node_index]
         base_leg_liters = (
             distance_meters

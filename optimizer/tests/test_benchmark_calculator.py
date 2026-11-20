@@ -98,7 +98,7 @@ def test_baseline_preserves_distinct_service_durations_and_timing_breakdown():
     request = _request(vehicles=[vehicle], orders=[order], distances=matrix, durations=matrix)
     calculator = BaselineCostCalculator(request, FleetRoutingSolver(request).nodes)
 
-    route = calculator._evaluate_actions(vehicle, 0, calculator._actions_for_order(order))
+    route = calculator._evaluate_actions(vehicle, 0, calculator._actions_for_order(order), order_index=0)
 
     assert not route.violations
     pickup, delivery = route.stops

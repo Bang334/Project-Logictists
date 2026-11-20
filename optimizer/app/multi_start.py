@@ -12,6 +12,7 @@ import time
 from typing import Dict, List, Optional, Set, Tuple
 
 from .models import (
+    BenchmarkMetric,
     FleetOptimizationBatchResponse,
     FleetOptimizationCandidate,
     FleetOptimizationRequest,
@@ -22,6 +23,7 @@ from .models import (
 from .routing_solver import FleetRoutingSolver
 from .request_preprocessor import (
     prune_unserviceable_virtual_resources,
+    request_with_vehicle_slots,
     split_orders_within_deadline,
 )
 from .search_policy import AdaptiveSearchPolicy, derive_search_policy
@@ -275,12 +277,18 @@ def is_fully_served(
     return True
 
 
+def _span_over_target(plan: FleetOptimizationResponse, target_days: int) -> int:
+    last_day = max((route.service_day_index + 1 for route in plan.routes), default=0)
+    return max(0, last_day - target_days) if target_days else 0
+
+
 def select_ranked_candidates(
     evaluated_runs: List[Tuple[SearchStrategy, FleetOptimizationResponse, int]],
     all_order_ids: Set[str],
     max_candidates: int = 3,
     max_routes_per_day: Optional[int] = None,
     expected_items: Optional[Dict[str, Set[str]]] = None,
+    target_span_days: int = 0,
 ) -> Tuple[List[FleetOptimizationCandidate], int, List[str]]:
     """Pure selection and ranking function to allow isolated unit testing.
 
@@ -296,10 +304,9 @@ def select_ranked_candidates(
     fully_served_count = len(fully_served_runs)
 
     if fully_served_runs:
-        # Rank by the confirmed lexicographic hierarchy:
-        # 1) extra_order_trips, 2) active_route_count, 3) selection_score_vnd,
-        # 4) total_cost_vnd, 5) physical_vehicle_count.
-        fully_served_runs.sort(key=_candidate_lexicographic_key)
+        fully_served_runs.sort(key=lambda item: (
+            _span_over_target(item[1], target_span_days), *_candidate_lexicographic_key(item),
+        ))
 
         distinct_candidates: List[Tuple[SearchStrategy, FleetOptimizationResponse, int]] = []
         seen_signatures: Set[Tuple] = set()
@@ -395,6 +402,42 @@ class MultiStartFleetOptimizer:
             else list(SEARCH_STRATEGIES[: self.policy.strategy_count])
         )
 
+    def _direct_benchmark(self) -> Tuple[BaselineCostCalculator, BenchmarkMetric]:
+        nodes = FleetRoutingSolver(self.objective_request, should_split_orders=False).nodes
+        budget = min(60.0, max(DIRECT_BENCHMARK_BUDGET_SECONDS, len(self.objective_request.orders) * 0.4))
+        calculator = BaselineCostCalculator(self.objective_request, nodes, deadline=time.perf_counter() + budget)
+        return calculator, calculator.compute_direct_dedicated()
+
+    def _search_direct_span(
+        self, slots: List[int], direct: BenchmarkMetric, deadline: float,
+    ) -> Optional[FleetOptimizationResponse]:
+        limited = request_with_vehicle_slots(self.request, slots)
+        if limited is None:
+            return None
+        # Each Direct trip carries one order. Its chronological pickup/delivery
+        # sequence seeds a single Hybrid route for the same physical truck/day.
+        trips_by_shift = {}
+        for trip in direct.routes:
+            trips_by_shift.setdefault((trip.vehicle_id, trip.service_day_index), []).append(trip)
+        seed_routes = []
+        for vehicle in limited.vehicles:
+            trips = trips_by_shift.get((vehicle.source_vehicle_id or vehicle.id, vehicle.service_day_index))
+            if trips:
+                stops = [stop for trip in sorted(trips, key=lambda r: r.start_time_sec) for stop in trip.stops]
+                seed_routes.append(trips[0].model_copy(update={
+                    "route_id": vehicle.id,
+                    "stops": [stop.model_copy(update={"sequence": i}) for i, stop in enumerate(stops, 1)],
+                }))
+        remaining = deadline - time.perf_counter()
+        if remaining < 0.5:
+            return None
+        initial = FleetOptimizationResponse(job_id=limited.job_id, status="PARTIAL", routes=seed_routes)
+        engine = PackingAwareHybridALNSOptimizer(
+            limited, time_budget_seconds=remaining, initial_plan=initial,
+            should_split_orders=False, include_benchmarks=False,
+        )
+        return engine.solve(hard_deadline=deadline)
+
     def _preprocessing_timeout_notes(self) -> List[str]:
         if not self.unchecked_split_order_count:
             return []
@@ -479,6 +522,32 @@ class MultiStartFleetOptimizer:
         evaluated_runs: List[Tuple[SearchStrategy, FleetOptimizationResponse, int]] = []
         search_errors: List[str] = []
         is_mocked = PackingAwareHybridALNSOptimizer is not _REAL_HYBRID_OPTIMIZER
+        calculator = None
+        direct_metric = None
+        target_days = 0
+        if len({v.service_day_index for v in self.request.vehicles}) > 1:
+            started = time.perf_counter()
+            calculator, direct_metric = self._direct_benchmark()
+            job_deadline += time.perf_counter() - started  # Direct has its own budget.
+            if direct_metric.is_feasible and direct_metric.planning_span_days:
+                target_days = direct_metric.planning_span_days
+                slots = [i for i, v in enumerate(self.request.vehicles) if v.service_day_index < target_days]
+                remaining = job_deadline - time.perf_counter()
+                if len(slots) < len(self.request.vehicles) and remaining * 0.30 >= 0.5:
+                    try:
+                        challenger = self._search_direct_span(
+                            slots, direct_metric, time.perf_counter() + remaining * 0.30,
+                        )
+                        if challenger is not None and challenger.routes:
+                            objective = apply_planning_objective(self.objective_request, challenger)
+                            strategy = SearchStrategy(
+                                "hybrid-direct-span", f"Hybrid ALNS trong {target_days} ngày",
+                                DEFAULT_SEARCH_STRATEGY.first_solution_strategy,
+                                DEFAULT_SEARCH_STRATEGY.local_search_metaheuristic,
+                            )
+                            evaluated_runs.append((strategy, challenger, objective.selection_score_vnd))
+                    except Exception as error:
+                        search_errors.append(f"Hybrid ALNS trong {target_days} ngày: {error}")
         total_items = sum(len(o.items) for o in self.request.orders)
         cpu_count = os.cpu_count() or 1
         use_single_seed_for_scale = (
@@ -673,7 +742,7 @@ class MultiStartFleetOptimizer:
                         f"Packing-aware Hybrid ALNS (seed {seed}): {exc}"
                     )
 
-        hybrid_success_count = len(evaluated_runs)
+        hybrid_success_count = sum(strategy.key != "hybrid-direct-span" for strategy, _, _ in evaluated_runs)
         ortools_fallback_used = False
         if not evaluated_runs:
             remaining_fallback = job_deadline - time.perf_counter()
@@ -762,17 +831,13 @@ class MultiStartFleetOptimizer:
             all_order_ids,
             max_candidates=max_candidates,
             max_routes_per_day=self.request.policy.max_routes_per_day,
+            target_span_days=target_days,
             expected_items={o.id: {i.id for i in o.items} for o in self.request.orders},
         )
 
-        if any(candidate.result.routes for candidate in candidates):
-            nodes = FleetRoutingSolver(self.objective_request, should_split_orders=False).nodes
-            calculator = BaselineCostCalculator(
-                self.objective_request,
-                nodes,
-                deadline=time.perf_counter() + min(60.0, max(DIRECT_BENCHMARK_BUDGET_SECONDS, len(self.objective_request.orders) * 0.4)),
-            )
-            direct_metric = calculator.compute_direct_dedicated()
+        if calculator is None and any(candidate.result.routes for candidate in candidates):
+            calculator, direct_metric = self._direct_benchmark()
+        if calculator is not None and direct_metric is not None:
             for candidate in candidates:
                 plan = candidate.result
                 plan.benchmarks = calculator.build_comparison(
@@ -794,6 +859,11 @@ class MultiStartFleetOptimizer:
                 f"{seed_budget_detail}."
             ),
         ]
+        if target_days and candidates and _span_over_target(candidates[0].result, target_days):
+            batch_diagnostics.append(
+                f"Direct giao đủ trong {target_days} ngày. Trong ngân sách lần chạy này, "
+                "Hybrid chưa tìm được lịch ghép giao đủ trong cùng số ngày."
+            )
         if adaptive_search:
             batch_diagnostics.append(
                 f"Ngưỡng {self.request.early_stop_patience} phương án hợp lệ không cải thiện "

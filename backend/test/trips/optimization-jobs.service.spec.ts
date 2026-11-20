@@ -48,6 +48,7 @@ describe('OptimizationJobsService', () => {
       findUnique: jest.fn(),
       findMany: jest.fn(),
     },
+    $queryRaw: jest.fn(),
     $transaction: jest.fn(),
   };
   const trips = { applyAutomaticOptimization: jest.fn() };
@@ -168,7 +169,7 @@ describe('OptimizationJobsService', () => {
   });
 
   it('rejects reading a job belonging to another branch', async () => {
-    prisma.optimizationJob.findUnique.mockResolvedValue(job({ branchId: 'branch-2' }));
+    prisma.$queryRaw.mockResolvedValue([job({ branchId: 'branch-2' })]);
 
     await expect(
       service.get(
@@ -332,28 +333,17 @@ describe('OptimizationJobsService', () => {
       role: Role.DISPATCHER,
       grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH' as const, branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }],
     };
-    prisma.optimizationJob.findFirst.mockResolvedValue({ id: 'job-latest' });
-    prisma.optimizationJob.findUnique.mockResolvedValue(
-      job({ id: 'job-latest', status: 'SUCCEEDED', result: { proposal: { result: { total_cost_vnd: 123 } }, signature: 'sig' } }),
-    );
-    prisma.optimizationResult.findMany.mockResolvedValue([
-      {
-        candidateNumber: 1,
-        feasibilityStatus: 'FEASIBLE',
-        objectiveBreakdown: { totalCostVnd: 123, routeCount: 1, unassignedOrderCount: 0 },
-      },
-    ]);
-
+    prisma.$queryRaw.mockResolvedValue([job({
+      id: 'job-latest', status: 'SUCCEEDED', result: { proposal: { result: { total_cost_vnd: 123 } } },
+      summaries: [{ candidateNumber: 1, feasibilityStatus: 'FEASIBLE',
+        objectiveBreakdown: { totalCostVnd: 123, routeCount: 1, unassignedOrderCount: 0 } }],
+    })]);
     const restored = await service.getLatestRestorable(user, undefined);
-
-    expect(prisma.optimizationJob.findFirst).toHaveBeenCalledWith({
-      where: {
-        branchId: 'branch-1',
-        status: { in: ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED', 'SUCCEEDED', 'PARTIAL', 'APPLIED'] },
-      },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      select: { id: true },
-    });
+    const filter = prisma.$queryRaw.mock.calls[0][1];
+    expect(filter.values).toEqual(['branch-1']);
+    expect(filter.sql).toContain('WHERE j."branchId" = ?');
+    expect(filter.sql).toContain("j.status IN ('PENDING','RUNNING','RETRYING','CANCEL_REQUESTED','SUCCEEDED','PARTIAL','APPLIED')");
+    expect(filter.sql).toContain('ORDER BY j."createdAt" DESC, j.id DESC LIMIT 1');
     expect(restored).toMatchObject({
       id: 'job-latest',
       status: 'SUCCEEDED',
@@ -361,7 +351,7 @@ describe('OptimizationJobsService', () => {
       candidates: [expect.objectContaining({ candidateNumber: 1, totalCostVnd: 123 })],
     });
 
-    prisma.optimizationJob.findFirst.mockResolvedValue(null);
+    prisma.$queryRaw.mockResolvedValue([]);
     await expect(service.getLatestRestorable(user, undefined)).resolves.toBeNull();
   });
 

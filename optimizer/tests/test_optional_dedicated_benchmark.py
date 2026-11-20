@@ -39,3 +39,14 @@ def test_production_default_still_includes_dedicated_report(engine_type):
     result = engine_type(comparison_request(), time_budget_seconds=0.05).solve()
     assert result.benchmarks is not None
     assert not result.unassigned_orders
+
+def test_direct_routing_slice_timeout_is_reported_as_timeout(monkeypatch):
+    from app.baseline_calculator import _DirectRoutingTimeout
+
+    calculator = BaselineCostCalculator(comparison_request(), [])
+    def no_first_schedule(*args):
+        raise _DirectRoutingTimeout
+    monkeypatch.setattr(calculator, "_solve_direct_schedule", no_first_schedule)
+    report = calculator.compute_direct_dedicated()
+    assert not report.is_feasible
+    assert report.violations[0].startswith("TIMEOUT:")
