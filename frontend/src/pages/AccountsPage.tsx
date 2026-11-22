@@ -3,7 +3,9 @@ import { Alert, App, Button, Form, Input, Modal, Popconfirm, Select, Space, Tabl
 import axios from 'axios';
 import { accountsApi, apiErrorMessage } from '../api/client';
 import { useAuth } from '../context/AuthContext';
-import { Account, AccountDetail, AccountList, AccountQuery, AvailableDriver, canManageAccounts, CreateAccount } from '../types/accounts';
+import { Account, AccountDetail, AccountList, AccountQuery, AvailableDriver, canManageAccounts, CreateAccount, branchRoleLabels } from '../types/accounts';
+
+const webRoles = Object.entries(branchRoleLabels).map(([value, label]) => ({ value, label }));
 
 type FormValues = CreateAccount & { confirmPassword: string };
 
@@ -25,26 +27,26 @@ export default function AccountsPage() {
   const mounted = useRef(true);
   const [form] = Form.useForm<FormValues>();
   const [editing, setEditing] = useState<AccountDetail>();
-  const canEditTarget = !!editing && editing.id !== user?.id && ['DRIVER', 'DISPATCHER'].includes(editing.role) && !editing.scopeHistory.some(scope => scope.role.code === 'ADMIN') && canManageAccounts(user, 'users.create');
-  const [editForm] = Form.useForm<{ fullName: string; branchIds: string[] }>();
+  const canEditTarget = !!editing && editing.id !== user?.id && ['DRIVER', 'DISPATCHER', 'STAFF'].includes(editing.role) && !editing.scopeHistory.some(scope => scope.role.code === 'ADMIN') && canManageAccounts(user, 'users.create');
+  const [editForm] = Form.useForm<{ fullName: string; branchIds: string[]; roleCode?: keyof typeof branchRoleLabels }>();
   useEffect(() => {
     const id = new URLSearchParams(window.location.search).get('account');
     let live = true;
     if (id) void accountsApi.detail(id).then(fresh => {
       if (!live) return;
-      setEditing(fresh); editForm.setFieldsValue({ fullName: fresh.fullName, branchIds: fresh.scopeHistory.flatMap(s => s.active && s.branch ? [s.branch.id] : []) });
+      setEditing(fresh); editForm.setFieldsValue({ fullName: fresh.fullName, roleCode: webRoles.find(option => fresh.roleScopes.some(scope => scope.role.code === option.value))?.value as keyof typeof branchRoleLabels | undefined, branchIds: fresh.scopeHistory.flatMap(s => s.active && s.branch ? [s.branch.id] : []) });
     }).catch(e => { if (live) setError(apiErrorMessage(e)); });
     return () => { live = false; };
   }, [editForm]);
   const openEdit = async (account: Account) => {
-    try { const fresh = await accountsApi.detail(account.id); setEditing(fresh); setFormError(undefined); editForm.setFieldsValue({ fullName: fresh.fullName, branchIds: fresh.scopeHistory.flatMap(scope => scope.active && scope.branch ? [scope.branch.id] : []) }); }
+    try { const fresh = await accountsApi.detail(account.id); setEditing(fresh); setFormError(undefined); editForm.setFieldsValue({ fullName: fresh.fullName, roleCode: webRoles.find(option => fresh.roleScopes.some(scope => scope.role.code === option.value))?.value as keyof typeof branchRoleLabels | undefined, branchIds: fresh.scopeHistory.flatMap(scope => scope.active && scope.branch ? [scope.branch.id] : []) }); }
     catch (e) { setError(apiErrorMessage(e)); }
   };
-  const edit = async (values: { fullName: string; branchIds: string[] }) => {
+  const edit = async (values: { fullName: string; branchIds: string[]; roleCode?: keyof typeof branchRoleLabels }) => {
     if (!editing || !canEditTarget || savingRef.current) return;
     savingRef.current = true; setSaving(true); setFormError(undefined);
     try {
-      await accountsApi.update(editing.id, { fullName: values.fullName, expectedUpdatedAt: editing.updatedAt, ...(editing.role === 'DISPATCHER' ? { branchIds: values.branchIds } : {}) });
+      await accountsApi.update(editing.id, { fullName: values.fullName, expectedUpdatedAt: editing.updatedAt, ...(editing.role !== 'DRIVER' ? { branchIds: values.branchIds, roleCode: values.roleCode } : {}) });
       setEditing(undefined); setRevision(v => v + 1);
     } catch (e) { setFormError(apiErrorMessage(e)); }
     finally { savingRef.current = false; setSaving(false); }
@@ -138,21 +140,21 @@ export default function AccountsPage() {
           <Button danger disabled={!!locking} loading={locking === a.id}>Khóa</Button>
         </Popconfirm> },
       ]} />
-    <Modal title="Tạo tài khoản DRIVER / DISPATCHER" open={open} destroyOnClose maskClosable={!saving} closable={!saving} onCancel={() => { if (!saving) { setOpen(false); form.resetFields(); } }} footer={null}>
+    <Modal title="Tạo tài khoản" open={open} destroyOnClose maskClosable={!saving} closable={!saving} onCancel={() => { if (!saving) { setOpen(false); form.resetFields(); } }} footer={null}>
       {formError && <Alert type="error" showIcon message={formError} style={{ marginBottom: 16 }} />}
       <Form form={form} layout="vertical" onFinish={create} onValuesChange={() => { createKey.current = crypto.randomUUID(); }} disabled={saving} requiredMark>
         <Form.Item name="username" label="Username" rules={[{ required: true, whitespace: true, message: 'Nhập username' }, { max: 100, message: 'Username tối đa 100 ký tự' }]}><Input autoComplete="off" /></Form.Item>
         <Form.Item name="fullName" label="Họ tên" rules={[{ required: true, whitespace: true, message: 'Nhập họ tên' }, { max: 200, message: 'Họ tên tối đa 200 ký tự' }]}><Input autoComplete="off" /></Form.Item>
         <Form.Item name="password" label="Mật khẩu" rules={[{ required: true, message: 'Nhập mật khẩu' }, { validator: (_, value: unknown) => typeof value === 'string' && new TextEncoder().encode(value).length >= 12 && new TextEncoder().encode(value).length <= 72 ? Promise.resolve() : Promise.reject(new Error('Mật khẩu phải có từ 12 đến 72 byte UTF-8')) }]}><Input.Password autoComplete="new-password" /></Form.Item>
         <Form.Item name="confirmPassword" label="Xác nhận mật khẩu" dependencies={['password']} rules={[{ required: true, message: 'Xác nhận mật khẩu' }, { validator: (_, value: unknown) => value === form.getFieldValue('password') ? Promise.resolve() : Promise.reject(new Error('Mật khẩu xác nhận không khớp')) }]}><Input.Password autoComplete="new-password" /></Form.Item>
-        <Form.Item name="roleCode" label="Vai trò" rules={[{ required: true, message: 'Chọn vai trò' }]}><Select onChange={() => { form.setFieldsValue({ driverId: undefined, branchIds: [] }); }} options={[{ value: 'DISPATCHER', label: 'DISPATCHER' }, { value: 'DRIVER', label: 'DRIVER' }]} placeholder="Chọn vai trò" /></Form.Item>
+        <Form.Item name="roleCode" label="Vai trò" rules={[{ required: true, message: 'Chọn vai trò' }]}><Select onChange={() => { form.setFieldsValue({ driverId: undefined, branchIds: [] }); }} options={[...webRoles, { value: 'DRIVER', label: 'Tài xế (mobile)' }]} placeholder="Chọn vai trò" /></Form.Item>
         {roleCode === 'DRIVER' && <>
           {driversError && <Alert type="error" message={driversError} />}
           <Form.Item name="driverId" label="Hồ sơ tài xế có sẵn" rules={[{ required: true, message: 'Chọn tài xế chưa có tài khoản' }]}>
             <Select showSearch filterOption={false} loading={driversLoading} onSearch={setDriverSearch} placeholder="Tìm theo tên; tối đa 100 kết quả" options={drivers.map(driver => ({ value: driver.id, label: driver.fullName }))} onChange={id => { const driver = drivers.find(d => d.id === id); if (driver) form.setFieldsValue({ fullName: driver.fullName, branchIds: [driver.homeBranchId] }); }} />
           </Form.Item>
         </>}
-        <Form.Item name="branchIds" label="Chi nhánh được cấp" rules={[{ required: true, type: 'array', min: 1, message: 'Chọn ít nhất một chi nhánh' }]}><Select disabled={roleCode === 'DRIVER'} mode="multiple" options={branchOptions} optionFilterProp="label" placeholder="Chọn một hoặc nhiều chi nhánh" /></Form.Item>
+        <Form.Item name="branchIds" label="Chi nhánh được cấp" rules={[{ required: true, type: 'array', min: 1, message: 'Chọn ít nhất một chi nhánh' }]}><Select disabled={roleCode === 'DRIVER'} maxCount={1} mode="multiple" options={branchOptions} optionFilterProp="label" placeholder="Chọn một chi nhánh" /></Form.Item>
         <Button type="primary" htmlType="submit" loading={saving}>Lưu tài khoản</Button>
       </Form>
     </Modal>
@@ -163,7 +165,8 @@ export default function AccountsPage() {
       {formError && <Alert type="error" message={formError} />}
       <Form form={editForm} layout="vertical" onFinish={edit} disabled={saving || !canEditTarget}>
         <Form.Item name="fullName" label="Tên hiển thị" rules={[{ required: true, whitespace: true }, { max: 200 }]}><Input /></Form.Item>
-        {editing?.role === 'DISPATCHER' && <Form.Item name="branchIds" label="Phạm vi chi nhánh" rules={[{ required: true, type: 'array', min: 1 }]}><Select mode="multiple" options={[...branchOptions, ...editing.scopeHistory.flatMap(scope => scope.active && scope.branch && !scope.branch.active ? [{ value: scope.branch.id, label: `${scope.branch.name} (đã ngừng)`, disabled: true }] : [])]} /></Form.Item>}
+        {editing && editing.role !== 'DRIVER' && <Form.Item name="roleCode" label="Vai trò quản lý" rules={[{ required: true }]}><Select options={webRoles} /></Form.Item>}
+        {editing && editing.role !== 'DRIVER' && <Form.Item name="branchIds" label="Phạm vi chi nhánh" rules={[{ required: true, type: 'array', min: 1 }]}><Select maxCount={1} mode="multiple" options={[...branchOptions, ...editing.scopeHistory.flatMap(scope => scope.active && scope.branch && !scope.branch.active ? [{ value: scope.branch.id, label: `${scope.branch.name} (đã ngừng)`, disabled: true }] : [])]} /></Form.Item>}
         {canEditTarget && <Button type="primary" htmlType="submit" loading={saving}>Xác nhận lưu thay đổi</Button>}
       </Form>
     </Modal>

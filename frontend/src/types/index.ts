@@ -118,6 +118,7 @@ export interface Driver {
 }
 
 export interface OrderPackage {
+  cargoKind?: import('./orders').CargoKind | 'UNCLASSIFIED';
   id: string; orderId: string; orderItemId: string; packageCode: string;
   lengthMm: number; widthMm: number; heightMm: number; weightG: string;
   pickupStopId: string | null; deliveryStopId: string | null; status: string; version: number;
@@ -212,6 +213,7 @@ export interface TripStop {
 }
 
 export interface Trip {
+  approvedPlanVersion?: number | null;
   id: string;
   tripNumber: string;
   version: number;

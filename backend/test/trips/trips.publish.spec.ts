@@ -8,6 +8,7 @@ describe('TripsService.publish', () => {
     tripNumber: 'TRIP-1',
     status: TripStatus.PLANNED,
     version: 4,
+    approvedPlanVersion: 4,
     managingBranchId: 'branch-1',
     vehicleId: 'vehicle-1',
     plannedStartTime: new Date('2026-10-04T01:00:00.000Z'),
@@ -49,8 +50,11 @@ describe('TripsService.publish', () => {
     order: { findMany: jest.fn() },
     vehicle: { findUnique: jest.fn() },
     driver: { findUnique: jest.fn() },
+    driverShift: { findMany: jest.fn() },
+    vehicleUnavailability: { findFirst: jest.fn() },
+    employeeLeave: { findFirst: jest.fn() },
     loadPlan: { findFirst: jest.fn() },
-    resourceReservation: { findMany: jest.fn(), updateMany: jest.fn() },
+    resourceReservation: { findMany: jest.fn(), findFirst: jest.fn(), updateMany: jest.fn() },
   };
   const prisma = {
     $transaction: jest.fn((callback: (client: typeof tx) => unknown) => callback(tx)),
@@ -60,6 +64,10 @@ describe('TripsService.publish', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    tx.driverShift.findMany.mockResolvedValue([{ startsAt: trip.plannedStartTime, endsAt: trip.plannedEndTime }]);
+    tx.vehicleUnavailability.findFirst.mockResolvedValue(null);
+    tx.employeeLeave.findFirst.mockResolvedValue(null);
+    tx.resourceReservation.findFirst.mockResolvedValue(null);
     service = new TripsService(prisma as never, {} as never, outbox as never, {} as never);
     tx.trip.findUnique.mockResolvedValue(trip);
     tx.loadPlan.findFirst.mockResolvedValue({
@@ -79,6 +87,8 @@ describe('TripsService.publish', () => {
     });
     tx.driver.findUnique.mockResolvedValue({
       id: 'driver-1',
+      employeeId: 'employee-1', homeBranchId: 'branch-1',
+      employee: { employmentStatus: 'ACTIVE', branchId: 'branch-1' },
       status: DriverStatus.AVAILABLE,
       licenseExpiry: new Date('2027-01-01T00:00:00.000Z'),
       updatedAt: new Date('2026-10-03T00:00:00.000Z'),
@@ -90,11 +100,20 @@ describe('TripsService.publish', () => {
     tx.resourceReservation.updateMany.mockResolvedValue({ count: 2 });
   });
 
+  it.each([null, 3])('rejects publishing version 4 with approval for %s', async approvedPlanVersion => {
+    tx.trip.findUnique.mockResolvedValue({ ...trip, approvedPlanVersion });
+    await expect(service.publish('trip-1', { expectedVersion: 4 }, {
+      id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session',
+      grants: [{ role: 'TRANSPORT_DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.publish'] }],
+    })).rejects.toThrow(ConflictException);
+    expect(tx.trip.updateMany).not.toHaveBeenCalled();
+  });
+
   it('publishes only the expected version with a complete valid load plan', async () => {
     const result = await service.publish(
       'trip-1',
       { expectedVersion: 4 },
-      { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
+      { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'TRANSPORT_DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
     );
 
     expect(tx.trip.updateMany).toHaveBeenCalledWith({
@@ -117,7 +136,7 @@ describe('TripsService.publish', () => {
       service.publish(
         'trip-1',
         { expectedVersion: 3 },
-        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'TRANSPORT_DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       ),
     ).rejects.toBeInstanceOf(ConflictException);
 
@@ -135,7 +154,7 @@ describe('TripsService.publish', () => {
       service.publish(
         'trip-1',
         { expectedVersion: 4 },
-        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'TRANSPORT_DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       ),
     ).rejects.toBeInstanceOf(ConflictException);
   });
@@ -147,7 +166,7 @@ describe('TripsService.publish', () => {
       service.publish(
         'trip-1',
         { expectedVersion: 4 },
-        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'TRANSPORT_DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       ),
     ).rejects.toBeInstanceOf(ConflictException);
 
@@ -169,7 +188,7 @@ describe('TripsService.publish', () => {
       service.publish(
         'trip-1',
         { expectedVersion: 4 },
-        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'TRANSPORT_DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       ),
     ).rejects.toBeInstanceOf(ConflictException);
 
@@ -185,7 +204,7 @@ describe('TripsService.publish', () => {
       service.publish(
         'trip-1',
         { expectedVersion: 4 },
-        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
+        { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'TRANSPORT_DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }] },
       ),
     ).rejects.toBeInstanceOf(ConflictException);
 

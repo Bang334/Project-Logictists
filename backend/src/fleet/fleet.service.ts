@@ -170,7 +170,17 @@ export class FleetService {
         if (!common.endsAt) throw new BadRequestException('Lịch tài xế cần thời điểm kết thúc');
         const finite = { ...common, endsAt: common.endsAt };
         if (scheduleKind === 'SHIFT') {
-          const row = scheduleId ? await tx.driverShift.update({ where: { id: scheduleId }, data: { ...finite, status: cancel ? 'CANCELLED' : 'ACTIVE', version: { increment: 1 } } }) : await tx.driverShift.create({ data: { ...finite, driverId: id } }); resultId = row.id;
+          let readiness: { readyAt: Date; readyAddress: string; readyLatitude: number; readyLongitude: number } | undefined;
+          if (!cancel && 'startsAt' in dto) {
+            const fields = [dto.readyAt, dto.readyAddress, dto.readyLatitude, dto.readyLongitude];
+            if (fields.some(v => v !== undefined && v !== null)) {
+              if (!dto.readyAt || !dto.readyAddress?.trim() || typeof dto.readyLatitude !== 'number' || typeof dto.readyLongitude !== 'number') throw new BadRequestException('Điểm sẵn sàng cần đủ địa chỉ, tọa độ và thời gian');
+              const readyAt = new Date(dto.readyAt);
+              if (readyAt < finite.startsAt || readyAt >= finite.endsAt) throw new BadRequestException('Thời gian sẵn sàng phải nằm trong ca');
+              readiness = { readyAt, readyAddress: dto.readyAddress, readyLatitude: dto.readyLatitude, readyLongitude: dto.readyLongitude };
+            }
+          }
+          const row = scheduleId ? await tx.driverShift.update({ where: { id: scheduleId }, data: { ...finite, ...readiness, status: cancel ? 'CANCELLED' : 'ACTIVE', version: { increment: 1 } } }) : await tx.driverShift.create({ data: { ...finite, ...readiness, driverId: id } }); resultId = row.id;
         } else {
           const row = scheduleId ? await tx.employeeLeave.update({ where: { id: scheduleId }, data: { ...finite, approvalStatus: cancel ? 'CANCELLED' : 'APPROVED', version: { increment: 1 } } }) : await tx.employeeLeave.create({ data: { ...finite, employeeId: driver?.employeeId ?? '', leaveType: scheduleKind, approvalStatus: 'APPROVED' } }); resultId = row.id;
         }

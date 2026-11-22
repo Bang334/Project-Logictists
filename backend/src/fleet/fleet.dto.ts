@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { IsIn, IsInt, IsISO8601, IsNotEmpty, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min } from 'class-validator';
+import { IsIn, IsInt, IsISO8601, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min } from 'class-validator';
 
 export const trim = ({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value;
 export class FleetQueryDto {
@@ -33,6 +33,10 @@ export class LinkEmployeeDto {
   @IsISO8601({ strict: true }) expectedUpdatedAt!: string;
 }
 export class ScheduleDto {
+  @IsOptional() @IsISO8601({ strict: true }) @Matches(/T.*(Z|[+-]\d{2}:\d{2})$/) readyAt?: string;
+  @IsOptional() @Transform(trim) @IsString() @IsNotEmpty() @MaxLength(500) readyAddress?: string;
+  @IsOptional() @IsNumber() @Min(-90) @Max(90) readyLatitude?: number;
+  @IsOptional() @IsNumber() @Min(-180) @Max(180) readyLongitude?: number;
   @IsISO8601({ strict: true }) @Matches(/T.*(Z|[+-]\d{2}:\d{2})$/) startsAt!: string;
   @IsISO8601({ strict: true }) @Matches(/T.*(Z|[+-]\d{2}:\d{2})$/) endsAt!: string;
   @IsIn(['SHIFT', 'LEAVE', 'OTHER', 'MAINTENANCE', 'BREAKDOWN']) kind!: string;

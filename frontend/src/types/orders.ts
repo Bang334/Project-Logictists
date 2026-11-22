@@ -1,5 +1,6 @@
 import type { Order } from './index';
-export interface PackageInput { id?: string; lengthMm: number; widthMm: number; heightMm: number; weightG: string }
+export type CargoKind = 'STANDARD' | 'FRAGILE' | 'FROZEN';
+export interface PackageInput { cargoKind?: CargoKind; id?: string; lengthMm: number; widthMm: number; heightMm: number; weightG: string }
 export interface OrderLineInput { id?: string; description: string; packageType: string; sku?: string; packages: PackageInput[] }
 export interface StopInput {
   id?: string; type: 'PICKUP' | 'DELIVERY'; address: string; latitude: number; longitude: number;

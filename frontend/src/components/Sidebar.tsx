@@ -25,7 +25,7 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
-  const { can, user } = useAuth();
+  const { can, user, branchId } = useAuth();
   const menuItems = [
     { key: 'audit-logs', icon: <DatabaseOutlined />, label: 'Nhật ký thao tác' },
     { key: 'trips', icon: <CarOutlined />, label: 'Tra cứu chuyến' },
@@ -43,7 +43,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
     {
       key: 'dispatch-manual',
       icon: <CompassOutlined style={{ fontSize: '16px' }} />,
-      label: 'Điều Phối Thủ Công',
+      label: can('trips.publish') && !can('trips.plan') ? 'Phát hành chuyến' : 'Lập và duyệt kế hoạch',
     },
     {
       key: 'dispatch-auto',
@@ -86,7 +86,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
           mode="inline"
           selectedKeys={[currentTab]}
           onClick={({ key }) => onSelectTab(key)}
-          items={menuItems.filter((item) => canOpenTab(user, item.key, can))}
+          items={menuItems.filter((item) => canOpenTab(user, item.key, can, branchId))}
         />
         <div className="tms-sidebar-footer">
           <span

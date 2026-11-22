@@ -4,12 +4,16 @@ import { Prisma, Role } from '@prisma/client';
 export const PERMISSIONS = [
   'branches.read', 'branches.manage', 'vehicles.read', 'vehicles.manage',
   'drivers.read', 'drivers.manage', 'customers.read', 'customers.write', 'customers.manage', 'orders.read',
-  'orders.write', 'trips.read', 'trips.plan', 'trips.publish',
+  'orders.write', 'trips.read', 'trips.plan', 'trips.approve', 'trips.publish',
   'users.read', 'users.create', 'users.lock',
 ] as const;
 export const DRIVER_PERMISSIONS = ['driver.profile.read', 'driver.assignments.read', 'driver.assignments.respond', 'driver.trips.execute'] as const;
+export const BRANCH_WEB_ROLES = ['BRANCH_DISPATCH_LEAD', 'RESOURCE_MANAGER', 'TRANSPORT_DISPATCHER', 'ORDER_SCHEDULER'] as const;
+export function isBranchWebRole(role: string): boolean {
+  return BRANCH_WEB_ROLES.some(code => code === role);
+}
 export type PermissionCode = typeof PERMISSIONS[number] | typeof DRIVER_PERMISSIONS[number];
-export const DISPATCHER_PERMISSIONS = PERMISSIONS.filter(p => !p.endsWith('.manage') && !p.startsWith('users.'));
+export const DISPATCHER_PERMISSIONS = PERMISSIONS.filter(p => !p.endsWith('.manage') && !p.startsWith('users.') && p !== 'trips.approve');
 export const RequirePermission = (permission: PermissionCode | 'authenticated') => SetMetadata('permission', permission);
 export const Public = () => SetMetadata('public', true);
 export interface AccessGrant {
@@ -36,14 +40,17 @@ export interface AuthRequest {
   headers: Record<string, string | string[] | undefined>;
 }
 export function hasPermission(user: Principal, permission: PermissionCode, branchId?: string | null): boolean {
+  if ((permission === 'trips.approve' || permission === 'trips.publish') && branchId && user.selectedBranchId && branchId !== user.selectedBranchId) return false;
   if (permission.startsWith('driver.')) return user.grants.some(g => g.role === 'DRIVER' && g.scopeType === 'BRANCH' && !!g.branchId && (!branchId || g.branchId === branchId) && g.permissions.includes(permission));
   // Account administration is a closed capability, even if a dispatcher is accidentally granted it.
   // Grants are loaded from PostgreSQL on every request; usernames confer no authority.
   if (permission.startsWith('users.')) return user.grants.some(g =>
     g.role === 'ADMIN' && g.scopeType === 'COMPANY' && g.branchId === null && g.permissions.includes(permission));
   return user.grants.some(g => g.permissions.includes(permission) && (
-    (g.role === 'ADMIN' && g.scopeType === 'COMPANY' && g.branchId === null) ||
-    (g.role === 'DISPATCHER' && !permission.endsWith('.manage') && g.scopeType === 'BRANCH' && !!g.branchId && (!branchId || g.branchId === branchId))
+    (g.role === 'ADMIN' && permission !== 'trips.approve' && permission !== 'trips.publish' && g.scopeType === 'COMPANY' && g.branchId === null) ||
+    (isBranchWebRole(g.role) && g.scopeType === 'BRANCH' && !!g.branchId && (!branchId || g.branchId === branchId) &&
+      (permission !== 'trips.approve' || g.role === 'BRANCH_DISPATCH_LEAD') &&
+      (permission !== 'trips.publish' || g.role === 'TRANSPORT_DISPATCHER'))
   ));
 }
 export function assertPermission(user: Principal, permission: PermissionCode, branchId?: string | null) {
@@ -59,7 +66,7 @@ export function branchFilter(user: Principal, permission: PermissionCode, reques
     return { equals: selected };
   }
   if (user.grants.some(g => g.role === 'ADMIN' && g.scopeType === 'COMPANY' && g.permissions.includes(permission))) return {};
-  return { in: [...new Set(user.grants.filter(g => g.role === 'DISPATCHER' && g.scopeType === 'BRANCH' && g.permissions.includes(permission)).flatMap(g => g.branchId ? [g.branchId] : []))] };
+  return { in: [...new Set(user.grants.filter(g => isBranchWebRole(g.role) && g.branchId && hasPermission({ ...user, grants: [g] }, permission, g.branchId)).flatMap(g => g.branchId ? [g.branchId] : []))] };
 }
 export function requireBranch(user: Principal, permission: PermissionCode, requested?: string): string {
   const filter = branchFilter(user, permission, requested);

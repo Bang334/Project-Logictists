@@ -34,7 +34,13 @@ export function parseAccountDetail(value: unknown): AccountDetail {
   return { ...account, scopeHistory };
 }
 export interface AccountQuery { page: number; pageSize: number; search?: string; status?: 'active' | 'locked'; branchId?: string }
-export interface CreateAccount { username: string; fullName: string; password: string; roleCode: 'DISPATCHER' | 'DRIVER'; branchIds: string[]; driverId?: string }
+export const branchRoleLabels = {
+  BRANCH_DISPATCH_LEAD: 'Trưởng điều phối chi nhánh',
+  RESOURCE_MANAGER: 'Nhân viên quản lý tài nguyên',
+  TRANSPORT_DISPATCHER: 'Điều phối viên vận tải',
+  ORDER_SCHEDULER: 'Nhân viên xử lý đơn và lịch hẹn',
+};
+export interface CreateAccount { username: string; fullName: string; password: string; roleCode: keyof typeof branchRoleLabels | 'DRIVER'; branchIds: string[]; driverId?: string }
 export interface AvailableDriver { id: string; fullName: string; homeBranchId: string }
 export function parseAvailableDrivers(value: unknown): AvailableDriver[] {
   if (!record(value) || !Array.isArray(value.items)) throw new Error('Phản hồi tài xế không hợp lệ');

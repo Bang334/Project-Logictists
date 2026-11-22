@@ -1,7 +1,6 @@
 import { canOpenTab, defaultTab } from './utils/navigationAccess';
 import React, { useEffect, useState, lazy, Suspense } from 'react';
 import AccountsPage from './pages/AccountsPage';
-import { canManageAccounts } from './types/accounts';
 import { Layout, ConfigProvider, theme, App as AntdApp, Spin, Alert, Button, Result } from 'antd';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import LoginPage from './pages/LoginPage';
@@ -29,18 +28,16 @@ const { Content } = Layout;
 
 
 const MainLayout: React.FC = () => {
-  const { user, token, loading, error, retry, logout, scopeVersion, can } = useAuth();
-  const [currentTab, setTab] = useState(() => window.location.pathname.slice(1) || 'dashboard');
-  const setCurrentTab = (tab: string) => { setTab(tab.split('?')[0]); window.history.pushState(null, '', tab === 'dashboard' ? '/' : '/' + tab); };
+  const { user, token, loading, error, retry, logout, scopeVersion, can, branchId } = useAuth();
+  const [requestedTab, setTab] = useState(() => window.location.pathname.slice(1));
+  const homeTab = user ? defaultTab(user, can, branchId) : '';
+  const currentTab = requestedTab || homeTab;
+  const setCurrentTab = (tab: string) => { setTab(tab.split('?')[0]); window.history.pushState(null, '', '/' + tab); };
   useEffect(() => {
-    const pop = () => setTab(window.location.pathname.slice(1) || 'dashboard');
+    const pop = () => setTab(window.location.pathname.slice(1));
     window.addEventListener('popstate', pop);
     return () => window.removeEventListener('popstate', pop);
   }, []);
-
-  useEffect(() => {
-    if (user && window.location.pathname === '/' && defaultTab(user) !== 'dashboard') setCurrentTab(defaultTab(user));
-  }, [user?.id]);
 
   if (loading) {
     return <Spin fullscreen aria-label="Đang kiểm tra phiên" />;
@@ -52,9 +49,10 @@ const MainLayout: React.FC = () => {
   }
 
   const renderContent = () => {
-    if (currentTab === 'accounts') return canManageAccounts(user) ? <AccountsPage /> : <Result status="403" title="Không có quyền truy cập" subTitle="Bạn không được phép quản lý tài khoản." />;
-    if (!canOpenTab(user, currentTab, can)) return <Result status="403" title="Không có quyền truy cập" />;
+    if (!homeTab && !currentTab) return <Result status="403" title="Tài khoản chưa được cấp trang làm việc" />;
+    if (!canOpenTab(user, currentTab, can, branchId)) return <Result status="403" title="Không có quyền truy cập trong phạm vi đang chọn" extra={homeTab && <Button onClick={() => setCurrentTab('')}>Về trang làm việc</Button>} />;
     switch (currentTab) {
+      case 'accounts': return <AccountsPage />;
       case 'audit-logs': return <AuditLogsPage />;
       case 'branch-detail': return <BranchDetailPage />;
       case 'trips':

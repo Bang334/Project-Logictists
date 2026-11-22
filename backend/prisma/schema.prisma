@@ -131,6 +131,8 @@ enum TransportRequestStatus {
 }
 
 model User {
+  systemSettingsUpdates SystemSetting[]
+  deliveryPlanningBatches DeliveryPlanningBatch[]
   recordedShifts DriverShift[]
   recordedLeaves EmployeeLeave[]
   recordedVehicleUnavailability VehicleUnavailability[]
@@ -186,6 +188,8 @@ model User {
 }
 
 model Branch {
+  systemSettings SystemSetting?
+  deliveryPlanningBatches DeliveryPlanningBatch[]
   customerBranches CustomerBranch[]
   locationScopes UserLocationScope[]
   id                            String          @id @default(uuid())
@@ -227,6 +231,7 @@ model Branch {
 }
 
 model Vehicle {
+  deliveryCapacityHolds DeliveryCapacityHold[]
   id                                    String        @id @default(uuid())
   plateNumber                           String        @unique
   model                                 String
@@ -259,6 +264,7 @@ model Vehicle {
 }
 
 model Driver {
+  deliveryCapacityHolds DeliveryCapacityHold[]
   shifts DriverShift[]
   id            String   @id @default(uuid())
   userId        String?  @unique
@@ -294,6 +300,7 @@ model Driver {
 }
 
 model Customer {
+  deliveryAppointments DeliveryAppointment[]
   retailPhoneKey String? @unique
   version       Int @default(1)
   branches      CustomerBranch[]
@@ -334,6 +341,7 @@ model CustomerBranch {
 }
 
 model Order {
+  deliveryAppointments DeliveryAppointment[]
   id            String          @id @default(uuid())
   orderNumber   String          @unique
   customerId    String
@@ -461,6 +469,9 @@ model Trip {
   routeGeometry        String? // GeoJSON string hoặc encoded polyline
   version              Int                @default(1)
   notes                String?
+  approvedPlanVersion  Int?
+  approvedPlanById     String?
+  approvedPlanAt       DateTime?          @db.Timestamptz(3)
   stops                TripStop[]
   allocations          Allocation[]
   assignments          DriverAssignment[]
@@ -625,6 +636,7 @@ model AuditLog {
 }
 
 model OptimizationJob {
+  deliveryPlanningBatches DeliveryPlanningBatch[]
   id              String    @id @default(uuid())
   status          String    @default("PENDING")
   branchId        String
@@ -743,6 +755,10 @@ model CustomerUser {
 }
 
 model Package {
+  cargoKind CargoKind @default(UNCLASSIFIED)
+  allowUpperTier Boolean @default(false)
+  noTopLoadRequested Boolean @default(false)
+  maxTopLoadG Int?
   pickupResults PickupResult[]
   id                  String           @id @default(uuid())
   orderItemId         String?
@@ -1994,6 +2010,10 @@ model VehicleUnavailability {
 
 model DriverShift {
   id String @id @default(uuid())
+  readyAt DateTime? @db.Timestamptz(3)
+  readyAddress String?
+  readyLatitude Float?
+  readyLongitude Float?
   driverId String
   driver Driver @relation(fields: [driverId], references: [id], onDelete: Restrict)
   startsAt DateTime @db.Timestamptz(3)
@@ -2007,6 +2027,134 @@ model DriverShift {
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
   @@index([driverId, startsAt, endsAt])
   @@map("driver_shifts")
+}
+
+model DeliveryPlanningBatch {
+  id                     String   @id
+  branchId               String
+  sourceJobId            String
+  candidateNumber        Int
+  createdById            String
+  idempotencyKey         String
+  requestHash            String
+  status                 String   @default("OFFERING")
+  version                Int      @default(1)
+  windowMinutes          Int
+  expiresAt              DateTime @db.Timestamptz(3)
+  proposal               Json
+  finalOptimizationJobId String?  @unique
+  createdAt              DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt              DateTime @db.Timestamptz(3)
+
+  branch        Branch                 @relation(fields: [branchId], references: [id])
+  sourceJob     OptimizationJob        @relation(fields: [sourceJobId], references: [id])
+  createdBy     User                   @relation(fields: [createdById], references: [id])
+  appointments  DeliveryAppointment[]
+  capacityHolds DeliveryCapacityHold[]
+
+  @@unique([createdById, idempotencyKey])
+  @@index([branchId, createdAt])
+  @@index([status, expiresAt])
+  @@map("delivery_planning_batches")
+}
+
+model DeliveryAppointment {
+  id             String    @id
+  batchId        String
+  orderId        String
+  customerId     String
+  windowStart    DateTime  @db.Timestamptz(3)
+  windowEnd      DateTime  @db.Timestamptz(3)
+  expiresAt      DateTime  @db.Timestamptz(3)
+  status         String    @default("PENDING")
+  version        Int       @default(1)
+  respondedAt    DateTime? @db.Timestamptz(3)
+  responseKey    String?
+  responseHash   String?
+  requestedStart DateTime? @db.Timestamptz(3)
+  requestedEnd   DateTime? @db.Timestamptz(3)
+  responseNote   String?
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime  @db.Timestamptz(3)
+
+  batch    DeliveryPlanningBatch @relation(fields: [batchId], references: [id])
+  order    Order                 @relation(fields: [orderId], references: [id])
+  customer Customer              @relation(fields: [customerId], references: [id])
+
+  @@unique([batchId, orderId])
+  @@index([customerId, createdAt])
+  @@index([status, expiresAt])
+  @@map("delivery_appointments")
+}
+
+model DeliveryCapacityHold {
+  id         String    @id
+  batchId    String
+  routeIndex Int
+  vehicleId  String
+  driverId   String
+  orderIds   String[]
+  startsAt   DateTime  @db.Timestamptz(3)
+  endsAt     DateTime  @db.Timestamptz(3)
+  expiresAt  DateTime? @db.Timestamptz(3)
+  status     String    @default("HELD")
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime  @db.Timestamptz(3)
+
+  batch   DeliveryPlanningBatch @relation(fields: [batchId], references: [id])
+  vehicle Vehicle               @relation(fields: [vehicleId], references: [id])
+  driver  Driver                @relation(fields: [driverId], references: [id])
+
+  @@unique([batchId, routeIndex])
+  @@index([driverId, startsAt, endsAt])
+  @@index([vehicleId, startsAt, endsAt])
+  @@map("delivery_capacity_holds")
+}
+
+enum CargoKind {
+  UNCLASSIFIED
+  STANDARD
+  FRAGILE
+  FROZEN
+}
+
+enum StackingOwnerMode {
+  SAME_CUSTOMER
+  ANY_CUSTOMER
+}
+
+model SystemSetting {
+  id                            String                   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  scopeType                     ScopeType
+  branchId                      String?                  @unique
+  version                       Int                      @default(1)
+  overrideStacking              Boolean                  @default(false)
+  stackingEnabled               Boolean?
+  stackingOwnerMode             StackingOwnerMode?
+  stackingMaxTiers              Int?
+  stackingLiftClearanceMm       Int?
+  overrideOptimization          Boolean                  @default(false)
+  defaultSearchBudgetSeconds    Int?
+  maxOptimizationTimeSeconds    Int?
+  unassignedOrderPenaltyVnd     BigInt?
+  maxRoutesPerDay               Int?
+  demoAllowOverride             Boolean?
+  overrideCostPenalty           Boolean                  @default(false)
+  fuelPricePerLiter             Decimal?                 @db.Decimal(12, 2)
+  monthlyWorkingMinutes         Int?
+  cargoHoldingCostVndPerTonHour Decimal?                 @db.Decimal(14, 2)
+  workStartTime                 String?
+  workEndTime                   String?
+  deliveryGraceDays             Int?
+  lateDeliveryPenaltyMode       LateDeliveryPenaltyMode?
+  lateDeliveryPenaltyValue      Decimal?                 @db.Decimal(14, 4)
+  updatedById                   String?
+  createdAt                     DateTime                 @default(now()) @db.Timestamptz(3)
+  updatedAt                     DateTime                 @default(now()) @db.Timestamptz(3)
+  branch                        Branch?                  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  updatedBy                     User?                    @relation(fields: [updatedById], references: [id])
+
+  @@map("system_settings")
 }
 
 model CustomerAddress {

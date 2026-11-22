@@ -1,5 +1,7 @@
 import { licenseValidUntilExclusive, minimumLicenseDate } from '../fleet/availability';
 import { calendarSnapshot } from '../fleet/calendar-snapshot';
+import { assertPlanningCalendar } from './planning-calendar';
+import { driverArrivalEvidence, assertDriverArrivalCurrent } from './driver-readiness';
 import { assertDispatchableOrder, newDispatchOrderWhere } from '../orders/order-contract';
 import { Principal, tripFilter, requireBranch, assertPermission } from '../auth/access';
 import { ResourceAccess } from '../auth/resource-access.service';
@@ -375,6 +377,7 @@ export class TripsService {
     }
 
     // 3. Tải danh sách đơn hàng được chọn
+    const driverArrival = await driverArrivalEvidence(this.prisma, this.mapboxService, driver.id, plannedStart, planningStart);
     const orders = await this.prisma.order.findMany({
       where: {
         id: { in: dto.orderIds },
@@ -516,6 +519,8 @@ export class TripsService {
       await tx.$queryRaw(Prisma.sql`SELECT id FROM orders WHERE id IN (${Prisma.join(dto.orderIds)}) ORDER BY id FOR UPDATE`);
       await this.access.tripInputs(user, branchId, dto, tx);
       await this.assertOrdersNotOnActiveTrip(tx, dto.orderIds);
+      await assertPlanningCalendar(tx, dto.vehicleId, dto.driverId, plannedStart, plannedEnd);
+      await assertDriverArrivalCurrent(tx, driverArrival);
       const [
         currentVehicle,
         currentDriver,
@@ -614,6 +619,7 @@ export class TripsService {
             ? JSON.stringify(routeResult.geometry)
             : null,
           planningSnapshot: {
+            driverArrival,
             orders: currentOrders.map((order) => ({
               id: order.id,
               version: order.version + 1,
@@ -849,6 +855,7 @@ export class TripsService {
     });
     const planningStart = resolveVehiclePlanningStart(vehicle);
     const requiredStopIds = orders.flatMap((order) => order.stops.map((stop) => stop.id));
+    const driverArrival = await driverArrivalEvidence(this.prisma, this.mapboxService, driver.id, plannedStart, planningStart);
     if (
       dto.orderedStopIds.length !== requiredStopIds.length ||
       new Set(dto.orderedStopIds).size !== requiredStopIds.length ||
@@ -891,6 +898,8 @@ export class TripsService {
     await this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LOCK_NAMESPACE_TRIP_COMMAND}::int4, hashtext(${`UPDATE_TRIP:${id}`})::int4)`;
       await this.acquireApplicationLocks(tx, [dto.vehicleId], [dto.driverId], orderIds);
+      await assertPlanningCalendar(tx, dto.vehicleId, dto.driverId, plannedStart, plannedEnd, id);
+      await assertDriverArrivalCurrent(tx, driverArrival);
       const [currentTrip, currentVehicle, currentDriver, currentOrders] = await Promise.all([
         tx.trip.findUnique({ where: { id }, select: { version: true, status: true } }),
         tx.vehicle.findFirst({
@@ -1062,6 +1071,7 @@ export class TripsService {
           notes: dto.notes,
           planningSnapshot: {
             orders: currentOrders,
+            driverArrival,
             vehicle: {
               id: currentVehicle.id,
               updatedAt: currentVehicle.updatedAt.toISOString(),
@@ -1106,6 +1116,25 @@ export class TripsService {
   /**
    * Phát hành chuyến đi (Publish Trip)
    */
+  async approvePlan(id: string, dto: PublishTripDto, user: Principal) {
+    return this.prisma.$transaction(async (tx) => {
+      const trip = await tx.trip.findFirst({ where: { id, AND: [tripFilter(user, 'trips.approve')] }, select: { managingBranchId: true } });
+      if (!trip?.managingBranchId) throw new NotFoundException('Không tìm thấy chuyến có chi nhánh quản lý');
+      assertPermission(user, 'trips.approve', trip.managingBranchId);
+      const result = await tx.trip.updateMany({
+        where: { id, managingBranchId: trip.managingBranchId, version: dto.expectedVersion, status: TripStatus.PLANNED, OR: [{ approvedPlanVersion: null }, { approvedPlanVersion: { not: dto.expectedVersion } }] },
+        data: { approvedPlanVersion: dto.expectedVersion, approvedPlanById: user.id, approvedPlanAt: new Date() },
+      });
+      if (!result.count) {
+        const current = await tx.trip.findUniqueOrThrow({ where: { id } });
+        if (current.version === dto.expectedVersion && current.approvedPlanVersion === dto.expectedVersion && current.status === TripStatus.PLANNED) return current;
+        throw new ConflictException('Kế hoạch đã thay đổi hoặc chưa sẵn sàng để duyệt');
+      }
+      await tx.auditLog.create({ data: { entityType: 'Trip', entityId: id, action: 'TRIP_PLAN_APPROVED', performedBy: user.id, actorUserId: user.id, changeSummary: { version: dto.expectedVersion, branchId: trip.managingBranchId } } });
+      return tx.trip.findUniqueOrThrow({ where: { id } });
+    });
+  }
+
   async publish(
     id: string,
     dto: PublishTripDto,
@@ -1140,6 +1169,11 @@ export class TripsService {
         throw new ConflictException(
           `Chuyến đi đã thay đổi (version ${trip.version}); hãy tải lại trước khi phát hành`,
         );
+      }
+      if (!trip.managingBranchId) throw new ConflictException('Chuyến chưa có chi nhánh quản lý');
+      assertPermission(user, 'trips.publish', trip.managingBranchId);
+      if (trip.approvedPlanVersion !== dto.expectedVersion) {
+        throw new ConflictException('Phiên bản kế hoạch này cần được duyệt trước khi phát hành');
       }
       if (!trip.assignments.some((assignment) => assignment.role === 'PRIMARY')) {
         throw new ConflictException(
@@ -1236,6 +1270,8 @@ export class TripsService {
           'Lịch xe hoặc tài xế đã bị trùng trước khi phát hành chuyến',
         );
       }
+      await assertPlanningCalendar(tx, trip.vehicleId, primaryAssignment.driverId,
+        trip.plannedStartTime, trip.plannedEndTime, id);
       const reservations = await tx.resourceReservation.findMany({
         where: {
           tripId: id,
@@ -2182,6 +2218,8 @@ export class TripsService {
         await this.assertPackagesNotOnActiveTrip(tx, packageIds);
         for (const trip of plannedTrips) {
           await this.assertNoResourceOverlap(tx, trip);
+          await assertPlanningCalendar(tx, trip.vehicleId, trip.driverId,
+            trip.plannedStartTime, trip.plannedEndTime);
         }
 
         const tripNumbers = await this.allocateTripNumbers(

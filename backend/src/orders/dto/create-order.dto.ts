@@ -2,6 +2,8 @@ import { Type } from 'class-transformer';
 import { ArrayMaxSize, ArrayMinSize, IsArray, IsIn, IsInt, IsISO8601, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 
 export class PackageInputDto {
+  @IsOptional() @IsIn(['STANDARD', 'FRAGILE', 'FROZEN'])
+  cargoKind?: 'STANDARD' | 'FRAGILE' | 'FROZEN' | 'UNCLASSIFIED';
   @IsOptional() @IsUUID() id?: string;
   @IsInt() @Min(1) @Max(2147483647) lengthMm: number;
   @IsInt() @Min(1) @Max(2147483647) widthMm: number;

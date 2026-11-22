@@ -11,7 +11,7 @@ export interface FleetProfile {
 }
 export interface FleetPageResult<T> { items: T[]; total: number; page: number; pageSize: number; shiftTotal?: number; leaveTotal?: number }
 export interface FleetEmployee { id: string; employeeCode: string; fullName: string; branchId: string; version: number }
-export interface FleetSchedule { id: string; kind: string; startsAt: string; endsAt: string | null; reason: string | null; status: string; version: number; recordedById: string | null }
+export interface FleetSchedule { id: string; kind: string; startsAt: string; endsAt: string | null; reason: string | null; status: string; version: number; recordedById: string | null; readyAt?: string | null; readyAddress?: string | null; readyLatitude?: number | null; readyLongitude?: number | null }
 export interface Availability { resourceId: string; profile: FleetProfile; version: string; profileActive: boolean; dataComplete: boolean; scheduleCovered: boolean | null; reasons: string[]; unchecked: string[]; affectedTrips: Array<{ id: string; tripNumber: string; status: string }> }
 export function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Phản hồi API không hợp lệ'); return value as Record<string, unknown>;
@@ -32,7 +32,11 @@ export function employee(value: unknown): FleetEmployee {
 }
 export function schedule(value: unknown): FleetSchedule {
   const v = record(value); if (typeof v.id !== 'string' || typeof v.kind !== 'string' || typeof v.startsAt !== 'string' || (v.endsAt !== null && typeof v.endsAt !== 'string') || typeof v.status !== 'string' || typeof v.version !== 'number' || (v.reason !== null && typeof v.reason !== 'string') || (v.recordedById !== null && typeof v.recordedById !== 'string')) throw new Error('Lịch API không hợp lệ');
-  return { id: v.id, kind: v.kind, startsAt: v.startsAt, endsAt: v.endsAt, status: v.status, version: v.version, reason: v.reason, recordedById: v.recordedById };
+  for (const k of ['readyAt', 'readyAddress']) if (v[k] != null && typeof v[k] !== 'string') throw new Error('Điểm sẵn sàng không hợp lệ');
+  for (const k of ['readyLatitude', 'readyLongitude']) if (v[k] != null && (typeof v[k] !== 'number' || !Number.isFinite(v[k]))) throw new Error('Tọa độ sẵn sàng không hợp lệ');
+  return { id: v.id, kind: v.kind, startsAt: v.startsAt, endsAt: v.endsAt, status: v.status, version: v.version, reason: v.reason, recordedById: v.recordedById,
+    readyAt: v.readyAt as string | null | undefined, readyAddress: v.readyAddress as string | null | undefined,
+    readyLatitude: v.readyLatitude as number | null | undefined, readyLongitude: v.readyLongitude as number | null | undefined };
 }
 export function availability(value: unknown): Availability {
   const v = record(value); if (typeof v.resourceId !== 'string' || typeof v.version !== 'string' || typeof v.profileActive !== 'boolean' || typeof v.dataComplete !== 'boolean' || !(v.scheduleCovered === null || typeof v.scheduleCovered === 'boolean') || !Array.isArray(v.reasons) || !v.reasons.every(r => typeof r === 'string') || !Array.isArray(v.unchecked) || !v.unchecked.every(r => typeof r === 'string') || !Array.isArray(v.affectedTrips)) throw new Error('Khả dụng API không hợp lệ');

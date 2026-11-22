@@ -167,6 +167,12 @@ export class TripsController {
     return this.tripsService.findOneAuthorized(id, req.user);
   }
 
+  @Patch(':id/approve')
+  @RequirePermission('trips.approve')
+  approve(@Req() req: AuthRequest, @Param('id') id: string, @Body() body: PublishTripDto) {
+    return this.tripsService.approvePlan(id, body, req.user);
+  }
+
   @Patch(':id/publish')
   @RequirePermission('trips.publish')
   publish(

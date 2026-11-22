@@ -77,7 +77,7 @@ export const authApi = {
 
 export const accountsApi = {
   detail: async (id: string) => parseAccountDetail((await client.get<unknown>(`/users/${id}`)).data),
-  update: async (id: string, body: { fullName: string; branchIds?: string[]; expectedUpdatedAt: string }) => parseAccount((await client.patch<unknown>(`/users/${id}`, body)).data),
+  update: async (id: string, body: { fullName: string; branchIds?: string[]; roleCode?: Exclude<CreateAccount['roleCode'], 'DRIVER'>; expectedUpdatedAt: string }) => parseAccount((await client.patch<unknown>(`/users/${id}`, body)).data),
   unlock: async (id: string, expectedUpdatedAt: string) => parseAccount((await client.patch<unknown>(`/users/${id}/unlock`, { expectedUpdatedAt })).data),
   availableDrivers: async (search = '') => parseAvailableDrivers((await client.get<unknown>('/users/available-drivers', { params: { search, pageSize: 100 } })).data),
   list: async (params: AccountQuery) => parseAccountList((await client.get<unknown>('/users', { params, timeout: 10000 })).data),
@@ -167,6 +167,8 @@ export const tripsApi = {
     orderedStopIds: string[];
     notes?: string;
   }) => apiClient.patch<Trip>(`/trips/${id}/plan`, data),
+  approve: (id: string, expectedVersion: number) =>
+    apiClient.patch(`/trips/${id}/approve`, { expectedVersion }),
   publish: (id: string, expectedVersion: number) =>
     apiClient.patch<Trip>(`/trips/${id}/publish`, { expectedVersion }),
   getLoadProfile: (id: string) =>

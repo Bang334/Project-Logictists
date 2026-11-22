@@ -107,8 +107,9 @@ export class OrdersService {
       if (dto.branchId !== old.branchId) orderFieldError('branchId', 'Không chuyển chi nhánh quản lý qua thao tác sửa đơn');
       await this.access.branch(user, 'orders.write', old.branchId, tx);
       await this.access.customer(user, dto.customerId, old.branchId, tx);
-      validateOrderInput(dto, old.status === 'CONFIRMED');
       this.validateOwnedIds(old, dto);
+      const previousKinds = new Map(old.items.flatMap(item => item.packages.map(pkg => [pkg.id, pkg.cargoKind] as const)));
+      validateOrderInput({ ...dto, items: dto.items.map(item => ({ ...item, packages: item.packages.map(pkg => ({ ...pkg, cargoKind: pkg.cargoKind ?? (pkg.id ? previousKinds.get(pkg.id) : undefined) })) })) }, old.status === 'CONFIRMED');
       await this.writeContents(tx, id, dto, old.status === 'CONFIRMED' ? PackageStatus.READY : PackageStatus.DRAFT, old);
       await tx.order.update({ where: { id }, data: { customerId: dto.customerId, notes: dto.notes ?? null, packageDataStatus: 'COMPLETE', version: { increment: 1 } } });
       await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: old.packageDataStatus === 'COMPLETE' ? 'UPDATED' : 'PACKAGES_RECONCILED', fromStatus: old.status, toStatus: old.status, payload: json({ before: serializeOrder(old), source: 'USER_DECLARED', auditBranchIds: [old.branchId] }) } });
@@ -196,7 +197,7 @@ export class OrdersService {
       const data = { orderId, sku: item.sku ?? null, description: item.description.trim(), packageType: item.packageType, quantity: totals.totalPackages, weightKg: Number(totals.weightG) / 1000, volumeM3: Number(totals.volumeMm3) / 1e9, lengthCm: null, widthCm: null, heightCm: null };
       const line = item.id ? await tx.orderItem.update({ where: { id: item.id }, data }) : await tx.orderItem.create({ data });
       for (const p of item.packages) {
-        const data = { lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: BigInt(p.weightG), measurementSource: 'USER_DECLARED', status };
+        const data = { lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: BigInt(p.weightG), measurementSource: 'USER_DECLARED', status, ...(p.cargoKind ? { cargoKind: p.cargoKind } : {}) };
         if (p.id) await tx.package.update({ where: { id: p.id }, data: { ...data, version: { increment: 1 } } });
         else await tx.package.create({ data: { ...data, orderItemId: line.id, packageCode: 'PKG-' + randomUUID().toUpperCase(), allowedOrientations: Prisma.DbNull } });
       }

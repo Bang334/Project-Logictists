@@ -2378,6 +2378,7 @@ const AutomaticDispatchPage: React.FC = () => {
             <Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>
               Chi nhánh điều phối
             </Text>
+            {user?.companyScope ? (
             <Select
               aria-label="Chọn chi nhánh điều phối tự động"
               value={selectedBranchId}
@@ -2393,6 +2394,7 @@ const AutomaticDispatchPage: React.FC = () => {
                 label: `${branch.code} · ${branch.name}`,
               }))}
             />
+            ) : <Text>{branches.find(branch => branch.id === selectedBranchId)?.name ?? user?.branches.find(branch => branch.id === branchId)?.name}</Text>}
           </div>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>

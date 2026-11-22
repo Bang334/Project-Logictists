@@ -43,6 +43,9 @@ const PackageFields: React.FC<{ index: number; form: FormInstance<FormValues> }>
     {(fields, { add, remove }, { errors }) => <>
       {fields.map((field, j) => <Card size="small" key={field.key} style={{ marginBottom: 8 }} title={`Kiện ${j + 1}`} extra={<Button danger size="small" onClick={() => remove(field.name)}>Xóa kiện {j + 1}</Button>}>
         <Form.Item name={[field.name, 'id']} hidden><Input /></Form.Item>
+        <Form.Item name={[field.name, 'cargoKind']} label="Loại hàng">
+          <Select placeholder="Chưa phân loại" options={[{ value: 'STANDARD', label: 'Bình thường' }, { value: 'FRAGILE', label: 'Dễ vỡ' }, { value: 'FROZEN', label: 'Đông lạnh' }]} />
+        </Form.Item>
         <Row gutter={12}>
           {(['lengthMm', 'widthMm', 'heightMm'] as const).map((key, k) => <Col xs={24} sm={6} key={key}>
             <Form.Item name={[field.name, key]} label={['Dài mỗi kiện (mm)', 'Rộng mỗi kiện (mm)', 'Cao mỗi kiện (mm)'][k]} rules={required}>
@@ -63,7 +66,7 @@ const PackageFields: React.FC<{ index: number; form: FormInstance<FormValues> }>
           if (!first || !first.lengthMm || !first.widthMm || !first.heightMm || !first.weightG || packages.length + count > 500) {
             form.setFields([{ name: ['items', index, 'packages'], errors: ['Nhập đủ số đo kiện đầu; tổng số kiện không vượt 500'] }]); return;
           }
-          for (let n = 0; n < count; n++) add({ lengthMm: first.lengthMm, widthMm: first.widthMm, heightMm: first.heightMm, weightG: first.weightG });
+          for (let n = 0; n < count; n++) add({ lengthMm: first.lengthMm, widthMm: first.widthMm, heightMm: first.heightMm, weightG: first.weightG, cargoKind: first.cargoKind });
         }}>Thêm N kiện theo số đo kiện đầu</Button>
       </Space>
     </>}
@@ -116,7 +119,7 @@ const OrdersPage: React.FC = () => {
       const current = await ordersApi.getOne(order.id); setEditing(current); setDetail(null); setSaveError(''); command.current = undefined; form.resetFields();
       form.setFieldsValue({ branchId: current.branchId, customerId: current.customerId, notes: current.notes,
         stops: current.stops.map(s => ({ ...s, windowStart: dateValue(s.windowStart), windowEnd: dateValue(s.windowEnd) })),
-        items: current.items.map(i => ({ id: i.id, description: i.description, packageType: i.packageType, sku: i.sku, packages: i.packages.length ? i.packages.map(p => ({ id: p.id, lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: p.weightG })) : [blankPackage()] })),
+        items: current.items.map(i => ({ id: i.id, description: i.description, packageType: i.packageType, sku: i.sku, packages: i.packages.length ? i.packages.map(p => ({ id: p.id, lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: p.weightG, cargoKind: p.cargoKind === 'UNCLASSIFIED' ? undefined : p.cargoKind })) : [blankPackage()] })),
       }); setOpen(true);
     } catch (e) { message.error(apiErrorMessage(e)); }
   };
@@ -126,7 +129,7 @@ const OrdersPage: React.FC = () => {
     const input: OrderInput = {
       branchId: values.branchId, customerId: values.customerId, notes: values.notes,
       stops: values.stops.map(s => ({ id: s.id, type: s.type, address: s.address, latitude: s.latitude, longitude: s.longitude, contactName: s.contactName, contactPhone: s.contactPhone, serviceDurationMinutes: s.serviceDurationMinutes, windowStart: isoValue(s.windowStart), windowEnd: isoValue(s.windowEnd) })),
-      items: values.items.map(i => ({ id: i.id, sku: i.sku, description: i.description, packageType: i.packageType, packages: i.packages.map(p => ({ id: p.id, lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: String(p.weightG) })) })),
+      items: values.items.map(i => ({ id: i.id, sku: i.sku, description: i.description, packageType: i.packageType, packages: i.packages.map(p => ({ id: p.id, lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: String(p.weightG), cargoKind: p.cargoKind })) })),
     };
     const payload = JSON.stringify({ id: editing?.id, version: editing?.version, ...input });
     if (!command.current || command.current.payload !== payload) command.current = { payload, key: crypto.randomUUID() };
@@ -173,7 +176,10 @@ const OrdersPage: React.FC = () => {
         <Row gutter={16}><Col xs={24} sm={12}><Form.Item name="branchId" label="Chi nhánh quản lý" rules={required}><Select disabled={!!editing} onChange={() => form.setFieldValue('customerId', undefined)} options={branches.map(b => ({ value: b.id, label: b.name }))} /></Form.Item></Col>
           <Col xs={24} sm={12}><Form.Item name="customerId" label="Khách hàng" rules={required}><CustomerSelect branchId={formBranch} disabled={saving} /></Form.Item></Col></Row>
         <Form.List name="stops">{fields => fields.map((field, i) => <Card key={field.key} title={i === 0 ? 'Điểm lấy hàng' : 'Điểm giao hàng'} style={{ marginBottom: 16 }}>
-          <Form.Item name={[field.name, 'id']} hidden><Input /></Form.Item><Form.Item name={[field.name, 'type']} hidden><Input /></Form.Item>
+          <Form.Item name={[field.name, 'id']} hidden><Input /></Form.Item>
+        <Form.Item name={[field.name, 'cargoKind']} label="Loại hàng">
+          <Select placeholder="Chưa phân loại" options={[{ value: 'STANDARD', label: 'Bình thường' }, { value: 'FRAGILE', label: 'Dễ vỡ' }, { value: 'FROZEN', label: 'Đông lạnh' }]} />
+        </Form.Item><Form.Item name={[field.name, 'type']} hidden><Input /></Form.Item>
           <Form.Item name={[field.name, 'address']} label="Địa chỉ" rules={required}><Input /></Form.Item>
           <Button onClick={() => setMapStop(field.name)}>Chọn {i === 0 ? 'điểm lấy' : 'điểm giao'} trên Mapbox</Button>
           <Row gutter={16}><Col xs={12}><Form.Item name={[field.name, 'latitude']} label="Vĩ độ" rules={required}><InputNumber min={-90} max={90} style={{ width: '100%' }} /></Form.Item></Col><Col xs={12}><Form.Item name={[field.name, 'longitude']} label="Kinh độ" rules={required}><InputNumber min={-180} max={180} style={{ width: '100%' }} /></Form.Item></Col></Row>

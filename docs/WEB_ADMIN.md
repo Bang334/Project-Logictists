@@ -1,5 +1,11 @@
 # Web Admin TMS — chức năng, contract và kiểm chứng
 
+**Đồng bộ Supabase và ca làm (14/11/2026):** đã sao lưu schema `public` và dữ liệu vào `C:/Users/ASUS/.codex/backups/tms-shifts-20261114/before.dump` (ngoài Git), phục hồi trên PostgreSQL 17 riêng với `btree_gist`. Hai migration `20261017120000_fleet_schedules` và `20261105120000_driver_shift_ready_location` chạy đạt trên bản sao; đối chiếu số dòng và hash các cột cũ khớp 101 bảng / 1.195 dòng. Thử ca qua đêm, ca tiếp giáp, chặn chồng ca và chặn giờ sẵn sàng ngoài ca trên bản sao.
+
+Áp đúng hai file SQL lên Supabase trong một transaction, ghi lịch sử/checksum trong cùng transaction; không chạy toàn bộ migration pending, không seed. Kiểm tra sau commit: `driver_shifts` có 0 dòng, đủ khóa ngoại, CHECK, EXCLUDE chống chồng ca và trigger bảo vệ lịch/reservation. Ca mới cần được khai báo trước khi giữ tài nguyên cho tài xế; không tạo ca giả cho dữ liệu cũ. Backup là của schema `public`, không phải toàn bộ schema hạ tầng Supabase.
+
+Prisma local bổ sung model cho ba bảng lịch hẹn, `system_settings` và bốn trường kiện đã tồn tại trên Supabase. Đây là đồng bộ mô hình dữ liệu, không bật chính sách xếp chồng hoặc thay thuật toán. Đối chiếu introspection: 100 model, không lệch danh sách bảng/cột được Prisma mô hình hóa; hai bảng metadata/liên kết được quản lý riêng. Còn bốn migration local chưa áp dụng (ba vòng đời chi nhánh và một index audit), cùng 12 migration đã áp dụng có file không nằm trong checkout. Cần đối soát lịch sử trước khi chạy migrate deploy hoặc dựng database mới từ source.
+
 **Nhật ký thao tác quản trị (05/11/2026):** đã nối `/audit-logs` → NestJS → PostgreSQL; chỉ ADMIN COMPANY theo quyết định người dùng. Có lọc, phân trang, chi tiết an toàn và liên kết đối tượng. Xem [nguồn dữ liệu, giới hạn lịch sử và thiết kế](#audit-log-survey), cùng mục 9 bên dưới. Migration index mới chưa áp lên database thật.
 
 **Quản trị tài khoản và chi nhánh (03/11/2026):** xem [ma trận quyền, API, migration, kiểm thử và demo](#account-branch-admin). ADMIN cấp/khóa DRIVER và DISPATCHER; quản trị chi nhánh nằm trong tab Chi nhánh của Fleet. Chưa áp migration lên database thật.

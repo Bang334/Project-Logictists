@@ -54,7 +54,9 @@ const Navbar: React.FC = () => {
       </div>
 
       <Space size="middle" wrap style={{ maxWidth: '100%' }}>
+        {user?.companyScope || (user?.branches.length ?? 0) > 1 ? (
         <Select aria-label="Chi nhánh làm việc" showSearch optionFilterProp="label" style={{ width: screens.sm ? 260 : 'calc(100vw - 32px)', maxWidth: '100%' }} value={branchId || 'ALL'} onChange={value => setBranchId(value === 'ALL' ? undefined : value)} options={[{ value: 'ALL', label: user?.companyScope ? 'Toàn công ty' : 'Các chi nhánh được cấp' }, ...(user?.branches || []).map(b => ({ value: b.id, label: b.name }))]} />
+        ) : user?.branches[0] && <Tag>{user.branches[0].name}</Tag>}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Tag color="geekblue" icon={<UserOutlined />}>

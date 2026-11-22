@@ -1,4 +1,5 @@
 import { Transform, Type } from 'class-transformer';
+import { BRANCH_WEB_ROLES } from '../auth/access';
 import { ArrayMinSize, ArrayUnique, IsArray, IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, Length, Max, Min, Validate, ValidatorConstraint, ValidatorConstraintInterface } from 'class-validator';
 
 @ValidatorConstraint({ name: 'newPasswordBytes' })
@@ -14,6 +15,9 @@ export class AccountVersionDto {
   @IsDateString() expectedUpdatedAt!: string;
 }
 export class UpdateUserDto extends AccountVersionDto {
+  @IsOptional()
+  @IsIn(BRANCH_WEB_ROLES)
+  roleCode?: typeof BRANCH_WEB_ROLES[number];
   @Transform(trim) @IsString() @Length(1, 200) fullName!: string;
   @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayUnique() @IsUUID('all', { each: true }) branchIds?: string[];
 }
@@ -33,8 +37,8 @@ export class CreateUserDto {
   @Validate(NewPasswordBytes)
   password!: string;
 
-  @IsIn(['DISPATCHER', 'DRIVER'])
-  roleCode!: 'DISPATCHER' | 'DRIVER';
+  @IsIn(['DRIVER', ...BRANCH_WEB_ROLES])
+  roleCode!: 'DRIVER' | typeof BRANCH_WEB_ROLES[number];
 
   @IsOptional()
   @IsUUID()

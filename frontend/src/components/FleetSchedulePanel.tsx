@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, App, Button, DatePicker, Form, Input, Modal, Select, Space, Table, Tag } from 'antd';
+import { Alert, App, Button, DatePicker, Form, Input, InputNumber, Modal, Select, Space, Table, Tag } from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
@@ -14,6 +14,7 @@ export const scheduleLabels: Record<string, string> = { SHIFT: 'Ca làm', LEAVE:
 
 export function FleetSchedulePanel({ kind, resource, canManage, onChanged }: { kind: FleetKind; resource: FleetProfile; canManage: boolean; onChanged: () => void }) {
   const { message } = App.useApp(); const [form] = Form.useForm();
+  const scheduleKind = Form.useWatch('kind', form);
   const [range, setRange] = useState<[Dayjs, Dayjs]>([dayjs().startOf('day'), dayjs().add(7, 'day').endOf('day')]);
   const [rows, setRows] = useState<FleetSchedule[]>([]), [total, setTotal] = useState(0), [page, setPage] = useState(1);
   const [affectedTrips, setAffectedTrips] = useState<Array<{ id: string; tripNumber: string; status: string }>>([]);
@@ -25,10 +26,11 @@ export function FleetSchedulePanel({ kind, resource, canManage, onChanged }: { k
     catch (e) { if (seq === generation.current) { setRows([]); setError(apiErrorMessage(e)); } } finally { if (seq === generation.current) setLoading(false); }
   }, [kind, resource.id, range, page]);
   useEffect(() => { const counter = generation; void fetchRows(); return () => { counter.current++; }; }, [fetchRows]);
-  const startEdit = (row: FleetSchedule | null) => { setEditing(row); setFormError(''); key.current = crypto.randomUUID(); payload.current = ''; form.resetFields(); form.setFieldsValue(row ? { ...row, range: [dayjs(row.startsAt).tz(VN_ZONE), row.endsAt ? dayjs(row.endsAt).tz(VN_ZONE) : null] } : { kind: kind === 'drivers' ? 'SHIFT' : 'MAINTENANCE' }); };
-  const save = async (values: { kind: string; range: [Dayjs, Dayjs]; reason: string }) => {
+  const startEdit = (row: FleetSchedule | null) => { setEditing(row); setFormError(''); key.current = crypto.randomUUID(); payload.current = ''; form.resetFields(); form.setFieldsValue(row ? { ...row, readyAt: row.readyAt ? dayjs(row.readyAt).tz(VN_ZONE) : undefined, range: [dayjs(row.startsAt).tz(VN_ZONE), row.endsAt ? dayjs(row.endsAt).tz(VN_ZONE) : null] } : { kind: kind === 'drivers' ? 'SHIFT' : 'MAINTENANCE' }); };
+  const save = async (values: { kind: string; range: [Dayjs, Dayjs]; reason: string; readyAt?: Dayjs; readyAddress?: string; readyLatitude?: number; readyLongitude?: number }) => {
     if (pending.current) return; pending.current = true; setSaving(true); setFormError('');
-    try { const data = { kind: values.kind, startsAt: pickerUtc(values.range[0]), endsAt: pickerUtc(values.range[1]), reason: values.reason, ...(editing ? { version: editing.version } : {}) };
+    try { const data = { kind: values.kind, startsAt: pickerUtc(values.range[0]), endsAt: pickerUtc(values.range[1]), reason: values.reason, ...(editing ? { version: editing.version } : {}),
+      ...(values.kind === 'SHIFT' ? { readyAt: values.readyAt ? pickerUtc(values.readyAt) : undefined, readyAddress: values.readyAddress, readyLatitude: values.readyLatitude, readyLongitude: values.readyLongitude } : {}) };
       if (payload.current && payload.current !== JSON.stringify(data)) key.current = crypto.randomUUID(); payload.current = JSON.stringify(data);
       await fleetApi.saveSchedule(kind, resource.id, data, key.current, editing?.id, editing?.kind); setEditing(undefined); message.success('Đã lưu lịch'); setRange(values.range); setPage(1); onChanged();
     } catch (e) { form.setFields(fleetFieldErrors(e)); setFormError(apiErrorMessage(e)); } finally { setSaving(false); pending.current = false; }
@@ -47,6 +49,7 @@ export function FleetSchedulePanel({ kind, resource, canManage, onChanged }: { k
     <Table<FleetSchedule> rowKey="id" size="small" loading={loading} dataSource={rows} scroll={{ x: 650 }} pagination={{ current: page, total, pageSize: 10, onChange: setPage }} columns={[
       { title: 'Loại', render: (_, r) => scheduleLabels[r.kind] ?? r.kind },
       { title: 'Bắt đầu → kết thúc', render: (_, r) => `${inVietnam(r.startsAt)} → ${r.endsAt ? inVietnam(r.endsAt) : 'Chưa xác định'}` },
+      ...(kind === 'drivers' ? [{ title: 'Sẵn sàng nhận việc', render: (_: unknown, r: FleetSchedule) => r.kind !== 'SHIFT' ? '—' : r.readyAt ? `${r.readyAddress} (${r.readyLatitude}, ${r.readyLongitude}) · ${inVietnam(r.readyAt)}` : 'Chưa ghi nhận' }] : []),
       { title: 'Lý do', dataIndex: 'reason' }, { title: 'Hiệu lực', render: (_, r) => <Tag>{r.status}</Tag> },
       { title: 'Thao tác', render: (_, r) => canManage && r.status === 'ACTIVE' && r.kind !== 'LEGACY' ? <Space><Button onClick={() => startEdit(r)}>Sửa</Button><Button danger onClick={() => { setCancelling(r); setCancelReason(''); setFormError(''); key.current = crypto.randomUUID(); }}>Hủy</Button></Space> : null },
     ]} />
@@ -56,6 +59,14 @@ export function FleetSchedulePanel({ kind, resource, canManage, onChanged }: { k
       <Form form={form} layout="vertical" onFinish={save}>
         <Form.Item name="kind" label="Loại lịch" rules={[{ required: true }]}><Select disabled={!!editing} options={(kind === 'vehicles' ? ['MAINTENANCE', 'BREAKDOWN'] : ['SHIFT', 'LEAVE', 'OTHER']).map(k => ({ value: k, label: scheduleLabels[k] }))} /></Form.Item>
         <Form.Item name="range" label="Bắt đầu / kết thúc — giờ Việt Nam" rules={[{ required: true }]}><DatePicker.RangePicker showTime format="DD/MM/YYYY HH:mm" /></Form.Item>
+        {scheduleKind === 'SHIFT' && <>
+          <Form.Item name="readyAt" label="Sẵn sàng từ — giờ Việt Nam" rules={[{ required: true }]}><DatePicker showTime format="DD/MM/YYYY HH:mm" /></Form.Item>
+          <Form.Item name="readyAddress" label="Điểm tài xế sẵn sàng" rules={[{ required: true, whitespace: true }, { max: 500 }]}><Input /></Form.Item>
+          <Space>
+            <Form.Item name="readyLatitude" label="Vĩ độ" rules={[{ required: true }]}><InputNumber min={-90} max={90} /></Form.Item>
+            <Form.Item name="readyLongitude" label="Kinh độ" rules={[{ required: true }]}><InputNumber min={-180} max={180} /></Form.Item>
+          </Space>
+        </>}
         <Form.Item name="reason" label="Lý do" rules={[{ required: true, whitespace: true }, { max: 1000 }]}><Input.TextArea /></Form.Item>
       </Form>
     </Modal>

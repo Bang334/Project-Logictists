@@ -50,6 +50,10 @@ export function validateOrderInput(dto: CreateOrderDto, confirmed: boolean) {
     orderFieldError(`stops.${dto.stops.indexOf(delivery)}.windowEnd`, 'Không thể bắt đầu giao sau khi hoàn tất lấy trong các khung giờ này');
   }
   const ids = new Set<string>();
+  const cargoKinds = dto.items.flatMap(item => item.packages.map(pkg => pkg.cargoKind));
+  if (cargoKinds.includes('FROZEN') && cargoKinds.some(kind => kind !== 'FROZEN')) {
+    orderFieldError('items', 'Đơn đông lạnh chỉ được chứa kiện đông lạnh');
+  }
   const unique = (id: string | undefined, field: string) => {
     if (id && ids.has(id)) orderFieldError(field, 'ID bị lặp trong yêu cầu');
     if (id) ids.add(id);
@@ -78,7 +82,7 @@ export function assertDispatchableOrder(order: {
   orderType?: string;
   status: string; packageDataStatus: string;
   stops: Array<{ type: string; windowBasis: string | null; windowStart: Date | null; windowEnd: Date | null; serviceDurationMinutes: number }>;
-  items: Array<{ quantity: number; packages: Array<{ status: string; lengthMm: number; widthMm: number; heightMm: number; weightG: bigint }> }>;
+  items: Array<{ quantity: number; packages: Array<{ cargoKind?: string; status: string; lengthMm: number; widthMm: number; heightMm: number; weightG: bigint }> }>;
 }) {
   if (order.orderType && order.orderType !== 'B2B_TRANSPORT') {
     if (order.status !== 'CONFIRMED') {
@@ -91,6 +95,9 @@ export function assertDispatchableOrder(order: {
     return;
   }
   assertPackageManifest(order);
+  if (order.items.some(item => item.packages.some(pkg => pkg.cargoKind === 'FROZEN'))) {
+    throw new ConflictException({ code: 'REFRIGERATED_VEHICLE_REQUIRED', message: 'Chưa có cấu hình xe đông lạnh để lập chuyến cho đơn này' });
+  }
   if (order.status !== 'CONFIRMED' || order.items.some(i => i.packages.some(p => p.status !== 'READY'))) {
     throw new ConflictException({ code: 'ORDER_NOT_DISPATCHABLE', message: 'Đơn phải được xác nhận và mọi kiện phải ở trạng thái READY' });
   }

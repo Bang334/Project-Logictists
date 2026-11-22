@@ -53,6 +53,7 @@ const DispatchPage: React.FC = () => {
   const createCommandRef = useRef<{ payloadHash: string; key: string } | null>(null);
   const { message } = AntdApp.useApp();
   const { can, branchId } = useAuth();
+  const publishingOnly = can('trips.publish') && !can('trips.plan');
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -99,15 +100,18 @@ const DispatchPage: React.FC = () => {
     try {
       setLoading(true);
       const [vRes, dRes, oRes, tRes] = await Promise.all([
-        vehiclesApi.getAvailable(),
-        driversApi.getAvailable(),
-        ordersApi.getAvailableForDispatch(),
+        can('trips.plan') ? vehiclesApi.getAvailable() : { data: [] },
+        can('trips.plan') ? driversApi.getAvailable() : { data: [] },
+        can('trips.plan') ? ordersApi.getAvailableForDispatch() : { data: [] },
         tripsApi.getAll(),
       ]);
       setVehicles(vRes.data);
       setDrivers(dRes.data);
       setOrders(oRes.data);
-      setTrips(tRes.data);
+      const visibleTrips = publishingOnly
+        ? tRes.data.filter(trip => trip.status === 'PLANNED' && trip.approvedPlanVersion === trip.version)
+        : tRes.data;
+      setTrips(visibleTrips);
 
       if (vRes.data.length > 0 && !selectedVehicleId) {
         setSelectedVehicleId(vRes.data[0].id);
@@ -115,9 +119,10 @@ const DispatchPage: React.FC = () => {
       if (dRes.data.length > 0 && !selectedDriverId) {
         setSelectedDriverId(dRes.data[0].id);
       }
-      if (tRes.data.length > 0 && !activeTrip) {
-        setActiveTrip(tRes.data[0]);
-        fetchLoadProfile(tRes.data[0].id);
+      const selected = visibleTrips.find(trip => trip.id === activeTrip?.id) ?? visibleTrips[0];
+      setActiveTrip(selected ?? null);
+      if (selected && selected.id !== activeTrip?.id) {
+        fetchLoadProfile(selected.id);
       }
     } catch {
       message.error('Lỗi khi tải dữ liệu điều phối');
@@ -266,6 +271,20 @@ const DispatchPage: React.FC = () => {
       fetchData();
     } catch (err: any) {
       message.error(err.response?.data?.message || 'Không thể tạo chuyến đi do vi phạm quy tắc');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleApproveTrip = async () => {
+    if (!activeTrip) return;
+    try {
+      setSubmitting(true);
+      await tripsApi.approve(activeTrip.id, activeTrip.version);
+      setActiveTrip({ ...activeTrip, approvedPlanVersion: activeTrip.version });
+      message.success('Đã duyệt phiên bản kế hoạch');
+    } catch {
+      message.error('Không thể duyệt kế hoạch. Hãy tải lại chuyến và kiểm tra phiên bản.');
     } finally {
       setSubmitting(false);
     }
@@ -624,10 +643,12 @@ const DispatchPage: React.FC = () => {
         <div>
           <Title level={4} style={{ margin: 0 }}>
             <CompassOutlined style={{ color: '#1d4ed8', marginRight: '8px' }} />
-            Điều Phối Thủ Công
+            {publishingOnly ? 'Phát hành chuyến' : 'Lập và duyệt kế hoạch'}
           </Title>
           <Text type="secondary">
-            Chọn đơn ngay trên danh sách/bản đồ, sắp thứ tự điểm dừng, gán xe và tài xế trước khi phát hành
+            {publishingOnly
+              ? 'Kiểm tra tuyến và phương án xếp/dỡ của kế hoạch đã duyệt trước khi phát hành.'
+              : 'Chọn đơn, sắp thứ tự điểm dừng, gán xe và tài xế để lập kế hoạch.'}
           </Text>
         </div>
       </div>
@@ -635,7 +656,7 @@ const DispatchPage: React.FC = () => {
       <Row gutter={[20, 20]}>
         {/* CỘT TRÁI: BÀN LẬP CHUYẾN & DANH SÁCH ĐƠN HÀNG */}
         <Col xs={24} xl={10}>
-          <Card
+          {can('trips.plan') && <Card
             title="1. Thiết Lập Chuyến Đi Mới"
             variant="borderless"
             className="card-elevation"
@@ -877,11 +898,12 @@ const DispatchPage: React.FC = () => {
                 </Button>
               )}
             </Space>
-          </Card>
+          </Card>}
 
           {/* DANH SÁCH CÁC CHUYẾN ĐI ĐÃ TẠO */}
-          <Card title="Danh Sách Chuyến Đi Đang Quản Lý" variant="borderless" className="card-elevation">
+          <Card title={publishingOnly ? 'Kế hoạch chờ phát hành' : 'Chuyến đi đang quản lý'} variant="borderless" className="card-elevation">
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {!trips.length && <Text type="secondary">{publishingOnly ? 'Chưa có kế hoạch đã duyệt chờ phát hành.' : 'Chưa có chuyến đi.'}</Text>}
               {trips.map((t) => (
                 <div
                   key={t.id}
@@ -960,12 +982,15 @@ const DispatchPage: React.FC = () => {
                     {['DRAFT', 'PLANNED'].includes(activeTrip.status) && (
                       <Button size="small" disabled={!can('trips.plan')} onClick={() => handleStartEdit(activeTrip)}>Chỉnh sửa kế hoạch</Button>
                     )}
-                    {activeTrip.status === 'PLANNED' && (
+                    {activeTrip.status === 'PLANNED' && can('trips.approve') && activeTrip.approvedPlanVersion !== activeTrip.version && (
+                      <Button size="small" loading={submitting} onClick={handleApproveTrip}>Duyệt kế hoạch</Button>
+                    )}
+                    {activeTrip.status === 'PLANNED' && can('trips.publish') && (
                       <Button
                         type="primary"
                         size="small"
                         icon={<CheckCircleOutlined />}
-                        disabled={!can('trips.publish')} onClick={handlePublishTrip}
+                        disabled={activeTrip.approvedPlanVersion !== activeTrip.version} onClick={handlePublishTrip}
                         loading={submitting}
                         style={{ background: '#059669', borderColor: '#059669' }}
                       >

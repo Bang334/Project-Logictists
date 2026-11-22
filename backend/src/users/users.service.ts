@@ -6,12 +6,13 @@ import { EventsGateway } from '../events/events.gateway';
 import { AccountVersionDto, CreateUserDto, ListUsersDto, UpdateUserDto } from './users.dto';
 import { createHmac } from 'crypto';
 import { ConfigService } from '@nestjs/config';
+import { BRANCH_WEB_ROLES, isBranchWebRole } from '../auth/access';
 
 const activeScope: Prisma.UserRoleScopeWhereInput = {
   active: true, role: { active: true },
   OR: [
     { scopeType: 'COMPANY', branchId: null, role: { code: 'ADMIN' } },
-    { scopeType: 'BRANCH', role: { code: 'DISPATCHER' }, branch: { active: true } },
+    { scopeType: 'BRANCH', role: { code: { in: [...BRANCH_WEB_ROLES] } }, branch: { active: true } },
     { scopeType: 'BRANCH', role: { code: 'DRIVER' }, branch: { active: true } },
   ],
 };
@@ -63,16 +64,21 @@ export class UsersService {
       await tx.$queryRaw`SELECT id FROM users WHERE id = ${id} FOR UPDATE`;
       const target = await tx.user.findUnique({ where: { id }, include: { roleScopes: { include: { role: true } } } });
       if (!target) throw new NotFoundException('Không tìm thấy tài khoản');
-      if (!['DRIVER', 'DISPATCHER'].includes(target.role) || target.roleScopes.some(scope => scope.role.code === 'ADMIN')) throw new ForbiddenException('Chỉ quản lý DRIVER và DISPATCHER; không sửa ADMIN');
+      if (!['DRIVER', 'DISPATCHER', 'STAFF'].includes(target.role) || target.roleScopes.some(scope => scope.role.code === 'ADMIN')) throw new ForbiddenException('Không được chỉnh sửa tài khoản này');
       if (unlock && target.active) return tx.user.findUniqueOrThrow({ where: { id }, select: userSelect });
       if (target.updatedAt.toISOString() !== new Date(dto.expectedUpdatedAt).toISOString()) throw new ConflictException({ code: 'VERSION_CONFLICT', message: 'Tài khoản đã thay đổi. Hãy tải lại' });
+      const roleCode = 'roleCode' in dto ? dto.roleCode : undefined;
+      if (roleCode && (!('branchIds' in dto) || !dto.branchIds)) throw new BadRequestException('Cần chọn chi nhánh khi gán vai trò');
       if ('branchIds' in dto && dto.branchIds) {
-        if (target.role !== 'DISPATCHER' || target.roleScopes.some(scope => scope.role.code !== 'DISPATCHER')) throw new ForbiddenException('Phạm vi DRIVER lấy từ hồ sơ tài xế, không sửa qua User');
+        if (dto.branchIds.length !== 1) throw new BadRequestException('Tài khoản chỉ được gán một chi nhánh');
+        if (!['DISPATCHER', 'STAFF'].includes(target.role)) throw new ForbiddenException('Phạm vi tài xế lấy từ hồ sơ tài xế');
         const branches = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM branches WHERE id IN (${Prisma.join(dto.branchIds)}) AND active = true ORDER BY id FOR SHARE`;
         if (branches.length !== dto.branchIds.length) throw new BadRequestException({ code: 'BRANCH_UNAVAILABLE', field: 'branchIds', message: 'Chi nhánh không tồn tại hoặc đã ngừng hoạt động' });
-        const role = await tx.accessRole.findUnique({ where: { code: 'DISPATCHER' } });
-        if (!role?.active) throw new BadRequestException('Vai trò DISPATCHER không hoạt động');
-        await tx.userRoleScope.updateMany({ where: { userId: id, roleId: role.id }, data: { active: false } });
+        const currentCodes = [...new Set(target.roleScopes.filter(scope => scope.active && isBranchWebRole(scope.role.code)).map(scope => scope.role.code))];
+        const code = roleCode ?? (currentCodes.length === 1 ? currentCodes[0] : undefined);
+        const role = code ? await tx.accessRole.findUnique({ where: { code } }) : null;
+        if (!role?.active) throw new BadRequestException('Hãy chọn vai trò quản lý đang hoạt động');
+        await tx.userRoleScope.updateMany({ where: { userId: id, scopeType: 'BRANCH' }, data: { active: false } });
         for (const branchId of dto.branchIds) {
           await tx.userRoleScope.upsert({ where: { userId_roleId_scopeType_branchId: { userId: id, roleId: role.id, scopeType: 'BRANCH', branchId } }, create: { userId: id, roleId: role.id, scopeType: 'BRANCH', branchId }, update: { active: true } });
         }
@@ -91,6 +97,7 @@ export class UsersService {
   }
 
   async create(dto: CreateUserDto, actorId: string, idempotencyKey: string) {
+    if (dto.branchIds.length !== 1) throw new BadRequestException('Tài khoản chỉ được gán một chi nhánh');
     if (!/^[a-zA-Z0-9_-]{16,100}$/.test(idempotencyKey)) throw new BadRequestException({ code: 'IDEMPOTENCY_KEY_REQUIRED', message: 'Cần Idempotency-Key từ 16 đến 100 ký tự' });
     if ((dto.roleCode === 'DRIVER') !== !!dto.driverId) throw new BadRequestException({ code: 'DRIVER_LINK_REQUIRED', field: 'driverId', message: 'Tài khoản DRIVER phải chọn hồ sơ tài xế; DISPATCHER không được liên kết tài xế' });
     const password = await bcrypt.hash(dto.password, 12);
@@ -126,7 +133,7 @@ export class UsersService {
           fullName = driver.fullName;
         }
         const user = await tx.user.create({
-          data: { role: dto.roleCode, username: dto.username, fullName, password, roleScopes: { create: dto.branchIds.map(branchId => ({ roleId: roles[0].id, scopeType: 'BRANCH', branchId })) } },
+          data: { role: dto.roleCode === 'DRIVER' ? 'DRIVER' : 'DISPATCHER', username: dto.username, fullName, password, roleScopes: { create: dto.branchIds.map(branchId => ({ roleId: roles[0].id, scopeType: 'BRANCH', branchId })) } },
           select: userSelect,
         });
         if (dto.driverId) await tx.driver.update({ where: { id: dto.driverId }, data: { userId: user.id } });

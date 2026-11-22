@@ -1,5 +1,9 @@
 # KẾ HOẠCH XÂY DỰNG LOGISTICS / TRANSPORTATION MANAGEMENT SYSTEM
 
+> **Chốt 19/11/2026 — khách đặt đơn vận tải:** áp dụng [quy tắc đặt, sửa và hủy đơn vận tải](#quy-tac-dat-sua-va-huy-don-van-tai) cho thao tác của khách hàng.
+
+> **Cập nhật 19/11/2026 — điều phối tài xế:** xem [lịch ca tuần, phân xe và lịch chuyến đầu ca](#lich-ca-tuan-va-lich-chuyen-dau-ca) để áp dụng giờ ca và quy trình chốt lịch ngày.
+
 > **Chốt 05/11/2026 — tra cứu nhật ký quản trị:** chỉ ADMIN có grant COMPANY hiện hành được xem, gồm nhật ký tài khoản/quyền/đổi mật khẩu; không trả giá trị mật khẩu. DISPATCHER không có quyền đọc audit. Quyền xem đối tượng đích được kiểm tra riêng. Xem [nguồn dữ liệu và contract](docs/WEB_ADMIN.md#audit-log-survey).
 
 > **Chốt 03/11/2026 — hủy đơn trước phân công (POL02):** Người dùng xác nhận toàn bộ đề xuất: ADMIN/DISPATCHER dùng `orders.write` theo scope; hủy DRAFT/CONFIRMED chưa phân công/lịch sử vận chuyển; lý do bắt buộc; Order/Package sang CANCELLED, giữ ID/lịch sử, không phục hồi. Lệnh hủy mới cho đơn đã hủy trả 409; retry cùng key/payload trả kết quả cũ sau kiểm tra quyền. Đơn đã phân công/thực thi bị chặn, không sửa chuyến. [Contract và kiểm chứng](docs/WEB_ADMIN.md#huy-don-van-tai).
@@ -184,6 +188,7 @@ Phân công hiện hành có mobile khách hàng do Người 2 phụ trách; thi
 ### 6.3. Chi nhánh và vị trí
 
 - Chi nhánh có tên, địa chỉ, tọa độ, giờ hoạt động và phạm vi điều phối.
+- **Đã chốt:** mỗi chi nhánh tương ứng với một thành phố trên bản đồ Việt Nam. Trưởng điều phối là Trưởng chi nhánh và phụ trách lập, chốt lịch chuyến thường ngày hôm sau. Nhân viên Quản lý tài nguyên phụ trách xếp ca tuần cho tài xế của chi nhánh.
 - Home Branch là nơi quản lý xe/tài xế; Current Branch chỉ có giá trị khi thực tế đang ở chi nhánh.
 - Current Location là vị trí có nguồn và thời điểm; khi xe đang trên đường không ép gán vào một chi nhánh.
 - Điều xe/tài xế liên chi nhánh phải xét quyền, lịch và chi phí di chuyển đến nơi nhận việc.
@@ -683,7 +688,7 @@ Nếu ưu tiên đồ án thể hiện thuật toán, có thể đẩy P3 lên t
 | D14 | POD bắt buộc và giao một phần | Đã chốt cho delivery từng Package: tên người nhận + ít nhất một ảnh hàng/biên nhận, không chữ ký/OTP; chung POD trong cùng lần bàn giao. Cho kết thúc thiếu/không giao kèm lý do, giữ hàng trên xe chờ điều phối. Tách dỡ/bàn giao; còn hàng đã dỡ thì phải bàn giao hoặc xếp lại có kiểm chứng trước khi kết thúc. Chi tiết và giới hạn: [MOBILE_DRIVER_DELIVERY_POD.md](MOBILE_DRIVER_DELIVERY_POD.md). Không suy đã chốt policy khác theo loại đơn. |
 | D15 | Điểm cuối, tài xế về nhà và backhaul | Policy riêng cho xe/tài xế, tính cả thời gian và chi phí |
 | D16 | Trễ mềm/cứng và penalty | Tách cam kết vận hành, trọng số solver và phạt tài chính |
-| D17 | Thông báo khách và cổng khách | Chốt kênh/phạm vi; không tự thêm portal |
+| D17 | Thông báo khách và cổng khách | Đã chốt một số thao tác đặt, sửa và hủy đơn vận tải tại mục cập nhật 19/11/2026. Kênh thông báo và phạm vi giao diện còn cần chốt. |
 | D18 | Giá cước, chi phí và lợi nhuận | Xác định nguồn doanh thu và phương pháp phân bổ trước |
 | D19 | Quy mô và ngân sách hạ tầng | Dùng workload thực để tính GPS, matrix, storage và worker |
 | D20 | Android/iOS, dẫn đường trong app | Chốt thiết bị mục tiêu và phạm vi dẫn đường trước mobile |
@@ -709,3 +714,82 @@ Việc duyệt/chỉnh tài liệu chưa đồng nghĩa cho phép triển khai. 
 Trong phiên triển khai, người dùng đã xác nhận số đo **mỗi kiện**, nhập nhanh rồi sửa riêng; khung giờ **bắt đầu phục vụ**, bắt buộc khi xác nhận, UTC/Asia/Ho_Chi_Minh, cho phép qua ngày/chồng nhau; lưu **DRAFT → CONFIRMED**, chỉ sửa hàng/điểm/giờ khi chưa có phân công hay lịch sử tham chiếu. MVP một lấy–một giao theo thiết kế hiện hành. Đơn cũ không tự chia khối lượng hoặc tạo kiện suy đoán.
 
 Chi tiết triển khai, giới hạn migration, hợp đồng với Người 1 và bằng chứng kiểm thử: [ORDERS_PACKAGES.md](ORDERS_PACKAGES.md). Đây chỉ là phần POL02 liên quan nhiệm vụ này; không chốt thêm chia đơn, mở kiện, giao thiếu, hủy sau lấy. POL03 về hình học/hướng xoay/khoảng hở/thiết bị vẫn còn mở; không thêm quyền xoay hoặc xếp chồng.
+
+## Phân quyền web quản lý và duyệt kế hoạch chuyến (14/11/2026)
+
+Web quản lý có Admin và bốn vai trò theo chi nhánh: Trưởng điều phối (Trưởng chi nhánh), Quản lý tài nguyên, Điều phối viên vận tải và Xử lý đơn/lịch hẹn. Admin dùng trang Tài khoản để gán vai trò quản lý và chi nhánh. Tài khoản quản lý cũ cần được gán vai trò mới trước khi có thể làm việc theo chính sách này. DRIVER phục vụ mobile và CUSTOMER phục vụ cổng mua hàng.
+
+Bộ tối ưu hoặc Trưởng điều phối lập kế hoạch. Trưởng điều phối duyệt phiên bản cụ thể trong chi nhánh quản lý. Điều phối viên vận tải phát hành phiên bản đó. Chỉnh sửa tăng version và làm mất hiệu lực duyệt cho phiên bản hiện hành. Khi phát hành, API tiếp tục kiểm tra tải, phương án xếp/dỡ, xe, tài xế và reservation trong transaction.
+
+Migration thêm cột duyệt nullable và danh mục vai trò. Chuyến đã phát hành giữ lịch sử. Kế hoạch cũ còn chờ phát hành cần được duyệt theo luồng mới. Không tự gán quyền từ tài khoản cũ. Việc gán vai trò thu hồi phiên cũ để áp dụng quyền mới.
+
+### Chính sách vận hành chi nhánh bổ sung (16/11/2026)
+
+- Chi nhánh hoạt động cả tuần từ 07:00 đến 17:00 theo giờ Việt Nam, trong phạm vi thành phố. Trưởng điều phối mở thẳng chi nhánh được gán, mặc định xem hôm nay. Mỗi tài khoản có một vai trò và một chi nhánh. Khi giao việc, gợi ý nhân viên cùng chi nhánh có vai trò phù hợp.
+- Chuyến bình thường lấy và giao vào các ngày khác nhau theo kế hoạch đã duyệt, có thể cách nhiều ngày. Đến 17:00 xe tập kết về kho của chi nhánh. Mỗi chi nhánh có ít nhất một kho tập kết xe và hàng. Hàng qua đêm có thể nằm trên xe hoặc trong kho, cần ghi nhận vị trí lưu thực tế.
+- Hỏa tốc là cam kết của chuyến, lấy và giao trong ngày. Điều phối viên kiểm tra phương án khả dụng trước khi nhận đơn phát sinh. Dùng xe đang rảnh hoặc bố trí sau các lượt giao bình thường đã lên lịch, với điều kiện còn giao kịp trước 17:00.
+- Một đơn có thể có nhiều kiện. Kiện đông lạnh đi xe đông lạnh và không ghép chung đơn với kiện thuộc loại hàng khác. Phân loại kiện dùng CargoKind: STANDARD, FRAGILE và FROZEN. UNCLASSIFIED giữ cho dữ liệu chưa phân loại. Quy tắc xếp chồng sẽ được xem xét riêng ở phần kế hoạch.
+- Trưởng điều phối xử lý đổi lịch chuyến đang chạy. Với hàng hỏa tốc đã lấy nhưng chưa giao được, nếu xe chỉ có đơn đó thì có thể giữ hàng trên xe và thử giao lại trong ngày. Nếu xe còn đơn khác, tiếp tục lịch rồi quay lại giao hỏa tốc trước 17:00. Nếu hết giờ vẫn không giao được do người nhận không nhận và đơn bị hủy, tính phí phát sinh cho người gửi. Nếu tài xế không giao kịp, đưa hàng về kho để trưởng điều phối xếp ngày giao lại.
+
+<a id="quy-tac-dat-sua-va-huy-don-van-tai"></a>
+## Quy tắc đặt, sửa và hủy đơn vận tải (19/11/2026)
+
+Các quyết định dưới đây áp dụng cho đơn vận tải do khách đặt. Mục này cập nhật hành vi của khách ở §6.1 và cách xử lý hàng sau pickup ở BR14/T09. Với đơn hỏa tốc do khách đặt, quy tắc xuất phát ngay bên dưới thay thế phương án chờ sau các lượt giao thường ở mục 16/11/2026.
+
+### Đã chốt
+
+- **Điểm 1 — Đặt và thanh toán đơn hỏa tốc.** Sau **16:00 giờ Việt Nam**, hệ thống ngừng nhận đơn hỏa tốc mới. Trong giờ nhận đơn, kiểm tra khả năng phục vụ, giữ xe và tài xế, rồi cho khách thanh toán. Thời lượng giữ tài nguyên là **15 phút**. Khách phải thanh toán trong **10 phút kể từ lúc đặt đơn**. Hết 10 phút mà chưa thanh toán, hệ thống tự hủy đơn và giải phóng ngay cả xe lẫn tài xế đang giữ.
+- **Điểm 2 — Tài xế phản hồi đơn hỏa tốc.** Xe và tài xế được chọn theo luồng kiểm tra và giữ tài nguyên ở điểm 1. Tài xế có **30 giây từ lúc nhận thông báo của hệ thống** để phản hồi. Mỗi tài xế khởi đầu với **10 điểm** và bị trừ điểm khi chủ động từ chối.
+- **Điểm 3 — Điều phối đơn thường.** Áp dụng các mốc nhận đơn, lập kế hoạch và gửi lịch tại mục [lịch ca tuần, phân xe và lịch chuyến đầu ca](#lich-ca-tuan-va-lich-chuyen-dau-ca).
+- **Điểm 4 — Hủy đơn thường.** Khách được tự hủy trong vòng **24 giờ kể từ lúc đặt đơn** nếu tài xế chưa lấy hàng. Nếu đã lấy hàng ngay trong ngày đặt, khách phải gọi **tổng đài** từ thời điểm đã lấy hàng, kể cả khi vẫn còn trong 24 giờ đầu.
+- **Điểm 5 — Sửa đơn thường.** Khách còn được sửa giờ gửi nếu đơn chưa thuộc kế hoạch đã duyệt và chưa thuộc chuyến đã phát hành. Khi đơn thuộc một trong hai trường hợp đó, toàn bộ thông tin đơn bị khóa với khách. Muốn thay đổi, khách phải hủy theo quy trình áp dụng cho đơn rồi đặt đơn mới.
+- **Điểm 6 — Giờ lấy và giao của đơn hỏa tốc.** Khi đơn được xác nhận để thực hiện, tài xế xuất phát ngay đi lấy hàng. Khách không chọn giờ gửi hoặc giờ nhận.
+- **Điểm 7 — Trả hàng sau khi hủy đơn đã lấy.** Tài xế đưa hàng về kho. Khách tự liên hệ và đến kho nhận lại hàng, hoặc chọn giao trả tận nhà có tính thêm phí dịch vụ.
+
+### Cần chốt
+
+- **Xử lý ngoại lệ hỏa tốc.** Cần chốt số điểm trừ mỗi lần từ chối, cách xử lý khi tài xế không phản hồi trong 30 giây và cách bố trí lại nếu tài xế từ chối. Hạn thanh toán ở điểm 1 là quy tắc tự hủy khi chưa thanh toán. Điều kiện khách chủ động hủy hỏa tốc vẫn cần chốt.
+- **Xử lý hủy và trả hàng.** Cần chốt cách tiếp nhận yêu cầu hủy đơn thường sau 24 giờ nếu hàng chưa được lấy, kênh tiếp nhận nếu hàng được lấy vào ngày khác ngày đặt, mức phí giao trả và chính sách hoàn tiền.
+
+### Tiêu chí nghiệm thu khi triển khai
+
+- Đơn hỏa tốc quá hạn thanh toán tự hủy và giải phóng cả hai tài nguyên ngay ở hạn 10 phút. Kiểm tra thanh toán đồng thời với hết hạn để tránh đơn đã hủy nhưng vẫn xác nhận vận chuyển hoặc giữ tài nguyên.
+- Hạn phản hồi được tính từ lúc tài xế nhận thông báo. Một lần từ chối được ghi nhận và trừ điểm một lần dù phản hồi bị gửi lại.
+- Đơn thường chưa lấy trong 24 giờ cho phép tự hủy. Với đơn lấy ngay trong ngày đặt, việc xác nhận pickup chặn tự hủy và hướng khách gọi tổng đài.
+- Kiểm tra quyền sửa giờ gửi trước duyệt/phát hành và khóa mọi chỉnh sửa của khách sau mỗi mốc. Form hỏa tốc bỏ chọn giờ gửi/nhận.
+- Khi hủy sau pickup, theo dõi hàng đang trên xe, đã về kho và kết quả bàn giao khi khách nhận tại kho hoặc được giao trả tận nhà.
+
+<a id="lich-ca-tuan-va-lich-chuyen-dau-ca"></a>
+## Lịch ca tuần, phân xe và lịch chuyến đầu ca (19/11/2026)
+
+### Đã chốt
+
+- **Ca vận tải từ 07:30 đến 17:00 theo giờ Việt Nam.** Mốc 07:30 thay cho 07:00 đã ghi ở mục 16/11/2026 đối với ca vận tải. Nhân viên Quản lý tài nguyên phân lịch ca theo tuần, xác định tài xế đi làm và nhóm nhiệm vụ theo từng ngày. Ví dụ, một ngày có 10 tài xế đi làm có thể bố trí 7 người chạy đơn thường và 3 người trực hỏa tốc.
+- **Mỗi tài xế phụ trách một xe công ty cố định.** Cặp tài xế–xe là cơ sở xếp chuyến. Tài xế theo dõi tình trạng, báo sự cố và nhu cầu bảo dưỡng của xe mình phụ trách. Khi lập lịch vẫn phải kiểm tra ca, nghỉ, bảo dưỡng và khả năng phục vụ thực tế của cả hai.
+- **Đơn thường đặt trước 17:00 và hẹn lấy ngày mai được đưa vào danh sách xếp lịch ngày mai.** Sau 17:00, Trưởng chi nhánh bắt đầu lập và chốt lịch chuyến thường ngày mai dựa trên lịch ca do Quản lý tài nguyên bố trí. Việc xếp chuyến phụ thuộc vào khung giờ, xe, tài xế và khả năng phục vụ thực tế.
+- **Gửi lịch lúc 07:30 ngày chạy.** Hệ thống gửi cho từng tài xế lịch chuyến thường đã chốt và phát hành. Tài xế trực hỏa tốc vào ca ở nhóm chờ điều phối và nhận chuyến phát sinh theo quy tắc hỏa tốc.
+
+### Trình tự vận hành
+
+| Mốc (giờ Việt Nam) | Việc cần làm |
+|---|---|
+| Khi lập lịch tuần | Quản lý tài nguyên xếp người đi làm và nhóm chạy thường/trực hỏa tốc từng ngày. |
+| Sau 16:00 | Hệ thống ngừng nhận đơn hỏa tốc mới. Đơn thường hẹn lấy ngày mai vẫn có thể vào danh sách xếp lịch nếu khách đặt trước 17:00. |
+| Sau 17:00 ngày trước | Trưởng chi nhánh lập và chốt lịch chuyến thường cho ngày mai, gồm cả phần việc ngày mai của chuyến đang tiếp diễn. Trưởng chi nhánh duyệt phiên bản kế hoạch. Điều phối viên vận tải phát hành phiên bản đã duyệt trong ngày trước ngày chạy theo phân quyền hiện hành. |
+| 07:30 ngày chạy | Hệ thống gửi thông báo và app hiển thị lịch trong mục Hôm nay. Với chuyến nhiều ngày, lịch đầu ca hiển thị phần việc của ngày đó. Nhóm hỏa tốc thấy trạng thái trực. Khi thiết bị mất mạng, lịch được tải lại khi kết nối. |
+
+- Đề xuất dùng trạng thái **Đã xem** để điều phối biết tài xế đã mở lịch. Quy trình nhận hoặc từ chối chuyến trong 30 giây áp dụng cho hỏa tốc theo điểm 2.
+- Nếu sau khi phát hành có tài xế báo nghỉ, xe báo hỏng hoặc dữ liệu thay đổi, điều phối xử lý phần việc bị ảnh hưởng và phát hành phiên bản cập nhật sau khi kiểm tra lại. Thông báo cập nhật cho đúng tài xế, giữ phần công việc và bàn giao đã thực hiện.
+- Nếu lịch ngày mai chưa được duyệt hoặc phát hành sau phiên lập lịch buổi tối, cảnh báo cho người phụ trách xử lý. Đến 07:30 chỉ gửi phiên bản đã phát hành.
+
+### Cần chốt
+
+- Có cần tài xế bấm xác nhận lịch thường hay chỉ ghi nhận đã xem.
+- Cách cấp xe thay thế khi xe cố định hỏng hoặc bảo dưỡng, và quyền điều động tài xế giữa hai nhóm trong ngày.
+
+### Tiêu chí nghiệm thu khi triển khai
+
+- Đơn thường đặt lúc 16:20 và hẹn lấy ngày mai được đưa vào danh sách xếp lịch ngày mai. Cùng thời điểm đó, hệ thống từ chối tạo đơn hỏa tốc mới. Kiểm tra mốc trước 17:00 cho đơn thường và quy tắc bắt đầu lập lịch sau 17:00.
+- Kiểm tra Quản lý tài nguyên xếp ca tuần và Trưởng chi nhánh lập, chốt lịch chuyến thường ngày mai trong phạm vi chi nhánh quản lý.
+- Kiểm tra lịch tuần mẫu có 7 tài xế chạy thường và 3 tài xế trực hỏa tốc. Đúng 07:30, hệ thống gửi nội dung theo nhóm và mỗi tài xế chỉ xem lịch của mình. Chuyến mới ở bản nháp hoặc mới duyệt chưa được gửi thành lịch chạy.
+- Kiểm tra một chuyến kéo dài nhiều ngày, tài xế mất mạng lúc 07:30, thay đổi sau phát hành, ca nghỉ và xe bảo dưỡng. App tải đúng phiên bản có hiệu lực, việc phát hành lại giữ lịch sử và không tạo phân công trùng.

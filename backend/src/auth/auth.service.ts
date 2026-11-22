@@ -5,7 +5,7 @@ import * as bcrypt from 'bcryptjs';
 import { createHmac } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { authConfig } from './auth.config';
-import { AccessGrant, Principal } from './access';
+import { AccessGrant, Principal, isBranchWebRole } from './access';
 import { LoginDto } from './login.dto';
 import { Prisma } from '@prisma/client';
 import { ChangePasswordDto } from './change-password.dto';
@@ -29,7 +29,7 @@ export class AuthService {
       // A password verified before this lock may have been replaced concurrently.
       if (rows[0].password !== user.password) throw new UnauthorizedException({ code: 'INVALID_CREDENTIALS', message: 'Thông tin đăng nhập đã thay đổi. Vui lòng đăng nhập lại' });
       const grants = await this.loadGrants(user.id, tx);
-      if (!grants.length && !['STAFF', 'CUSTOMER'].includes(user.role)) throw new ForbiddenException({ code: 'NO_SCOPE', message: 'Tài khoản chưa có phạm vi hoạt động được cấp' });
+      if (!grants.length && user.role !== 'CUSTOMER') throw new ForbiddenException({ code: 'NO_SCOPE', message: 'Tài khoản chưa có phạm vi hoạt động được cấp' });
       return { grants, session: await tx.authSession.create({ data: { userId: user.id, expiresAt } }) };
     });
     const accessToken = this.jwt.sign({ sub: user.id, sid: session.id }, { expiresIn: this.settings.ttl });
@@ -61,7 +61,7 @@ export class AuthService {
       include: { role: { include: { permissions: { include: { permission: true } } } } },
     });
     const driver = scopes.some(s => s.role.code === 'DRIVER') ? await db.driver.findUnique({ where: { userId }, select: { homeBranchId: true } }) : null;
-    return scopes.filter(s => (s.role.code === 'ADMIN' && s.scopeType === 'COMPANY' && s.branchId === null) || (s.role.code === 'DISPATCHER' && s.scopeType === 'BRANCH' && !!s.branchId) || (s.role.code === 'DRIVER' && s.scopeType === 'BRANCH' && !!driver && s.branchId === driver.homeBranchId))
+    return scopes.filter(s => (s.role.code === 'ADMIN' && s.scopeType === 'COMPANY' && s.branchId === null) || (isBranchWebRole(s.role.code) && s.scopeType === 'BRANCH' && !!s.branchId) || (s.role.code === 'DRIVER' && s.scopeType === 'BRANCH' && !!driver && s.branchId === driver.homeBranchId))
       .map(s => ({ role: s.role.code, scopeType: s.scopeType, branchId: s.branchId, permissions: s.role.permissions.map(p => p.permission.code) }));
   }
   async authenticatePayload(payload: unknown, db: Prisma.TransactionClient = this.prisma): Promise<Principal> {
@@ -69,7 +69,9 @@ export class AuthService {
     const session = await db.authSession.findUnique({ where: { id: payload.sid }, include: { user: true } });
     if (!session || session.userId !== payload.sub || session.revokedAt || session.expiresAt <= new Date()) throw new UnauthorizedException({ code: 'SESSION_INVALID', message: 'Phiên đã hết hạn hoặc đã đăng xuất' });
     if (!session.user.active) throw new UnauthorizedException({ code: 'ACCOUNT_DISABLED', message: 'Tài khoản đã bị khóa' });
-    return { id: session.userId, username: session.user.username, fullName: session.user.fullName, sessionId: session.id, role: session.user.role, branchId: session.user.branchId, locationId: session.user.locationId, phone: session.user.phone, email: session.user.email, grants: await this.loadGrants(session.userId, db) };
+    const grants = await this.loadGrants(session.userId, db);
+    if (!grants.length && session.user.role !== 'CUSTOMER') throw new ForbiddenException({ code: 'NO_SCOPE', message: 'Tài khoản chưa có phạm vi hoạt động được cấp' });
+    return { id: session.userId, username: session.user.username, fullName: session.user.fullName, sessionId: session.id, role: session.user.role, branchId: session.user.branchId, locationId: session.user.locationId, phone: session.user.phone, email: session.user.email, grants };
   }
   async authenticateToken(token: string, db: Prisma.TransactionClient = this.prisma) {
     let payload: unknown;

@@ -87,7 +87,7 @@ export class MapboxService {
 
       const route = response.data.routes[0];
       const distanceKm = Math.round((route.distance / 1000) * 10) / 10;
-      const durationMinutes = Math.round(route.duration / 60);
+      const durationMinutes = route.duration / 60;
 
       return {
         distanceKm,
