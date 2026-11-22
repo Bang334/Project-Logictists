@@ -123,7 +123,7 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
           showIcon
           style={{ marginBottom: 16 }}
           message="Ràng buộc vật lý & lối dỡ hàng 3D luôn được bảo vệ tự động"
-          description="Khi bật xếp chồng, optimizer vẫn bắt buộc kiểm tra cùng chuẩn hàng tiêu chuẩn, cho phép đặt tầng trên, tải đè dưới 30% giới hạn, khớp diện tích đáy và không chắn lối dỡ các kiện khác."
+          description={`Khi bật xếp chồng, optimizer vẫn bắt buộc kiểm tra cùng chuẩn hàng tiêu chuẩn, cho phép đặt tầng trên, tổng khối lượng đè lên mỗi kiện không vượt quá ${displayedStacking.maxTopLoadPercent ?? 30}% khối lượng kiện đỡ (và trần tải của kiện), khớp diện tích đáy và không chắn lối dỡ các kiện khác.`}
         />
         <Row gutter={[16, 16]}>
           <Col xs={24} md={12}>
@@ -210,6 +210,28 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
                 onChangeDraft((prev) => ({
                   ...prev,
                   stacking: { ...prev.stacking, liftClearanceMm: value ?? 50 },
+                }))
+              }
+            />
+          </Col>
+
+          <Col xs={24} md={12}>
+            <Text strong style={{ display: 'block', marginBottom: 6 }}>
+              Tải trọng đè tối đa lên kiện dưới (%)
+            </Text>
+            <InputNumber
+              aria-label="Tỷ lệ tải đè tối đa lên kiện dưới"
+              min={1}
+              max={100}
+              precision={0}
+              addonAfter="%"
+              style={{ width: '100%' }}
+              value={displayedStacking.maxTopLoadPercent}
+              disabled={!isStackingEditable || !displayedStacking.enabled}
+              onChange={(value) =>
+                onChangeDraft((prev) => ({
+                  ...prev,
+                  stacking: { ...prev.stacking, maxTopLoadPercent: value ?? 30 },
                 }))
               }
             />

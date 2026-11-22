@@ -108,6 +108,7 @@ class FastPackingChecker:
         current_placed: List[PlacedItem],
         item_delivery_rank: int,
         delivery_ranks: Dict[str, int],
+        strategy: str = "default",
     ) -> Optional[PlacedItem]:
         floor_area = self.L * self.W
         current_area = sum(p.length_cm * p.width_cm for p in current_placed)
@@ -204,8 +205,18 @@ class FastPackingChecker:
                     floor_length_cm=self.L,
                     floor_width_cm=self.W,
                 )
-                corridor_penalty = 150.0 if (y > 0.01 and y + w < self.W - 0.01) else 0.0
-                score = x * 1000.0 + corridor_penalty + lat_imb * 120.0 + fragile_adj * 140.0 + y * 0.05
+                if strategy == "default":
+                    corridor_penalty = 150.0 if (y > 0.01 and y + w < self.W - 0.01) else 0.0
+                    score = x * 1000.0 + corridor_penalty + lat_imb * 120.0 + fragile_adj * 140.0 + y * 0.05
+                else:
+                    # Keep overlapping deliveries in separate longitudinal y-lanes for FIFO clearance.
+                    diff_y = any(
+                        delivery_ranks.get(p.order_id, 999999) != item_delivery_rank
+                        and not (y + w <= p.y + 0.01 or p.y + p.width_cm <= y + 0.01)
+                        for p in current_placed
+                    )
+                    y_pref = (y + w) if strategy == "lane_y_left" else (self.W - y)
+                    score = (1_000_000.0 if diff_y else 0.0) + y_pref * 1000.0 + x * 10.0 + lat_imb * 20.0 + fragile_adj * 25.0
                 if score < best_score:
                     best_score = score
                     best_candidate = cand
@@ -223,9 +234,17 @@ class FastPackingChecker:
                 self.demo_stacking,
                 allow_layout_search=self.allow_layout_search,
             )
-        valid, reason = self._validate_greedy_route_stops(stops, cargo_items_by_id)
+        valid, reason = self._validate_greedy_route_stops(stops, cargo_items_by_id, strategy="default")
         if valid:
             return valid, reason
+        order_count = len({s.order_id for s in stops if s.order_id})
+        if order_count > 1:
+            for strategy in ("lane_y_left", "lane_y_right"):
+                alt_valid, alt_reason = self._validate_greedy_route_stops(
+                    stops, cargo_items_by_id, strategy=strategy
+                )
+                if alt_valid:
+                    return alt_valid, alt_reason
         if len(stops) <= 12 or self.allow_layout_search:
             valid_dyn, dyn_reason = self._validate_dynamic_lifo_route_stops(stops, cargo_items_by_id)
             if valid_dyn:
@@ -337,6 +356,7 @@ class FastPackingChecker:
         self,
         stops: List[ScheduledStop],
         cargo_items_by_id: Dict[str, CargoItem],
+        strategy: str = "default",
     ) -> Tuple[bool, str]:
         current_placed: List[PlacedItem] = []
         loaded_item_ids = set()
@@ -385,7 +405,7 @@ class FastPackingChecker:
                         )
                     item_rank = delivery_ranks.get(item.order_id, 999999)
                     placed = self.find_placement(
-                        item, current_placed, item_rank, delivery_ranks
+                        item, current_placed, item_rank, delivery_ranks, strategy=strategy
                     )
                     if not placed:
                         return (

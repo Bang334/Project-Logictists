@@ -35,11 +35,14 @@ it('form đơn không yêu cầu hạn giao và vẫn có thời lượng lấy/
   expect(dialog.getAllByLabelText('Thời gian phục vụ (phút)')).toHaveLength(2);
   expect(dialog.getByText('Lưu nháp')).toBeInTheDocument();
   const cargoKind = dialog.getByLabelText('Loại hàng');
+  expect(dialog.getByLabelText('Được đặt ở tầng trên')).toBeChecked();
+  expect(dialog.getByLabelText('Khách yêu cầu không đặt hàng lên trên')).not.toBeChecked();
+  fireEvent.mouseDown(cargoKind);
+  fireEvent.click(await screen.findByText('Dễ vỡ'));
   expect(dialog.queryByText('Được đặt ở tầng trên')).not.toBeInTheDocument();
   fireEvent.mouseDown(cargoKind);
   fireEvent.click(await screen.findByText('Thông thường'));
-  expect(dialog.getByLabelText('Được đặt ở tầng trên')).not.toBeChecked();
-  expect(dialog.getByLabelText('Khách yêu cầu không đặt hàng lên trên')).not.toBeChecked();
+  expect(dialog.getByLabelText('Được đặt ở tầng trên')).toBeInTheDocument();
 }, 30000);
 
 it('hiển thị checkbox khóa xoay 90° trên sàn cho mọi loại hàng và cho phép bật/tắt', async () => {

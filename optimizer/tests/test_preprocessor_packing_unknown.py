@@ -16,6 +16,7 @@ def bundle_request(packages, vehicles):
     size = vehicles+2
     request.distance_matrix_meters = [[0 if i == j else 100 for j in range(size)] for i in range(size)]
     request.duration_matrix_seconds = [[0 if i == j else 10 for j in range(size)] for i in range(size)]
+    request.demo_stacking = None
     return request
 
 

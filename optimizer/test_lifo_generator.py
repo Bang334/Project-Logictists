@@ -68,7 +68,6 @@ print(f"Xe 0 (3 đơn): Sinh được {len(seqs_v0)} chuỗi LIFO hoàn hảo!")
 # Thử nghiệm kiểm tra trên Xe 0:
 vehicle0 = solver.request.vehicles[0]
 val0 = SpatialValidator(vehicle0)
-node_id_to_idx = {node["id"]: idx for idx, node in enumerate(solver.nodes)}
 
 best_score = float("inf")
 best_res = None
@@ -81,7 +80,7 @@ for seq in seqs_v0:
         else:
             actions.append(StopAction(stop_id=o.delivery_location.id, sequence=i, stop_type="DELIVERY", address=o.delivery_location.name, latitude=o.delivery_location.latitude, longitude=o.delivery_location.longitude, items_to_unload=[it.id for it in o.items]))
     
-    eval_res = solver._evaluate_resequence_candidate(vehicle0, 0, actions, node_id_to_idx)
+    eval_res = solver._evaluate_resequence_candidate(vehicle0, 0, actions, seq)
     if eval_res is not None and eval_res[2] < best_score:
         sp = val0.validate_plan(actions)
         if sp.is_valid:
@@ -115,7 +114,7 @@ for seq in seqs_v2:
         else:
             actions.append(StopAction(stop_id=o.delivery_location.id, sequence=i, stop_type="DELIVERY", address=o.delivery_location.name, latitude=o.delivery_location.latitude, longitude=o.delivery_location.longitude, items_to_unload=[it.id for it in o.items]))
     
-    eval_res = solver._evaluate_resequence_candidate(vehicle2, 2, actions, node_id_to_idx)
+    eval_res = solver._evaluate_resequence_candidate(vehicle2, 2, actions, seq)
     if eval_res is not None and eval_res[2] < best_score2:
         sp = val2.validate_plan(actions)
         if sp.is_valid:

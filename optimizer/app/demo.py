@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -22,157 +22,7 @@ from .multi_start import MultiStartFleetOptimizer
 
 router = APIRouter(prefix="/demo", tags=["Demo Benchmarks"])
 
-CASES_DIR = Path(__file__).resolve().parent.parent / "benchmarks" / "cases"
-
-CASE_METADATA: Dict[str, Dict[str, Any]] = {
-    "stress_3d_danang_dense_120_orders": {
-        "name": "Đà Nẵng — kiện cồng kềnh, giao gần, 120 đơn",
-        "category": "SCENARIO",
-        "category_name": "Kịch bản demo",
-        "description": "1.260 kiện, tổng thể tích 1.157 m³, 20 xe vật lý và 7 ngày. Lấy tại 36 điểm trên địa bàn Đà Nẵng, giao 11 điểm cách bãi tối đa khoảng 12,2 km. Ma trận đường bộ Mapbox; giá vận hành giả lập.",
-        "suggested_time_limit_sec": 60.0,
-    },
-    "stress_3d_danang_120_orders": {
-        "name": "Đà Nẵng — 120 đơn, 1.260 kiện, 20 xe, 7 ngày",
-        "category": "SCENARIO",
-        "category_name": "Kịch bản demo",
-        "description": "120 đơn với 1–20 kiện mỗi đơn, xếp tối đa 3 tầng. 20 xe vật lý có 140 slot xe-ngày trong 7 ngày, ca 08:00–17:00. Điểm nhận được tách ra nhiều địa điểm tại Đà Nẵng và miền Trung trên ma trận đường bộ Mapbox. Giá vận hành giả lập.",
-        "suggested_time_limit_sec": 30.0,
-    },
-    "scenario_stack_customer_modes": {
-        "name": "Xếp chồng cùng khách và khác khách",
-        "category": "SCENARIO",
-        "category_name": "Kịch bản demo",
-        "description": "Hai khách có hai kiện cùng đáy. Thứ tự lấy và giao cho phép thử đặt kiện nhẹ của khách thứ hai lên kiện của khách thứ nhất.",
-        "suggested_time_limit_sec": 6.0,
-    },
-    "scenario_stack_cost_comparison": {
-        "name": "So sánh chi phí xếp chồng ba tầng",
-        "category": "SCENARIO",
-        "category_name": "Kịch bản demo",
-        "description": "Một đơn, ba kiện cùng đáy và ba xe nhỏ. Bật hoặc tắt xếp chồng trên cùng ma trận quãng đường giả lập để so chi phí.",
-        "suggested_time_limit_sec": 6.0,
-    },
-    "novel_1_mekong_hub_spoke": {
-        "name": "Mê Kông 2 chiều (Star Topology, Fronthaul-Backhaul)",
-        "category": "NOVEL",
-        "category_name": "Novel Nâng Cao",
-        "description": "Tuyến mạng hình sao ĐBSCL, phối hợp chiều đi giao vật tư và chiều về gom nông sản về kho trung tâm Cần Thơ.",
-        "suggested_time_limit_sec": 6.0,
-    },
-    "novel_2_long_narrow_timber": {
-        "name": "Gỗ dài 2.3m, sàn xe hẹp (Ràng buộc hình học 2D)",
-        "category": "NOVEL",
-        "category_name": "Novel Nâng Cao",
-        "description": "12 kiện gỗ dài 2.3m, tổng tải 7.2 tấn. Xe chỉ chở tối đa 3.2 tấn và thùng hẹp, kiểm tra nghiêm ngặt cấm xếp chồng và lối dỡ ra cửa sau.",
-        "suggested_time_limit_sec": 6.0,
-    },
-    "novel_3_three_shift_relay": {
-        "name": "Cảng biển 3 ca xoay vòng xe (Sáng - Trưa - Tối)",
-        "category": "NOVEL",
-        "category_name": "Novel Nâng Cao",
-        "description": "Điều phối 18 đơn phân bổ trải dài 3 ca làm việc trong ngày, tối ưu xoay vòng một xe tải phục vụ toàn bộ lộ trình liên tục.",
-        "suggested_time_limit_sec": 6.0,
-    },
-    "novel_4_3tier_asymmetric_fleet": {
-        "name": "Đội xe 3 tầng tải trọng lệch tâm (Tối ưu ghép xe)",
-        "category": "NOVEL",
-        "category_name": "Novel Nâng Cao",
-        "description": "Đội xe phân tầng (1 tấn, 2.5 tấn, 5 tấn) với chi phí định mức khác biệt; tối ưu gom đơn vào các xe tải lớn nhất để tiết kiệm số xe.",
-        "suggested_time_limit_sec": 6.0,
-    },
-    "novel_5_rolling_3day_horizon": {
-        "name": "Cửa sổ thời gian trượt 3 ngày (Đơn liên ngày)",
-        "category": "NOVEL",
-        "category_name": "Novel Nâng Cao",
-        "description": "Lập kế hoạch phân bổ đơn hàng qua chân trời thời gian 3 ngày, tối ưu ngày xuất phát xe và chi phí lưu kho.",
-        "suggested_time_limit_sec": 6.0,
-    },
-    "scenario_1_multi_item": {
-        "name": "Đa kiện hàng hóa (Nhiều kiện kích thước khác nhau)",
-        "category": "SCENARIO",
-        "category_name": "Bài Toán Vận Tải Đặc Thù",
-        "description": "Mỗi đơn gồm nhiều kiện hàng có kích thước và trọng lượng khác nhau, kiểm tra xếp dỡ LIFO 2D theo kiện.",
-        "suggested_time_limit_sec": 5.0,
-    },
-    "scenario_2_heavy_cargo": {
-        "name": "Hàng nặng tiếp cận tải trọng xe",
-        "category": "SCENARIO",
-        "category_name": "Bài Toán Vận Tải Đặc Thù",
-        "description": "Các kiện hàng có mật độ khối lượng lớn, kiểm tra tải trọng từng chặng (leg) và phụ trội nhiên liệu tải nặng.",
-        "suggested_time_limit_sec": 5.0,
-    },
-    "scenario_3_dispersed": {
-        "name": "Điểm giao nhận phân tán diện rộng",
-        "category": "SCENARIO",
-        "category_name": "Bài Toán Vận Tải Đặc Thù",
-        "description": "Khoảng cách giữa các điểm giao nhận xa nhau, tối ưu giảm thiểu tổng quãng đường km và phụ phí tài xế.",
-        "suggested_time_limit_sec": 5.0,
-    },
-    "scenario_4_tight_windows": {
-        "name": "Khung giờ giao nhận ngặt nghèo (Tight Time Windows)",
-        "category": "SCENARIO",
-        "category_name": "Bài Toán Vận Tải Đặc Thù",
-        "description": "Cửa sổ thời gian nhận và trả hàng rất hẹp; kiểm tra khả năng điều phối đúng giờ và phạt trễ hạn.",
-        "suggested_time_limit_sec": 5.0,
-    },
-    "scenario_5_heterogeneous_fleet": {
-        "name": "Đội xe hỗn hợp nhiều kích cỡ tải trọng",
-        "category": "SCENARIO",
-        "category_name": "Bài Toán Vận Tải Đặc Thù",
-        "description": "Đội xe đa dạng kích thước thùng và tải trọng; thuật toán tự chọn loại xe tối ưu nhất cho từng tuyến.",
-        "suggested_time_limit_sec": 6.0,
-    },
-    "scenario_6_dynamic_reuse": {
-        "name": "Tái sử dụng không gian sàn xe động",
-        "category": "SCENARIO",
-        "category_name": "Bài Toán Vận Tải Đặc Thù",
-        "description": "Sau khi giao đơn trước, khoảng trống trên sàn được giải phóng để bốc đơn tiếp theo mà không cản cửa.",
-        "suggested_time_limit_sec": 5.0,
-    },
-    "scenario_7_multi_depot_overnight": {
-        "name": "Đa kho xuất phát & lưu kho qua đêm",
-        "category": "SCENARIO",
-        "category_name": "Bài Toán Vận Tải Đặc Thù",
-        "description": "Nhiều xe xuất phát từ các kho khác nhau (Hà Nội, Hải Phòng, Bắc Ninh); kiểm tra ma trận đa trạm liên tỉnh.",
-        "suggested_time_limit_sec": 6.0,
-    },
-    "scenario_8_dense_fragmentation": {
-        "name": "Phân mảnh đơn hàng mật độ cao",
-        "category": "SCENARIO",
-        "category_name": "Bài Toán Vận Tải Đặc Thù",
-        "description": "Nhiều đơn lẻ nhỏ phân bố dày đặc trong nội thành, thử thách năng lực gom tuyến của Hybrid ALNS.",
-        "suggested_time_limit_sec": 6.0,
-    },
-    "db_danang_30_orders": {
-        "name": "Dữ liệu thực tế Đà Nẵng (30 đơn gom tải)",
-        "category": "REAL_DATA",
-        "category_name": "Dữ Liệu Thực Tế Doanh Nghiệp",
-        "description": "Tập dữ liệu quy mô lớn 30 đơn hàng thực tế tại khu vực Đà Nẵng - Quảng Nam.",
-        "suggested_time_limit_sec": 8.0,
-    },
-    "db_hanoi_16_orders": {
-        "name": "Dữ liệu thực tế Hà Nội (16 đơn đa quận)",
-        "category": "REAL_DATA",
-        "category_name": "Dữ Liệu Thực Tế Doanh Nghiệp",
-        "description": "16 đơn hàng thực tế giao nhận liên quận tại khu vực Hà Nội.",
-        "suggested_time_limit_sec": 6.0,
-    },
-    "db_songthan_4_orders": {
-        "name": "Dữ liệu thực tế KCN Sóng Thần (4 đơn phân phối)",
-        "category": "REAL_DATA",
-        "category_name": "Dữ Liệu Thực Tế Doanh Nghiệp",
-        "description": "Tuyến phân phối hàng hóa xuất phát từ Tổng kho Sóng Thần (Bình Dương).",
-        "suggested_time_limit_sec": 4.0,
-    },
-    "db_nhatrang_2_orders": {
-        "name": "Dữ liệu thực tế Nha Trang (2 đơn cơ bản)",
-        "category": "REAL_DATA",
-        "category_name": "Dữ Liệu Thực Tế Doanh Nghiệp",
-        "description": "Tập dữ liệu mẫu cơ bản 2 đơn hàng nội thành Nha Trang (Khánh Hòa).",
-        "suggested_time_limit_sec": 3.0,
-    },
-}
+CASES_DIR = Path(__file__).resolve().parent.parent / "benchmarks" / "corridor"
 
 
 class DemoCaseSummary(BaseModel):
@@ -204,84 +54,35 @@ class DemoRunRequest(BaseModel):
     max_time_seconds: Optional[int] = Field(default=None, ge=1, le=1000)
     demo_stacking_enabled: Optional[bool] = None
     demo_stacking_owner_mode: Optional[Literal["SAME_CUSTOMER", "ANY_CUSTOMER"]] = None
+    demo_stacking_max_top_load_percent: Optional[int] = Field(default=None, ge=1, le=100)
 
 
 def _load_case_dict(case_id: str) -> dict:
-    if not CASES_DIR.exists():
-        raise HTTPException(status_code=500, detail="Thư mục benchmarks/cases không tồn tại")
-    case_file = CASES_DIR / f"{case_id}.json"
-    if not case_file.exists():
-        raise HTTPException(status_code=404, detail=f"Không tìm thấy kịch bản {case_id}")
-    try:
-        with open(case_file, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500, detail=f"Lỗi khi đọc file kịch bản {case_id}: {exc}"
-        )
+    if not case_id.startswith("corridor_") or not case_id.replace("_", "").isalnum():
+        raise HTTPException(status_code=404, detail="Không tìm thấy kịch bản demo")
+    path = CASES_DIR / f"{case_id}.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Không tìm thấy kịch bản demo")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @router.get("/cases", response_model=List[DemoCaseSummary])
 def list_demo_cases() -> List[DemoCaseSummary]:
-    """Danh sách 17 kịch bản benchmark chuẩn kèm metadata mô tả."""
-    if not CASES_DIR.exists():
-        return []
-
-    summaries: List[DemoCaseSummary] = []
-    case_files = sorted(CASES_DIR.glob("*.json"))
-
-    for file_path in case_files:
-        stem = file_path.stem
-        meta = CASE_METADATA.get(
-            stem,
-            {
-                "name": stem,
-                "category": "SCENARIO",
-                "category_name": "Kịch Bản Khác",
-                "description": f"Kịch bản thử nghiệm {stem}",
-                "suggested_time_limit_sec": 5.0,
-            },
-        )
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            orders = data.get("orders", [])
-            vehicles = data.get("vehicles", [])
-            drivers = data.get("drivers", [])
-
-            total_weight = 0.0
-            total_volume = 0.0
-            for o in orders:
-                for item in o.get("items", []):
-                    total_weight += float(item.get("weight_kg", 0.0))
-                    l = float(item.get("length_cm", 0.0)) / 100.0
-                    w = float(item.get("width_cm", 0.0)) / 100.0
-                    h = float(item.get("height_cm", 0.0)) / 100.0
-                    total_volume += l * w * h
-
-            summaries.append(
-                DemoCaseSummary(
-                    id=stem,
-                    filename=file_path.name,
-                    name=meta["name"],
-                    category=meta["category"],
-                    category_name=meta["category_name"],
-                    description=meta["description"],
-                    orders_count=len(orders),
-                    vehicles_count=len(vehicles),
-                    drivers_count=len(drivers),
-                    total_weight_kg=round(total_weight, 2),
-                    total_volume_cbm=round(total_volume, 3),
-                    suggested_time_limit_sec=float(meta.get("suggested_time_limit_sec", 6.0)),
-                    supports_stacking=data.get("demo_stacking") is not None,
-                )
-            )
-        except Exception:
-            continue
-
-    # Sắp xếp: Novel trước, rồi Scenario, rồi Real Data
-    category_order = {"NOVEL": 0, "SCENARIO": 1, "REAL_DATA": 2}
-    summaries.sort(key=lambda s: (category_order.get(s.category, 99), s.orders_count, s.name))
+    summaries = []
+    catalog = json.loads((CASES_DIR / "catalog.json").read_text(encoding="utf-8"))
+    for case_id, profile in catalog.items():
+        data = _load_case_dict(case_id)
+        items = [item for order in data["orders"] for item in order["items"]]
+        summaries.append(DemoCaseSummary(
+            id=case_id, filename=f"{case_id}.json", name=profile["name"],
+            description=profile["description"], category="SCENARIO",
+            category_name="Xếp dỡ trên tuyến thẳng", orders_count=len(data["orders"]),
+            vehicles_count=len(data["vehicles"]), drivers_count=len(data["drivers"]),
+            total_weight_kg=sum(item["weight_kg"] for item in items),
+            total_volume_cbm=round(sum(item["length_cm"] * item["width_cm"] * item["height_cm"]
+                                       for item in items) / 1_000_000, 3),
+            suggested_time_limit_sec=data["max_time_seconds"],
+        ))
     return summaries
 
 
@@ -313,7 +114,7 @@ def run_demo_case(payload: DemoRunRequest) -> FleetOptimizationBatchResponse:
         request.max_time_seconds = int(round(payload.time_budget_seconds))
 
     # Chạy trực tiếp qua MultiStartFleetOptimizer (Hybrid ALNS first)
-    if payload.demo_stacking_enabled is False:
+    if (payload.case_id and payload.custom_request is None) or payload.demo_stacking_enabled is False:
         stacking_policy = None
     elif request.demo_stacking is not None:
         stacking_policy = request.demo_stacking
@@ -321,12 +122,17 @@ def run_demo_case(payload: DemoRunRequest) -> FleetOptimizationBatchResponse:
         stacking_policy = DemoStackingPolicy(
             max_tiers=3,
             lift_clearance_cm=5.0,
-            owner_mode=payload.demo_stacking_owner_mode or "SAME_CUSTOMER",
+            owner_mode=payload.demo_stacking_owner_mode or "ANY_CUSTOMER",
+            max_top_load_percent=payload.demo_stacking_max_top_load_percent or 30,
         )
     else:
         stacking_policy = None
     if stacking_policy and payload.demo_stacking_owner_mode:
         stacking_policy = stacking_policy.model_copy(update={"owner_mode": payload.demo_stacking_owner_mode})
+    if stacking_policy and payload.demo_stacking_max_top_load_percent is not None:
+        stacking_policy = stacking_policy.model_copy(
+            update={"max_top_load_percent": payload.demo_stacking_max_top_load_percent}
+        )
     solver_request = request.model_copy(update={
         "demo_stacking": stacking_policy,
         "hybrid_seed_count": request.hybrid_seed_count if payload.hybrid_seed_count is None else payload.hybrid_seed_count,

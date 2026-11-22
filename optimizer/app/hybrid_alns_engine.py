@@ -9,6 +9,7 @@ final source of truth.
 from __future__ import annotations
 
 import copy
+import random
 import math
 import time
 from itertools import permutations
@@ -30,7 +31,14 @@ from .hybrid_alns.models import (
     ScheduledStop as HybridScheduledStop,
 )
 from .hybrid_alns.solver import solve_hybrid_alns
-from .hybrid_alns.stop_moves import ranked_order_moves, ranked_stop_moves, ranked_subtrip_moves
+from .hybrid_alns.stop_moves import (
+    MAX_RESEQUENCE_STOPS,
+    is_single_stop_relocation,
+    ranked_order_moves,
+    ranked_short_route_sequences,
+    ranked_stop_moves,
+    ranked_subtrip_moves,
+)
 from .models import (
     FleetOptimizationRequest,
     FleetOptimizationResponse,
@@ -65,6 +73,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
         include_benchmarks: bool = True,
         ortools_seed_pool: Optional[Sequence[List[List[ScheduledStop]]]] = None,
         should_split_orders: bool = True,
+        initial_plan_is_verified: bool = False,
     ) -> None:
         super().__init__(
             request,
@@ -75,11 +84,13 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             should_split_orders=should_split_orders,
         )
         self.initial_plan = initial_plan
+        self._initial_plan_is_verified = initial_plan_is_verified
         self._ortools_seed_pool: List[List[List[ScheduledStop]]] = list(ortools_seed_pool or ())
         self._use_ranked_repair = True
         self._native_search_budget_available = True
         self._seed_search_deadline: Optional[float] = None
         self._construction_audit_fallback: Optional[Tuple[List[List[ScheduledStop]], List[str]]] = None
+        self._verified_construction_plan: Optional[FleetOptimizationResponse] = None
         self._post_audit_budget_sec = min(0.28, max(0.15, self.time_limit_sec * 0.14))
         self.destroy_weights: Dict[str, float] = {
             "route": 2.0,
@@ -871,10 +882,53 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             routes[vehicle_index] = stops
         return routes, unassigned
 
+    def _single_order_fits_vehicle_floor(
+        self,
+        vehicle_index: int,
+        order_id: str,
+        pair_stops: List[ScheduledStop],
+        deadline: float,
+        spatially_checked: Set[Tuple[Any, ...]],
+        fit_cache: Optional[Dict[Tuple[str, Tuple[Any, ...]], bool]] = None,
+        exact_cap_seconds: float = 0.05,
+    ) -> bool:
+        """Check whether an isolated pickup-delivery pair fits on the vehicle floor."""
+        if self._validate_stops_cached(vehicle_index, pair_stops):
+            return True
+        vehicle = self.vehicles[vehicle_index]
+        profile = (
+            vehicle.length_cm,
+            vehicle.width_cm,
+            vehicle.height_cm,
+            vehicle.payload_limit_kg,
+            vehicle.door_position,
+            vehicle.door_width_cm,
+        )
+        cache_key = (order_id, profile)
+        if fit_cache is not None and cache_key in fit_cache:
+            return fit_cache[cache_key]
+        if profile in spatially_checked:
+            return False
+        spatially_checked.add(profile)
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0.0:
+            return False
+        budget = min(exact_cap_seconds, remaining)
+        actions = [
+            stop.model_copy(update={"sequence": n})
+            for n, stop in enumerate(pair_stops, 1)
+        ]
+        fits = self._validate_exact_route(vehicle_index, actions, budget)
+        if fit_cache is not None and (fits or budget >= exact_cap_seconds * 0.5):
+            fit_cache[cache_key] = fits
+        return fits
+
     def _conservative_cycle_construction(
         self,
         order_sequence: Sequence[str],
         deadline: float,
+        vehicle_indices: Sequence[int],
+        fit_cache: Optional[Dict[Tuple[str, Tuple[Any, ...]], bool]] = None,
     ) -> Tuple[List[List[ScheduledStop]], List[str]]:
         """Build a spatially safe fallback from adjacent pickup-delivery cycles.
 
@@ -890,14 +944,20 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 unassigned.extend(order_sequence[sequence_index:])
                 break
             order = self.order_by_id[order_id]
-            best: Optional[Tuple[float, int, List[ScheduledStop]]] = None
-            for vehicle_index, current_route in enumerate(routes):
+            exact_cap = 0.25 if len(order.items) >= 40 else 0.08
+            spatially_checked: Set[Tuple[Any, ...]] = set()
+            best: Optional[Tuple[int, float, int, List[ScheduledStop]]] = None
+            for vehicle_index in vehicle_indices:
+                if time.perf_counter() >= deadline:
+                    break
+                current_route = routes[vehicle_index]
                 feasible, candidate_stops = self._can_insert_order(
                     vehicle_index,
                     current_route,
                     order,
                     len(current_route),
                     len(current_route) + 1,
+                    check_packing=False,
                 )
                 if not feasible:
                     continue
@@ -915,14 +975,63 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 score = activation_cost + max(
                     0.0, candidate_distance - previous_distance
                 ) * 1_000.0
-                option = (score, vehicle_index, candidate_stops)
-                if best is None or option[0] < best[0]:
-                    best = option
+                option = (len(current_route), score, vehicle_index, candidate_stops)
+                if best is not None and option[:3] >= best[:3]:
+                    continue
+                if not self._single_order_fits_vehicle_floor(
+                    vehicle_index,
+                    order_id,
+                    candidate_stops[-2:],
+                    deadline,
+                    spatially_checked,
+                    fit_cache=fit_cache,
+                    exact_cap_seconds=exact_cap,
+                ):
+                    continue
+                best = option
             if best is None:
                 unassigned.append(order_id)
             else:
-                routes[best[1]] = best[2]
+                routes[best[2]] = best[3]
         return routes, unassigned
+
+    def _audited_cycle_checkpoint(
+        self,
+        vehicle_indices: Sequence[int],
+        deadline: float,
+        max_attempts: int = 12,
+    ) -> Optional[FleetOptimizationResponse]:
+        natural_sequence = [order.id for order in self.orders]
+        largest_first_sequence = [
+            order.id
+            for order in sorted(
+                self.orders,
+                key=lambda item: (-len(item.items), item.id),
+            )
+        ]
+        candidate_sequences: List[List[str]] = [largest_first_sequence]
+        if natural_sequence != largest_first_sequence:
+            candidate_sequences.append(natural_sequence)
+        rng = random.Random(0)
+        shuffled = list(natural_sequence)
+        while len(candidate_sequences) < max_attempts:
+            rng.shuffle(shuffled)
+            candidate_sequences.append(list(shuffled))
+        fit_cache: Dict[Tuple[str, Tuple[Any, ...]], bool] = {}
+        for sequence in candidate_sequences[:max_attempts]:
+            if time.perf_counter() >= deadline:
+                break
+            routes, missing = self._conservative_cycle_construction(
+                sequence, deadline, vehicle_indices, fit_cache=fit_cache
+            )
+            if not missing and time.perf_counter() < deadline:
+                result = self._build_final_response(
+                    routes, [], include_benchmarks=False,
+                    spatial_time_budget_seconds=deadline - time.perf_counter(),
+                )
+                if result.status == "SUCCESS" and not result.unassigned_orders:
+                    return result
+        return None
 
     def _time_wave_order_sequence(self) -> List[str]:
         waves_by_start: Dict[int, List[str]] = {}
@@ -1644,7 +1753,9 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
         routes: List[List[ScheduledStop]] = [[] for _ in self.vehicles]
         for route in response.routes:
             index = indices.get(route.route_id or route.vehicle_id)
-            if index is None:
+            # This search state can represent only one trip per vehicle/day slot.
+            # Keep the audited plan when multiple trips share that slot.
+            if index is None or routes[index]:
                 return None
             routes[index] = [stop.model_copy(update={
                 "order_id": stop.allocation_id or stop.order_id,
@@ -1660,7 +1771,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
         created yet. Re-price these moves with the production objective, and
         audit again before accepting any of them.
         """
-        if response.unassigned_orders or not response.routes:
+        if response.unassigned_orders or not response.routes or time.perf_counter() >= deadline:
             return response
         best = response
         order_weights = {
@@ -1707,6 +1818,19 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             scheduled_route_keys.add(cache_key)
             return True
 
+        def audit_improvement(candidate: List[List[ScheduledStop]]) -> FleetOptimizationResponse:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                return best
+            audited = self._build_final_response(
+                candidate, [], include_benchmarks=False,
+                spatial_time_budget_seconds=remaining, polish_checkpoint=(deadline, best),
+            )
+            if audited is best or time.perf_counter() >= deadline:
+                return best
+            return self._best_audited_response([best, audited])
+
+        try_short_sequences = True
         while time.perf_counter() < deadline:
             routes = self._routes_from_audited_response(best)
             if routes is None:
@@ -1722,25 +1846,63 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 node_routes.append(nodes)
             actions = [[(stop.allocation_id or stop.order_id or "", stop.stop_type)
                 for stop in route] for route in routes]
+            short_sequences = []
+            if try_short_sequences:
+                try_short_sequences = False
+                distances = self.request.distance_matrix_meters
+                segments = []
+                now = time.perf_counter()
+                sequence_deadline = now + min(0.25, max(0.0, (deadline - now) * 0.65))
+                for index, nodes in enumerate(node_routes):
+                    if time.perf_counter() >= sequence_deadline:
+                        break
+                    for start in range(len(nodes) - 1):
+                        if time.perf_counter() >= sequence_deadline:
+                            break
+                        first = nodes[start - 1] if start else index
+                        previous, length = first, 0.0
+                        for stop in range(start, min(start + MAX_RESEQUENCE_STOPS, len(nodes))):
+                            length += distances[previous][nodes[stop]]
+                            previous = nodes[stop]
+                            end = stop + 1
+                            if end - start < 2:
+                                continue
+                            last = nodes[end] if end < len(nodes) else index
+                            detour = length + distances[previous][last] - distances[first][last]
+                            segments.append((detour, index, start, end, first, last))
+                for _, index, start, end, first, last in sorted(segments, reverse=True):
+                    if time.perf_counter() >= sequence_deadline:
+                        break
+                    short_sequences.extend(
+                        (delta, (index, start, end, *positions))
+                        for delta, positions in ranked_short_route_sequences(
+                            node_routes[index][start:end], actions[index][start:end], first,
+                            distances, min(sequence_deadline, time.perf_counter() + 0.20),
+                            end_node=last,
+                        )
+                        if not is_single_stop_relocation(positions)
+                    )
+            now = time.perf_counter()
+            generation_budget = max(0.0, (deadline - now) * 0.5)
             stop_moves = ranked_stop_moves(
                 node_routes,
                 actions,
                 list(range(len(routes))), list(range(len(routes))),
-                self.request.distance_matrix_meters, deadline,
+                self.request.distance_matrix_meters, now + generation_budget * 0.25,
             )
             pair_moves = ranked_order_moves(
                 node_routes, actions, list(range(len(routes))), list(range(len(routes))),
-                self.request.distance_matrix_meters, deadline,
+                self.request.distance_matrix_meters, now + generation_budget * 0.80,
             )
             subtrip_moves = ranked_subtrip_moves(
                 node_routes, actions, list(range(len(routes))), list(range(len(routes))),
-                self.request.distance_matrix_meters, deadline,
+                self.request.distance_matrix_meters, now + generation_budget,
             )
-            # Rank route-eliminating moves first, then distance-improving single-stop
-            # moves, then cross-route order/subtrip moves so thousands of infeasible pair moves
-            # cannot starve cheap intra-route improvements.
+            # Prioritize removing trips, then short-route proposals and local moves.
+            # All proposals still compete on the audited production objective.
             moves = sorted(
-                [(0, 0 if delta < 0 else 2, delta, 0, (vehicle, source, target))
+                [(0, -1, delta, 3, positions) for delta, positions in short_sequences]
+                + [(0, 0 if delta < 0 else 2, delta, 0, (vehicle, source, target))
                     for delta, vehicle, source, target in stop_moves]
                 + [(trips, 1 if delta < 0 else 2, delta, 1, (source, pickup, delivery, target, p, d))
                     for trips, delta, source, pickup, delivery, target, p, d in pair_moves]
@@ -1753,7 +1915,14 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 if time.perf_counter() >= deadline:
                     return best
                 candidate = list(routes)
-                if kind == 0:
+                if kind == 3:
+                    vehicle_index, start, end, *sequence = positions
+                    route = routes[vehicle_index]
+                    candidate[vehicle_index] = (
+                        route[:start] + [route[start + index] for index in sequence] + route[end:]
+                    )
+                    changed_indices = (vehicle_index,)
+                elif kind == 0:
                     vehicle_index, source, target = positions
                     route = routes[vehicle_index]
                     reduced = route[:source] + route[source+1:]
@@ -1804,66 +1973,54 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 if any(not _route_capacity_and_schedule_ok(index, candidate[index])
                     for index in changed_indices if candidate[index]):
                     continue
-                # A cheap conservative check avoids spending the ranking/audit budget
-                # on moves that cannot load/unload their cargo.
-                prev_layout_search = getattr(self, "_allow_layout_search", True)
-                self._allow_layout_search = False
-                try:
-                    spatial_ok = True
-                    for index in changed_indices:
-                        if not candidate[index]:
-                            continue
-                        if not self._validate_stops_cached(index, candidate[index]):
-                            sig = tuple((stop.allocation_id or stop.order_id or "", stop.stop_type) for stop in candidate[index])
-                            rejected_route_keys.add((index, sig))
-                            spatial_ok = False
-                            break
-                finally:
-                    self._allow_layout_search = prev_layout_search
-                if not spatial_ok:
-                    continue
+                if kind != 3:
+                    # A cheap conservative check avoids spending the ranking/audit budget
+                    # on moves that cannot load/unload their cargo.
+                    prev_layout_search = getattr(self, "_allow_layout_search", True)
+                    self._allow_layout_search = False
+                    try:
+                        spatial_ok = True
+                        for index in changed_indices:
+                            if not candidate[index]:
+                                continue
+                            if time.perf_counter() >= deadline:
+                                return best
+                            if not self._validate_stops_cached(index, candidate[index]):
+                                spatial_ok = False
+                                break
+                    finally:
+                        self._allow_layout_search = prev_layout_search
+                    if not spatial_ok:
+                        continue
+                if time.perf_counter() >= deadline:
+                    return best
                 if self._rank_candidate_for_audit(candidate, []) >= incumbent_key:
                     continue
-                remaining = deadline - time.perf_counter()
-                if remaining <= 0:
-                    return best
-                audited = self._build_final_response(
-                    candidate, [], include_benchmarks=False,
-                    spatial_time_budget_seconds=remaining,
-                )
-                if self._best_audited_response([best, audited]) is audited:
+                audited = audit_improvement(candidate)
+                if audited is not best:
                     best = audited
                     improved = True
                     break
             if not improved and time.perf_counter() < deadline:
                 exchanged = self._best_order_exchange(routes, [], deadline)
-                if exchanged is not None:
+                if exchanged is not None and time.perf_counter() < deadline:
                     _, ex_routes, _, (first_index, second_index) = exchanged
                     reassigned = self._optimize_production_vehicles(ex_routes, [], deadline)
                     if reassigned is not None:
                         ex_routes = reassigned[1]
-                    if self._rank_candidate_for_audit(ex_routes, []) < incumbent_key:
-                        remaining = deadline - time.perf_counter()
-                        if remaining > 0:
-                            audited = self._build_final_response(
-                                ex_routes, [], include_benchmarks=False,
-                                spatial_time_budget_seconds=remaining,
-                            )
-                            if self._best_audited_response([best, audited]) is audited:
-                                best = audited
-                                improved = True
-            if not improved and time.perf_counter() < deadline:
-                reassigned = self._optimize_production_vehicles(routes, [], deadline)
-                if reassigned is not None and self._rank_candidate_for_audit(reassigned[1], []) < incumbent_key:
-                    remaining = deadline - time.perf_counter()
-                    if remaining > 0:
-                        audited = self._build_final_response(
-                            reassigned[1], [], include_benchmarks=False,
-                            spatial_time_budget_seconds=remaining,
-                        )
-                        if self._best_audited_response([best, audited]) is audited:
+                    if time.perf_counter() < deadline and self._rank_candidate_for_audit(ex_routes, []) < incumbent_key:
+                        audited = audit_improvement(ex_routes)
+                        if audited is not best:
                             best = audited
                             improved = True
+            if not improved and time.perf_counter() < deadline:
+                reassigned = self._optimize_production_vehicles(routes, [], deadline)
+                if (reassigned is not None and time.perf_counter() < deadline
+                        and self._rank_candidate_for_audit(reassigned[1], []) < incumbent_key):
+                    audited = audit_improvement(reassigned[1])
+                    if audited is not best:
+                        best = audited
+                        improved = True
             if not improved:
                 break
         return best
@@ -1879,19 +2036,19 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
         actions = [
             StopAction(
                 stop_id=stop.location_id,
-                sequence=stop.sequence,
+                sequence=stop.sequence if stop.sequence and stop.sequence >= 1 else seq_idx,
                 stop_type=stop.stop_type,
                 address=stop.location_name,
                 latitude=stop.latitude,
                 longitude=stop.longitude,
                 items_to_load=[
-                    self.cargo_by_id[item_id]
+                    self._spatial_cargo_item(item_id)
                     for item_id in stop.items_loaded
                     if item_id in self.cargo_by_id
                 ],
                 items_to_unload=list(stop.items_unloaded),
             )
-            for stop in stops
+            for seq_idx, stop in enumerate(stops, start=1)
         ]
         return self._validate_spatial_actions(
             vehicle_index,
@@ -1917,7 +2074,11 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             ),
             tuple(
                 (
+                    # Layout step states also carry stop identifiers and labels.
+                    action.stop_id,
+                    action.sequence,
                     action.stop_type,
+                    action.address,
                     tuple(
                         (
                             item.id,
@@ -2188,56 +2349,191 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
         return self._candidate_key(repaired, missing), repaired, missing
 
     def _append_delivery_cycles(
-        self, routes: List[List[ScheduledStop]], vehicle_indices: Sequence[int], deadline: float,
+        self,
+        routes: List[List[ScheduledStop]],
+        vehicle_indices: Sequence[int],
+        deadline: float,
+        *,
+        allow_overlap: bool = False,
     ) -> List[str]:
-        """Construct a seed with an empty truck between successive orders."""
+        """Construct a seed; optionally prefer corridor overlaps on active trucks."""
         missing = []
         routes_by_day: Dict[int, int] = {}
         route_limit = self.request.policy.max_routes_per_day
+        started = time.perf_counter()
+        overlap_deadline = started + max(0.0, (deadline - started) * 0.75)
         orders = sorted(self.orders, key=lambda o: (o.pickup_window_end_sec, o.delivery_window_end_sec))
         for position, order in enumerate(orders):
             if time.perf_counter() >= deadline:
                 missing.extend(o.id for o in orders[position:])
                 break
-            pickup_index = self.order_node_indices[order.id][0]
+            pickup_index, _ = self.order_node_indices[order.id]
+            use_overlap = allow_overlap and time.perf_counter() < overlap_deadline
 
             def priority(index: int) -> Tuple:
                 route = routes[index]
                 origin = self.order_node_indices[route[-1].allocation_id][1] if route else index
                 vehicle = self.vehicles[index]
-                return (vehicle.service_day_index, not route,
-                        self.request.duration_matrix_seconds[origin][pickup_index],
-                        -vehicle.width_cm * vehicle.length_cm)
+                min_stop_dur = self.request.duration_matrix_seconds[origin][pickup_index]
+                if use_overlap and route:
+                    for st in route[-4:]:
+                        oid = st.allocation_id or st.order_id
+                        if oid and oid in self.order_node_indices:
+                            p_node, d_node = self.order_node_indices[oid]
+                            node = p_node if st.stop_type == "PICKUP" else d_node
+                            min_stop_dur = min(
+                                min_stop_dur,
+                                self.request.duration_matrix_seconds[node][pickup_index],
+                            )
+                return (
+                    vehicle.service_day_index,
+                    not route,
+                    min_stop_dur,
+                    -vehicle.width_cm * vehicle.length_cm,
+                )
+
+            ranked_indices = sorted(vehicle_indices, key=priority)
+            if not use_overlap:
+                assigned = False
+                spatially_checked: Set[Tuple[Any, ...]] = set()
+                for idx in ranked_indices:
+                    if time.perf_counter() >= deadline:
+                        break
+                    route = routes[idx]
+                    day = self.vehicles[idx].service_day_index
+                    if not route and route_limit is not None and routes_by_day.get(day, 0) >= route_limit:
+                        continue
+                    ok, stops = self._can_insert_order(idx, route, order, len(route), len(route) + 1, check_packing=False)
+                    if not ok:
+                        continue
+                    if self._single_order_fits_vehicle_floor(
+                        idx, order.id, stops[-2:], deadline, spatially_checked,
+                    ):
+                        if not route:
+                            routes_by_day[day] = routes_by_day.get(day, 0) + 1
+                        routes[idx] = stops
+                        assigned = True
+                        break
+                if not assigned:
+                    missing.append(order.id)
+                continue
+
+            active_candidates: List[Tuple[int, float, int, int, int, int]] = []
+            active_checked = 0
+            empty_candidates: List[int] = []
+            for idx in ranked_indices:
+                route = routes[idx]
+                v = self.vehicles[idx]
+                day = v.service_day_index
+                if not route:
+                    if route_limit is None or routes_by_day.get(day, 0) < route_limit:
+                        empty_candidates.append(idx)
+                    continue
+                if active_checked >= 8:
+                    continue
+                if not self._order_allows_vehicle(order, v) or not self._vehicle_has_compatible_driver(v):
+                    continue
+                active_checked += 1
+                last_pickup = max((i for i, s in enumerate(route) if s.stop_type == "PICKUP"), default=0)
+                tail_options: List[Tuple[int, int]] = []
+                max_d = len(route) + 1
+                for p_pos in (last_pickup + 1, last_pickup, len(route)):
+                    if not (0 <= p_pos <= len(route)):
+                        continue
+                    for d_pos in (p_pos + 1, max_d - 1, max_d):
+                        if p_pos + 1 <= d_pos <= max_d and (p_pos, d_pos) not in tail_options:
+                            tail_options.append((p_pos, d_pos))
+                if (len(route), max_d) not in tail_options:
+                    tail_options.append((len(route), max_d))
+                for p_pos, d_pos in tail_options:
+                    delta_dist = self._estimate_insertion_delta_km(idx, route, order, p_pos, d_pos)
+                    active_candidates.append((day, delta_dist, -len(route), idx, p_pos, d_pos))
 
             assigned = False
-            spatially_checked = set()
-            for idx in sorted(vehicle_indices, key=priority):
-                if time.perf_counter() >= deadline:
+            active_candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+            spatial_checks = 0
+            for _, _, _, idx, p_pos, d_pos in active_candidates[:12]:
+                if time.perf_counter() >= deadline or spatial_checks >= 4:
                     break
-                route = routes[idx]
-                day = self.vehicles[idx].service_day_index
-                if not route and route_limit is not None and routes_by_day.get(day, 0) >= route_limit:
-                    continue
-                ok, stops = self._can_insert_order(idx, route, order, len(route), len(route) + 1, check_packing=False)
+                ok, stops = self._can_insert_order(idx, routes[idx], order, p_pos, d_pos, check_packing=False)
                 if not ok:
                     continue
-                fits = self._validate_stops_cached(idx, stops[-2:])
-                vehicle = self.vehicles[idx]
-                profile = (vehicle.length_cm, vehicle.width_cm, vehicle.height_cm,
-                           vehicle.payload_limit_kg, vehicle.door_position, vehicle.door_width_cm)
-                if not fits and profile not in spatially_checked:
-                    spatially_checked.add(profile)
-                    actions = [stop.model_copy(update={"sequence": n}) for n, stop in enumerate(stops[-2:], 1)]
-                    fits = self._validate_exact_route(idx, actions, min(0.05, deadline - time.perf_counter()))
-                if fits:
-                    if not route:
-                        routes_by_day[day] = routes_by_day.get(day, 0) + 1
-                    routes[idx] = stops
+                segment = self._extract_active_cycle(stops, p_pos)
+                if not self._segment_fits_floor_bound(idx, segment):
+                    continue
+                scheduled = self._schedule_stops(idx, stops)
+                if scheduled is None:
+                    continue
+                sched_stops = scheduled[0]
+                spatial_checks += 1
+                if len(segment) <= 2:
+                    if self._single_order_fits_vehicle_floor(idx, order.id, segment, deadline, set()):
+                        routes[idx] = sched_stops
+                        assigned = True
+                        break
+                elif self._validate_stops_cached(idx, segment):
+                    routes[idx] = sched_stops
                     assigned = True
                     break
+
+            if not assigned:
+                spatially_checked: Set[Tuple[Any, ...]] = set()
+                for idx in empty_candidates:
+                    if time.perf_counter() >= deadline:
+                        break
+                    day = self.vehicles[idx].service_day_index
+                    ok, stops = self._can_insert_order(idx, routes[idx], order, 0, 1, check_packing=False)
+                    if not ok:
+                        continue
+                    if self._single_order_fits_vehicle_floor(idx, order.id, stops[-2:], deadline, spatially_checked):
+                        routes_by_day[day] = routes_by_day.get(day, 0) + 1
+                        routes[idx] = stops
+                        assigned = True
+                        break
             if not assigned:
                 missing.append(order.id)
         return missing
+
+    def _estimate_insertion_delta_km(
+        self,
+        vehicle_index: int,
+        route: List[ScheduledStop],
+        order: OrderPair,
+        p_pos: int,
+        d_pos: int,
+    ) -> float:
+        """Compute O(1) distance delta (km) for inserting ``order`` at (p_pos, d_pos)."""
+        dist_m = self.request.distance_matrix_meters
+        p_node, d_node = self.order_node_indices[order.id]
+        depot_node = vehicle_index
+
+        def _node(stop: ScheduledStop) -> int:
+            oid = stop.allocation_id or stop.order_id or ""
+            pn, dn = self.order_node_indices[oid]
+            return pn if stop.stop_type == "PICKUP" else dn
+
+        prev_p = depot_node if p_pos == 0 else _node(route[p_pos - 1])
+        next_p = depot_node if p_pos >= len(route) else _node(route[p_pos])
+        if d_pos == p_pos + 1:
+            delta_m = (
+                dist_m[prev_p][p_node]
+                + dist_m[p_node][d_node]
+                + dist_m[d_node][next_p]
+                - dist_m[prev_p][next_p]
+            )
+        else:
+            d_orig_idx = d_pos - 1
+            prev_d = _node(route[d_orig_idx - 1])
+            next_d = depot_node if d_orig_idx >= len(route) else _node(route[d_orig_idx])
+            delta_m = (
+                dist_m[prev_p][p_node]
+                + dist_m[p_node][next_p]
+                - dist_m[prev_p][next_p]
+                + dist_m[prev_d][d_node]
+                + dist_m[d_node][next_d]
+                - dist_m[prev_d][next_d]
+            )
+        return delta_m / 1000.0
 
     @staticmethod
     def _extract_active_cycle(stops: List[ScheduledStop], anchor_idx: int) -> List[ScheduledStop]:
@@ -2323,7 +2619,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     # Prefer collecting at a pickup already on the route. Pass 1 tries only
                     # the immediately preceding pickup across all routes so every route merges fast.
                     preceding = [i for i in range(position) if route[i].stop_type == "PICKUP"]
-                    anchors = preceding[-1:] if pass_index == 1 else list(reversed(preceding))
+                    anchors = preceding[-2:] if pass_index == 1 else list(reversed(preceding))
                     for anchor in anchors:
                         previous_route = route
                         if time.perf_counter() >= route_deadline:
@@ -2334,13 +2630,16 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                             if stop.stop_type == "DELIVERY" and (stop.allocation_id or stop.order_id) == order.id)
                         first_delivery = next((i for i in range(anchor + 1, len(reduced))
                             if reduced[i].stop_type == "DELIVERY"), len(reduced))
-                        # Try LIFO (deliver newly merged order before earlier onboard order) first,
-                        # then FIFO/after-first-delivery, then keeping original delivery position.
-                        options = []
-                        for d_cand in (first_delivery, first_delivery + 1, delivery_index):
-                            pair = (anchor + 1, d_cand)
-                            if pair not in options:
-                                options.append(pair)
+                        # In _can_insert_order, p_pos+1 <= d_pos <= len(reduced)+1:
+                        # first_delivery+1 places D right before D_first (LIFO), first_delivery+2 right after (FIFO).
+                        max_d = len(reduced) + 1
+                        options: List[Tuple[int, int]] = []
+                        for p_cand in (anchor + 1, anchor):
+                            if not (0 <= p_cand <= len(reduced)):
+                                continue
+                            for d_cand in (first_delivery + 1, first_delivery + 2, p_cand + 1, min(max_d, delivery_index + 1)):
+                                if p_cand + 1 <= d_cand <= max_d and (p_cand, d_cand) not in options:
+                                    options.append((p_cand, d_cand))
                         for p_pos, d_pos in options:
                             if time.perf_counter() >= route_deadline:
                                 break
@@ -2354,9 +2653,12 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                             segment = self._extract_active_cycle(candidate, p_pos)
                             if not self._segment_fits_floor_bound(index, segment):
                                 continue
-                            if self._validate_stops_cached(index, segment) or self._validate_exact_route(
-                                index, segment, min(0.25, deadline - time.perf_counter())
-                            ):
+                            valid_seg = self._validate_stops_cached(index, segment)
+                            if not valid_seg and len(segment) <= 6 and route_deadline - time.perf_counter() > 0.12:
+                                valid_seg = self._validate_exact_route(
+                                    index, segment, min(0.08, route_deadline - time.perf_counter())
+                                )
+                            if valid_seg:
                                 proposed = list(best)
                                 proposed[index] = candidate
                                 rank = self._rank_candidate_for_audit(proposed, unassigned)
@@ -2369,6 +2671,262 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             if not improved_any and pass_index >= 2:
                 break
         return best
+
+    def _consolidate_across_routes(
+        self, routes: List[List[ScheduledStop]], unassigned: List[str], deadline: float,
+    ) -> List[List[ScheduledStop]]:
+        """Move orders onto nearby corridor trucks to overlap loads and cut route count."""
+        best = list(routes)
+        best_rank = self._rank_candidate_for_audit(best, unassigned)
+        dist_m = self.request.distance_matrix_meters
+
+        def _stop_node(stop: ScheduledStop) -> Optional[int]:
+            oid = stop.allocation_id or stop.order_id
+            if not oid or oid not in self.order_node_indices:
+                return None
+            p_node, d_node = self.order_node_indices[oid]
+            return p_node if stop.stop_type == "PICKUP" else d_node
+
+        pass_count = 0
+        while time.perf_counter() < deadline and pass_count < 4:
+            pass_count += 1
+            improved_any = False
+            route_orders_list = [
+                list(dict.fromkeys((s.allocation_id or s.order_id) for s in rt if s.stop_type == "PICKUP" and (s.allocation_id or s.order_id)))
+                for rt in best
+            ]
+            # Prioritize emptying smaller routes first, then heavy distance-saving swaps.
+            src_indices = sorted(
+                (i for i, rt in enumerate(best) if rt),
+                key=lambda i: (len(route_orders_list[i]), -self._calc_route_distance_km(i, best[i])),
+            )
+            for src_idx in src_indices:
+                if time.perf_counter() >= deadline:
+                    return best
+                src_route = best[src_idx]
+                if not src_route:
+                    continue
+                src_orders = [
+                    oid for oid in dict.fromkeys(
+                        (s.allocation_id or s.order_id)
+                        for s in src_route
+                        if s.stop_type == "PICKUP" and (s.allocation_id or s.order_id)
+                    )
+                ]
+                for oid in src_orders:
+                    if time.perf_counter() >= deadline:
+                        return best
+                    src_route = best[src_idx]
+                    if not any((s.allocation_id or s.order_id) == oid for s in src_route):
+                        continue
+                    order = self.order_by_id[oid]
+                    p_node, d_node = self.order_node_indices[oid]
+                    reduced_src = [s for s in src_route if (s.allocation_id or s.order_id) != oid]
+                    empties_src = len(reduced_src) == 0
+                    if not empties_src:
+                        sched_src = self._schedule_stops(src_idx, reduced_src)
+                        if sched_src is None or not self._validate_stops_cached(src_idx, sched_src[0]):
+                            continue
+                        reduced_src_sched = sched_src[0]
+                        src_save_km = (
+                            self._calc_route_distance_km(src_idx, src_route)
+                            - self._calc_route_distance_km(src_idx, reduced_src_sched)
+                        )
+                    else:
+                        reduced_src_sched = []
+                        src_save_km = self._calc_route_distance_km(src_idx, src_route)
+
+                    src_day = self.vehicles[src_idx].service_day_index
+                    tgt_scores: List[Tuple[int, float, int]] = []
+                    for tgt_idx, tgt_rt in enumerate(best):
+                        if not tgt_rt or tgt_idx == src_idx:
+                            continue
+                        tgt_v = self.vehicles[tgt_idx]
+                        if not empties_src and tgt_v.service_day_index > src_day:
+                            continue
+                        if not self._order_allows_vehicle(order, tgt_v) or not self._vehicle_has_compatible_driver(tgt_v):
+                            continue
+                        min_p = float("inf")
+                        min_d = float("inf")
+                        for s in tgt_rt:
+                            nd = _stop_node(s)
+                            if nd is not None:
+                                mp = float(dist_m[nd][p_node])
+                                md = float(dist_m[nd][d_node])
+                                if mp < min_p:
+                                    min_p = mp
+                                if md < min_d:
+                                    min_d = md
+                        tgt_scores.append((max(0, tgt_v.service_day_index - src_day), min_p + min_d, tgt_idx))
+                    tgt_scores.sort(key=lambda item: (item[0], item[1]))
+
+                    moved = False
+                    for _, _, tgt_idx in tgt_scores[:8]:
+                        if time.perf_counter() >= deadline:
+                            return best
+                        tgt_rt = best[tgt_idx]
+                        node_pairs_p = []
+                        node_pairs_d = []
+                        for pos, s in enumerate(tgt_rt):
+                            nd = _stop_node(s)
+                            if nd is not None:
+                                node_pairs_p.append((float(dist_m[nd][p_node]), pos))
+                                node_pairs_d.append((float(dist_m[nd][d_node]), pos))
+                        node_pairs_p.sort()
+                        node_pairs_d.sort()
+                        p_cands: List[int] = []
+                        for _, pos in node_pairs_p[:3]:
+                            for off in (pos, pos + 1):
+                                if 0 <= off <= len(tgt_rt) and off not in p_cands:
+                                    p_cands.append(off)
+                        if len(tgt_rt) not in p_cands:
+                            p_cands.append(len(tgt_rt))
+                        d_anchors = [pos for _, pos in node_pairs_d[:3]]
+
+                        raw_trials: List[Tuple[float, int, int]] = []
+                        max_d = len(tgt_rt) + 1
+                        max_allowed_added_km = src_save_km + (8.0 if empties_src else -0.01)
+                        for p_pos in p_cands[:6]:
+                            next_deliv = next((i for i in range(p_pos, len(tgt_rt)) if tgt_rt[i].stop_type == "DELIVERY"), len(tgt_rt))
+                            d_cands: List[int] = []
+                            raw_ds = [p_pos + 1, next_deliv + 1, next_deliv + 2, max_d] + [a + 1 for a in d_anchors] + [a + 2 for a in d_anchors]
+                            for d_pos in raw_ds:
+                                if p_pos + 1 <= d_pos <= max_d and d_pos not in d_cands:
+                                    d_cands.append(d_pos)
+                            for d_pos in d_cands[:6]:
+                                added_km = self._estimate_insertion_delta_km(tgt_idx, tgt_rt, order, p_pos, d_pos)
+                                if added_km >= max_allowed_added_km:
+                                    continue
+                                raw_trials.append((added_km, p_pos, d_pos))
+                        raw_trials.sort(key=lambda item: item[0])
+                        for _, p_pos, d_pos in raw_trials[:4]:
+                            if time.perf_counter() >= deadline:
+                                return best
+                            ok, cand_tgt = self._can_insert_order(tgt_idx, tgt_rt, order, p_pos, d_pos, check_packing=False)
+                            if not ok:
+                                continue
+                            sched_tgt = self._schedule_stops(tgt_idx, cand_tgt)
+                            if sched_tgt is None:
+                                continue
+                            cand_sched = sched_tgt[0]
+                            segment = self._extract_active_cycle(cand_sched, p_pos)
+                            if not self._segment_fits_floor_bound(tgt_idx, segment) or not self._validate_stops_cached(tgt_idx, segment):
+                                continue
+                            proposed = list(best)
+                            proposed[src_idx] = reduced_src_sched
+                            proposed[tgt_idx] = cand_sched
+                            rank = self._rank_candidate_for_audit(proposed, unassigned)
+                            if rank < best_rank:
+                                best = proposed
+                                best_rank = rank
+                                improved_any = True
+                                moved = True
+                                break
+                        if moved:
+                            break
+            if not improved_any:
+                break
+        return best
+
+    def refine_direct_span(
+        self,
+        checkpoint: FleetOptimizationResponse,
+        audited_direct_trips: Dict[str, List[OptimizedRoute]],
+        deadline: float,
+    ) -> FleetOptimizationResponse:
+        """Overlap loads and consolidate across routes within the target day span."""
+        routes = self._routes_from_audited_response(checkpoint)
+        remaining = deadline - time.perf_counter()
+        if routes is None or remaining <= 0.05:
+            return checkpoint
+
+        verification_reserve = (
+            min(remaining * 0.45, max(1.8, len(routes) * 0.14))
+            if remaining > 1.8
+            else remaining * 0.35
+        )
+        work_deadline = deadline - verification_reserve
+        now = time.perf_counter()
+        merged = self._consolidate_delivery_cycles(
+            routes, [], now + max(0.0, (work_deadline - now) * 0.42),
+        )
+        now2 = time.perf_counter()
+        if now2 < work_deadline:
+            merged = self._consolidate_across_routes(
+                merged, [], now2 + max(0.0, (work_deadline - now2) * 0.80),
+            )
+            now3 = time.perf_counter()
+            if now3 + 0.1 < work_deadline:
+                merged = self._consolidate_delivery_cycles(merged, [], work_deadline)
+
+        changed = [idx for idx, route in enumerate(merged) if route != routes[idx]]
+        if not changed:
+            return checkpoint
+
+        # Group changed routes into connected components sharing any order_id so rolling back
+        # a failed multi-route move never loses or duplicates orders while keeping other wins.
+        def _route_order_set(stops: List[ScheduledStop]) -> Set[str]:
+            return {
+                (s.allocation_id or s.order_id or "")
+                for s in stops
+                if s.stop_type == "PICKUP" and (s.allocation_id or s.order_id)
+            }
+
+        changed_orders = {
+            idx: (_route_order_set(routes[idx]) | _route_order_set(merged[idx]))
+            for idx in changed
+        }
+        visited_changed: Set[int] = set()
+        components: List[List[int]] = []
+        for start in changed:
+            if start in visited_changed:
+                continue
+            comp = []
+            stack = [start]
+            visited_changed.add(start)
+            while stack:
+                cur = stack.pop()
+                comp.append(cur)
+                for other in changed:
+                    if other not in visited_changed and (changed_orders[cur] & changed_orders[other]):
+                        visited_changed.add(other)
+                        stack.append(other)
+            components.append(comp)
+
+        verified_routes = list(routes)
+        now_v = time.perf_counter()
+        nonempty_changed = [idx for idx in changed if merged[idx]]
+        verification_deadline = max(now_v, now_v + max(0.0, (deadline - now_v) * 0.72))
+        failed_indices: Set[int] = set()
+        for offset, index in enumerate(nonempty_changed):
+            rem_v = verification_deadline - time.perf_counter()
+            if rem_v <= 0:
+                failed_indices.update(nonempty_changed[offset:])
+                break
+            route_budget = min(1.5, max(0.05, rem_v / max(1, len(nonempty_changed) - offset)))
+            if not self._validate_exact_route(index, merged[index], route_budget):
+                failed_indices.add(index)
+
+        for comp in components:
+            if not (set(comp) & failed_indices):
+                for idx in comp:
+                    verified_routes[idx] = merged[idx]
+
+        if verified_routes == routes:
+            return checkpoint
+
+        trial = self._build_final_response(
+            verified_routes, [], include_benchmarks=False,
+            audited_direct_trips=audited_direct_trips,
+            spatial_time_budget_seconds=max(0.5, deadline - time.perf_counter()),
+            polish_checkpoint=(max(deadline, time.perf_counter() + 1.0), checkpoint),
+        )
+        if trial.status != "SUCCESS" or trial.unassigned_orders:
+            return checkpoint
+        best = self._best_audited_response([checkpoint, trial])
+        if best is trial or trial.total_distance_km < checkpoint.total_distance_km - 0.01:
+            return trial if best is trial else checkpoint
+        return checkpoint
 
     def _build_hybrid_initial_solution(
         self,
@@ -2408,14 +2966,38 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             routes_a: List[List[ScheduledStop]] = [[] for _ in self.vehicles]
             pending = [order.id for order in self.orders]
             if len(self.orders) >= LARGE_SEED_ORDER_COUNT:
-                pending = self._append_delivery_cycles(routes_a, original_vehicle_indices, hard_search_deadline)
+                build_total = max(0.2, hard_search_deadline - t_start)
+                append_deadline = min(hard_search_deadline, t_start + build_total * 0.45)
+                pending = self._append_delivery_cycles(
+                    routes_a, original_vehicle_indices, append_deadline, allow_overlap=True
+                )
                 unassigned_a = pending
                 consolidate_deadline = min(
                     hard_search_deadline,
-                    time.perf_counter() + max(0.8, (hard_search_deadline - time.perf_counter()) * 0.35),
+                    time.perf_counter() + max(0.6, (hard_search_deadline - time.perf_counter()) * 0.30),
                 )
                 routes_a = self._consolidate_delivery_cycles(routes_a, unassigned_a, consolidate_deadline)
+                across_deadline = min(
+                    hard_search_deadline,
+                    time.perf_counter() + max(0.5, (hard_search_deadline - time.perf_counter()) * 0.35),
+                )
+                routes_a = self._consolidate_across_routes(routes_a, unassigned_a, across_deadline)
+                now = time.perf_counter()
+                remaining = hard_search_deadline - now
+                if self.request.demo_stacking is not None and not pending and remaining >= 1.5:
+                    audit_budget = min(2.0, remaining * 0.25)
+                    verified = self._build_final_response(
+                        routes_a, [], include_benchmarks=False,
+                        spatial_time_budget_seconds=audit_budget,
+                        absolute_spatial_deadline=now + audit_budget,
+                    )
+                    if verified.status == "SUCCESS" and verified.routes and not verified.unassigned_orders:
+                        self._verified_construction_plan = verified
             else:
+                self._use_ranked_repair = (
+                    self.request.demo_stacking is not None
+                    and any(len(order.items) > 1 for order in self.orders)
+                )
                 routes_a, unassigned_a = self._repair_greedy_insert(
                     routes_a, pending, start_time=t_start, deadline=hard_search_deadline, randomize=False,
                 )
@@ -2464,7 +3046,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 # A partial greedy basin can remain fragmented even after
                 # filling its missing orders. Rebuild within this same phase
                 # using ranked probes, retaining the original as a fallback.
-                self._use_ranked_repair = True
+                self._use_ranked_repair = not self._use_ranked_repair
                 cur_routes, cur_unassigned = self._repair_greedy_insert(
                     [[] for _ in self.vehicles], [order.id for order in self.orders],
                     start_time=search_started_at,
@@ -2680,6 +3262,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
         )
 
     def solve(self, hard_deadline: Optional[float] = None) -> FleetOptimizationResponse:
+        self._verified_construction_plan = None
         solve_started_at = time.perf_counter()
         solve_deadline = solve_started_at + max(0.5, float(self.time_limit_sec or 2.0))
         if hard_deadline is not None:
@@ -2712,6 +3295,27 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             return result
 
         vehicles: List[HybridVehicle] = []
+        cycle_checkpoint = None
+        # Packing many pieces per order or dense interleaved stops can exhaust the
+        # search budget before ALNS yields a valid audited plan. Reserve a quick
+        # sequential cycle fallback proportional to cargo density.
+        total_item_count = sum(len(order.items) for order in self.orders)
+        is_dense_cargo = total_item_count >= 10 * len(self.orders)
+        if len(resource_pairs) >= 2 and len(self.orders) < LARGE_SEED_ORDER_COUNT and (
+            is_dense_cargo or (len(self.orders) >= 4 and total_budget >= 1.5)
+        ):
+            if is_dense_cargo:
+                checkpoint_cap = 4.5 if len(self.orders) >= 12 else 2.5
+                checkpoint_budget = min(checkpoint_cap, total_budget * 0.45)
+                checkpoint_attempts = 12
+            else:
+                checkpoint_budget = min(0.60, total_budget * 0.12)
+                checkpoint_attempts = 2
+            cycle_checkpoint = self._audited_cycle_checkpoint(
+                [index for index, _ in resource_pairs],
+                min(search_deadline, solve_started_at + checkpoint_budget),
+                max_attempts=checkpoint_attempts,
+            )
         drivers: List[HybridDriver] = []
         original_vehicle_indices: List[int] = []
         node_id_to_index: Dict[str, int] = {}
@@ -2803,7 +3407,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                             # while keeping legacy D11 rotation when allowed_orientations is omitted.
                             can_rotate=resolve_can_rotate(
                                 item,
-                                d11_default=True if self.request.demo_stacking is None else None,
+                                d11_default=True,
                             ),
                             allowed_orientations=item.allowed_orientations,
                             description=item.description or "",
@@ -2880,13 +3484,43 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             delivery_key_by_order,
             search_deadline=construction_deadline,
         )
+        checkpoints = [
+            plan for plan in (
+                self.initial_plan if self._initial_plan_is_verified else None,
+                cycle_checkpoint,
+                self._verified_construction_plan,
+            )
+            if plan is not None
+        ]
+        checkpoint = self._best_audited_response(checkpoints) if checkpoints else None
 
         operator_weights: Dict[str, Dict[str, float]] = {}
         solution = initial_solution
         native_budget = max(0.0, search_deadline - time.perf_counter())
-        if initial_solution is None and (solve_deadline - solve_started_at) >= 1.5:
-            self._native_search_budget_available = True
-            native_budget = max(native_budget, min(2.5, (solve_deadline - solve_started_at) * 0.5))
+        if (
+            initial_solution is None
+            and checkpoint is None
+            and (solve_deadline - solve_started_at) >= 1.5
+        ):
+            ceiling_deadline = (
+                min(solve_deadline, hard_deadline)
+                if hard_deadline is not None
+                else solve_deadline
+            )
+            audit_floor_sec = 0.35
+            available_for_native = max(
+                0.0, ceiling_deadline - time.perf_counter() - audit_floor_sec
+            )
+            if available_for_native >= 0.15:
+                self._native_search_budget_available = True
+                native_budget = max(
+                    native_budget,
+                    min(2.5, (solve_deadline - solve_started_at) * 0.5, available_for_native),
+                )
+        skip_native_for_cycle_checkpoint = (
+            checkpoint is not None
+            and (search_deadline - time.perf_counter()) < 0.25
+        )
         skip_native_for_large_complete_seed = (
             initial_solution is not None
             and not initial_solution.unassigned_orders
@@ -2894,7 +3528,12 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             and native_budget < 12.0
             and not self.request.early_stop_patience
         )
-        if (self._native_search_budget_available or self.request.early_stop_patience) and native_budget >= 0.05 and not skip_native_for_large_complete_seed:
+        if (
+            (self._native_search_budget_available or self.request.early_stop_patience)
+            and native_budget >= 0.05
+            and not skip_native_for_cycle_checkpoint
+            and not skip_native_for_large_complete_seed
+        ):
             effective_max_iterations = (
                 self.max_iterations
                 if self.max_iterations < 800
@@ -2909,9 +3548,16 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 max_iterations=effective_max_iterations, random_seed=self.random_seed,
                 initial_solution=initial_solution, operator_weights_out=operator_weights,
                 search_profile="historical_portfolio",
-                final_spatial_time_limit_sec=min(2.0, max(0.05, native_budget * 0.30)),
-                final_repair_time_limit_sec=min(2.5, max(0.05, native_budget * 0.35)),
+                final_spatial_time_limit_sec=min(
+                    1.5 if (len(self.orders) >= LARGE_SEED_ORDER_COUNT and native_budget < 12.0) else 3.0,
+                    max(0.05, native_budget * 0.22),
+                ),
+                final_repair_time_limit_sec=min(
+                    1.5 if (len(self.orders) >= LARGE_SEED_ORDER_COUNT and native_budget < 12.0) else 3.0,
+                    max(0.05, native_budget * 0.22),
+                ),
                 early_stop_patience=self.request.early_stop_patience,
+                has_verified_plan=checkpoint is not None,
             )
         if "destroy" in operator_weights:
             self.destroy_weights = operator_weights["destroy"]
@@ -3015,25 +3661,44 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
 
         audit_limit = 3 if max_items_per_order >= 40 else 6
         audit_candidates = self._select_audit_candidates(unique_plans, limit=audit_limit, fallback=construction_fallback)
-        valid_responses: List[FleetOptimizationResponse] = []
+        valid_responses = [checkpoint] if checkpoint is not None else []
+        incumbent = checkpoint
+        failed_route_signatures: Set[Tuple[Any, ...]] = set()
         for idx, (_, c_routes_stops, unassigned_ids) in enumerate(audit_candidates):
             remaining = solve_deadline - time.perf_counter()
             has_full_served = any(not r.unassigned_orders for r in valid_responses)
+            has_routed_response = any(r.routes for r in valid_responses)
             if has_full_served and remaining <= 0.35:
                 break
-            if valid_responses and remaining <= 0.15:
+            if has_routed_response and remaining <= 0.15:
                 break
+            cand_route_sigs = {
+                (self.vehicles[v_idx].id, tuple((s.order_id, s.stop_type) for s in r_stops))
+                for v_idx, r_stops in enumerate(c_routes_stops)
+                if r_stops
+            }
+            if (
+                remaining < 4.0
+                and cand_route_sigs
+                and cand_route_sigs <= failed_route_signatures
+            ):
+                continue
             allow_best_candidate_grace = (
-                idx == 0
-                and not valid_responses
+                not has_routed_response
+                and idx <= 1
                 and (solve_deadline - solve_started_at) >= 1.5
-                and (hard_deadline is None or hard_deadline > solve_started_at)
+                and (hard_deadline is None or hard_deadline - time.perf_counter() > 0.25)
             )
-            if not valid_responses and remaining <= 0.0 and not allow_best_candidate_grace:
+            if not has_routed_response and remaining <= 0.0 and not allow_best_candidate_grace:
                 break
             desired_spatial_budget = max(8.0, sum(bool(r) for r in c_routes_stops) * 3.0)
+            grace_cap = (
+                max(4.0, sum(bool(r) for r in c_routes_stops) * 2.0)
+                if idx == 0
+                else max(2.0, sum(bool(r) for r in c_routes_stops) * 1.5)
+            )
             per_candidate_cap = (
-                min(desired_spatial_budget, max(4.0, sum(bool(r) for r in c_routes_stops) * 2.0))
+                min(desired_spatial_budget, grace_cap)
                 if remaining <= 0.0 and allow_best_candidate_grace
                 else max(
                     0.25,
@@ -3046,16 +3711,50 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     audit_reserve_sec,
                     remaining if remaining > 0 else audit_reserve_sec,
                 )
+            if hard_deadline is not None:
+                hard_rem = hard_deadline - time.perf_counter()
+                if hard_rem <= 0.05:
+                    break
+                per_candidate_cap = min(per_candidate_cap, max(0.15, hard_rem - 0.05))
+            audit_budget = min(desired_spatial_budget, per_candidate_cap)
+            guarded_incumbent = incumbent if len(self.orders) >= LARGE_SEED_ORDER_COUNT else None
+            # Small-snapshot cycle checkpoints can still use salvage to merge
+            # their one-order fallback routes. Large audited plans can abort a
+            # failed trial instead of spending their remaining time on salvage.
+            checkpoint_guard = (
+                (min(solve_deadline, time.perf_counter() + audit_budget), guarded_incumbent)
+                if guarded_incumbent is not None else None
+            )
             cand_resp = self._build_final_response(
                 c_routes_stops,
                 unassigned_ids,
                 include_benchmarks=False,
-                spatial_time_budget_seconds=min(desired_spatial_budget, per_candidate_cap),
+                spatial_time_budget_seconds=audit_budget,
+                polish_checkpoint=checkpoint_guard,
             )
-            if not cand_resp.unassigned_orders:
+            if cand_resp is incumbent:
+                continue
+            if cand_resp.status == "SUCCESS" and cand_resp.routes and not cand_resp.unassigned_orders:
+                incumbent = self._best_audited_response([incumbent, cand_resp]) if incumbent else cand_resp
+            if not cand_resp.unassigned_orders or cand_resp.routes:
+                # Never let an earlier 0-route TIMEOUT response mask a valid routed plan.
+                valid_responses = [r for r in valid_responses if r.routes]
                 valid_responses.append(cand_resp)
             elif not valid_responses:
                 valid_responses.append(cand_resp)
+
+            if cand_resp.unassigned_orders and per_candidate_cap >= 1.0:
+                if not cand_resp.routes and len(cand_route_sigs) == 1:
+                    failed_route_signatures.update(cand_route_sigs)
+                elif cand_resp.routes:
+                    passed_sigs = {
+                        (
+                            getattr(route, "route_id", None) or getattr(route, "vehicle_id", None),
+                            tuple((stop.order_id, stop.stop_type) for stop in getattr(route, "stops", [])),
+                        )
+                        for route in cand_resp.routes
+                    }
+                    failed_route_signatures.update(cand_route_sigs - passed_sigs)
 
         if not valid_responses:
             return FleetOptimizationResponse(

@@ -1,3 +1,4 @@
+import { corridorDemos, demoCases } from '../corridorDemos';
 import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { DispatcherDeliveryPlanning } from '../components/DeliveryAppointments';
@@ -67,7 +68,6 @@ import { DemoScenarioControlCard } from '../components/DemoScenarioControlCard';
 import {
   AutomaticDispatchScheduleModeUI,
   AutomaticOptimizationResponseUI,
-  DemoCaseSummaryUI,
   RunDemoOptimizationPayloadUI,
   Branch,
   Driver,
@@ -150,12 +150,10 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
 
   // Chế độ: Chi nhánh thực tế vs Demo Benchmark
   const [pageMode, setPageMode] = useState<'BRANCH' | 'DEMO'>('BRANCH');
-  const [demoCases, setDemoCases] = useState<DemoCaseSummaryUI[]>([]);
-  const [loadingDemoCases, setLoadingDemoCases] = useState<boolean>(false);
-  const [selectedDemoCaseId, setSelectedDemoCaseId] = useState<string>('novel_1_mekong_hub_spoke');
-  const [demoTimeBudgetSeconds, setDemoTimeBudgetSeconds] = useState<number>(6);
+  const [selectedDemoCaseId, setSelectedDemoCaseId] = useState<string>(demoCases[0].id);
+  const [demoTimeBudgetSeconds, setDemoTimeBudgetSeconds] = useState<number>(demoCases[0].suggested_time_limit_sec);
   const [demoStackingEnabled, setDemoStackingEnabled] = useState(true);
-  const [demoStackingOwnerMode, setDemoStackingOwnerMode] = useState<DemoStackingOwnerMode>('SAME_CUSTOMER');
+  const [demoStackingOwnerMode, setDemoStackingOwnerMode] = useState<DemoStackingOwnerMode>('ANY_CUSTOMER');
   const [effectiveSettings, setEffectiveSettings] = useState<EffectiveSettings | null>(null);
   const [demoStackingRuns, setDemoStackingRuns] = useState<Record<string, Partial<Record<'off' | DemoStackingOwnerMode, OptimizationCandidateSummaryUI>>>>({});
   const demoComparisonKey = `${selectedDemoCaseId}:${demoTimeBudgetSeconds}`;
@@ -392,7 +390,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
             timer = window.setTimeout(poll, 1500);
           } else {
             setStarting(false);
-            if (['SUCCEEDED', 'PARTIAL'].includes(response.data.status)) {
+            if (response.data.status === 'SUCCEEDED') {
               message.success('Phương án tối ưu đã sẵn sàng để kiểm tra');
             } else if (response.data.error?.message) {
               message.error(response.data.error.message);
@@ -626,33 +624,9 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     saveLastSelectedBranch(branchId);
   };
 
-  useEffect(() => {
-    if (pageMode !== 'DEMO' || demoCases.length > 0) return;
-    let active = true;
-    const loadCases = async () => {
-      try {
-        setLoadingDemoCases(true);
-        const res = await tripsApi.getDemoCases();
-        if (!active) return;
-        setDemoCases(res.data);
-        if (res.data.length > 0 && !selectedDemoCaseId) {
-          setSelectedDemoCaseId(res.data[0].id);
-          setDemoTimeBudgetSeconds(res.data[0].suggested_time_limit_sec || 6);
-        }
-      } catch (err: any) {
-        if (active) message.error('Không tải được danh sách kịch bản demo: ' + (err.message || ''));
-      } finally {
-        if (active) setLoadingDemoCases(false);
-      }
-    };
-    void loadCases();
-    return () => {
-      active = false;
-    };
-  }, [pageMode, demoCases.length, selectedDemoCaseId, message]);
-
   const startDemoOptimization = async () => {
-    if (!isCustomDemoUpload && !selectedDemoCaseId) {
+    const selectedDemo = corridorDemos.find(demo => demo.summary.id === selectedDemoCaseId);
+    if (!isCustomDemoUpload && !selectedDemo) {
       message.warning('Vui lòng chọn kịch bản demo');
       return;
     }
@@ -685,9 +659,9 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       const payload: RunDemoOptimizationPayloadUI = {
         ...(selectedBranchId ? { branchId: selectedBranchId } : {}),
         caseId: isCustomDemoUpload ? undefined : selectedDemoCaseId,
-        customRequest: isCustomDemoUpload ? customDemoJson : undefined,
+        customRequest: isCustomDemoUpload ? customDemoJson : selectedDemo?.request,
         timeBudgetSeconds: effectiveDemoBudget,
-        demoStackingEnabled: supportsStacking ? effectiveDemoStacking : undefined,
+        demoStackingEnabled: supportsStacking ? effectiveDemoStacking : false,
         demoStackingOwnerMode:
           effectiveDemoStacking && supportsStacking ? effectiveDemoOwnerMode : undefined,
       };
@@ -2593,7 +2567,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                   <ExperimentOutlined style={{ fontSize: 16, color: '#7c3aed' }} />
                   <span style={{ fontWeight: 700, color: '#6d28d9' }}>Thử nghiệm Demo Kịch bản mẫu (Benchmarks)</span>
                   <Tag color="purple" style={{ margin: 0, borderRadius: 10, fontWeight: 700 }}>
-                    {demoCases.length || 19} kịch bản
+                    {demoCases.length} kịch bản
                   </Tag>
                 </Space>
               ),
@@ -2611,7 +2585,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
           allowOverride={effectiveSettings?.optimization.demoAllowOverride ?? true}
           stackingComparison={demoComparison ? { off: demoComparison.off, on: demoComparison[demoStackingOwnerMode] } : undefined}
           cases={demoCases}
-          loadingCases={loadingDemoCases}
+          loadingCases={false}
           selectedCaseId={selectedDemoCaseId}
           onSelectCaseId={setSelectedDemoCaseId}
           timeBudgetSeconds={demoTimeBudgetSeconds}
@@ -2631,7 +2605,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
         />
       ) : (
       <div className="dispatch-page-header">
-        <Space wrap align="end">
+        <div className="dispatch-header-filters">
           <div>
             <Text type="secondary" style={{ display: 'block', marginBottom: 4 }}>
               Chi nhánh điều phối
@@ -2719,31 +2693,8 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
               )}
             </Space>
           </div>
-          <div className="automatic-search-budget">
-            <div className="automatic-search-budget-label">
-              <Text type="secondary">Ngân sách tìm kiếm</Text>
-              <Tooltip title="Thời gian tìm kiếm được tự động tính toán thích ứng theo quy mô bài toán (số lượng đơn hàng, số xe và độ phức tạp địa lý). Bài toán nhỏ hoàn thành nhanh chóng trong vài giây, bài toán phức tạp sẽ tự động phân bổ đủ thời gian tìm kiếm sâu.">
-                <InfoCircleOutlined aria-label="Giải thích ngân sách tìm kiếm tự động" />
-              </Tooltip>
-            </div>
-            <Tag
-              color="blue"
-              icon={<ThunderboltOutlined />}
-              style={{
-                margin: 0,
-                padding: '4px 10px',
-                fontSize: 13,
-                borderRadius: 6,
-                fontWeight: 500,
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 4,
-                width: 'fit-content',
-              }}
-            >
-              Tự động thích ứng
-            </Tag>
-          </div>
+        </div>
+        <div className="dispatch-header-actions">
           <Button
             type="primary"
             size="large"
@@ -2778,7 +2729,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
               !optimization ||
               !result ||
               result.routes.length === 0 ||
-              !['SUCCEEDED', 'PARTIAL'].includes(optimization.status) ||
+              optimization.status !== 'SUCCEEDED' ||
               isApplied ||
               starting
             }
@@ -2861,20 +2812,20 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
               </Popconfirm>
             )
           )}
-        </Space>
+        </div>
       </div>
       )}
 
       {pageMode === 'BRANCH' && effectiveSettings && (
-        <Card size="small" style={{ marginBottom: 16, background: '#f8fafc' }}>
-          <Space wrap size={[8, 8]} style={{ width: '100%', justifyContent: 'space-between' }}>
-            <Space wrap size={[8, 6]}>
+        <Card size="small" style={{ marginBottom: 16, background: '#f8fafc', borderRadius: 10 }}>
+          <div className="dispatch-effective-policy-row">
+            <Space wrap size={[8, 6]} className="dispatch-effective-policy-tags">
               <Text strong style={{ fontSize: 13 }}>
                 Cấu hình hiệu lực:
               </Text>
               <Tag color={effectiveSettings.stacking.enabled ? 'green' : 'default'}>
                 {effectiveSettings.stacking.enabled
-                  ? `Xếp chồng: Bật · ${STACKING_OWNER_MODE_LABELS[effectiveSettings.stacking.ownerMode]} · Tối đa ${effectiveSettings.stacking.maxTiers} tầng`
+                  ? `Xếp chồng: Bật · ${STACKING_OWNER_MODE_LABELS[effectiveSettings.stacking.ownerMode]} · Tối đa ${effectiveSettings.stacking.maxTiers} tầng · Tải đè ≤ ${effectiveSettings.stacking.maxTopLoadPercent}%`
                   : 'Xếp chồng: Tắt (chỉ xếp 1 lớp)'}
               </Tag>
               <Tag color="blue">
@@ -2889,21 +2840,19 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                   ? `Tối đa ${effectiveSettings.optimization.maxRoutesPerDay} chuyến/ngày`
                   : 'Không giới hạn số chuyến/ngày'}
               </Tag>
-              <Tag color={effectiveSettings.sources.stacking === 'BRANCH' || effectiveSettings.sources.optimization === 'BRANCH' ? 'gold' : 'geekblue'}>
-                {effectiveSettings.policyVersion}
-              </Tag>
             </Space>
             {onNavigate && can('settings.read') && (
               <Button
                 size="small"
                 type="link"
                 icon={<SettingOutlined />}
+                style={{ flexShrink: 0, paddingInline: 4 }}
                 onClick={() => onNavigate('settings')}
               >
                 Mở Cấu hình chung
               </Button>
             )}
-          </Space>
+          </div>
         </Card>
       )}
 
@@ -3195,7 +3144,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                   type="success"
                   showIcon
                   message={`Đã ghi lại ${optimization.candidates.length} phương án tối ưu giao đủ 100% đơn`}
-                  description="Phương án #1 có điểm xếp hạng thấp nhất: chi phí vận hành, lương cố định của toàn đội trong suốt lịch và penalty vận hành cho đơn trễ. Penalty vận hành không phải khoản phạt tài chính khách hàng."
+                  description="Khi có lịch giao đủ với số ngày khác nhau, bảng giữ các lựa chọn để so sánh. Chi phí toàn đội gồm chi phí vận hành, lương lịch và điểm phạt vận hành do trễ."
                   style={{ marginBottom: 12 }}
                 />
               )}
@@ -3563,6 +3512,11 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                 }}
                 stepStates={currentActiveRoute.spatial_validation?.step_states || []}
                 isValid={currentActiveRoute.spatial_validation?.is_valid ?? true}
+                maxTopLoadPercent={
+                  currentActiveRoute.spatial_validation?.demo_stacking?.max_top_load_percent ??
+                  effectiveSettings?.stacking.maxTopLoadPercent ??
+                  30
+                }
                 violations={
                   currentActiveRoute.spatial_validation?.error_message
                     ? [currentActiveRoute.spatial_validation.error_message]

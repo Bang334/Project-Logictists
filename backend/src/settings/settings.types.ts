@@ -7,6 +7,7 @@ export interface StackingSettings {
   ownerMode: StackingOwnerMode;
   maxTiers: number;
   liftClearanceMm: number;
+  maxTopLoadPercent: number;
 }
 
 export interface OptimizationSettings {
@@ -84,6 +85,7 @@ export interface ResolvedStackingPolicy {
   max_tiers: number;
   lift_clearance_cm: number;
   owner_mode: 'SAME_CUSTOMER' | 'ANY_CUSTOMER';
+  max_top_load_percent: number;
 }
 
 export const COMPANY_SETTING_DEFAULTS: {
@@ -92,10 +94,11 @@ export const COMPANY_SETTING_DEFAULTS: {
   costPenalty: CostPenaltySettings;
 } = {
   stacking: {
-    enabled: false,
-    ownerMode: StackingOwnerMode.SAME_CUSTOMER,
-    maxTiers: 2,
+    enabled: true,
+    ownerMode: StackingOwnerMode.ANY_CUSTOMER,
+    maxTiers: 3,
     liftClearanceMm: 50,
+    maxTopLoadPercent: 30,
   },
   optimization: {
     defaultSearchBudgetSeconds: 10,

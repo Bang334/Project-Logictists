@@ -95,6 +95,6 @@ def test_multi_start_returns_timeout_batch_instead_of_raising_when_budget_expire
     optimizer._created_at = time.perf_counter() - 1.0
     batch = optimizer.solve(max_candidates=3)
 
-    assert len(batch.candidates) == 1
-    assert batch.candidates[0].result.status == "TIMEOUT"
+    assert batch.candidates == []
+    assert batch.no_plan_status == "TIMEOUT"
     assert batch.fully_served_candidate_count == 0

@@ -502,10 +502,9 @@ class LegacyHybridALNSSolver:
         ]
         if not pickup_ids:
             return routes, []
+        pickup_ids = list(dict.fromkeys(pickup_ids))
         start = self.rng.randrange(len(pickup_ids))
-        removed = pickup_ids[start : start + remove_count]
-        if len(removed) < remove_count:
-            removed += pickup_ids[: remove_count - len(removed)]
+        removed = (pickup_ids[start:] + pickup_ids[:start])[:max(0, remove_count)]
         return self._remove_orders(routes, set(removed)), removed
 
     def _economic_plan_cost(

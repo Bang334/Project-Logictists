@@ -269,6 +269,7 @@ export interface PlacedItemUI {
   width_cm: number;
   height_cm: number;
   weight_kg: number;
+  max_top_load_g?: number | null;
   cargo_kind?: 'UNCLASSIFIED' | 'STANDARD' | 'FRAGILE' | null;
   no_top_load_requested?: boolean | null;
   floor_rotation_locked?: boolean | null;
@@ -299,6 +300,12 @@ export interface FloorStepStateUI {
 }
 
 export interface SpatialValidationUI {
+  demo_stacking?: {
+    max_tiers: number;
+    lift_clearance_cm: number;
+    owner_mode?: 'SAME_CUSTOMER' | 'ANY_CUSTOMER';
+    max_top_load_percent?: number;
+  } | null;
   is_valid: boolean;
   violation_code?: string;
   violation_scenario?: string;

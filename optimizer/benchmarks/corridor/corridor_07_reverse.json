@@ -1,0 +1,340 @@
+{
+  "job_id": "corridor_07_reverse",
+  "vehicles": [
+    {
+      "id": "truck-1",
+      "plate_number": "DEMO-01",
+      "length_cm": 400,
+      "width_cm": 240,
+      "height_cm": 210,
+      "payload_limit_kg": 2000,
+      "door_width_cm": 240,
+      "depot": {
+        "id": "km-00",
+        "name": "Bãi · Km 0",
+        "latitude": 16.05,
+        "longitude": 108.05
+      },
+      "available_end_sec": 28800,
+      "fuel_consumption_liters_per_100_km": 12,
+      "fixed_operating_cost_vnd": 100000
+    }
+  ],
+  "drivers": [
+    {
+      "id": "driver-1",
+      "full_name": "Tài xế demo",
+      "license_class": "C",
+      "fixed_salary_monthly_vnd": 10000000,
+      "trip_base_pay_vnd": 100000,
+      "per_km_pay_vnd": 1500
+    }
+  ],
+  "orders": [
+    {
+      "id": "D01",
+      "order_number": "D01",
+      "pickup_location": {
+        "id": "km-03",
+        "name": "Km 3 · Lấy K01",
+        "latitude": 16.05,
+        "longitude": 108.078
+      },
+      "delivery_location": {
+        "id": "km-42",
+        "name": "Km 42 · Giao K01",
+        "latitude": 16.05,
+        "longitude": 108.442
+      },
+      "items": [
+        {
+          "id": "K01",
+          "order_id": "D01",
+          "description": "Kiện 1",
+          "length_cm": 48,
+          "width_cm": 220,
+          "height_cm": 75,
+          "weight_kg": 85,
+          "can_rotate": false,
+          "allowed_orientations": [
+            "LWH"
+          ]
+        }
+      ],
+      "pickup_window_start_sec": 420,
+      "pickup_window_end_sec": 540,
+      "delivery_window_start_sec": 5880,
+      "delivery_window_end_sec": 6000,
+      "pickup_service_time_sec": 60,
+      "delivery_service_time_sec": 60,
+      "package_contract_version": "1"
+    },
+    {
+      "id": "D02",
+      "order_number": "D02",
+      "pickup_location": {
+        "id": "km-06",
+        "name": "Km 6 · Lấy K02",
+        "latitude": 16.05,
+        "longitude": 108.106
+      },
+      "delivery_location": {
+        "id": "km-39",
+        "name": "Km 39 · Giao K02",
+        "latitude": 16.05,
+        "longitude": 108.414
+      },
+      "items": [
+        {
+          "id": "K02",
+          "order_id": "D02",
+          "description": "Kiện 2",
+          "length_cm": 52,
+          "width_cm": 220,
+          "height_cm": 78,
+          "weight_kg": 93,
+          "can_rotate": false,
+          "allowed_orientations": [
+            "LWH"
+          ]
+        }
+      ],
+      "pickup_window_start_sec": 840,
+      "pickup_window_end_sec": 960,
+      "delivery_window_start_sec": 5460,
+      "delivery_window_end_sec": 5580,
+      "pickup_service_time_sec": 60,
+      "delivery_service_time_sec": 60,
+      "package_contract_version": "1"
+    },
+    {
+      "id": "D03",
+      "order_number": "D03",
+      "pickup_location": {
+        "id": "km-09",
+        "name": "Km 9 · Lấy K03",
+        "latitude": 16.05,
+        "longitude": 108.134
+      },
+      "delivery_location": {
+        "id": "km-36",
+        "name": "Km 36 · Giao K03",
+        "latitude": 16.05,
+        "longitude": 108.386
+      },
+      "items": [
+        {
+          "id": "K03",
+          "order_id": "D03",
+          "description": "Kiện 3",
+          "length_cm": 56,
+          "width_cm": 220,
+          "height_cm": 81,
+          "weight_kg": 101,
+          "can_rotate": false,
+          "allowed_orientations": [
+            "LWH"
+          ]
+        }
+      ],
+      "pickup_window_start_sec": 1260,
+      "pickup_window_end_sec": 1380,
+      "delivery_window_start_sec": 5040,
+      "delivery_window_end_sec": 5160,
+      "pickup_service_time_sec": 60,
+      "delivery_service_time_sec": 60,
+      "package_contract_version": "1"
+    },
+    {
+      "id": "D04",
+      "order_number": "D04",
+      "pickup_location": {
+        "id": "km-12",
+        "name": "Km 12 · Lấy K04",
+        "latitude": 16.05,
+        "longitude": 108.162
+      },
+      "delivery_location": {
+        "id": "km-33",
+        "name": "Km 33 · Giao K04",
+        "latitude": 16.05,
+        "longitude": 108.358
+      },
+      "items": [
+        {
+          "id": "K04",
+          "order_id": "D04",
+          "description": "Kiện 4",
+          "length_cm": 48,
+          "width_cm": 220,
+          "height_cm": 84,
+          "weight_kg": 109,
+          "can_rotate": false,
+          "allowed_orientations": [
+            "LWH"
+          ]
+        }
+      ],
+      "pickup_window_start_sec": 1680,
+      "pickup_window_end_sec": 1800,
+      "delivery_window_start_sec": 4620,
+      "delivery_window_end_sec": 4740,
+      "pickup_service_time_sec": 60,
+      "delivery_service_time_sec": 60,
+      "package_contract_version": "1"
+    },
+    {
+      "id": "D05",
+      "order_number": "D05",
+      "pickup_location": {
+        "id": "km-15",
+        "name": "Km 15 · Lấy K05",
+        "latitude": 16.05,
+        "longitude": 108.19
+      },
+      "delivery_location": {
+        "id": "km-30",
+        "name": "Km 30 · Giao K05",
+        "latitude": 16.05,
+        "longitude": 108.33
+      },
+      "items": [
+        {
+          "id": "K05",
+          "order_id": "D05",
+          "description": "Kiện 5",
+          "length_cm": 52,
+          "width_cm": 220,
+          "height_cm": 87,
+          "weight_kg": 117,
+          "can_rotate": false,
+          "allowed_orientations": [
+            "LWH"
+          ]
+        }
+      ],
+      "pickup_window_start_sec": 2100,
+      "pickup_window_end_sec": 2220,
+      "delivery_window_start_sec": 4200,
+      "delivery_window_end_sec": 4320,
+      "pickup_service_time_sec": 60,
+      "delivery_service_time_sec": 60,
+      "package_contract_version": "1"
+    },
+    {
+      "id": "D06",
+      "order_number": "D06",
+      "pickup_location": {
+        "id": "km-18",
+        "name": "Km 18 · Lấy K06",
+        "latitude": 16.05,
+        "longitude": 108.218
+      },
+      "delivery_location": {
+        "id": "km-27",
+        "name": "Km 27 · Giao K06",
+        "latitude": 16.05,
+        "longitude": 108.302
+      },
+      "items": [
+        {
+          "id": "K06",
+          "order_id": "D06",
+          "description": "Kiện 6",
+          "length_cm": 56,
+          "width_cm": 220,
+          "height_cm": 90,
+          "weight_kg": 125,
+          "can_rotate": false,
+          "allowed_orientations": [
+            "LWH"
+          ]
+        }
+      ],
+      "pickup_window_start_sec": 2520,
+      "pickup_window_end_sec": 2640,
+      "delivery_window_start_sec": 3780,
+      "delivery_window_end_sec": 3900,
+      "pickup_service_time_sec": 60,
+      "delivery_service_time_sec": 60,
+      "package_contract_version": "1"
+    },
+    {
+      "id": "D07",
+      "order_number": "D07",
+      "pickup_location": {
+        "id": "km-21",
+        "name": "Km 21 · Lấy K07",
+        "latitude": 16.05,
+        "longitude": 108.246
+      },
+      "delivery_location": {
+        "id": "km-24",
+        "name": "Km 24 · Giao K07",
+        "latitude": 16.05,
+        "longitude": 108.274
+      },
+      "items": [
+        {
+          "id": "K07",
+          "order_id": "D07",
+          "description": "Kiện 7",
+          "length_cm": 48,
+          "width_cm": 220,
+          "height_cm": 93,
+          "weight_kg": 133,
+          "can_rotate": false,
+          "allowed_orientations": [
+            "LWH"
+          ]
+        }
+      ],
+      "pickup_window_start_sec": 2940,
+      "pickup_window_end_sec": 3060,
+      "delivery_window_start_sec": 3360,
+      "delivery_window_end_sec": 3480,
+      "pickup_service_time_sec": 60,
+      "delivery_service_time_sec": 60,
+      "package_contract_version": "1"
+    }
+  ],
+  "policy": {
+    "monthly_working_minutes": 10560,
+    "fuel_price_per_liter_vnd": 23000
+  },
+  "distance_matrix_meters": [
+    [0, 3000, 42000, 6000, 39000, 9000, 36000, 12000, 33000, 15000, 30000, 18000, 27000, 21000, 24000],
+    [3000, 0, 39000, 3000, 36000, 6000, 33000, 9000, 30000, 12000, 27000, 15000, 24000, 18000, 21000],
+    [42000, 39000, 0, 36000, 3000, 33000, 6000, 30000, 9000, 27000, 12000, 24000, 15000, 21000, 18000],
+    [6000, 3000, 36000, 0, 33000, 3000, 30000, 6000, 27000, 9000, 24000, 12000, 21000, 15000, 18000],
+    [39000, 36000, 3000, 33000, 0, 30000, 3000, 27000, 6000, 24000, 9000, 21000, 12000, 18000, 15000],
+    [9000, 6000, 33000, 3000, 30000, 0, 27000, 3000, 24000, 6000, 21000, 9000, 18000, 12000, 15000],
+    [36000, 33000, 6000, 30000, 3000, 27000, 0, 24000, 3000, 21000, 6000, 18000, 9000, 15000, 12000],
+    [12000, 9000, 30000, 6000, 27000, 3000, 24000, 0, 21000, 3000, 18000, 6000, 15000, 9000, 12000],
+    [33000, 30000, 9000, 27000, 6000, 24000, 3000, 21000, 0, 18000, 3000, 15000, 6000, 12000, 9000],
+    [15000, 12000, 27000, 9000, 24000, 6000, 21000, 3000, 18000, 0, 15000, 3000, 12000, 6000, 9000],
+    [30000, 27000, 12000, 24000, 9000, 21000, 6000, 18000, 3000, 15000, 0, 12000, 3000, 9000, 6000],
+    [18000, 15000, 24000, 12000, 21000, 9000, 18000, 6000, 15000, 3000, 12000, 0, 9000, 3000, 6000],
+    [27000, 24000, 15000, 21000, 12000, 18000, 9000, 15000, 6000, 12000, 3000, 9000, 0, 6000, 3000],
+    [21000, 18000, 21000, 15000, 18000, 12000, 15000, 9000, 12000, 6000, 9000, 3000, 6000, 0, 3000],
+    [24000, 21000, 18000, 18000, 15000, 15000, 12000, 12000, 9000, 9000, 6000, 6000, 3000, 3000, 0]
+  ],
+  "duration_matrix_seconds": [
+    [0, 270, 3780, 540, 3510, 810, 3240, 1080, 2970, 1350, 2700, 1620, 2430, 1890, 2160],
+    [270, 0, 3510, 270, 3240, 540, 2970, 810, 2700, 1080, 2430, 1350, 2160, 1620, 1890],
+    [3780, 3510, 0, 3240, 270, 2970, 540, 2700, 810, 2430, 1080, 2160, 1350, 1890, 1620],
+    [540, 270, 3240, 0, 2970, 270, 2700, 540, 2430, 810, 2160, 1080, 1890, 1350, 1620],
+    [3510, 3240, 270, 2970, 0, 2700, 270, 2430, 540, 2160, 810, 1890, 1080, 1620, 1350],
+    [810, 540, 2970, 270, 2700, 0, 2430, 270, 2160, 540, 1890, 810, 1620, 1080, 1350],
+    [3240, 2970, 540, 2700, 270, 2430, 0, 2160, 270, 1890, 540, 1620, 810, 1350, 1080],
+    [1080, 810, 2700, 540, 2430, 270, 2160, 0, 1890, 270, 1620, 540, 1350, 810, 1080],
+    [2970, 2700, 810, 2430, 540, 2160, 270, 1890, 0, 1620, 270, 1350, 540, 1080, 810],
+    [1350, 1080, 2430, 810, 2160, 540, 1890, 270, 1620, 0, 1350, 270, 1080, 540, 810],
+    [2700, 2430, 1080, 2160, 810, 1890, 540, 1620, 270, 1350, 0, 1080, 270, 810, 540],
+    [1620, 1350, 2160, 1080, 1890, 810, 1620, 540, 1350, 270, 1080, 0, 810, 270, 540],
+    [2430, 2160, 1350, 1890, 1080, 1620, 810, 1350, 540, 1080, 270, 810, 0, 540, 270],
+    [1890, 1620, 1890, 1350, 1620, 1080, 1350, 810, 1080, 540, 810, 270, 540, 0, 270],
+    [2160, 1890, 1620, 1620, 1350, 1350, 1080, 1080, 810, 810, 540, 540, 270, 270, 0]
+  ],
+  "max_time_seconds": 8
+}

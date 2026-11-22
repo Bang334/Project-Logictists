@@ -1,9 +1,13 @@
 """Polish repaired plans using real costs and another full spatial audit."""
+from itertools import permutations
+import json
 import time
+from pathlib import Path
 
 import pytest
 
 from app.hybrid_alns_engine import PackingAwareHybridALNSOptimizer
+from app.models import FleetOptimizationRequest, SpatialValidationResult
 from app.planning_objective import plan_lexicographic_key
 from test_benchmark_contract import comparison_request
 
@@ -39,6 +43,95 @@ def test_post_audit_search_finds_a_real_cheaper_feasible_plan():
     assert all(route.spatial_validation.is_valid for route in polished.routes)
     assert {cid for route in polished.routes for stop in route.stops for cid in stop.items_unloaded} == {"pkg-0", "pkg-1"}
     assert plan.model_dump() == before
+
+
+def test_polish_caps_candidate_audit_and_keeps_incumbent_at_deadline(monkeypatch):
+    engine, plan = make_audited_serial_plan()
+    before = plan.model_dump()
+    now = [0.0]
+    budgets = []
+    validate = engine._validate_spatial_actions
+
+    def audit(vehicle_index, actions, max_time_seconds=None):
+        budgets.append(max_time_seconds)
+        result = validate(vehicle_index, actions, max_time_seconds=max_time_seconds)
+        now[0] = 1.0
+        return result
+
+    monkeypatch.setattr(time, "perf_counter", lambda: now[0])
+    monkeypatch.setattr(engine, "_validate_spatial_actions", audit)
+    result = engine._polish_audited_response(plan, 0.28)
+    assert len(budgets) == 1 and 0 < budgets[0] <= 0.28
+    assert result is plan
+    assert plan.model_dump() == before
+
+
+def test_failed_spatial_trial_keeps_verified_plan_without_salvage(monkeypatch):
+    engine, plan = make_audited_serial_plan()
+    before = plan.model_dump()
+    engine.initial_plan = plan
+    _, routes, _ = engine._warm_start_state()
+    calls = []
+
+    def expire(*_args, **_kwargs):
+        calls.append(1)
+        return SpatialValidationResult(
+            is_valid=False, violation_code="PLACEMENT_SEARCH_LIMIT_REACHED",
+        )
+
+    monkeypatch.setattr(engine, "_validate_spatial_actions", expire)
+    retained = engine._build_final_response(
+        routes, [], include_benchmarks=False,
+        polish_checkpoint=(time.perf_counter() + 1, plan),
+    )
+    assert retained is plan
+    assert calls == [1]
+    assert plan.model_dump() == before
+
+
+def test_solve_returns_verified_construction_plan_after_search_deadline(monkeypatch):
+    from app import hybrid_alns_engine
+    from app.multi_start import is_fully_served
+
+    engine, plan = make_audited_serial_plan()
+    now = [10.0]
+    expected = {order.id: {item.id for item in order.items} for order in engine.orders}
+
+    def construct(*_args, **_kwargs):
+        engine._verified_construction_plan = plan
+        now[0] += 3
+        return None
+
+    monkeypatch.setattr(hybrid_alns_engine, "LARGE_SEED_ORDER_COUNT", len(engine.orders))
+    monkeypatch.setattr(time, "perf_counter", lambda: now[0])
+    monkeypatch.setattr(engine, "_build_hybrid_initial_solution", construct)
+
+    result = engine.solve(hard_deadline=12)
+    assert result is plan
+    assert is_fully_served(result, set(expected), engine.request.policy.max_routes_per_day, expected)
+
+
+def test_sequential_cycle_checkpoint_serves_ten_multi_item_orders():
+    from app.multi_start import is_fully_served
+    from benchmark_hybrid_regression import load_request
+
+    request = load_request("scenario_1_multi_item.json")
+    original_fleet_size = len(request.vehicles)
+    indices = [0, 1, *range(original_fleet_size, original_fleet_size + 2 * len(request.orders))]
+    request.distance_matrix_meters = [
+        [request.distance_matrix_meters[i][j] for j in indices] for i in indices
+    ]
+    request.duration_matrix_seconds = [
+        [request.duration_matrix_seconds[i][j] for j in indices] for i in indices
+    ]
+    request.vehicles = request.vehicles[:2]
+    request.drivers = request.drivers[:2]
+    engine = PackingAwareHybridALNSOptimizer(request, include_benchmarks=False)
+    result = engine._audited_cycle_checkpoint([0, 1], time.perf_counter() + 5)
+    expected = {order.id: {item.id for item in order.items} for order in request.orders}
+    assert result is not None
+    assert is_fully_served(result, set(expected), request.policy.max_routes_per_day, expected)
+    assert {route.driver_id for route in result.routes} == {driver.id for driver in request.drivers}
 
 
 
@@ -161,3 +254,137 @@ def test_can_schedule_stops_matches_schedule_stops_feasibility():
     assert engine._schedule_stops(0, valid_stops) is None
 
 
+
+
+@pytest.mark.parametrize(
+    "order_count,vehicle_index,incumbent_nodes,before_km,minimum_km",
+    [
+        (4, 0, [5, 1, 3, 7, 2, 4, 6, 8], 48, 46),
+        (5, 0, [5, 1, 3, 9, 7, 2, 4, 6, 8, 10], 52, 48),
+        (7, 0, [3, 1, 13, 11, 5, 9, 12, 10, 4, 7, 2, 6, 14, 8], 58, 54),
+        (7, 1, [3, 1, 13, 11, 5, 9, 12, 10, 4, 7, 2, 6, 14, 8], 58, 54),
+        (8, 0, [3, 1, 13, 11, 5, 9, 12, 10, 4, 7, 2, 6, 14, 8, 15, 16], 58, 54),
+    ],
+)
+def test_post_audit_improves_short_route_requiring_multiple_stop_changes(
+    order_count, vehicle_index, incumbent_nodes, before_km, minimum_km,
+):
+    # Exact distance references from independent pickup-before-delivery checks.
+    coordinates = [
+        (0, 0), (4, 1), (4, 9), (2, 4), (10, 3), (6, 1),
+        (7, 2), (2, 10), (2, 2), (1, 9), (1, 3),
+    ][:2 * order_count + 1]
+    if order_count >= 7:
+        coordinates = [
+            (0, 0), (5, 2), (2, 10), (6, 1), (9, 4), (1, 7), (1, 10),
+            (7, 9), (2, 3), (5, 7), (8, 5), (1, 8), (7, 5), (3, 8), (1, 5),
+        ]
+    fixture_name = "corridor_07_reverse.json" if order_count >= 7 else f"corridor_{order_count:02}_fifo.json"
+    fixture = (
+        Path(__file__).resolve().parents[1] / "benchmarks" / "corridor"
+        / fixture_name
+    )
+    request = FleetOptimizationRequest.model_validate(json.loads(fixture.read_text(encoding="utf8")))
+    if order_count == 8:
+        extra = request.orders[-1].model_copy(deep=True)
+        extra.id = extra.order_number = "extra-order"
+        extra.items[0].id = "extra-item"
+        extra.items[0].order_id = extra.id
+        extra.pickup_location.id = "extra-pickup"
+        extra.delivery_location.id = "extra-delivery"
+        request.orders.append(extra)
+        coordinates.extend([(0, 0), (0, 0)])
+    if vehicle_index == 1:
+        request.vehicles.insert(0, request.vehicles[0].model_copy(update={"id": "other-truck"}))
+        coordinates.insert(0, (50, 50))
+        for order in request.orders:
+            order.allowed_source_vehicle_ids = [request.vehicles[1].id]
+    grid_distances = [
+        [abs(x - other_x) + abs(y - other_y) for other_x, other_y in coordinates]
+        for x, y in coordinates
+    ]
+    request.distance_matrix_meters = [[km * 1000 for km in row] for row in grid_distances]
+    request.duration_matrix_seconds = [[km * 60 for km in row] for row in grid_distances]
+    request.drivers[0].fixed_salary_monthly_vnd = 0
+    for order in request.orders:
+        order.pickup_window_start_sec = order.delivery_window_start_sec = 0
+        order.pickup_window_end_sec = order.delivery_window_end_sec = 28_800
+        order.pickup_service_time_sec = order.delivery_service_time_sec = 0
+        item, = order.items
+        item.length_cm = item.width_cm = item.height_cm = 20
+        item.weight_kg = 1
+
+    if order_count == 8:
+        request.orders[-1].pickup_window_start_sec = 20_000
+        for order in request.orders[:-1]:
+            order.delivery_window_end_sec = 10_000
+
+    engine = PackingAwareHybridALNSOptimizer(request, time_budget_seconds=2, include_benchmarks=False)
+    stops = []
+    for order in engine.orders:
+        valid, stops = engine._can_insert_order(vehicle_index, stops, order, len(stops), len(stops) + 1)
+        assert valid
+    stops_by_node = {engine._stop_node_index(stop): stop for stop in stops}
+    route = [stops_by_node[node + vehicle_index] for node in incumbent_nodes]
+    routes = [[]] * vehicle_index + [route]
+    incumbent = engine._build_final_response(routes, [], include_benchmarks=False)
+    engine._best_audited_response([incumbent])
+    assert incumbent.status == "SUCCESS"
+    assert incumbent.total_distance_km == before_km
+
+    improved = engine._polish_audited_response(incumbent, time.perf_counter() + 1)
+    assert improved.status == "SUCCESS"
+    assert improved.total_distance_km == minimum_km
+    assert improved.total_cost_vnd == 200_000 + 4_260 * minimum_km
+    improved_route, = improved.routes
+    assert improved_route.spatial_validation.is_valid
+    expected_items = {item.id for order in request.orders for item in order.items}
+    for field in ("items_loaded", "items_unloaded"):
+        actual_items = [item for stop in improved_route.stops for item in getattr(stop, field)]
+        assert sorted(actual_items) == sorted(expected_items)
+
+@pytest.mark.parametrize("seed", range(6))
+def test_window_sequences_match_permutation_reference(seed):
+    import random
+    from app.hybrid_alns.stop_moves import ranked_short_route_sequences
+
+    # A was picked before this window, B will be delivered after it.
+    # C and D have both actions inside. Two visits use the same matrix node.
+    nodes = [1, 2, 3, 2, 4, 5]
+    actions = [
+        ("A", "DELIVERY"), ("C", "PICKUP"), ("B", "PICKUP"),
+        ("D", "PICKUP"), ("C", "DELIVERY"), ("D", "DELIVERY"),
+    ]
+    rng = random.Random(seed)
+    distances = [[0 if i == j else rng.randrange(1, 25) for j in range(7)] for i in range(7)]
+
+    def distance(sequence):
+        path = [0, *(nodes[index] for index in sequence), 6]
+        return sum(distances[a][b] for a, b in zip(path, path[1:]))
+
+    initial = distance(range(len(nodes)))
+    permitted = [
+        path for path in permutations(range(len(nodes)))
+        if path.index(1) < path.index(4) and path.index(3) < path.index(5)
+    ]
+    expected = sorted(distance(path) - initial for path in permitted if distance(path) < initial)
+    moves = ranked_short_route_sequences(
+        nodes, actions, 0, distances, time.perf_counter() + 1, end_node=6,
+    )
+    assert [delta for delta, _ in moves] == expected[:12]
+    assert len({path for _, path in moves}) == len(moves)
+    assert all(path in permitted and distance(path) - initial == delta for delta, path in moves)
+
+
+def test_polish_preserves_two_trips_mapped_to_one_vehicle_slot():
+    engine, plan = make_audited_serial_plan()
+    original, = plan.routes
+    # Both trips return to the same truck/day slot. Each carries a distinct order.
+    serial_trips = [
+        original.model_copy(update={"stops": original.stops[start:start + 2]})
+        for start in (0, 2)
+    ]
+    plan = plan.model_copy(update={"routes": serial_trips})
+    before = plan.model_dump()
+    assert engine._routes_from_audited_response(plan) is None
+    assert engine._polish_audited_response(plan, time.perf_counter() + 1).model_dump() == before

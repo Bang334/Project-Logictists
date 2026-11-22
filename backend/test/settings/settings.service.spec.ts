@@ -80,6 +80,7 @@ function makeCompanyRow(overrides: Record<string, unknown> = {}) {
     stackingOwnerMode: StackingOwnerMode.SAME_CUSTOMER,
     stackingMaxTiers: 2,
     stackingLiftClearanceMm: 50,
+    stackingMaxTopLoadPercent: 30,
     overrideOptimization: false,
     defaultSearchBudgetSeconds: 10,
     maxOptimizationTimeSeconds: 120,
@@ -124,6 +125,7 @@ describe('SettingsService & TMS DB Policy Integration', () => {
       stackingOwnerMode: StackingOwnerMode.ANY_CUSTOMER,
       stackingMaxTiers: 4,
       stackingLiftClearanceMm: 65,
+      stackingMaxTopLoadPercent: 45,
       overrideOptimization: true,
       defaultSearchBudgetSeconds: 15,
       maxOptimizationTimeSeconds: 180,
@@ -157,6 +159,7 @@ describe('SettingsService & TMS DB Policy Integration', () => {
       ownerMode: StackingOwnerMode.ANY_CUSTOMER,
       maxTiers: 4,
       liftClearanceMm: 65,
+      maxTopLoadPercent: 45,
     });
     // Must stay null (unlimited) instead of inheriting 5 from company
     expect(effective.optimization.maxRoutesPerDay).toBeNull();
@@ -643,6 +646,7 @@ describe('SettingsService & TMS DB Policy Integration', () => {
         max_tiers: 3,
         lift_clearance_cm: 5,
         owner_mode: 'ANY_CUSTOMER',
+        max_top_load_percent: 30,
       });
       expect(sentPayload.max_time_seconds).toBe(90);
       expect(sentPayload.search_time_seconds).toBe(18);

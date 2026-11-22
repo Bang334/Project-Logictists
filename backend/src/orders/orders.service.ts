@@ -204,10 +204,16 @@ export class OrdersService {
       const line = item.id ? await tx.orderItem.update({ where: { id: item.id }, data }) : await tx.orderItem.create({ data });
       for (const p of item.packages) {
         const normalizedOrientations = parseAllowedOrientationsInput(p.allowedOrientations);
+        const cargoKind = p.cargoKind ?? 'STANDARD';
+        const noTopLoadRequested = p.noTopLoadRequested ?? false;
+        const allowUpperTier =
+          cargoKind === 'STANDARD' && !noTopLoadRequested
+            ? (p.allowUpperTier ?? true)
+            : false;
         const data = {
           lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: BigInt(p.weightG),
-          cargoKind: p.cargoKind ?? 'UNCLASSIFIED', allowUpperTier: p.allowUpperTier ?? false,
-          noTopLoadRequested: p.noTopLoadRequested ?? false, maxTopLoadG: p.maxTopLoadG ?? null,
+          cargoKind, allowUpperTier,
+          noTopLoadRequested, maxTopLoadG: p.maxTopLoadG ?? null,
           allowedOrientations: normalizedOrientations === null ? Prisma.DbNull : normalizedOrientations,
           measurementSource: 'USER_DECLARED' as const, status,
         };

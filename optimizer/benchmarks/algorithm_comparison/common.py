@@ -171,10 +171,15 @@ def convert_request_to_hybrid(
                         weight_kg=float(item.weight_kg),
                         can_rotate=resolve_can_rotate(
                             item,
-                            d11_default=True if getattr(request, "demo_stacking", None) is None else None,
+                            d11_default=True,
                         ),
                         allowed_orientations=getattr(item, "allowed_orientations", None),
                         description=item.description or "",
+                        customer_id=getattr(item, "customer_id", None),
+                        cargo_kind=getattr(item, "cargo_kind", "STANDARD"),
+                        allow_upper_tier=bool(getattr(item, "allow_upper_tier", True)),
+                        no_top_load_requested=bool(getattr(item, "no_top_load_requested", False)),
+                        max_top_load_g=getattr(item, "max_top_load_g", None),
                     )
                     for item in order.items
                 ],
@@ -205,6 +210,7 @@ def convert_request_to_hybrid(
         unassigned_order_penalty_vnd=int(request.policy.unassigned_order_penalty_vnd),
         late_delivery_penalty_mode=request.policy.late_delivery_penalty_mode,
         late_delivery_penalty_value=float(request.policy.late_delivery_penalty_value),
+        demo_stacking=getattr(request, "demo_stacking", None),
     )
 
     return (

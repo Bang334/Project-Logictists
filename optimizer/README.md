@@ -1,10 +1,17 @@
 # TMS Optimization Engine
 
-FastAPI service dùng Packing-aware Hybrid ALNS làm bộ tìm kiếm chính, Google OR-Tools làm fallback có giới hạn, và validator riêng cho tải từng chặng, pickup trước delivery và bố trí kiện không chồng/lối thao tác.
+Điều phối tự động chỉ trả phương án đã đối soát đầy đủ đơn và kiện. API
+`/optimize-fleet/candidates` trả danh sách rỗng kèm `no_plan_status` khi hết
+thời gian hoặc chưa tìm được lịch đủ. Backend mở rộng lịch theo các ca tiếp
+theo trong ngân sách tìm kiếm, giữ khung hẹn đã xác nhận và các ca bị giữ chỗ.
+API `/optimize-fleet` trả lỗi nếu chưa có phương án giao đủ.
+
+
+FastAPI service dùng Packing-aware Hybrid ALNS làm bộ tìm kiếm chính, Google OR-Tools làm fallback có giới hạn, và validator riêng cho tải từng chặng, pickup trước delivery và bố trí kiện 3D theo bước. Request gửi `demo_stacking: null` để dùng chế độ đặt sàn.
 
 `POST /optimize-fleet/candidates` tự chọn cơ chế tìm kiếm. Bài toán 1–3 đơn với tối đa 2 xe vật lý dùng vét cạn các chuỗi pickup–delivery, phân xe/ngày và kiểm tra hình học. Bài toán lớn hơn chạy Hybrid-first: một seed dùng toàn bộ ngân sách dưới 48 giây; từ 48 giây và ít nhất 8 đơn thì hai seed chia đều ngân sách. OR-Tools chỉ chạy đúng một lượt fallback khi tất cả seed Hybrid không tạo được tuyến. Response chỉ giữ nghiệm đã qua time window, ca xe, hạng bằng và `SpatialValidator`, sau đó lọc và xếp tối đa 3 phương án giao đủ 100% đơn theo objective chung.
 
-Khi có ca trong nhiều ngày, bộ điều phối Hybrid tính lịch Direct trên cùng đầu vào. Nếu Direct giao đủ trước ngày cuối của các ca khả dụng, Hybrid dành tối đa 30% ngân sách tìm kiếm còn lại để thử ghép trong mốc ngày đó. Chuỗi chuyến Direct theo từng xe/ngày cung cấp thứ tự lấy và giao ban đầu. Hybrid tính lại lịch, chi phí và kiểm tra xếp/dỡ trước khi đưa nghiệm vào so sánh. Trong các nghiệm giao đủ đã kiểm chứng, số ngày vượt mốc Direct được xét trước thứ hạng nghiệp vụ hiện có. Lịch dài hơn vẫn có thể xuất hiện khi bộ giải chưa tìm được lịch ghép đạt mốc trong lần chạy.
+Khi có ca trong nhiều ngày, bộ điều phối Hybrid tính lịch Direct trên cùng đầu vào. Nếu Direct giao đủ, Hybrid dành tối đa 30% ngân sách tìm kiếm còn lại để thử ghép trong mốc ngày đó. Chuỗi chuyến Direct theo từng xe/ngày cung cấp thứ tự lấy và giao ban đầu. Khi chuỗi này đã qua kiểm tra, Hybrid giữ làm phương án dự phòng và thử đưa điểm lấy của đơn sau lên trước điểm giao của đơn trước. Phương án ghép phải giao đủ, qua kiểm tra xếp/dỡ, giảm quãng đường, giữ hoặc giảm thời gian và cải thiện điểm xếp hạng. Với lịch nhiều ngày, bảng ưu tiên điểm chi phí toàn đội trong các nghiệm giao đủ, giữ đại diện cho các số ngày khác nhau trước khi điền thêm lịch cùng số ngày. Seed 0 có thể tìm tiếp từ lịch ngắn đã kiểm chứng trên toàn bộ các ca.
 
 Thứ hạng candidate dùng `planning_objective.selection_score_vnd`, không dùng riêng `total_cost_vnd`. Điểm này giữ chi phí route để báo cáo nhưng thay phần lương cố định phân bổ theo phút chạy bằng lương lịch của toàn bộ đội tài xế trong suốt số ngày kế hoạch còn mở. Nếu chi nhánh chưa cấu hình phạt giao trễ tài chính, objective cộng một penalty vận hành theo thời gian trễ; đây chỉ là trọng số quyết định và được trả riêng trong `operational_late_penalty_vnd`, không phải khoản phạt phải trả khách. `total_cost_vnd` vẫn là chi phí vận hành dự toán và không chứa penalty vận hành này.
 
@@ -14,15 +21,18 @@ Mốc tốt nhất lịch sử của từng testcase được lưu tập trung t
 
 Trước khi tìm kiếm, optimizer loại các slot xe-ngày không thể phục vụ bất kỳ đơn nào ngay cả khi giả sử thời gian di chuyển bằng 0. Ma trận được cắt đồng bộ với danh sách xe, nên không làm lệch node index. Phép lọc này chỉ loại slot chắc chắn không khả thi theo ca và time window.
 
-Mặc định, số lượt và ngân sách được chọn thích ứng theo số đơn, số kiện, số xe vật lý và số slot xe theo ngày. Nếu request gửi `search_time_seconds` (số nguyên từ 1 đến 120), giá trị này trở thành ngân sách tối đa tường minh cho mỗi lượt tìm kiếm chính và không bị policy tự rút ngắn; `max_time_seconds` vẫn là trần an toàn phía server:
+Khi bật `early_stop_patience`, `search_time_seconds` định hướng lượt tìm nghiệm đầu, còn `max_time_seconds` là trần của lượt điều phối solver. Pha cải thiện dừng sớm khi đạt số lần quan sát phương án hợp lệ liên tiếp mà không cải thiện. Mỗi lần tìm được phương án tốt hơn thì bộ đếm bắt đầu lại. Mặc định backend dùng 10 giây cho lượt đầu, trần 120 giây và patience 30. Với request tắt early stop, solver dùng ngân sách tìm kiếm đã chọn, giới hạn bởi `max_time_seconds`.
+
+Với bài 3D lớn, Hybrid thử xác minh phương án ghép các chu kỳ lấy–giao độc lập trước khi tìm cách ghép nhiều đơn. Nếu đã có phương án giao đủ đã kiểm chứng, solver giữ phương án này trong lúc thử ứng viên khác. Vòng chính thường gỡ một nhóm nhỏ theo policy hiện hành. Khi có phương án đã kiểm chứng và còn ngân sách, solver cho bài từ 20 đơn thử gỡ khoảng 30% số đơn, tối đa 18, rồi chèn lại bằng regret-2. Kích thước thực tế còn phụ thuộc phép gỡ và số đơn trong nhóm.
+
+Policy phân bổ lượt và thời gian theo quy mô đơn, kiện, xe vật lý và slot theo ngày:
 
 - job 1–3 đơn, tối đa 2 xe vật lý dùng 1 lượt vét cạn trong ngân sách chung;
 - job ngoài ngưỡng vét cạn dùng 2–4 chiến lược khi nhỏ/trung bình;
 - job lớn dùng tối đa 6 chiến lược;
-- trần cứng của một lượt là 120 giây;
-- một lượt được dừng sớm khi đã có nghiệm giao đủ đơn ở tầng routing và objective không còn cải thiện trong khoảng stagnation của policy.
+- các pha có ngân sách riêng để dành thời gian cho tìm tuyến và kiểm chứng xếp dỡ.
 
-Với job ngoài ngưỡng rất nhỏ, ngân sách mong muốn là `ceil(5 + 1,30 × complexity)` và bị chặn bởi trần caller/120 giây. Phân bổ theo tổng ngân sách thực:
+Với job ngoài ngưỡng rất nhỏ và chưa đặt ngân sách tìm kiếm, ngân sách mong muốn là `ceil(5 + 1,30 × complexity)` và bị chặn bởi trần từ request. Phân bổ theo tổng ngân sách thực:
 
 | Ngân sách | Routing | Validator | Gom tuyến | Stagnation |
 |---:|---:|---:|---:|---:|

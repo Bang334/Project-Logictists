@@ -110,6 +110,11 @@ class FleetRoutingSolver:
         self.vehicle_count = len(request.vehicles)
         self.nodes = self._build_nodes()
         self.order_by_id = {order.id: order for order in request.orders}
+        self._order_stop_node_indices = {
+            (node["order"].id, node["type"]): index
+            for index, node in enumerate(self.nodes)
+            if node["order"] is not None
+        }
         self.driver_safe_vehicle_indices = self._find_driver_safe_vehicle_indices()
 
     def _find_driver_safe_vehicle_indices(self) -> Set[int]:
@@ -248,7 +253,6 @@ class FleetRoutingSolver:
         """
         started_at = time.monotonic()
         deadline = started_at + self.time_budget_seconds
-        node_id_to_idx = {node["id"]: index for index, node in enumerate(self.nodes)}
         all_order_ids = frozenset(order.id for order in self.request.orders)
         route_options: List[Tuple[int, frozenset, OptimizedRoute]] = []
         spatial_cache: Dict[Tuple, SpatialValidationResult] = {}
@@ -298,7 +302,7 @@ class FleetRoutingSolver:
                             vehicle,
                             vehicle_index,
                             actions,
-                            node_id_to_idx,
+                            sequence,
                         )
                         if evaluated is None:
                             continue
@@ -310,7 +314,7 @@ class FleetRoutingSolver:
                             vehicle.payload_limit_kg,
                             vehicle.door_position,
                             vehicle.door_width_cm,
-                            tuple((action.stop_type, action.stop_id) for action in actions),
+                            tuple((order_id, stop_type) for order_id, stop_type, _ in sequence),
                         )
                         spatial = spatial_cache.get(spatial_key)
                         if spatial is None:
@@ -818,7 +822,7 @@ class FleetRoutingSolver:
             ))
 
         time_callback_index = routing.RegisterTransitCallback(time_callback)
-        max_time_horizon = 30 * 86400  # 30 ngày = 2.592.000 giây
+        max_time_horizon = max(30 * 86400, max(v.available_end_sec for v in self.request.vehicles))
         routing.AddDimension(time_callback_index, max_time_horizon, max_time_horizon, False, "Time")
         time_dimension = routing.GetDimensionOrDie("Time")
         for vehicle_index, vehicle in enumerate(self.request.vehicles):
@@ -1464,9 +1468,6 @@ class FleetRoutingSolver:
         vehicle_index_by_id = {
             vehicle.id: index for index, vehicle in enumerate(self.request.vehicles)
         }
-        node_id_to_idx = {
-            node["id"]: index for index, node in enumerate(self.nodes)
-        }
         for route in routes:
             route_id = route.route_id or route.vehicle_id
             vehicle_index = vehicle_index_by_id.get(route_id)
@@ -1489,7 +1490,7 @@ class FleetRoutingSolver:
 
             actions = self._actions_from_precedence_sequence(sequence)
             evaluated = self._evaluate_resequence_candidate(
-                vehicle, vehicle_index, actions, node_id_to_idx
+                vehicle, vehicle_index, actions, sequence
             )
             spatial = validate_stop_actions(self.request.demo_stacking, vehicle, actions)
             if evaluated is None or not spatial.is_valid:
@@ -1942,7 +1943,7 @@ class FleetRoutingSolver:
             return False
         for item in order.items:
             orientations = [(item.length_cm, item.width_cm)]
-            if resolve_can_rotate(item, d11_default=True if demo_stacking is None else None):
+            if resolve_can_rotate(item, d11_default=True):
                 orientations.append((item.width_cm, item.length_cm))
             if item.height_cm > vehicle.height_cm or not any(
                 length <= vehicle.length_cm and width <= vehicle.width_cm
@@ -2169,8 +2170,6 @@ class FleetRoutingSolver:
         if time.monotonic() >= effective_deadline:
             return None
 
-        node_id_to_idx = {node["id"]: idx for idx, node in enumerate(self.nodes)}
-
         lifo_sequences = self._generate_lifo_sequences(orders, effective_deadline)
 
         candidates = []
@@ -2180,7 +2179,7 @@ class FleetRoutingSolver:
             cand_actions = self._actions_from_precedence_sequence(seq)
 
             evaluated = self._evaluate_resequence_candidate(
-                vehicle, vehicle_index, cand_actions, node_id_to_idx
+                vehicle, vehicle_index, cand_actions, seq
             )
             if evaluated is not None:
                 candidates.append((evaluated[2], cand_actions, evaluated))
@@ -2214,7 +2213,7 @@ class FleetRoutingSolver:
         seen_sequences = set()
         for candidate in low_complexity + candidates[:3]:
             action_key = tuple(
-                (action.stop_type, action.stop_id) for action in candidate[1]
+                (stop.allocation_id, stop.stop_type) for stop in candidate[2][0]
             )
             if action_key not in seen_sequences:
                 seen_sequences.add(action_key)
@@ -2248,7 +2247,7 @@ class FleetRoutingSolver:
         vehicle: FleetVehicle,
         vehicle_index: int,
         actions: List[StopAction],
-        node_id_to_idx: Dict[str, int],
+        sequence: List[Tuple[str, str, OrderPair]],
     ) -> Optional[Tuple[List[ScheduledStop], float, float, float]]:
         """Build and economically score a spatial fallback within vehicle availability."""
         scheduled: List[ScheduledStop] = []
@@ -2269,14 +2268,9 @@ class FleetRoutingSolver:
             for item in order.items
         }
 
-        for action in actions:
-            node_index = node_id_to_idx.get(action.stop_id)
-            if node_index is None:
-                return None
-            node = self.nodes[node_index]
-            order = node["order"]
-            if order is None:
-                return None
+        for action, (order_id, stop_type, order) in zip(actions, sequence, strict=True):
+            # Two orders at one address still have distinct matrix nodes and windows.
+            node_index = self._order_stop_node_indices[order_id, stop_type]
 
             leg_start = round(current_time)
             total_distance += self.request.distance_matrix_meters[previous_index][node_index]

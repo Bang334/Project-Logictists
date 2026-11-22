@@ -374,6 +374,10 @@ describe('TripsService automatic optimization search budget', () => {
       }),
     };
     const axiosPost = axios.post as jest.MockedFunction<typeof axios.post>;
+    axiosPost.mockResolvedValueOnce({ data: {
+      job_id: 'first-attempt', solver_run_count: 1, fully_served_candidate_count: 0,
+      candidates: [], no_plan_status: 'NO_COMPLETE_PLAN',
+    } });
     axiosPost.mockRejectedValueOnce(new Error('stop after payload capture'));
     const service = new TripsService(
       prisma as never,
@@ -391,6 +395,14 @@ describe('TripsService automatic optimization search budget', () => {
       }),
     ).rejects.toThrow('stop after payload capture');
 
+    const extendedPayload = axiosPost.mock.calls[1][1] as {
+      vehicles: Array<{ service_day_index: number }>;
+      orders: Array<{ id: string; delivery_window_end_sec: number }>;
+    };
+    expect(Math.max(...extendedPayload.vehicles.map(vehicle => vehicle.service_day_index))).toBe(13);
+    expect(extendedPayload.orders.find(order => order.id === 'order-other')?.delivery_window_end_sec).toBe(14 * 86400);
+    expect(extendedPayload.orders.find(order => order.id === 'order-confirmed')?.delivery_window_end_sec).toBe(8 * 3600);
+    expect(mapbox.getRoadMatrix).toHaveBeenCalledTimes(1);
     const sentPayload = axiosPost.mock.calls[0][1] as {
       vehicles: Array<{ source_vehicle_id: string }>;
       orders: Array<{ id: string; delivery_window_start_sec: number; delivery_window_end_sec: number }>;

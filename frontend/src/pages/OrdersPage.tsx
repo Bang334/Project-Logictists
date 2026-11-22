@@ -11,7 +11,7 @@ import { isFloorRotationLocked } from '../utils/weightBalance';
 import { MapLocationPickerModal } from '../components/MapLocationPickerModal';
 import { OrderDetailDrawer } from '../components/OrderDetailDrawer';
 interface FormValues extends Omit<OrderInput, 'stops'> { stops: StopInput[] }
-const blankPackage = () => ({ lengthMm: undefined, widthMm: undefined, heightMm: undefined, weightG: undefined });
+const blankPackage = () => ({ lengthMm: undefined, widthMm: undefined, heightMm: undefined, weightG: undefined, cargoKind: 'STANDARD' as const, allowUpperTier: true, noTopLoadRequested: false });
 const required = [{ required: true, message: 'Vui lòng nhập trường này' }];
 function showFieldErrors(error: unknown, form: FormInstance<FormValues>) {
   if (!axios.isAxiosError(error)) return;

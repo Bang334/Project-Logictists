@@ -273,6 +273,20 @@ describe('OptimizationJobsService', () => {
     );
   });
 
+  it('hides a historical partial result and refuses to apply it', async () => {
+    const user = { id: 'dispatcher', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 's',
+      branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH' as const,
+        branchId: 'branch-1', permissions: ['trips.read', 'trips.plan'] }] };
+    const partial = job({ status: 'PARTIAL', result: { proposal: { result: {
+      status: 'PARTIAL', unassigned_orders: [{ order_id: 'missing' }],
+    } } }, summaries: [{ candidateNumber: 1, feasibilityStatus: 'PARTIAL', objectiveBreakdown: {} }] });
+    prisma.$queryRaw.mockResolvedValueOnce([partial]);
+    prisma.optimizationJob.findUnique.mockResolvedValue(partial);
+    expect(await service.get(user, 'job-1')).toMatchObject({ candidates: [], result: null });
+    await expect(service.apply(user, 'job-1')).rejects.toThrow(ConflictException);
+    expect(trips.applyAutomaticOptimization).not.toHaveBeenCalled();
+  });
+
   it('exports ranked candidates and route details as an Excel workbook', async () => {
     prisma.optimizationJob.findUnique.mockResolvedValue(job({ status: 'SUCCEEDED' }));
     prisma.optimizationResult.findMany.mockResolvedValue([
@@ -289,6 +303,7 @@ describe('OptimizationJobsService', () => {
         resultSnapshot: {
           proposal: {
             result: {
+              status: "SUCCESS", unassigned_orders: [],
               routes: [
                 {
                   service_day_index: 0,
@@ -334,7 +349,7 @@ describe('OptimizationJobsService', () => {
       grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH' as const, branchId: 'branch-1', permissions: ['trips.read', 'trips.plan', 'trips.publish'] }],
     };
     prisma.$queryRaw.mockResolvedValue([job({
-      id: 'job-latest', status: 'SUCCEEDED', result: { proposal: { result: { total_cost_vnd: 123 } } },
+      id: 'job-latest', status: 'SUCCEEDED', result: { proposal: { result: { status: 'SUCCESS', unassigned_orders: [], total_cost_vnd: 123 } } },
       summaries: [{ candidateNumber: 1, feasibilityStatus: 'FEASIBLE',
         objectiveBreakdown: { totalCostVnd: 123, routeCount: 1, unassignedOrderCount: 0 } }],
     })]);
@@ -342,7 +357,7 @@ describe('OptimizationJobsService', () => {
     const filter = prisma.$queryRaw.mock.calls[0][1];
     expect(filter.values).toEqual(['branch-1']);
     expect(filter.sql).toContain('WHERE j."branchId" = ?');
-    expect(filter.sql).toContain("j.status IN ('PENDING','RUNNING','RETRYING','CANCEL_REQUESTED','SUCCEEDED','PARTIAL','APPLIED')");
+    expect(filter.sql).toContain("j.status IN ('PENDING','RUNNING','RETRYING','CANCEL_REQUESTED','SUCCEEDED','APPLIED')");
     expect(filter.sql).toContain('ORDER BY j."createdAt" DESC, j.id DESC LIMIT 1');
     expect(restored).toMatchObject({
       id: 'job-latest',

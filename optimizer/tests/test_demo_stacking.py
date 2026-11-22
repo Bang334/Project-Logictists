@@ -11,7 +11,7 @@ def package(item_id, weight, **policy):
                 allow_upper_tier=True, max_top_load_g=30000) | policy
 
 
-def validate(items, *, height=100, tiers=3, separate_delivery=False, enabled=True):
+def validate(items, *, height=100, tiers=3, max_top_load_percent=30, separate_delivery=False, enabled=True):
     stops = [
         dict(stop_id="pickup", sequence=1, stop_type="PICKUP", items_to_load=items),
         dict(stop_id="delivery", sequence=2, stop_type="DELIVERY",
@@ -23,7 +23,9 @@ def validate(items, *, height=100, tiers=3, separate_delivery=False, enabled=Tru
     body = dict(vehicle=dict(id="van", plate_number="TEST", length_cm=100,
                              width_cm=100, height_cm=height, payload_limit_kg=500), stops=stops)
     if enabled:
-        body["demo_stacking"] = dict(max_tiers=tiers, lift_clearance_cm=5)
+        body["demo_stacking"] = dict(max_tiers=tiers, lift_clearance_cm=5, max_top_load_percent=max_top_load_percent)
+    else:
+        body["demo_stacking"] = None
     response = TestClient(app).post("/validate-spatial", json=body)
     assert response.status_code == 200, response.text
     return response.json()
@@ -32,7 +34,9 @@ def validate(items, *, height=100, tiers=3, separate_delivery=False, enabled=Tru
 def test_three_tiers_restore_physical_ids_and_unload_top_first():
     result = validate([package("A", 100), package("B", 22), package("C", 5)])
     assert result["is_valid"]
-    assert result["demo_stacking"] == {"max_tiers": 3, "lift_clearance_cm": 5, "owner_mode": "SAME_CUSTOMER"}
+    assert result["demo_stacking"] == {
+        "max_tiers": 3, "lift_clearance_cm": 5, "owner_mode": "SAME_CUSTOMER", "max_top_load_percent": 30
+    }
     pickup, delivery = result["step_states"]
     assert pickup["current_occupied_area_cm2"] == 10000
     assert pickup["current_weight_kg"] == 127
@@ -43,9 +47,18 @@ def test_three_tiers_restore_physical_ids_and_unload_top_first():
     assert top_path["is_clear"] and top_path["points"][1]["z"] == 55
 
 
+def test_top_load_percent_boundary_allows_exact_limit_and_honors_custom_percent():
+    # Exactly 30% (30 kg on 100 kg base with max_top_load_g >= 30000) must be valid ("not > 30%").
+    assert validate([package("A", 100), package("B", 30)])["is_valid"] is True
+    # Tightening setting to 20% rejects 25 kg on 100 kg; raising setting to 50% allows 50 kg (with sufficient max_top_load_g).
+    assert validate([package("A", 100), package("B", 25)], max_top_load_percent=20)["is_valid"] is False
+    assert validate([package("A", 100, max_top_load_g=60000), package("B", 50)], max_top_load_percent=50)["is_valid"] is True
+    assert validate([package("A", 100, max_top_load_g=60000), package("B", 51)], max_top_load_percent=50)["is_valid"] is False
+
+
 @pytest.mark.parametrize("items,options", [
     ([package("A", 100), package("B", 25), package("C", 6)], {}),
-    ([package("A", 100), package("B", 30)], {}),
+    ([package("A", 100, max_top_load_g=35000), package("B", 31)], {}),
     ([package("A", 100, max_top_load_g=10000), package("B", 12)], {}),
     ([package("A", 100, cargo_kind="FRAGILE"), package("B", 20)], {}),
     ([package("A", 100, no_top_load_requested=True), package("B", 20)], {}),

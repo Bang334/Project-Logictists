@@ -126,13 +126,17 @@ class CargoItem(StrictContractModel):
     weight_kg: float = Field(gt=0)
     can_rotate: bool = True
     allowed_orientations: Optional[List[Literal["LWH", "WLH"]]] = None
-    cargo_kind: Literal["UNCLASSIFIED", "STANDARD", "FRAGILE"] = "UNCLASSIFIED"
-    allow_upper_tier: bool = False
+    cargo_kind: Literal["UNCLASSIFIED", "STANDARD", "FRAGILE"] = "STANDARD"
+    allow_upper_tier: bool = True
     no_top_load_requested: bool = False
     max_top_load_g: Optional[int] = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def validate_allowed_orientations(self):
+        if "allow_upper_tier" not in self.model_fields_set:
+            self.allow_upper_tier = (
+                self.cargo_kind == "STANDARD" and not self.no_top_load_requested
+            )
         if self.allowed_orientations is not None:
             deduped: List[Literal["LWH", "WLH"]] = []
             for entry in self.allowed_orientations:
@@ -226,6 +230,17 @@ class DemoStackingPolicy(StrictContractModel):
     max_tiers: int = Field(ge=2, le=20)
     lift_clearance_cm: float = Field(gt=0, allow_inf_nan=False)
     owner_mode: Literal["SAME_CUSTOMER", "ANY_CUSTOMER"] = "SAME_CUSTOMER"
+    max_top_load_percent: int = Field(default=30, ge=1, le=100)
+
+
+def default_stacking_policy() -> DemoStackingPolicy:
+    """Default production 3D multi-tier stacking policy when not explicitly disabled."""
+    return DemoStackingPolicy(
+        max_tiers=3,
+        lift_clearance_cm=5.0,
+        owner_mode="ANY_CUSTOMER",
+        max_top_load_percent=30,
+    )
 
 
 class SpatialValidationResult(StrictContractModel):
@@ -288,7 +303,9 @@ class OptimizationRequest(StrictContractModel):
     vehicle: VehicleFloor
     depot: LocationPoint
     orders: List[OrderPair] = Field(min_length=1)
-    demo_stacking: Optional[DemoStackingPolicy] = None
+    demo_stacking: Optional[DemoStackingPolicy] = Field(
+        default_factory=default_stacking_policy
+    )
     max_time_seconds: int = Field(default=10, ge=1, le=120)
     distance_matrix_meters: List[List[float]]
     duration_matrix_seconds: List[List[float]]
@@ -299,10 +316,21 @@ class FleetOptimizationRequest(StrictContractModel):
     vehicles: List[FleetVehicle] = Field(min_length=1)
     drivers: List[DriverOption] = Field(min_length=1)
     orders: List[OrderPair] = Field(min_length=1)
-    demo_stacking: Optional[DemoStackingPolicy] = None
+    demo_stacking: Optional[DemoStackingPolicy] = Field(
+        default_factory=default_stacking_policy
+    )
     policy: CostPolicy
-    max_time_seconds: int = Field(default=15, ge=1, le=1000)
-    search_time_seconds: Optional[int] = Field(default=None, ge=1, le=1000)
+    max_time_seconds: int = Field(
+        default=15, ge=1, le=1000,
+        description="Upper limit for the fleet solver budget used by search policy.",
+    )
+    search_time_seconds: Optional[int] = Field(
+        default=None, ge=1, le=1000,
+        description=(
+            "Requested search budget. Time spent preparing input, computing a direct "
+            "delivery baseline, and checking candidates can affect total response time."
+        ),
+    )
     early_stop_patience: int = Field(default=0, ge=0, le=1000)
     hybrid_seed_count: int = Field(default=0, ge=0, le=20)
     distance_matrix_meters: List[List[float]]
@@ -468,6 +496,8 @@ class FleetOptimizationBatchResponse(StrictContractModel):
     job_id: str
     solver_run_count: int = Field(ge=1)
     fully_served_candidate_count: int = Field(ge=0, default=0)
+    rank_by_objective_first: bool = False
+    no_plan_status: Optional[Literal["TIMEOUT", "NO_COMPLETE_PLAN"]] = None
     candidates: List[FleetOptimizationCandidate]
     diagnostics: List[str] = Field(default_factory=list)
 

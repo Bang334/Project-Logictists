@@ -38,6 +38,12 @@ export class StackingSettingsInputDto {
   @Min(1)
   @Max(5000)
   liftClearanceMm?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  maxTopLoadPercent?: number;
 }
 
 export class OptimizationSettingsInputDto {

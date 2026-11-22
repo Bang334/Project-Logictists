@@ -64,6 +64,7 @@ class HybridALNSSolver:
         initial_solution: Optional[OptimizationSolution] = None,
         post_audit_reserve_sec: float = 0.0,
         early_stop_patience: int = 0,
+        has_verified_plan: bool = False,
     ):
         if time_limit_sec <= 0:
             raise ValueError("time_limit_sec must be greater than zero")
@@ -90,6 +91,7 @@ class HybridALNSSolver:
         self.final_repair_time_limit_sec = final_repair_time_limit_sec
         self.initial_solution = initial_solution
         self.early_stop_patience = early_stop_patience
+        self.has_verified_plan = has_verified_plan
         self.stopped_for_patience = False
         self.rng = random.Random(random_seed)
         self._route_cache: Dict[
@@ -351,29 +353,7 @@ class HybridALNSSolver:
         deadline: float,
         limit: int = 5,
     ) -> List[_Insertion]:
-        has_empty_vehicles = any(not r for r in routes)
-        order_obj = self.order_by_id.get(order_id)
-        order_items_count = len(order_obj.items) if order_obj else 1
-        active_indices = []
-        for idx, r in enumerate(routes):
-            if not r:
-                continue
-            if has_empty_vehicles:
-                r_orders = {s.order_id for s in r if s.order_id}
-                max_safe_orders = 12 if self.vehicles[idx].payload_limit_kg > 5000 else 8
-                if len(r_orders) >= max_safe_orders:
-                    continue
-                r_items = sum(
-                    len(self.order_by_id[s.order_id].items)
-                    for s in r
-                    if s.order_id and s.stop_type == "PICKUP" and s.order_id in self.order_by_id
-                )
-                max_safe_items = 25 if self.vehicles[idx].payload_limit_kg < 3000 else 38
-                if r_items + order_items_count > max_safe_items:
-                    continue
-            active_indices.append(idx)
-        if not active_indices and not has_empty_vehicles:
-            active_indices = [idx for idx, r in enumerate(routes) if r]
+        active_indices = [idx for idx, r in enumerate(routes) if r]
         options = self._insertions_on_vehicles(
             order_id, routes, active_indices, deadline, limit
         )
@@ -794,10 +774,9 @@ class HybridALNSSolver:
         ]
         if not pickup_ids:
             return routes, []
+        pickup_ids = list(dict.fromkeys(pickup_ids))
         start = self.rng.randrange(len(pickup_ids))
-        removed = pickup_ids[start : start + remove_count]
-        if len(removed) < remove_count:
-            removed += pickup_ids[: remove_count - len(removed)]
+        removed = (pickup_ids[start:] + pickup_ids[:start])[:max(0, remove_count)]
         return self._remove_orders(routes, set(removed)), removed
 
     def _calendar_salary_for_span(self, span: int) -> int:
@@ -1353,12 +1332,6 @@ class HybridALNSSolver:
                 index
                 for index, route in enumerate(candidate_routes)
                 if route and index != victim_idx
-                and len({s.order_id for s in route if s.order_id}) < (30 if self.vehicles[index].payload_limit_kg > 5000 else 20)
-                and sum(
-                    len(self.order_by_id[s.order_id].items)
-                    for s in route
-                    if s.order_id and s.stop_type == "PICKUP" and s.order_id in self.order_by_id
-                ) < (150 if self.vehicles[index].payload_limit_kg > 5000 else 80)
             ]
             choices: List[Tuple[int, int, str, _Insertion]] = []
             order_ids = pending if use_regret else pending[:1]
@@ -2195,7 +2168,8 @@ class HybridALNSSolver:
 
     def solve(self) -> OptimizationSolution:
         started_at = time.perf_counter()
-        deadline = started_at + self.time_limit_sec - self.post_audit_reserve_sec
+        hard_finish_deadline = started_at + self.time_limit_sec
+        deadline = hard_finish_deadline - self.post_audit_reserve_sec
         has_complete_warm_start = self.initial_solution is not None and not self.initial_solution.unassigned_orders
         refine_warm_start = has_complete_warm_start and self.early_stop_patience > 0
         # Khởi tạo nghiệm xuất phát bằng Greedy Insertion nhanh (đảm bảo 100% khả thi ban đầu).
@@ -2204,10 +2178,14 @@ class HybridALNSSolver:
         if (
             self.initial_solution is not None
             and not self.initial_solution.unassigned_orders
-            and (self.time_limit_sec < 1.0 or refine_warm_start)
+            and (self.time_limit_sec < 8.0 or refine_warm_start)
         ):
             sol_pure_greedy = self.initial_solution
         else:
+            greedy_seed_deadline = min(
+                deadline,
+                started_at + max(0.25, self.time_limit_sec * 0.30),
+            )
             sol_pure_greedy = solve_greedy(
                 self.vehicles,
                 self.drivers,
@@ -2216,6 +2194,7 @@ class HybridALNSSolver:
                 self.distance_matrix,
                 self.duration_matrix,
                 self.node_id_to_index,
+                deadline=greedy_seed_deadline,
             )
         veh_id_to_idx = {v.id: idx for idx, v in enumerate(self.vehicles)}
         greedy_routes: List[List[ScheduledStop]] = [[] for _ in self.vehicles]
@@ -2286,6 +2265,23 @@ class HybridALNSSolver:
         if not greedy_unassigned and greedy_routes != current_routes:
             greedy_cost = self._plan_cost(greedy_routes, greedy_unassigned)
             elite_candidates.append((greedy_cost, copy.deepcopy(greedy_routes), list(greedy_unassigned)))
+        if self.has_verified_plan and not current_unassigned and len(self.orders) >= 20:
+            now = time.perf_counter()
+            retry_budget = min(2.5, (deadline - now) * 0.25)
+            if retry_budget >= 0.25:
+                # Try once before consolidation can consume the ALNS share.
+                # The caller keeps an independently verified plan during this search.
+                count = min(18, round(len(self.orders) * 0.30))
+                destroy = self.rng.choice(["cluster", "string", "worst"])
+                trial_routes, removed = self.destroy_operators[destroy](current_routes, count)
+                trial_routes, trial_missing = self._repair(
+                    trial_routes, removed, "regret2", min(deadline, now + retry_budget),
+                )
+                if not trial_missing and time.perf_counter() < deadline:
+                    trial_cost = self._plan_cost(trial_routes, trial_missing)
+                    elite_candidates.append((trial_cost, copy.deepcopy(trial_routes), []))
+                    if self._candidate_key(trial_routes, []) < self._candidate_key(current_routes, []):
+                        current_routes, current_cost = trial_routes, trial_cost
         used_diversified_start = False
         should_skip_heavy_starts = bool(
             self.initial_solution is not None
@@ -2793,7 +2789,13 @@ class HybridALNSSolver:
 
         observe_candidate(best_routes, best_unassigned)
 
-        while iteration < self.max_iterations and (iteration == 0 or time.perf_counter() < alns_deadline):
+        while iteration < self.max_iterations and (
+            time.perf_counter() < alns_deadline
+            or (
+                iteration == 0
+                and time.perf_counter() < hard_finish_deadline - max(0.05, self.post_audit_reserve_sec)
+            )
+        ):
             iteration += 1
             assigned_count = len(self._assigned_order_ids(current_routes))
             if assigned_count == 0:
@@ -2909,6 +2911,16 @@ class HybridALNSSolver:
             else:
                 max_rem = min(6, max(2, int(assigned_count * 0.35)))
             remove_count = self.rng.randint(1, max(1, max_rem))
+            if (
+                (self.has_verified_plan or audited_incumbent is not None)
+                and not current_unassigned
+                and assigned_count >= 20
+                and stagnant_iters >= 6
+                and iteration % 4 == 0
+                and alns_deadline - time.perf_counter() >= 0.25
+            ):
+                destroy_name = self.rng.choice(["cluster", "string", "worst"])
+                remove_count = min(18, round(assigned_count * 0.30))
             repair_name = self._weighted_choice(self.repair_weights)
             destroyed, removed = self.destroy_operators[destroy_name](
                 copy.deepcopy(current_routes), remove_count
@@ -3002,7 +3014,7 @@ class HybridALNSSolver:
             )
             refine_deadline = min(deadline, refine_cap)
         else:
-            refine_deadline = max(deadline, time.perf_counter() + 0.20)
+            refine_deadline = min(hard_finish_deadline, max(deadline, time.perf_counter() + 0.15))
         while time.perf_counter() < refine_deadline:
             improved_in_round = False
             active_vehicles_now = [idx for idx, r in enumerate(best_routes) if r]
@@ -3090,10 +3102,15 @@ class HybridALNSSolver:
         valid_elite_solutions: List[OptimizationSolution] = []
         if audited_incumbent is not None:
             valid_elite_solutions.append(audited_incumbent)
-        hard_finish_deadline = started_at + self.time_limit_sec
         for rank, (_, cand_routes, cand_unassigned) in enumerate(audit_candidates, start=1):
-            if valid_elite_solutions and time.perf_counter() >= hard_finish_deadline:
+            rem_audit = hard_finish_deadline - time.perf_counter()
+            if rem_audit <= 0.05 and (valid_elite_solutions or rank > 1):
                 break
+            spatial_cap = min(self.final_spatial_time_limit_sec, max(0.05, rem_audit * 0.45))
+            repair_cap = min(self.final_repair_time_limit_sec, max(0.05, rem_audit * 0.45))
+            if rank == 1 and not valid_elite_solutions and rem_audit <= 0.05:
+                spatial_cap = min(self.final_spatial_time_limit_sec, 0.25)
+                repair_cap = min(self.final_repair_time_limit_sec, 0.25)
             solution = self._build_solution(
                 cand_routes,
                 cand_unassigned,
@@ -3108,8 +3125,8 @@ class HybridALNSSolver:
                 self.distance_matrix,
                 self.duration_matrix,
                 self.node_id_to_index,
-                spatial_time_limit_sec=self.final_spatial_time_limit_sec,
-                repair_time_limit_sec=self.final_repair_time_limit_sec,
+                spatial_time_limit_sec=spatial_cap,
+                repair_time_limit_sec=repair_cap,
             )
             is_valid = bool(
                 solution.solution_audited
@@ -3201,32 +3218,35 @@ class HybridALNSSolver:
             fallback_compact_unassigned,
             f"Hybrid ALNS (compact fallback, {iteration} iters)",
         )
-        repair_and_audit_solution(
-            fallback_sol,
-            self.vehicles,
-            self.drivers,
-            self.orders,
-            self.policy,
-            self.distance_matrix,
-            self.duration_matrix,
-            self.node_id_to_index,
-            spatial_time_limit_sec=self.final_spatial_time_limit_sec,
-            repair_time_limit_sec=self.final_repair_time_limit_sec,
-        )
-        if (
-            fallback_sol.solution_audited
-            and fallback_sol.is_contract_valid
-            and fallback_sol.is_temporally_valid
-            and fallback_sol.is_spatial_valid
-            and fallback_sol.fulfillment_rate >= 99.9
-        ):
-            fallback_sol.execution_time_sec = round(time.perf_counter() - started_at, 3)
-            return fallback_sol
+        rem_fb = hard_finish_deadline - time.perf_counter()
+        if rem_fb > 0.10:
+            repair_and_audit_solution(
+                fallback_sol,
+                self.vehicles,
+                self.drivers,
+                self.orders,
+                self.policy,
+                self.distance_matrix,
+                self.duration_matrix,
+                self.node_id_to_index,
+                spatial_time_limit_sec=min(self.final_spatial_time_limit_sec, max(0.05, rem_fb * 0.45)),
+                repair_time_limit_sec=min(self.final_repair_time_limit_sec, max(0.05, rem_fb * 0.45)),
+            )
+            if (
+                fallback_sol.solution_audited
+                and fallback_sol.is_contract_valid
+                and fallback_sol.is_temporally_valid
+                and fallback_sol.is_spatial_valid
+                and fallback_sol.fulfillment_rate >= 99.9
+            ):
+                fallback_sol.execution_time_sec = round(time.perf_counter() - started_at, 3)
+                return fallback_sol
 
         # Fallback an toàn cuối cùng về nghiệm Greedy
         if sol_gr is not None:
             fallback = copy.deepcopy(sol_gr)
-            if not fallback.solution_audited:
+            rem_gr = hard_finish_deadline - time.perf_counter()
+            if not fallback.solution_audited and rem_gr > 0.10:
                 repair_and_audit_solution(
                     fallback,
                     self.vehicles,
@@ -3236,8 +3256,8 @@ class HybridALNSSolver:
                     self.distance_matrix,
                     self.duration_matrix,
                     self.node_id_to_index,
-                    spatial_time_limit_sec=self.final_spatial_time_limit_sec,
-                    repair_time_limit_sec=self.final_repair_time_limit_sec,
+                    spatial_time_limit_sec=min(self.final_spatial_time_limit_sec, max(0.05, rem_gr * 0.45)),
+                    repair_time_limit_sec=min(self.final_repair_time_limit_sec, max(0.05, rem_gr * 0.45)),
                 )
             sol_gr_valid = bool(
                 fallback.solution_audited
@@ -3257,18 +3277,20 @@ class HybridALNSSolver:
             best_unassigned,
             f"Hybrid ALNS (adaptive, {iteration} iters)",
         )
-        repair_and_audit_solution(
-            default_sol,
-            self.vehicles,
-            self.drivers,
-            self.orders,
-            self.policy,
-            self.distance_matrix,
-            self.duration_matrix,
-            self.node_id_to_index,
-            spatial_time_limit_sec=self.final_spatial_time_limit_sec,
-            repair_time_limit_sec=self.final_repair_time_limit_sec,
-        )
+        rem_def = hard_finish_deadline - time.perf_counter()
+        if rem_def > 0.10:
+            repair_and_audit_solution(
+                default_sol,
+                self.vehicles,
+                self.drivers,
+                self.orders,
+                self.policy,
+                self.distance_matrix,
+                self.duration_matrix,
+                self.node_id_to_index,
+                spatial_time_limit_sec=min(self.final_spatial_time_limit_sec, max(0.05, rem_def * 0.45)),
+                repair_time_limit_sec=min(self.final_repair_time_limit_sec, max(0.05, rem_def * 0.45)),
+            )
         default_sol.execution_time_sec = round(time.perf_counter() - started_at, 3)
         return default_sol
 
@@ -3292,6 +3314,7 @@ def solve_hybrid_alns(
     search_profile: str = "historical_portfolio",
     post_audit_reserve_sec: float = 0.0,
     early_stop_patience: int = 0,
+    has_verified_plan: bool = False,
 ) -> OptimizationSolution:
     if time_limit_sec <= 0:
         raise ValueError("time_limit_sec must be greater than zero")
@@ -3309,6 +3332,9 @@ def solve_hybrid_alns(
             "'algo_lab_legacy_v1' or 'evolved'"
         )
 
+    started_at = time.perf_counter()
+    overall_deadline = started_at + time_limit_sec
+    greedy_deadline = min(overall_deadline, started_at + max(0.25, time_limit_sec * 0.35))
     hybrid_initial = initial_solution
     if search_profile in {"historical_portfolio", "algo_lab_legacy_v1"}:
         # The lab benchmark built this shared seed before timing each search.
@@ -3322,6 +3348,7 @@ def solve_hybrid_alns(
             distance_matrix,
             duration_matrix,
             node_id_to_index,
+            deadline=greedy_deadline,
         )
 
     if search_profile == "historical_portfolio":
@@ -3382,7 +3409,6 @@ def solve_hybrid_alns(
             operator_weights_out["repair"] = dict(legacy_solver.repair_weights)
         return solution
 
-    started_at = time.perf_counter()
     hybrid_initial = hybrid_initial or solve_greedy(
         vehicles,
         drivers,
@@ -3391,8 +3417,9 @@ def solve_hybrid_alns(
         distance_matrix,
         duration_matrix,
         node_id_to_index,
+        deadline=greedy_deadline,
     )
-    alns_budget = time_limit_sec
+    nominal_alns_budget = time_limit_sec
     best_seed_solution: Optional[OptimizationSolution] = None
 
     depot_profiles = {
@@ -3457,6 +3484,9 @@ def solve_hybrid_alns(
         valid_seed_solutions: List[OptimizationSolution] = []
         construction_fraction = 0.30 if dense_cargo_seed else 0.95
         for seed, seed_budget in seed_runs:
+            rem_sa = overall_deadline - time.perf_counter()
+            if rem_sa <= 0.10:
+                break
             seed_solution = solve_simulated_annealing(
                 vehicles,
                 drivers,
@@ -3465,7 +3495,7 @@ def solve_hybrid_alns(
                 distance_matrix,
                 duration_matrix,
                 node_id_to_index,
-                time_limit_sec=seed_budget,
+                time_limit_sec=min(seed_budget, rem_sa),
                 random_seed=seed,
                 final_spatial_time_limit_sec=final_spatial_time_limit_sec,
                 final_repair_time_limit_sec=final_repair_time_limit_sec,
@@ -3488,10 +3518,19 @@ def solve_hybrid_alns(
                 key=lambda candidate: solution_key(candidate, orders),
             )
             hybrid_initial = best_seed_solution
-        alns_budget = time_limit_sec - sum(
+        nominal_alns_budget = time_limit_sec - sum(
             budget for _seed, budget in seed_runs
         )
 
+    alns_budget = max(
+        0.05,
+        min(nominal_alns_budget, overall_deadline - time.perf_counter()),
+    )
+    effective_post_audit_reserve = (
+        min(post_audit_reserve_sec, max(0.0, alns_budget * 0.45))
+        if alns_budget > 0.05
+        else 0.0
+    )
     alns_solver = HybridALNSSolver(
         vehicles,
         drivers,
@@ -3506,8 +3545,9 @@ def solve_hybrid_alns(
         final_spatial_time_limit_sec=final_spatial_time_limit_sec,
         final_repair_time_limit_sec=final_repair_time_limit_sec,
         initial_solution=hybrid_initial,
-        post_audit_reserve_sec=post_audit_reserve_sec,
+        post_audit_reserve_sec=effective_post_audit_reserve,
         early_stop_patience=early_stop_patience,
+        has_verified_plan=has_verified_plan,
     )
     solution = alns_solver.solve()
     if operator_weights_out is not None:

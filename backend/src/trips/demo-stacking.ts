@@ -6,13 +6,20 @@ export function readDemoStackingPolicy(config: Record<string, unknown>) {
   const tiers = config.TMS_DEMO_STACK_MAX_TIERS;
   const clearance = config.TMS_DEMO_STACK_CLEARANCE_MM;
   const ownerMode = config.TMS_DEMO_STACK_OWNER_MODE ?? 'SAME_CUSTOMER';
+  const maxTopLoadPercentRaw = config.TMS_DEMO_STACK_MAX_TOP_LOAD_PERCENT ?? '30';
   if (tiers === undefined && clearance === undefined) return undefined;
   if (config.NODE_ENV === 'production' || typeof tiers !== 'string' || !/^(?:[2-9]|1[0-9]|20)$/.test(tiers) ||
     typeof clearance !== 'string' || !/^[1-9][0-9]{0,8}$/.test(clearance) ||
-    (ownerMode !== 'SAME_CUSTOMER' && ownerMode !== 'ANY_CUSTOMER')) {
-    throw new Error('Xếp chồng demo cần số tầng (2–20), khoảng hở (> 0) và chế độ SAME_CUSTOMER hoặc ANY_CUSTOMER, ở môi trường ngoài production');
+    (ownerMode !== 'SAME_CUSTOMER' && ownerMode !== 'ANY_CUSTOMER') ||
+    typeof maxTopLoadPercentRaw !== 'string' || !/^(?:[1-9]|[1-9][0-9]|100)$/.test(maxTopLoadPercentRaw)) {
+    throw new Error('Xếp chồng demo cần số tầng (2–20), khoảng hở (> 0), tỷ lệ đè (1–100%) và chế độ SAME_CUSTOMER hoặc ANY_CUSTOMER, ở môi trường ngoài production');
   }
-  return { max_tiers: Number(tiers), lift_clearance_cm: Number(clearance) / 10, owner_mode: ownerMode };
+  return {
+    max_tiers: Number(tiers),
+    lift_clearance_cm: Number(clearance) / 10,
+    owner_mode: ownerMode,
+    max_top_load_percent: Number(maxTopLoadPercentRaw),
+  };
 }
 
 type Placements = FleetOptimizationResult['routes'][number]['spatial_validation']['step_states'][number]['placed_items'];
@@ -22,7 +29,9 @@ export function matchesDemoStackingPolicy(current: ReturnType<typeof readDemoSta
   return !!current && !!saved && typeof saved === 'object' &&
     'max_tiers' in saved && saved.max_tiers === current.max_tiers &&
     'lift_clearance_cm' in saved && saved.lift_clearance_cm === current.lift_clearance_cm &&
-    ('owner_mode' in saved ? saved.owner_mode : 'SAME_CUSTOMER') === current.owner_mode;
+    ('owner_mode' in saved ? saved.owner_mode : 'SAME_CUSTOMER') === current.owner_mode &&
+    ('max_top_load_percent' in saved && saved.max_top_load_percent != null ? saved.max_top_load_percent : 30) ===
+      (current.max_top_load_percent ?? 30);
 }
 
 export function assertDemoStackSupports(
@@ -84,7 +93,8 @@ export function assertDemoStackSupports(
         mm(layer.y) + mm(layer.width_cm) > mm(base.y) + mm(base.width_cm) ||
         mm(layer.z ?? 0) !== mm((base.z ?? 0) + base.height_cm)) return reject();
       const total = (above.get(base.item_id) ?? 0n) + physical.weightG;
-      if (total * 10n >= support.weightG * 3n || total > BigInt(support.maxTopLoadG)) return reject();
+      const maxTopLoadPercent = BigInt(policy.max_top_load_percent ?? 30);
+      if (total * 100n > support.weightG * maxTopLoadPercent || total > BigInt(support.maxTopLoadG)) return reject();
       above.set(base.item_id, total);
       layer = base;
     }

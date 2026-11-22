@@ -1,7 +1,11 @@
 """Unequal-footprint multi-child 3D tree stacking tests across API & stacking module."""
 
+from time import monotonic
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
+from app import stacking_unequal
 from app.main import app
 from app.models import (
     CargoItem,
@@ -16,6 +20,7 @@ from app.models import (
     VehicleFloor,
 )
 from app.stacking import fast_validate_stacked_route, validate_stop_actions
+from app.spatial_validator import SpatialValidator
 
 client = TestClient(app)
 
@@ -62,6 +67,36 @@ def _policy(
         max_tiers=max_tiers,
         lift_clearance_cm=clearance_cm,
     )
+
+
+def test_unequal_packing_stops_inside_floor_candidate_generation(monkeypatch):
+    vehicle = VehicleFloor(
+        id="v1", plate_number="TEST", length_cm=200, width_cm=150,
+        height_cm=120, payload_limit_kg=500,
+    )
+    validator = SpatialValidator(vehicle)
+    stops = [
+        StopAction(stop_id="load", sequence=1, stop_type="PICKUP", items_to_load=[_item("box")]),
+        StopAction(stop_id="unload", sequence=2, stop_type="DELIVERY", items_to_unload=["box"]),
+    ]
+    now = monotonic()
+    coordinates_examined = 0
+    normalize = validator._normalize_coordinate
+
+    def expire_during_generation(value):
+        nonlocal now, coordinates_examined
+        coordinates_examined += 1
+        now += 2.0
+        return normalize(value)
+
+    monkeypatch.setattr(stacking_unequal, "time", SimpleNamespace(monotonic=lambda: now))
+    monkeypatch.setattr(validator, "_normalize_coordinate", expire_during_generation)
+    result = stacking_unequal.validate_unequal_stacked_stops(
+        _policy(), vehicle, stops, validator, max_time_seconds=1.0,
+    )
+    assert coordinates_examined == 1
+    assert not result.is_valid
+    assert result.violation_code == "PLACEMENT_SEARCH_LIMIT_REACHED"
 
 
 def test_validate_spatial_places_small_box_on_larger_base():
@@ -149,10 +184,18 @@ def test_cumulative_subtree_weight_rejects_sibling_or_chain_overload():
         id="v1", plate_number="WT-01",
         length_cm=105, width_cm=105, height_cm=120, payload_limit_kg=1000,
     )
-    # 14 + 16 = 30kg -> reaches >= 30% of 100kg base -> must reject when floor has no spare slot.
+    # 14 + 16 = 30kg (exactly 30% of 100kg base -> allowed under "not > 30%"),
+    # while 14 + 17 = 31kg (> 30%) must reject when floor has no spare slot.
     base = _item("base", l=100, w=100, h=30, kg=100, allow_upper=False, max_top_load_g=40000)
     s1 = _item("s1", l=40, w=40, h=20, kg=14, max_top_load_g=None)
-    s2 = _item("s2", l=40, w=40, h=20, kg=16, max_top_load_g=None)
+    s2_ok = _item("s2", l=40, w=40, h=20, kg=16, max_top_load_g=None)
+    stops_ok = [
+        StopAction(stop_id="p1", sequence=1, stop_type="PICKUP", items_to_load=[base, s1, s2_ok]),
+        StopAction(stop_id="d1", sequence=2, stop_type="DELIVERY", items_to_unload=["base", "s1", "s2"]),
+    ]
+    assert validate_stop_actions(_policy(), vehicle, stops_ok).is_valid is True
+
+    s2 = _item("s2", l=40, w=40, h=20, kg=17, max_top_load_g=None)
     stops = [
         StopAction(stop_id="p1", sequence=1, stop_type="PICKUP", items_to_load=[base, s1, s2]),
         StopAction(stop_id="d1", sequence=2, stop_type="DELIVERY", items_to_unload=["base", "s1", "s2"]),
@@ -330,14 +373,66 @@ def test_fleet_optimizer_uses_unequal_stacking_to_save_a_vehicle_route():
     )
     res_stacked = client.post("/optimize-fleet/candidates", json=req_stacked.model_dump())
     assert res_stacked.status_code == 200
-    best = res_stacked.json()["candidates"][0]["result"]
+    batch = res_stacked.json()
+    assert batch["candidates"], batch["diagnostics"]
+    best = batch["candidates"][0]["result"]
     assert best["unassigned_orders"] == []
     assert len(best["routes"]) == 1
+    route = best["routes"][0]
+    package_ids_by_order = {"o-base": {"base-box"}, "o-small": {"small-1", "small-2"}}
+    assert len(route["stops"]) == 4
+    for stop in route["stops"]:
+        assert set(stop["items_loaded"] or stop["items_unloaded"]) == package_ids_by_order[stop["allocation_id"]]
+    assert route["total_distance_km"] == 25
     peak_state = max(
-        best["routes"][0]["spatial_validation"]["step_states"],
+        route["spatial_validation"]["step_states"],
         key=lambda st: len(st["placed_items"]),
     )
     placed_peak = {p["item_id"]: p for p in peak_state["placed_items"]}
     assert placed_peak["small-1"]["support_item_id"] == "base-box"
     assert placed_peak["small-2"]["support_item_id"] == "base-box"
-    assert best["routes"][0]["spatial_validation"]["max_area_cm2"] == 10000
+    assert route["spatial_validation"]["max_area_cm2"] == 10000
+
+
+def test_fifo_overlap_separates_floor_lanes_in_fast_and_exact_validators():
+    """FIFO overlap P1->P2->D1->D2 must keep floor orders in disjoint y-lanes instead of walling off y=0..W."""
+    vehicle = VehicleFloor(
+        id="v-fifo", plate_number="FIFO-01",
+        length_cm=600, width_cm=240, height_cm=240, payload_limit_kg=5000,
+    )
+    o1_items = [
+        _item(f"o1-{k}", order_id="o1", customer_id="cust-1", l=110, w=110, h=100, kg=120, allow_upper=False, max_top_load_g=None)
+        for k in range(3)
+    ]
+    o2_items = [
+        _item(f"o2-{k}", order_id="o2", customer_id="cust-2", l=110, w=110, h=100, kg=120, allow_upper=False, max_top_load_g=None)
+        for k in range(3)
+    ]
+    cargo = {it.id: it for it in (*o1_items, *o2_items)}
+    fifo_actions = [
+        StopAction(stop_id="p1", sequence=1, stop_type="PICKUP", items_to_load=o1_items),
+        StopAction(stop_id="p2", sequence=2, stop_type="PICKUP", items_to_load=o2_items),
+        StopAction(stop_id="d1", sequence=3, stop_type="DELIVERY", items_to_unload=[it.id for it in o1_items]),
+        StopAction(stop_id="d2", sequence=4, stop_type="DELIVERY", items_to_unload=[it.id for it in o2_items]),
+    ]
+    sched_like = [
+        type("Stop", (), {
+            "stop_type": s.stop_type,
+            "location_id": s.stop_id,
+            "items_loaded": [it.id for it in s.items_to_load],
+            "items_unloaded": list(s.items_to_unload),
+        })()
+        for s in fifo_actions
+    ]
+    policy = _policy("SAME_CUSTOMER", max_tiers=3, clearance_cm=5.0)
+    ok_fast, reason = fast_validate_stacked_route(
+        vehicle, sched_like, cargo, policy, allow_layout_search=False
+    )
+    assert ok_fast is True, reason
+    exact_res = validate_stop_actions(policy, vehicle, fifo_actions, max_time_seconds=2.0)
+    assert exact_res.is_valid is True, exact_res.error_message
+    peak_p2 = exact_res.step_states[1]
+    assert len(peak_p2.placed_items) == 6
+    o1_ys = [(p.y, p.y + p.width_cm) for p in peak_p2.placed_items if p.order_id == "o1"]
+    o2_ys = [(p.y, p.y + p.width_cm) for p in peak_p2.placed_items if p.order_id == "o2"]
+    assert all(y1_hi <= y2_lo + 0.01 or y2_hi <= y1_lo + 0.01 for y1_lo, y1_hi in o1_ys for y2_lo, y2_hi in o2_ys)

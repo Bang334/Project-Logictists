@@ -5,8 +5,9 @@ import sys
 if sys.version_info < (3, 11):
     raise RuntimeError("Optimizer requires Python 3.11+. On Windows run start_optimizer.ps1 from the project root.")
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import Field
 from typing import List
 
 from .models import (
@@ -20,16 +21,17 @@ from .models import (
     StopAction,
     SpatialValidationResult,
     StrictContractModel,
+    default_stacking_policy,
 )
 from .spatial_validator import SpatialValidator
-from .routing_solver import FleetRoutingSolver, OrToolsRoutingSolver
+from .routing_solver import OrToolsRoutingSolver
 from .multi_start import MultiStartFleetOptimizer
 from .demo import router as demo_router
 from .stacking import DemoStacks
 
 app = FastAPI(
     title="TMS Optimization & Spatial Packing Engine",
-    description="Google OR-Tools VRP Solver phối hợp cùng Dynamic Non-stacking 2D Spatial Packing Engine (Người 3)",
+    description="Google OR-Tools / Hybrid ALNS VRP Solver phối hợp cùng Dynamic 3D Stacking Spatial Packing Engine (mặc định 3D, hỗ trợ opt-out 2D)",
     version="1.0.0",
 )
 
@@ -47,7 +49,9 @@ app.include_router(demo_router)
 class ValidatePlanRequest(StrictContractModel):
     vehicle: VehicleFloor
     stops: List[StopAction]
-    demo_stacking: DemoStackingPolicy | None = None
+    demo_stacking: DemoStackingPolicy | None = Field(
+        default_factory=default_stacking_policy
+    )
 
 
 @app.get("/health")
@@ -55,7 +59,7 @@ def health():
     return {
         "status": "ok",
         "service": "optimizer",
-        "engine": "Packing-aware Hybrid ALNS + bounded OR-Tools fallback + Dynamic 2D Spatial Validator",
+        "engine": "Packing-aware Hybrid ALNS + bounded OR-Tools fallback + Dynamic 3D/2D Spatial Validator",
     }
 
 @app.post("/validate-spatial", response_model=SpatialValidationResult)
@@ -81,7 +85,11 @@ def optimize(request: OptimizationRequest):
 @app.post("/optimize-fleet", response_model=FleetOptimizationResponse)
 def optimize_fleet(request: FleetOptimizationRequest):
     """Tự chọn xe, tài xế và tuyến cho toàn bộ đơn trong snapshot của một chi nhánh."""
-    return FleetRoutingSolver(request).solve()
+    batch = MultiStartFleetOptimizer(request).solve(max_candidates=1)
+    if not batch.candidates:
+        raise HTTPException(status_code=504 if batch.no_plan_status == "TIMEOUT" else 409,
+                            detail="Chưa tìm được lịch giao đủ toàn bộ đơn và kiện.")
+    return batch.candidates[0].result
 
 
 @app.post("/optimize-fleet/candidates", response_model=FleetOptimizationBatchResponse)

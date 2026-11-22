@@ -25,6 +25,7 @@ def solve_greedy(
     distance_matrix: List[List[float]],
     duration_matrix: List[List[float]],
     node_id_to_index: Dict[str, int],
+    deadline: Optional[float] = None,
 ) -> OptimizationSolution:
     start_time = time.perf_counter()
 
@@ -39,28 +40,20 @@ def solve_greedy(
     unassigned_orders: List[str] = []
     vehicle_routes: List[List[ScheduledStop]] = [[] for _ in vehicles]
 
-    for order in sorted_orders:
+    for order_idx, order in enumerate(sorted_orders):
+        if deadline is not None and time.perf_counter() >= deadline:
+            unassigned_orders.extend(rem.order_number for rem in sorted_orders[order_idx:])
+            break
         best_vehicle_idx: Optional[int] = None
         best_p_pos: Optional[int] = None
         best_d_pos: Optional[int] = None
         best_incremental_cost = float("inf")
         checked_empty_types = set()
-        has_empty_vehicles = any(len(r) == 0 for r in vehicle_routes)
 
         for v_idx, vehicle in enumerate(vehicles):
+            if deadline is not None and time.perf_counter() >= deadline:
+                break
             current_stops = vehicle_routes[v_idx]
-            if len(current_stops) > 0 and has_empty_vehicles:
-                cur_orders = len({s.order_id for s in current_stops if s.order_id})
-                cur_items = sum(
-                    len(order_by_id[s.order_id].items)
-                    for s in current_stops
-                    if s.order_id and s.stop_type == "PICKUP" and s.order_id in order_by_id
-                )
-                order_items = len(order.items)
-                max_safe_items = 25 if vehicle.payload_limit_kg < 3000 else 38
-                max_safe_orders = 12 if vehicle.payload_limit_kg > 5000 else 8
-                if (cur_items + order_items > max_safe_items) or (cur_orders >= max_safe_orders):
-                    continue
             if len(current_stops) == 0:
                 v_type = (
                     vehicle.service_day_index,
@@ -130,6 +123,8 @@ def solve_greedy(
                 positions = sorted(pos_set)
             temporal_candidates = []
             for pos_idx, (i, j) in enumerate(positions):
+                if deadline is not None and time.perf_counter() >= deadline:
+                    break
                 pickup_stop = ScheduledStop(
                     sequence=0,
                     stop_type="PICKUP",
@@ -192,6 +187,8 @@ def solve_greedy(
             temporal_candidates.sort(key=lambda item: (item[0], item[1]))
             for cand_cost, _, i, j, candidate_stops in temporal_candidates:
                 if cand_cost >= best_incremental_cost:
+                    break
+                if deadline is not None and time.perf_counter() >= deadline:
                     break
                 valid_packing, _ = checker.validate_route_stops(
                     candidate_stops, cargo_by_id

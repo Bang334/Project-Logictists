@@ -48,9 +48,22 @@ it('allows multiple smaller packages side-by-side on one larger base within deck
   ];
   expect(() => assertDemoStackSupports(overhanging, packages, owners, 1000, policy)).toThrow();
 
-  // Cumulative 30% weight threshold across multiple upper siblings is enforced.
+  // Exact 30% boundary (14 + 16 = 30kg <= 30% of 100kg) is allowed.
   packages.set('b2', { ...b2, weightG: 16000n });
+  expect(() => assertDemoStackSupports(deckPlacements, packages, owners, 1000, policy)).not.toThrow();
+
+  // Over 30% threshold (14 + 17 = 31kg > 30% of 100kg) across multiple upper siblings is rejected.
+  packages.set('b2', { ...b2, weightG: 17000n });
   expect(() => assertDemoStackSupports(deckPlacements, packages, owners, 1000, policy)).toThrow();
+
+  // Configurable max_top_load_percent (20% rejects 28kg, 40% allows 31kg with matching maxTopLoadG).
+  packages.set('a', { ...lower, maxTopLoadG: 50000 });
+  const policy40 = readDemoStackingPolicy({ ...settings, TMS_DEMO_STACK_MAX_TOP_LOAD_PERCENT: '40' });
+  expect(() => assertDemoStackSupports(deckPlacements, packages, owners, 1000, policy40)).not.toThrow();
+  const policy20 = readDemoStackingPolicy({ ...settings, TMS_DEMO_STACK_MAX_TOP_LOAD_PERCENT: '20' });
+  packages.set('b2', { ...b2, weightG: 14000n });
+  expect(() => assertDemoStackSupports(deckPlacements, packages, owners, 1000, policy20)).toThrow();
+  packages.set('a', lower);
 
   // Cumulative maxTopLoadG across multiple upper siblings is enforced.
   packages.set('a', { ...lower, maxTopLoadG: 25000 });
@@ -72,7 +85,7 @@ it('enforces transitive ancestor load limits and containment on 3-tier unequal s
   ];
   expect(() => assertDemoStackSupports(stackPlacements, packages, owners, 1000, policy)).not.toThrow();
 
-  // Tier 3 (6kg) + Tier 2 (25kg) = 31kg >= 30% of 100kg base -> rejected on ancestor 'a'.
+  // Tier 3 (6kg) + Tier 2 (25kg) = 31kg > 30% of 100kg base -> rejected on ancestor 'a'.
   packages.set('c', { ...tier3, weightG: 6000n });
   expect(() => assertDemoStackSupports(stackPlacements, packages, owners, 1000, policy)).toThrow();
 });

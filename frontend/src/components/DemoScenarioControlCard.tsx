@@ -119,7 +119,7 @@ export const DemoScenarioControlCard: React.FC<DemoScenarioControlCardProps> = (
           label: `${c.name} (${c.orders_count} đơn · ${c.vehicles_count} xe)`,
         })),
       },
-    ];
+    ].filter(group => group.options.length > 0);
   }, [cases]);
 
   const handleFileUpload = (file: File) => {

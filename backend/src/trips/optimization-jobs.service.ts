@@ -28,6 +28,12 @@ type StoredJobResult = {
   signature: string;
 };
 
+function isCompleteStoredResult(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return false;
+  const plan = result as { status?: unknown; unassigned_orders?: unknown };
+  return plan.status === 'SUCCESS' && Array.isArray(plan.unassigned_orders) && plan.unassigned_orders.length === 0;
+}
+
 type CandidateSummary = {
   candidateNumber: number;
   rank?: number;
@@ -210,7 +216,7 @@ export class OptimizationJobsService {
     const branch = resolveBranchScope(user, branchId);
     return this.readPublicJob(user, Prisma.sql`
       WHERE j."branchId" = ${branch}
-        AND j.status IN ('PENDING','RUNNING','RETRYING','CANCEL_REQUESTED','SUCCEEDED','PARTIAL','APPLIED')
+        AND j.status IN ('PENDING','RUNNING','RETRYING','CANCEL_REQUESTED','SUCCEEDED','APPLIED')
       ORDER BY j."createdAt" DESC, j.id DESC LIMIT 1
     `);
   }
@@ -252,14 +258,14 @@ export class OptimizationJobsService {
         },
       },
     });
-    if (!candidate) {
+    if (!candidate || candidate.feasibilityStatus !== 'FEASIBLE') {
       throw new NotFoundException(
         `Không tìm thấy phương án ${candidateNumber} của optimization job ${id}`,
       );
     }
     const stored = candidate.resultSnapshot as unknown as StoredJobResult;
     const proposal = stored?.proposal as { result?: unknown } | undefined;
-    if (!proposal?.result) {
+    if (!proposal || !isCompleteStoredResult(proposal.result)) {
       throw new ConflictException(`Phương án ${candidateNumber} có dữ liệu không hợp lệ`);
     }
     return {
@@ -292,7 +298,7 @@ export class OptimizationJobsService {
 
   async apply(user: JobUser, id: string, candidateNumber = 1) {
     const job = await this.getAuthorizedJob(user, id);
-    if (!['SUCCEEDED', 'PARTIAL'].includes(job.status)) {
+    if (job.status !== 'SUCCEEDED') {
       throw new ConflictException(`Job ${id} chưa sẵn sàng để áp dụng`);
     }
     const selected = await this.prisma.optimizationResult.findUnique({
@@ -327,13 +333,17 @@ export class OptimizationJobsService {
   async exportCandidates(user: JobUser, id: string) {
     const job = await this.getAuthorizedJob(user, id);
     const candidates = await this.prisma.optimizationResult.findMany({
-      where: { optimizationJobId: id },
+      where: { optimizationJobId: id, feasibilityStatus: 'FEASIBLE' },
       orderBy: { candidateNumber: 'asc' },
     });
     if (candidates.length === 0) {
       throw new ConflictException(`Job ${id} chưa có phương án để xuất`);
     }
 
+    if (candidates.some(row => {
+      const stored = row.resultSnapshot as unknown as StoredJobResult | null;
+      return !isCompleteStoredResult(stored?.proposal?.result);
+    })) throw new ConflictException('Không thể xuất phương án chưa giao đủ.');
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'TMS Logistics';
     workbook.created = new Date();
@@ -518,8 +528,8 @@ export class OptimizationJobsService {
             ? storedProgress.updatedAt
             : null,
       },
-      result: proposal?.result ?? null,
-      candidates,
+      result: isCompleteStoredResult(proposal?.result) ? proposal?.result : null,
+      candidates: candidates.filter(candidate => candidate.feasibilityStatus === 'FEASIBLE' && !candidate.unassignedOrderCount),
       error: job.errorCode
         ? { code: job.errorCode, message: job.errorMessage }
         : null,

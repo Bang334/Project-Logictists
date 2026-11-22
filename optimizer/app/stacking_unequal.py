@@ -10,6 +10,7 @@ rear-door handling corridors.
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
@@ -27,6 +28,7 @@ from .models import (
 )
 from .packing_rules import (
     build_weight_balance_metrics,
+    exceeds_top_load_limit,
     is_floor_rotation_locked,
     resolve_can_rotate,
     score_candidate_balance_and_fragility,
@@ -181,7 +183,6 @@ def has_unequal_stack_potential(
             if (
                 getattr(base, "cargo_kind", "UNCLASSIFIED") != "STANDARD"
                 or bool(getattr(base, "no_top_load_requested", False))
-                or getattr(base, "max_top_load_g", None) is None
                 or (policy.owner_mode == "SAME_CUSTOMER" and not _same_customer(base, upper))
                 or pickups[base.id] > u_p
                 or deliveries[base.id] < u_d
@@ -190,7 +191,12 @@ def has_unequal_stack_potential(
             b_pair = tuple(sorted((round(float(base.length_cm), 2), round(float(base.width_cm), 2))))
             if abs(u_pair[0] - b_pair[0]) <= _EPS and abs(u_pair[1] - b_pair[1]) <= _EPS:
                 continue
-            if u_weight * 10 >= Decimal(str(base.weight_kg)) * 3 or u_weight * 1000 > base.max_top_load_g:
+            if exceeds_top_load_limit(
+                u_weight,
+                base.weight_kg,
+                getattr(base, "max_top_load_g", None),
+                getattr(policy, "max_top_load_percent", 30),
+            ):
                 continue
             if float(base.height_cm) + float(upper.height_cm) + policy.lift_clearance_cm > bed_h + _EPS:
                 continue
@@ -217,12 +223,19 @@ class _SearchBudget:
     limit_reached: bool = False
     branch_cap_reached: bool = False
 
-    def consume(self) -> bool:
-        if self.visited >= self.max_nodes:
+    def has_time(self) -> bool:
+        if self.limit_reached:
+            return False
+        if time.monotonic() - self.start_time >= self.max_time_seconds:
             self.limit_reached = True
             return False
-        if (self.visited & 7 == 0) and (time.monotonic() - self.start_time) >= self.max_time_seconds:
+        return True
+
+    def consume(self) -> bool:
+        if self.limit_reached or self.visited >= self.max_nodes:
             self.limit_reached = True
+            return False
+        if self.visited & 7 == 0 and not self.has_time():
             return False
         self.visited += 1
         return True
@@ -256,14 +269,16 @@ def _ancestors_can_support(
         if (
             anc_item.cargo_kind != "STANDARD"
             or anc_item.no_top_load_requested
-            or anc_item.max_top_load_g is None
             or (policy.owner_mode == "SAME_CUSTOMER" and not _same_customer(anc_item, item))
         ):
             return False
         new_above = above_weight.get(anc_id, Decimal("0")) + item_w
-        if new_above * 10 >= Decimal(str(anc_item.weight_kg)) * 3:
-            return False
-        if new_above * 1000 > anc_item.max_top_load_g:
+        if exceeds_top_load_limit(
+            new_above,
+            anc_item.weight_kg,
+            anc_item.max_top_load_g,
+            getattr(policy, "max_top_load_percent", 30),
+        ):
             return False
     return True
 
@@ -274,6 +289,7 @@ def _deck_candidates_on_base(
     onboard: Mapping[str, _PlacedNode],
     vehicle: VehicleFloor,
     prefer_door: bool,
+    has_time: Optional[Callable[[], bool]] = None,
 ) -> List[Tuple[float, float, float, float, float]]:
     base_p = base_node.placed
     u_z = round(base_p.z + base_p.height_cm, 4)
@@ -321,6 +337,8 @@ def _deck_candidates_on_base(
 
         for x in x_vals:
             for y in y_vals:
+                if has_time is not None and not has_time():
+                    return []
                 if any(_boxes_overlap_2d(x, y, l_dim, w_dim, occ.x, occ.y, occ.length_cm, occ.width_cm) for occ in z_conflicts):
                     continue
                 cand = (x, y, u_z, l_dim, w_dim)
@@ -452,6 +470,8 @@ class _UnequalCycleSolver:
                 reverse=True,
             )
             for iid in candidates:
+                if not self.budget.has_time():
+                    return None
                 node = cur[iid]
                 obstacles = self._obstacles_for(iid, node.ancestors, cur)
                 if not self.validator.is_path_to_door_clear(node.placed, obstacles)[0]:
@@ -502,6 +522,25 @@ class _UnequalCycleSolver:
         return True
 
     def solve(self) -> Optional[Tuple[List[Tuple[int, Tuple[_PlacedNode, ...], Tuple[str, ...]]], float, float]]:
+        cargo_by_id: Dict[str, CargoItem] = {}
+        for stop in self.stops:
+            for it in stop.items_to_load:
+                cargo_by_id[it.id] = it
+        collected = _collect_intervals(self.stops)
+        if collected is not None and len(self.stops) > 2 and self.budget.has_time():
+            pickup_stop, delivery_stop, _ = collected
+            ok, _, greedy_res = _solve_cycle_greedy(
+                vehicle=self.vehicle,
+                stops=self.stops,
+                cargo_by_id=cargo_by_id,
+                policy=self.policy,
+                pickup_stop=pickup_stop,
+                delivery_stop=delivery_stop,
+                collect_snapshots=True,
+                has_time=self.budget.has_time,
+            )
+            if ok and greedy_res is not None:
+                return greedy_res
         return self._search_stops(0, {}, [], 0.0, 0.0)
 
     def _search_stops(
@@ -597,6 +636,8 @@ class _UnequalCycleSolver:
         onboard: Dict[str, _PlacedNode],
         stop_index: int,
     ):
+        if not self.budget.has_time():
+            return
         if idx >= len(items):
             yield onboard
             return
@@ -636,11 +677,15 @@ class _UnequalCycleSolver:
                 ),
             )
             for bn in bases:
+                if not self.budget.has_time():
+                    return
                 if not _ancestors_can_support(
                     bn, item, onboard, above_weight, self.unload_step, self.policy, self.vehicle.height_cm
                 ):
                     continue
-                for cx, cy, cz, cl, cw in _deck_candidates_on_base(item, bn, onboard, self.vehicle, prefer_door):
+                for cx, cy, cz, cl, cw in _deck_candidates_on_base(
+                    item, bn, onboard, self.vehicle, prefer_door, self.budget.has_time,
+                ):
                     options.append((bn.placed.item_id, bn.ancestors, cx, cy, cz, cl, cw))
 
         floor_items = [n.placed for n in onboard.values() if n.tier == 1]
@@ -652,7 +697,10 @@ class _UnequalCycleSolver:
             allow_door_placement=bool(prefer_door and len(items) <= 4),
             cargo_kind_by_id={nid: n.item.cargo_kind for nid, n in onboard.items()},
             has_remaining_cargo=(idx + 1 < len(items)) or any(s.items_to_load for s in self.stops[stop_index + 1 :]),
+            has_time=self.budget.has_time,
         )
+        if self.budget.limit_reached:
+            return
         door_w = self.vehicle.door_width_cm
         orient_picked: Dict[int, int] = {}
         for fx, fy, fl, fw in floor_cands:
@@ -835,6 +883,61 @@ def validate_unequal_stacked_stops(
     )
 
 
+_FAST_CYCLE_CACHE: "OrderedDict[Tuple[Any, ...], Tuple[bool, str]]" = OrderedDict()
+_FAST_CYCLE_CACHE_MAX = 4096
+
+
+def _fast_cycle_cache_key(
+    vehicle: Any,
+    cycle_stops: Sequence[Any],
+    cargo_by_id: Mapping[str, Any],
+    policy: DemoStackingPolicy,
+    allow_layout_search: bool,
+    has_fallback: bool,
+) -> Tuple[Any, ...]:
+    veh_key = (
+        round(float(vehicle.length_cm), 4),
+        round(float(vehicle.width_cm), 4),
+        round(float(vehicle.height_cm), 4),
+        round(float(vehicle.payload_limit_kg), 4),
+        getattr(vehicle, "door_width_cm", None),
+        getattr(vehicle, "door_position", "REAR"),
+    )
+    pol_key = (
+        int(policy.max_tiers),
+        float(policy.lift_clearance_cm),
+        str(policy.owner_mode),
+        int(getattr(policy, "max_top_load_percent", 30)),
+    )
+    stops_key = tuple(
+        (
+            stop.stop_type,
+            tuple(
+                (
+                    iid,
+                    it.order_id,
+                    getattr(it, "customer_id", None),
+                    round(float(it.length_cm), 4),
+                    round(float(it.width_cm), 4),
+                    round(float(it.height_cm), 4),
+                    round(float(it.weight_kg), 4),
+                    bool(resolve_can_rotate(it)),
+                    tuple(getattr(it, "allowed_orientations", None) or ()),
+                    getattr(it, "cargo_kind", "UNCLASSIFIED"),
+                    bool(getattr(it, "allow_upper_tier", False)),
+                    bool(getattr(it, "no_top_load_requested", False)),
+                    getattr(it, "max_top_load_g", None),
+                )
+                for iid in stop.items_loaded
+                for it in (cargo_by_id[iid],)
+            ),
+            tuple(stop.items_unloaded),
+        )
+        for stop in cycle_stops
+    )
+    return veh_key, pol_key, bool(allow_layout_search), bool(has_fallback), stops_key
+
+
 def fast_validate_unequal_stacked_route(
     vehicle: Any,
     stops: Sequence[Any],
@@ -845,6 +948,8 @@ def fast_validate_unequal_stacked_route(
     validate_fallback: Optional[Callable[..., SpatialValidationResult]] = None,
 ) -> Tuple[bool, str]:
     """Fast O(N*K) LIFO + unequal-footprint tree stacking pre-check matching 3D rules."""
+    if not stops:
+        return True, "Hợp lệ"
     pickup_stop: Dict[str, int] = {}
     delivery_stop: Dict[str, int] = {}
     for idx, stop in enumerate(stops):
@@ -862,192 +967,461 @@ def fast_validate_unequal_stacked_route(
         if delivery_stop[iid] <= pickup_stop[iid] or iid not in cargo_by_id:
             return False, "Thứ tự nhận/giao kiện không hợp lệ"
 
+    # Empty-to-empty cycles are physically independent; validate & memoize each cycle once.
+    cycle_slices: List[Sequence[Any]] = []
+    onboard_cycle: Set[str] = set()
+    start_idx = 0
+    for idx, stop in enumerate(stops):
+        for iid in stop.items_unloaded:
+            onboard_cycle.discard(iid)
+        for iid in stop.items_loaded:
+            onboard_cycle.add(iid)
+        if not onboard_cycle and idx + 1 < len(stops):
+            cycle_slices.append(stops[start_idx : idx + 1])
+            start_idx = idx + 1
+    cycle_slices.append(stops[start_idx:])
+
+    if len(cycle_slices) > 1:
+        for cycle in cycle_slices:
+            ok, msg = _fast_validate_unequal_cycle(
+                vehicle,
+                cycle,
+                cargo_by_id,
+                policy,
+                allow_layout_search=allow_layout_search,
+                validate_fallback=validate_fallback,
+            )
+            if not ok:
+                return False, msg
+        return True, "Hợp lệ"
+
+    return _fast_validate_unequal_cycle(
+        vehicle,
+        stops,
+        cargo_by_id,
+        policy,
+        allow_layout_search=allow_layout_search,
+        validate_fallback=validate_fallback,
+    )
+
+
+def _fast_validate_unequal_cycle(
+    vehicle: Any,
+    stops: Sequence[Any],
+    cargo_by_id: Mapping[str, Any],
+    policy: DemoStackingPolicy,
+    *,
+    allow_layout_search: bool = True,
+    validate_fallback: Optional[Callable[..., SpatialValidationResult]] = None,
+) -> Tuple[bool, str]:
+    key = _fast_cycle_cache_key(
+        vehicle,
+        stops,
+        cargo_by_id,
+        policy,
+        allow_layout_search,
+        validate_fallback is not None,
+    )
+    cached = _FAST_CYCLE_CACHE.get(key)
+    if cached is not None:
+        _FAST_CYCLE_CACHE.move_to_end(key)
+        return cached
+
+    res = _fast_validate_unequal_cycle_uncached(
+        vehicle,
+        stops,
+        cargo_by_id,
+        policy,
+        allow_layout_search=allow_layout_search,
+        validate_fallback=validate_fallback,
+    )
+    if res[0] or not (allow_layout_search and validate_fallback is not None):
+        _FAST_CYCLE_CACHE[key] = res
+        if len(_FAST_CYCLE_CACHE) > _FAST_CYCLE_CACHE_MAX:
+            _FAST_CYCLE_CACHE.popitem(last=False)
+    return res
+
+
+def _solve_cycle_greedy(
+    *,
+    vehicle: Any,
+    stops: Sequence[Any],
+    cargo_by_id: Mapping[str, Any],
+    policy: DemoStackingPolicy,
+    pickup_stop: Mapping[str, int],
+    delivery_stop: Mapping[str, int],
+    collect_snapshots: bool = False,
+    has_time: Optional[Callable[[], bool]] = None,
+) -> Tuple[bool, str, Optional[Tuple[List[Tuple[int, Tuple[_PlacedNode, ...], Tuple[str, ...]]], float, float]]]:
     bed_l = float(vehicle.length_cm)
     bed_w = float(vehicle.width_cm)
     bed_h = float(vehicle.height_cm)
     payload_limit = Decimal(str(vehicle.payload_limit_kg))
 
-    onboard: Dict[str, Dict[str, Any]] = {}
-    onboard_weight = Decimal("0")
+    def _load_ids(stop: Any) -> List[str]:
+        loads = getattr(stop, "items_to_load", None)
+        if loads is not None:
+            return [it.id for it in loads]
+        return list(getattr(stop, "items_loaded", ()))
 
-    def _deck_place(item: Any, base: Dict[str, Any], item_deliv: int) -> Optional[Tuple[float, float, float, float, float]]:
-        u_z = base["z"] + base["h"]
-        u_h = float(item.height_cm)
-        orients = _permitted_orientations(item, vehicle)
-        if not orients:
-            return None
-        z_conflicts = [
-            e for e in onboard.values()
-            if not (e["z"] + e["h"] <= u_z + _EPS or u_z + u_h <= e["z"] + _EPS)
-        ]
-        ignored = {base["id"], *base["ancestors"]}
-        other_obs = [(e["x"], e["y"], e["l"], e["w"]) for oid, e in onboard.items() if oid not in ignored]
-        cand_best: Optional[Tuple[float, float, float, float, float]] = None
-        cand_score = float("inf")
+    def _unload_ids(stop: Any) -> List[str]:
+        unloads = getattr(stop, "items_to_unload", None)
+        if unloads is not None:
+            return list(unloads)
+        return list(getattr(stop, "items_unloaded", ()))
 
-        for l_dim, w_dim in orients:
-            if l_dim > base["l"] + _EPS or w_dim > base["w"] + _EPS:
-                continue
-            min_x, max_x = base["x"], base["x"] + base["l"] - l_dim
-            min_y, max_y = base["y"], base["y"] + base["w"] - w_dim
-            x_raw = [min_x, max_x]
-            y_raw = [min_y, max_y]
-            for occ in z_conflicts:
-                if _boxes_overlap_2d(base["x"], base["y"], base["l"], base["w"], occ["x"], occ["y"], occ["l"], occ["w"]):
-                    x_raw.extend((occ["x"] + occ["l"], occ["x"] - l_dim))
-                    y_raw.extend((occ["y"] + occ["w"], occ["y"] - w_dim))
-            x_vals = [sx for rx in x_raw if (sx := _snap_inside_span(rx, min_x, max_x)) is not None]
-            y_vals = [sy for ry in y_raw if (sy := _snap_inside_span(ry, min_y, max_y)) is not None]
-            for xc in sorted(set(x_vals)):
-                for yc in sorted(set(y_vals)):
-                    if any(_boxes_overlap_2d(xc, yc, l_dim, w_dim, occ["x"], occ["y"], occ["l"], occ["w"]) for occ in z_conflicts):
+    def _run_strategy(
+        strategy: str,
+    ) -> Tuple[bool, str, Optional[Tuple[List[Tuple[int, Tuple[_PlacedNode, ...], Tuple[str, ...]]], float, float]]]:
+        onboard: Dict[str, Dict[str, Any]] = {}
+        onboard_weight = Decimal("0")
+        snapshots: List[Tuple[int, Tuple[_PlacedNode, ...], Tuple[str, ...]]] = []
+        max_weight = 0.0
+        max_area = 0.0
+
+        def _deck_place(item: Any, base: Dict[str, Any], item_deliv: int) -> Optional[Tuple[float, float, float, float, float]]:
+            u_z = base["z"] + base["h"]
+            u_h = float(item.height_cm)
+            orients = _permitted_orientations(item, vehicle)
+            if not orients:
+                return None
+            z_conflicts = [
+                e for e in onboard.values()
+                if not (e["z"] + e["h"] <= u_z + _EPS or u_z + u_h <= e["z"] + _EPS)
+            ]
+            ignored = {base["id"], *base["ancestors"]}
+            other_obs = [(e["x"], e["y"], e["l"], e["w"]) for oid, e in onboard.items() if oid not in ignored]
+            cand_best: Optional[Tuple[float, float, float, float, float]] = None
+            cand_score = float("inf")
+
+            for l_dim, w_dim in orients:
+                if l_dim > base["l"] + _EPS or w_dim > base["w"] + _EPS:
+                    continue
+                min_x, max_x = base["x"], base["x"] + base["l"] - l_dim
+                min_y, max_y = base["y"], base["y"] + base["w"] - w_dim
+                x_raw = [min_x, max_x]
+                y_raw = [min_y, max_y]
+                for occ in z_conflicts:
+                    if _boxes_overlap_2d(base["x"], base["y"], base["l"], base["w"], occ["x"], occ["y"], occ["l"], occ["w"]):
+                        x_raw.extend((occ["x"] + occ["l"], occ["x"] - l_dim))
+                        y_raw.extend((occ["y"] + occ["w"], occ["y"] - w_dim))
+                x_vals = [sx for rx in x_raw if (sx := _snap_inside_span(rx, min_x, max_x)) is not None]
+                y_vals = [sy for ry in y_raw if (sy := _snap_inside_span(ry, min_y, max_y)) is not None]
+                for xc in sorted(set(x_vals)):
+                    for yc in sorted(set(y_vals)):
+                        if any(_boxes_overlap_2d(xc, yc, l_dim, w_dim, occ["x"], occ["y"], occ["l"], occ["w"]) for occ in z_conflicts):
+                            continue
+                        if not _col_corridor_clear(xc, yc, l_dim, w_dim, bed_l, other_obs):
+                            continue
+                        blocks_earlier = any(
+                            e["delivery_idx"] < item_deliv
+                            and xc > e["x"] + e["l"] - _EPS
+                            and not (yc + w_dim <= e["y"] + _EPS or e["y"] + e["w"] <= yc + _EPS)
+                            for oid, e in onboard.items()
+                            if oid not in ignored
+                        )
+                        if blocks_earlier:
+                            continue
+                        score = (xc - min_x) * 1000.0 + min(abs(yc - min_y), abs(max_y - yc)) * 10.0 + yc * 0.05
+                        if score < cand_score:
+                            cand_score = score
+                            cand_best = (xc, yc, u_z, l_dim, w_dim)
+            return cand_best
+
+        def _try_stack_existing(item: Any, item_deliv: int) -> bool:
+            if not bool(getattr(item, "allow_upper_tier", False)) or getattr(item, "cargo_kind", "UNCLASSIFIED") != "STANDARD":
+                return False
+            item_w = Decimal(str(item.weight_kg))
+            u_pair = tuple(sorted((round(float(item.length_cm), 2), round(float(item.width_cm), 2))))
+            bases = sorted(
+                onboard.values(),
+                key=lambda b: (
+                    0 if tuple(sorted((round(float(b["item"].length_cm), 2), round(float(b["item"].width_cm), 2)))) == u_pair else 1,
+                    b["delivery_idx"] - item_deliv,
+                    b["l"] * b["w"],
+                    b["tier"],
+                    b["id"],
+                ),
+            )
+            for base in bases:
+                if base["tier"] + 1 > policy.max_tiers or base["delivery_idx"] < item_deliv:
+                    continue
+                if base["z"] + base["h"] + float(item.height_cm) + policy.lift_clearance_cm > bed_h + _EPS:
+                    continue
+                anc_ids = (base["id"], *base["ancestors"])
+                ok_anc = True
+                for anc_id in anc_ids:
+                    anc = onboard[anc_id]
+                    anc_it = anc["item"]
+                    max_top = getattr(anc_it, "max_top_load_g", None)
+                    if (
+                        getattr(anc_it, "cargo_kind", "UNCLASSIFIED") != "STANDARD"
+                        or bool(getattr(anc_it, "no_top_load_requested", False))
+                        or (policy.owner_mode == "SAME_CUSTOMER" and not _same_customer(anc_it, item))
+                        or exceeds_top_load_limit(
+                            anc["above_weight"] + item_w,
+                            anc_it.weight_kg,
+                            max_top,
+                            getattr(policy, "max_top_load_percent", 30),
+                        )
+                    ):
+                        ok_anc = False
+                        break
+                if not ok_anc:
+                    continue
+                placement = _deck_place(item, base, item_deliv)
+                if placement is None:
+                    continue
+                xc, yc, zc, lc, wc = placement
+                for anc_id in anc_ids:
+                    onboard[anc_id]["above_weight"] += item_w
+                base["children"] += 1
+                onboard[item.id] = {
+                    "id": item.id, "item": item, "x": xc, "y": yc, "z": zc,
+                    "l": lc, "w": wc, "h": float(item.height_cm),
+                    "delivery_idx": item_deliv, "tier": base["tier"] + 1,
+                    "support_id": base["id"], "ancestors": anc_ids,
+                    "above_weight": Decimal("0"), "children": 0,
+                }
+                return True
+            return False
+
+        def _try_place_floor(item: Any, item_deliv: int) -> bool:
+            orients = _permitted_orientations(item, vehicle)
+            if not orients:
+                return False
+            floor_entries = [e for e in onboard.values() if e["tier"] == 1]
+            floor_obs = [(e["x"], e["y"], e["l"], e["w"]) for e in floor_entries]
+            pts = {(0.0, 0.0)}
+            for e in floor_entries:
+                if e["x"] + e["l"] <= bed_l:
+                    pts.add((e["x"] + e["l"], e["y"]))
+                    pts.add((e["x"] + e["l"], 0.0))
+                    pts.add((e["x"] + e["l"], e["y"] + e["w"]))
+                if e["y"] + e["w"] <= bed_w:
+                    pts.add((e["x"], e["y"] + e["w"]))
+                    pts.add((0.0, e["y"] + e["w"]))
+            for _, w_dim in orients:
+                if w_dim <= bed_w:
+                    pts.add((0.0, bed_w - w_dim))
+                    for e in floor_entries:
+                        if e["x"] + e["l"] <= bed_l:
+                            pts.add((e["x"] + e["l"], bed_w - w_dim))
+
+            placed_floor_list: Optional[List[PlacedItem]] = None
+            kind_map: Optional[Dict[str, str]] = None
+            item_kind = getattr(item, "cargo_kind", "UNCLASSIFIED")
+            item_w = max(0.0, float(item.weight_kg))
+            sorted_pts = sorted(pts)
+
+            best_cand: Optional[Tuple[float, float, float, float]] = None
+            best_score = float("inf")
+            for l_dim, w_dim in orients:
+                for xc, yc in sorted_pts:
+                    if strategy == "default" and xc * 1000.0 >= best_score:
+                        break
+                    if xc + l_dim > bed_l + _EPS or yc + w_dim > bed_w + _EPS:
                         continue
-                    if not _col_corridor_clear(xc, yc, l_dim, w_dim, bed_l, other_obs):
+                    if strategy == "default":
+                        corridor_pen = 150.0 if (yc > _EPS and yc + w_dim < bed_w - _EPS) else 0.0
+                        lb = xc * 1000.0 + corridor_pen + yc * 0.05
+                    else:
+                        diff_y = any(
+                            e["delivery_idx"] != item_deliv
+                            and not (yc + w_dim <= e["y"] + _EPS or e["y"] + e["w"] <= yc + _EPS)
+                            for e in floor_entries
+                        )
+                        y_pref = (yc + w_dim) if strategy == "lane_y_left" else (bed_w - yc)
+                        lb = (1_000_000.0 if diff_y else 0.0) + y_pref * 1000.0 + xc * 10.0
+                    if lb >= best_score:
                         continue
-                    blocks_earlier = any(
+                    if any(_boxes_overlap_2d(xc, yc, l_dim, w_dim, ox, oy, ol, ow) for ox, oy, ol, ow in floor_obs):
+                        continue
+                    if not _col_corridor_clear(xc, yc, l_dim, w_dim, bed_l, floor_obs):
+                        continue
+                    if any(
                         e["delivery_idx"] < item_deliv
                         and xc > e["x"] + e["l"] - _EPS
                         and not (yc + w_dim <= e["y"] + _EPS or e["y"] + e["w"] <= yc + _EPS)
-                        for oid, e in onboard.items()
-                        if oid not in ignored
-                    )
-                    if blocks_earlier:
+                        for e in onboard.values()
+                    ):
                         continue
-                    score = (xc - min_x) * 1000.0 + min(abs(yc - min_y), abs(max_y - yc)) * 10.0 + yc * 0.05
-                    if score < cand_score:
-                        cand_score = score
-                        cand_best = (xc, yc, u_z, l_dim, w_dim)
-        return cand_best
-
-    def _try_stack_existing(item: Any, item_deliv: int) -> bool:
-        if not bool(getattr(item, "allow_upper_tier", False)) or getattr(item, "cargo_kind", "UNCLASSIFIED") != "STANDARD":
-            return False
-        item_w = Decimal(str(item.weight_kg))
-        u_pair = tuple(sorted((round(float(item.length_cm), 2), round(float(item.width_cm), 2))))
-        bases = sorted(
-            onboard.values(),
-            key=lambda b: (
-                0 if tuple(sorted((round(float(b["item"].length_cm), 2), round(float(b["item"].width_cm), 2)))) == u_pair else 1,
-                b["delivery_idx"] - item_deliv,
-                b["l"] * b["w"],
-                b["tier"],
-                b["id"],
-            ),
-        )
-        for base in bases:
-            if base["tier"] + 1 > policy.max_tiers or base["delivery_idx"] < item_deliv:
-                continue
-            if base["z"] + base["h"] + float(item.height_cm) + policy.lift_clearance_cm > bed_h + _EPS:
-                continue
-            anc_ids = (base["id"], *base["ancestors"])
-            ok_anc = True
-            for anc_id in anc_ids:
-                anc = onboard[anc_id]
-                anc_it = anc["item"]
-                max_top = getattr(anc_it, "max_top_load_g", None)
-                if (
-                    getattr(anc_it, "cargo_kind", "UNCLASSIFIED") != "STANDARD"
-                    or bool(getattr(anc_it, "no_top_load_requested", False))
-                    or max_top is None
-                    or (policy.owner_mode == "SAME_CUSTOMER" and not _same_customer(anc_it, item))
-                    or (anc["above_weight"] + item_w) * 10 >= Decimal(str(anc_it.weight_kg)) * 3
-                    or (anc["above_weight"] + item_w) * 1000 > max_top
-                ):
-                    ok_anc = False
-                    break
-            if not ok_anc:
-                continue
-            placement = _deck_place(item, base, item_deliv)
-            if placement is None:
-                continue
-            xc, yc, zc, lc, wc = placement
-            for anc_id in anc_ids:
-                onboard[anc_id]["above_weight"] += item_w
-            base["children"] += 1
+                    if placed_floor_list is None:
+                        placed_floor_list = [
+                            PlacedItem(
+                                item_id=e["id"], order_id=e["item"].order_id,
+                                x=e["x"], y=e["y"], length_cm=e["l"], width_cm=e["w"],
+                                height_cm=e["h"], weight_kg=float(e["item"].weight_kg),
+                                cargo_kind=getattr(e["item"], "cargo_kind", "UNCLASSIFIED"),
+                            )
+                            for e in floor_entries
+                        ]
+                        kind_map = {e["id"]: getattr(e["item"], "cargo_kind", "UNCLASSIFIED") for e in floor_entries}
+                    lat_imb, fragile_adj = score_candidate_balance_and_fragility(
+                        cand_x=xc, cand_y=yc, cand_l=l_dim, cand_w=w_dim,
+                        cand_weight_kg=item_w, cand_cargo_kind=item_kind,
+                        current_placed=placed_floor_list, cargo_kind_by_id=kind_map,
+                        floor_length_cm=bed_l, floor_width_cm=bed_w,
+                    )
+                    extra = (lat_imb * 120.0 + fragile_adj * 140.0) if strategy == "default" else (lat_imb * 20.0 + fragile_adj * 25.0)
+                    score = lb + extra
+                    if score < best_score:
+                        best_score = score
+                        best_cand = (xc, yc, l_dim, w_dim)
+            if best_cand is None:
+                return False
+            xc, yc, lc, wc = best_cand
             onboard[item.id] = {
-                "id": item.id, "item": item, "x": xc, "y": yc, "z": zc,
+                "id": item.id, "item": item, "x": xc, "y": yc, "z": 0.0,
                 "l": lc, "w": wc, "h": float(item.height_cm),
-                "delivery_idx": item_deliv, "tier": base["tier"] + 1,
-                "support_id": base["id"], "ancestors": anc_ids,
+                "delivery_idx": item_deliv, "tier": 1,
+                "support_id": None, "ancestors": (),
                 "above_weight": Decimal("0"), "children": 0,
             }
             return True
-        return False
 
-    def _try_place_floor(item: Any, item_deliv: int) -> bool:
-        orients = _permitted_orientations(item, vehicle)
-        if not orients:
-            return False
-        floor_entries = [e for e in onboard.values() if e["tier"] == 1]
-        floor_obs = [(e["x"], e["y"], e["l"], e["w"]) for e in floor_entries]
-        pts = {(0.0, 0.0)}
-        for e in floor_entries:
-            if e["x"] + e["l"] <= bed_l:
-                pts.add((e["x"] + e["l"], e["y"]))
-                pts.add((e["x"] + e["l"], 0.0))
-                pts.add((e["x"] + e["l"], e["y"] + e["w"]))
-            if e["y"] + e["w"] <= bed_w:
-                pts.add((e["x"], e["y"] + e["w"]))
-                pts.add((0.0, e["y"] + e["w"]))
-        for _, w_dim in orients:
-            if w_dim <= bed_w:
-                pts.add((0.0, bed_w - w_dim))
-                for e in floor_entries:
-                    if e["x"] + e["l"] <= bed_l:
-                        pts.add((e["x"] + e["l"], bed_w - w_dim))
+        for stop_index, stop in enumerate(stops):
+            if has_time is not None and not has_time():
+                return False, "Hết thời gian kiểm tra bố trí", None
+            pending = _unload_ids(stop)
+            unload_seq: List[str] = []
+            if pending:
+                if len(pending) != len(set(pending)) or any(iid not in onboard for iid in pending):
+                    return False, "Dỡ kiện chưa có trên xe", None
+                while pending:
+                    ready = sorted(
+                        (iid for iid in pending if onboard[iid]["children"] == 0),
+                        key=lambda iid: (onboard[iid]["tier"], onboard[iid]["x"] + onboard[iid]["l"], iid),
+                        reverse=True,
+                    )
+                    popped_id: Optional[str] = None
+                    for iid in ready:
+                        entry = onboard[iid]
+                        ignored = {iid, *entry["ancestors"]}
+                        other_obs = [(e["x"], e["y"], e["l"], e["w"]) for oid, e in onboard.items() if oid not in ignored]
+                        if _col_corridor_clear(entry["x"], entry["y"], entry["l"], entry["w"], bed_l, other_obs):
+                            popped_id = iid
+                            break
+                    if popped_id is None:
+                        if any(onboard[iid]["children"] > 0 for iid in pending):
+                            return False, "Bị kiện phía trên chặn khi dỡ", None
+                        return False, "Bị hàng khác chặn lối ra cửa đuôi", None
+                    popped = onboard.pop(popped_id)
+                    pop_w = Decimal(str(popped["item"].weight_kg))
+                    for anc_id in popped["ancestors"]:
+                        if anc_id in onboard:
+                            onboard[anc_id]["above_weight"] = max(Decimal("0"), onboard[anc_id]["above_weight"] - pop_w)
+                    if popped["support_id"] and popped["support_id"] in onboard:
+                        onboard[popped["support_id"]]["children"] = max(0, onboard[popped["support_id"]]["children"] - 1)
+                    onboard_weight = max(Decimal("0"), onboard_weight - pop_w)
+                    pending.remove(popped_id)
+                    unload_seq.append(popped_id)
 
-        placed_floor_list = [
-            PlacedItem(
-                item_id=e["id"], order_id=e["item"].order_id,
-                x=e["x"], y=e["y"], length_cm=e["l"], width_cm=e["w"],
-                height_cm=e["h"], weight_kg=float(e["item"].weight_kg),
-                cargo_kind=getattr(e["item"], "cargo_kind", "UNCLASSIFIED"),
-            )
-            for e in floor_entries
-        ]
-        kind_map = {e["id"]: getattr(e["item"], "cargo_kind", "UNCLASSIFIED") for e in floor_entries}
-        item_kind = getattr(item, "cargo_kind", "UNCLASSIFIED")
-        item_w = max(0.0, float(item.weight_kg))
-
-        best_cand: Optional[Tuple[float, float, float, float]] = None
-        best_score = float("inf")
-        for l_dim, w_dim in orients:
-            for xc, yc in sorted(pts):
-                if xc + l_dim > bed_l + _EPS or yc + w_dim > bed_w + _EPS:
-                    continue
-                if any(_boxes_overlap_2d(xc, yc, l_dim, w_dim, ox, oy, ol, ow) for ox, oy, ol, ow in floor_obs):
-                    continue
-                if not _col_corridor_clear(xc, yc, l_dim, w_dim, bed_l, floor_obs):
-                    continue
-                if any(
-                    e["delivery_idx"] < item_deliv
-                    and xc > e["x"] + e["l"] - _EPS
-                    and not (yc + w_dim <= e["y"] + _EPS or e["y"] + e["w"] <= yc + _EPS)
-                    for e in onboard.values()
-                ):
-                    continue
-                lat_imb, fragile_adj = score_candidate_balance_and_fragility(
-                    cand_x=xc, cand_y=yc, cand_l=l_dim, cand_w=w_dim,
-                    cand_weight_kg=item_w, cand_cargo_kind=item_kind,
-                    current_placed=placed_floor_list, cargo_kind_by_id=kind_map,
-                    floor_length_cm=bed_l, floor_width_cm=bed_w,
+            loads = _load_ids(stop)
+            if loads:
+                ordered_load_ids = sorted(
+                    loads,
+                    key=lambda iid: (
+                        delivery_stop[iid],
+                        0 if getattr(cargo_by_id[iid], "cargo_kind", "UNCLASSIFIED") == "FRAGILE" else 1,
+                        0 if getattr(cargo_by_id[iid], "allow_upper_tier", False) else 1,
+                        float(cargo_by_id[iid].weight_kg),
+                        float(cargo_by_id[iid].length_cm) * float(cargo_by_id[iid].width_cm),
+                        getattr(cargo_by_id[iid], "max_top_load_g", None) or 0,
+                        iid,
+                    ),
+                    reverse=True,
                 )
-                corridor_pen = 150.0 if (yc > _EPS and yc + w_dim < bed_w - _EPS) else 0.0
-                score = xc * 1000.0 + corridor_pen + lat_imb * 120.0 + fragile_adj * 140.0 + yc * 0.05
-                if score < best_score:
-                    best_score = score
-                    best_cand = (xc, yc, l_dim, w_dim)
-        if best_cand is None:
-            return False
-        xc, yc, lc, wc = best_cand
-        onboard[item.id] = {
-            "id": item.id, "item": item, "x": xc, "y": yc, "z": 0.0,
-            "l": lc, "w": wc, "h": float(item.height_cm),
-            "delivery_idx": item_deliv, "tier": 1,
-            "support_id": None, "ancestors": (),
-            "above_weight": Decimal("0"), "children": 0,
-        }
-        return True
+                for iid in ordered_load_ids:
+                    item = cargo_by_id[iid]
+                    if float(item.height_cm) > bed_h + _EPS:
+                        return False, "Kiện vượt chiều cao thùng xe", None
+                    onboard_weight += Decimal(str(item.weight_kg))
+                    if onboard_weight > payload_limit + Decimal("0.01"):
+                        return False, "Vượt tải trọng xe", None
+                    item_deliv = delivery_stop[iid]
+                    if not (_try_stack_existing(item, item_deliv) or _try_place_floor(item, item_deliv)):
+                        return False, "Không đủ chỗ xếp chồng hoặc diện tích sàn", None
+
+            if stop.stop_type not in ("PICKUP", "DELIVERY"):
+                return False, f"Loại điểm dừng không hợp lệ: {stop.stop_type}", None
+
+            if collect_snapshots:
+                cur_w = float(onboard_weight)
+                floor_area = sum(e["l"] * e["w"] for e in onboard.values() if e["tier"] == 1)
+                max_weight = max(max_weight, cur_w)
+                max_area = max(max_area, floor_area)
+                nodes = tuple(
+                    _PlacedNode(
+                        placed=PlacedItem(
+                            item_id=e["id"],
+                            order_id=e["item"].order_id,
+                            x=e["x"],
+                            y=e["y"],
+                            z=e["z"],
+                            length_cm=e["l"],
+                            width_cm=e["w"],
+                            height_cm=e["h"],
+                            weight_kg=float(e["item"].weight_kg),
+                            support_item_id=e["support_id"],
+                            cargo_kind=getattr(e["item"], "cargo_kind", "UNCLASSIFIED"),
+                            no_top_load_requested=bool(getattr(e["item"], "no_top_load_requested", False)),
+                            floor_rotation_locked=is_floor_rotation_locked(e["item"]),
+                        ),
+                        item=e["item"],
+                        tier=e["tier"],
+                        ancestors=e["ancestors"],
+                    )
+                    for e in onboard.values()
+                )
+                snapshots.append((stop_index, nodes, tuple(unload_seq)))
+
+        if onboard:
+            return False, "Còn hàng chưa dỡ", None
+        return True, "Hợp lệ", (snapshots, max_weight, max_area) if collect_snapshots else None
+
+    res = _run_strategy("default")
+    if res[0]:
+        return res
+    if len(set(delivery_stop.values())) > 1 and res[1] in (
+        "Không đủ chỗ xếp chồng hoặc diện tích sàn",
+        "Bị hàng khác chặn lối ra cửa đuôi",
+        "Bị kiện phía trên chặn khi dỡ",
+    ):
+        for strategy in ("lane_y_left", "lane_y_right"):
+            if has_time is not None and not has_time():
+                break
+            alt = _run_strategy(strategy)
+            if alt[0]:
+                return alt
+    return res
+
+
+def _fast_validate_unequal_cycle_uncached(
+    vehicle: Any,
+    stops: Sequence[Any],
+    cargo_by_id: Mapping[str, Any],
+    policy: DemoStackingPolicy,
+    *,
+    allow_layout_search: bool = True,
+    validate_fallback: Optional[Callable[..., SpatialValidationResult]] = None,
+) -> Tuple[bool, str]:
+    pickup_stop: Dict[str, int] = {}
+    delivery_stop: Dict[str, int] = {}
+    for idx, stop in enumerate(stops):
+        for iid in stop.items_loaded:
+            if iid in pickup_stop:
+                return False, "Kiện bị bốc lên nhiều lần"
+            pickup_stop[iid] = idx
+        for iid in stop.items_unloaded:
+            if iid in delivery_stop:
+                return False, "Kiện bị dỡ nhiều lần"
+            delivery_stop[iid] = idx
+    if pickup_stop.keys() != delivery_stop.keys():
+        return False, "Thiếu cặp nhận/giao kiện"
+    for iid in pickup_stop:
+        if delivery_stop[iid] <= pickup_stop[iid] or iid not in cargo_by_id:
+            return False, "Thứ tự nhận/giao kiện không hợp lệ"
 
     def _try_fallback_search() -> Optional[Tuple[bool, str]]:
         if not (allow_layout_search and validate_fallback is not None and len(pickup_stop) <= 12 and len(stops) <= 24):
@@ -1085,68 +1459,18 @@ def fast_validate_unequal_stacked_route(
             return True, "Hợp lệ sau tìm kiếm xếp chồng"
         return None
 
-    for stop in stops:
-        if stop.stop_type == "PICKUP":
-            ordered_load_ids = sorted(
-                stop.items_loaded,
-                key=lambda iid: (
-                    delivery_stop[iid],
-                    0 if getattr(cargo_by_id[iid], "cargo_kind", "UNCLASSIFIED") == "FRAGILE" else 1,
-                    0 if getattr(cargo_by_id[iid], "allow_upper_tier", False) else 1,
-                    float(cargo_by_id[iid].weight_kg),
-                    float(cargo_by_id[iid].length_cm) * float(cargo_by_id[iid].width_cm),
-                    getattr(cargo_by_id[iid], "max_top_load_g", None) or 0,
-                    iid,
-                ),
-                reverse=True,
-            )
-            for iid in ordered_load_ids:
-                item = cargo_by_id[iid]
-                if float(item.height_cm) > bed_h + _EPS:
-                    return False, "Kiện vượt chiều cao thùng xe"
-                onboard_weight += Decimal(str(item.weight_kg))
-                if onboard_weight > payload_limit + Decimal("0.01"):
-                    return False, "Vượt tải trọng xe"
-                item_deliv = delivery_stop[iid]
-                if not (_try_stack_existing(item, item_deliv) or _try_place_floor(item, item_deliv)):
-                    fb = _try_fallback_search()
-                    if fb is not None:
-                        return fb
-                    return False, "Không đủ chỗ xếp chồng hoặc diện tích sàn"
-        elif stop.stop_type == "DELIVERY":
-            pending = list(stop.items_unloaded)
-            if any(iid not in onboard for iid in pending):
-                return False, "Dỡ kiện chưa có trên xe"
-            while pending:
-                ready = sorted(
-                    (iid for iid in pending if onboard[iid]["children"] == 0),
-                    key=lambda iid: (onboard[iid]["tier"], onboard[iid]["x"] + onboard[iid]["l"], iid),
-                    reverse=True,
-                )
-                popped_id: Optional[str] = None
-                for iid in ready:
-                    entry = onboard[iid]
-                    ignored = {iid, *entry["ancestors"]}
-                    other_obs = [(e["x"], e["y"], e["l"], e["w"]) for oid, e in onboard.items() if oid not in ignored]
-                    if _col_corridor_clear(entry["x"], entry["y"], entry["l"], entry["w"], bed_l, other_obs):
-                        popped_id = iid
-                        break
-                if popped_id is None:
-                    fb = _try_fallback_search()
-                    if fb is not None:
-                        return fb
-                    if any(onboard[iid]["children"] > 0 for iid in pending):
-                        return False, "Bị kiện phía trên chặn khi dỡ"
-                    return False, "Bị hàng khác chặn lối ra cửa đuôi"
-                popped = onboard.pop(popped_id)
-                pop_w = Decimal(str(popped["item"].weight_kg))
-                for anc_id in popped["ancestors"]:
-                    if anc_id in onboard:
-                        onboard[anc_id]["above_weight"] = max(Decimal("0"), onboard[anc_id]["above_weight"] - pop_w)
-                if popped["support_id"] and popped["support_id"] in onboard:
-                    onboard[popped["support_id"]]["children"] = max(0, onboard[popped["support_id"]]["children"] - 1)
-                onboard_weight = max(Decimal("0"), onboard_weight - pop_w)
-                pending.remove(popped_id)
-        else:
-            return False, f"Loại điểm dừng không hợp lệ: {stop.stop_type}"
-    return (len(onboard) == 0), ("Hợp lệ" if not onboard else "Còn hàng chưa dỡ")
+    ok, msg, _ = _solve_cycle_greedy(
+        vehicle=vehicle,
+        stops=stops,
+        cargo_by_id=cargo_by_id,
+        policy=policy,
+        pickup_stop=pickup_stop,
+        delivery_stop=delivery_stop,
+        collect_snapshots=False,
+    )
+    if ok:
+        return True, msg
+    fb = _try_fallback_search()
+    if fb is not None:
+        return fb
+    return False, msg

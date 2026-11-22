@@ -1,10 +1,137 @@
 """Index-only stop relocation probes shared by search and post-audit polish."""
 import time
+from functools import cache
+from heapq import heappush, heapreplace
 from typing import List, Sequence, Tuple
 
 StopMove = Tuple[float, int, int, int]
 OrderMove = Tuple[int, float, int, int, int, int, int, int]
 SubtripMove = Tuple[int, float, int, int, int, int, int]
+
+
+# Bound the exponential DP state space per window, independently of fleet size.
+MAX_RESEQUENCE_STOPS = 14
+
+
+class _ResequenceDeadlineReached(Exception):
+    pass
+
+
+def is_single_stop_relocation(sequence: Sequence[int]) -> bool:
+    """Whether the existing single-stop neighborhood already covers this permutation."""
+    misplaced = [i for i, source in enumerate(sequence) if i != source]
+    if not misplaced:
+        return True
+    first, last = misplaced[0], misplaced[-1]
+    middle = sequence[first:last + 1]
+    return (
+        list(middle) == [*range(first + 1, last + 1), first]
+        or list(middle) == [last, *range(first, last)]
+    )
+
+
+def ranked_short_route_sequences(
+    nodes: Sequence[int],
+    actions: Sequence[Tuple[str, str]],
+    depot: int,
+    distances: Sequence[Sequence[float]],
+    deadline: float,
+    *,
+    end_node: int | None = None,
+) -> List[Tuple[float, Tuple[int, ...]]]:
+    """Reorder a window of an audited route while its outside prefix/suffix stay fixed."""
+    if not 2 <= len(nodes) <= MAX_RESEQUENCE_STOPS or len(nodes) != len(actions):
+        return []
+    pickups = {order: i for i, (order, kind) in enumerate(actions) if kind == "PICKUP"}
+    deliveries = {order: i for i, (order, kind) in enumerate(actions) if kind == "DELIVERY"}
+    if len(pickups) + len(deliveries) != len(actions):
+        return []
+    predecessors = [0] * len(nodes)
+    for order in pickups.keys() & deliveries.keys():
+        predecessors[deliveries[order]] = 1 << pickups[order]
+    end = depot if end_node is None else end_node
+    path_nodes = [depot, *nodes, end]
+    incumbent = sum(distances[a][b] for a, b in zip(path_nodes, path_nodes[1:]))
+    all_pending = (1 << len(nodes)) - 1
+
+    def available(pending: int):
+        while pending:
+            bit = pending & -pending
+            yield bit.bit_length() - 1, bit
+            pending ^= bit
+
+    @cache
+    def next_visits(pending: int) -> Tuple[Tuple[int, int], ...]:
+        return tuple(
+            (nodes[i], pending ^ bit)
+            for i, bit in available(pending)
+            if not (pending & predecessors[i])
+        )
+
+    @cache
+    def shortest_suffix(previous: int, pending: int) -> float:
+        if time.perf_counter() >= deadline:
+            raise _ResequenceDeadlineReached
+        if not pending:
+            return distances[previous][end]
+        row = distances[previous]
+        best_cost = float("inf")
+        for node, next_pending in next_visits(pending):
+            cost = row[node] + shortest_suffix(node, next_pending)
+            if cost < best_cost:
+                best_cost = cost
+        return best_cost
+
+    try:
+        shortest = shortest_suffix(depot, all_pending)
+    except _ResequenceDeadlineReached:
+        return []
+    if shortest >= incumbent:
+        return []
+
+    best: List[Tuple[float, Tuple[int, ...]]] = []
+
+    def visit(previous: int, pending: int, path: Tuple[int, ...], cost: float) -> None:
+        cutoff = -best[0][0] if len(best) == 12 else incumbent
+        if time.perf_counter() >= deadline:
+            return
+        remaining = shortest_suffix(previous, pending)
+        if cost + remaining >= cutoff:
+            return
+        if not pending:
+            total = cost + distances[previous][end]
+            if total < cutoff and all(previous_path != path for _, previous_path in best):
+                entry = (-total, path)
+                if len(best) == 12:
+                    heapreplace(best, entry)
+                else:
+                    heappush(best, entry)
+            return
+
+        for i, node in enumerate(nodes):
+            bit = 1 << i
+            if pending & bit and not (pending & predecessors[i]):
+                visit(node, pending ^ bit, (*path, i), cost + distances[previous][node])
+
+    # Keep the best complete path even if the remaining budget permits no alternatives.
+    path = []
+    previous, pending = depot, all_pending
+    while pending:
+        i, bit = min(
+            ((i, bit) for i, bit in available(pending) if not (pending & predecessors[i])),
+            key=lambda entry: distances[previous][nodes[entry[0]]]
+            + shortest_suffix(nodes[entry[0]], pending ^ entry[1]),
+        )
+        path.append(i)
+        previous, pending = nodes[i], pending ^ bit
+    # Sum the reconstructed path in travel order, as for the incumbent.
+    path_nodes = [depot, *(nodes[i] for i in path), end]
+    path_cost = sum(distances[a][b] for a, b in zip(path_nodes, path_nodes[1:]))
+    if path_cost < incumbent:
+        best.append((-path_cost, tuple(path)))
+
+    visit(depot, all_pending, (), 0.0)
+    return sorted((-total - incumbent, path) for total, path in best)
 
 
 def ranked_subtrip_moves(

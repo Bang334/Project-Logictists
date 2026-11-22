@@ -229,6 +229,15 @@ describe('assertFleetOptimizationResult', () => {
 });
 
 describe('assertFleetOptimizationBatchResult', () => {
+  it('requires full coverage even for a single candidate and allows an explicit no-plan result', () => {
+    const batch = { job_id: 'job-1', solver_run_count: 1, fully_served_candidate_count: 0,
+      no_plan_status: 'NO_COMPLETE_PLAN', candidates: [] };
+    expect(() => assertFleetOptimizationBatchResult(batch)).not.toThrow();
+    const onlyCandidate = { rank: 1, search_strategy: 'Hybrid', solver_objective: 80, is_best_found: true,
+      result: { ...validResult(), status: 'PARTIAL' } };
+    expect(() => assertFleetOptimizationBatchResult({ ...batch, candidates: [onlyCandidate] })).toThrow('không giao đủ');
+  });
+
   it('accepts a valid ranked batch of fully-served candidates', () => {
     const res1 = validResult();
     res1.total_cost_vnd = 1_000_000;

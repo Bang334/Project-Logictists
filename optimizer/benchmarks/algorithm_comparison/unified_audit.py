@@ -66,7 +66,7 @@ class PlanAuditor:
                 update={
                     "can_rotate": resolve_can_rotate(
                         item,
-                        d11_default=True if getattr(request, "demo_stacking", None) is None else None,
+                        d11_default=True,
                     )
                 }
             )

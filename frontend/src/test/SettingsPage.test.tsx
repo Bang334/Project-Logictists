@@ -99,6 +99,7 @@ function makeCompanyResponse(overrides: Partial<ScopedSettingsResponse['company'
       ownerMode: 'SAME_CUSTOMER' as const,
       maxTiers: 2,
       liftClearanceMm: 50,
+      maxTopLoadPercent: 30,
     },
     optimization: {
       defaultSearchBudgetSeconds: 10,
@@ -194,7 +195,13 @@ beforeEach(() => {
 it('cho phép Admin lưu cấu hình xếp chồng và số seed toàn công ty', async () => {
   const saved = makeCompanyResponse({
     version: 2,
-    stacking: { enabled: true, ownerMode: 'ANY_CUSTOMER', maxTiers: 2, liftClearanceMm: 50 },
+    stacking: {
+      enabled: true,
+      ownerMode: 'ANY_CUSTOMER',
+      maxTiers: 2,
+      liftClearanceMm: 50,
+      maxTopLoadPercent: 30,
+    },
     optimization: {
       ...makeCompanyResponse().company.optimization,
       hybridSeedCount: 20,
@@ -212,14 +219,17 @@ it('cho phép Admin lưu cấu hình xếp chồng và số seed toàn công ty'
 
   const stackSwitch = screen.getByLabelText('Bật xếp chồng hàng hóa');
   fireEvent.click(stackSwitch);
-  const seedCount = screen.getByRole('combobox', { name: 'Số seed Hybrid ALNS' });
+  fireEvent.change(screen.getByLabelText('Tỷ lệ tải đè tối đa lên kiện dưới'), {
+    target: { value: '45' },
+  });
+  const seedCount = screen.getByLabelText('Số seed Hybrid ALNS', { selector: 'input' });
   fireEvent.mouseDown(seedCount);
   fireEvent.change(seedCount, { target: { value: '20' } });
   fireEvent.click(await screen.findByText('20 seed'));
-  fireEvent.change(screen.getByRole('spinbutton', { name: 'Trần thời gian tối ưu tối đa' }), {
+  fireEvent.change(screen.getByLabelText('Trần thời gian tối ưu tối đa'), {
     target: { value: '1000' },
   });
-  fireEvent.change(screen.getByRole('spinbutton', { name: 'Ngưỡng dừng sớm' }), {
+  fireEvent.change(screen.getByLabelText('Ngưỡng dừng sớm'), {
     target: { value: '35' },
   });
 
@@ -230,7 +240,7 @@ it('cho phép Admin lưu cấu hình xếp chồng và số seed toàn công ty'
     expect(settingsApi.updateCompany).toHaveBeenCalledWith(
       expect.objectContaining({
         expectedVersion: 1,
-        stacking: expect.objectContaining({ enabled: true }),
+        stacking: expect.objectContaining({ enabled: true, maxTopLoadPercent: 45 }),
         optimization: expect.objectContaining({ hybridSeedCount: 20, maxTimeSeconds: 1000, earlyStopPatience: 35 }),
       }),
     ),
@@ -251,11 +261,11 @@ it('lưu hạn giao và tỷ lệ phạt theo ngày', async () => {
   });
 
   render(<App><SettingsPage /></App>);
-  const deadline = await screen.findByRole('spinbutton', { name: 'Số ngày ân hạn giao hàng' });
+  const deadline = await screen.findByLabelText('Số ngày ân hạn giao hàng');
   fireEvent.change(deadline, { target: { value: '14' } });
-  fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Hình thức phạt giao trễ' }));
+  fireEvent.mouseDown(screen.getByLabelText('Hình thức phạt giao trễ', { selector: 'input' }));
   fireEvent.click(await screen.findByText('Phần trăm giá trị đơn mỗi ngày trễ'));
-  fireEvent.change(screen.getByRole('spinbutton', { name: 'Tỷ lệ phạt mỗi ngày trễ' }), {
+  fireEvent.change(screen.getByLabelText('Tỷ lệ phạt mỗi ngày trễ'), {
     target: { value: '1.5' },
   });
   fireEvent.click(screen.getByText('Lưu thay đổi'));

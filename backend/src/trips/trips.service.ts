@@ -16,7 +16,7 @@ import {
 import axios from 'axios';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
-import { MapboxService } from '../mapbox/mapbox.service';
+import { MapboxService, RoadMatrixResult } from '../mapbox/mapbox.service';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { TripsValidator } from './trips.validator';
 import {
@@ -82,7 +82,7 @@ const ACTIVE_TRIP_STATUSES = [
   TripStatus.IN_PROGRESS,
 ];
 const OPTIMIZATION_PROPOSAL_TTL_MS = 30 * 60 * 1000;
-const AUTOMATIC_PLANNING_DAY_COUNT = 7;
+const INITIAL_PLANNING_DAYS = 7;
 const LOCK_NAMESPACE_VEHICLE = 4101;
 const LOCK_NAMESPACE_DRIVER = 4102;
 const LOCK_NAMESPACE_ORDER = 4103;
@@ -179,6 +179,7 @@ export class TripsService {
       ownerMode: (policy?.owner_mode ?? 'SAME_CUSTOMER') as 'SAME_CUSTOMER' | 'ANY_CUSTOMER',
       maxTiers: policy?.max_tiers ?? 2,
       liftClearanceMm: Math.round((policy?.lift_clearance_cm ?? 5) * 10),
+      maxTopLoadPercent: policy?.max_top_load_percent ?? 30,
       policyVersion: 'env:fallback',
     };
   }
@@ -1632,24 +1633,6 @@ export class TripsService {
       );
     }
 
-    let serviceDays: ServiceDayWindow[];
-    try {
-      serviceDays = buildServiceDayWindows(
-        planningEpoch,
-        branch.timezone,
-        effectiveWorkStartTime,
-        effectiveWorkEndTime,
-        AUTOMATIC_PLANNING_DAY_COUNT,
-        {
-          scheduleMode,
-          effectiveStartTime,
-        },
-      );
-    } catch (error: any) {
-      throw new BadRequestException(
-        error.message || 'Không thể tạo cửa sổ thời gian điều phối',
-      );
-    }
     const baseVehicles = candidateVehicles.map((vehicle) => ({
       id: vehicle.id,
       source_vehicle_id: vehicle.id,
@@ -1718,305 +1701,157 @@ export class TripsService {
           orderBy: [{ respondedAt: 'desc' }, { createdAt: 'desc' }],
         })
       : [];
-    const windowConstraints = resolveDeliveryWindowConstraints({
-      planningEpoch,
-      confirmedAppointments: confirmations,
-      changeRequestedAppointments: [
-        ...batchChangeRequests.map((row) => ({ ...row, strict: true })),
-        ...latestChangeRequests.map((row) => ({ ...row, strict: false })),
-      ],
-    });
-    const optimizerOrders = this.buildOptimizerOrders(orders, planningEpoch, windowConstraints);
-    const snapshot = {
-      vehicles: serviceDays.flatMap((day) =>
-        baseVehicles.filter(vehicle => freeInDay(vehicle.source_vehicle_id, day, 'vehicleId')).slice(0, baseDrivers.filter(driver => freeInDay(driver.source_driver_id, day, 'driverId')).length).map((vehicle) => ({
-          ...vehicle,
-          id: `${vehicle.source_vehicle_id}::day:${day.serviceDayIndex}`,
-          service_day_index: day.serviceDayIndex,
-          available_start_sec: day.startSec,
-          available_end_sec: day.endSec,
-        })),
-      ),
-      drivers: serviceDays.flatMap((day) =>
-        baseDrivers.filter(driver => freeInDay(driver.source_driver_id, day, 'driverId')).map((driver) => ({
-          ...driver,
-          id: `${driver.source_driver_id}::day:${day.serviceDayIndex}`,
-          service_day_index: day.serviceDayIndex,
-        })),
-      ),
-      orders: demoStacking ? optimizerOrders : splitOversizedOrdersAcrossFleet(optimizerOrders, baseVehicles),
-      policy: {
-        fuel_price_per_liter_vnd:
-          effectiveSettings?.costPenalty.fuelPricePerLiter ?? Number(branch.fuelPricePerLiter),
-        monthly_working_minutes:
-          effectiveSettings?.costPenalty.monthlyWorkingMinutes ?? branch.monthlyWorkingMinutes,
-        cargo_holding_cost_vnd_per_ton_hour:
-          effectiveSettings?.costPenalty.cargoHoldingCostVndPerTonHour ??
-          Number(branch.cargoHoldingCostVndPerTonHour),
-        unassigned_order_penalty_vnd:
-          effectiveSettings?.optimization.unassignedOrderPenaltyVnd ?? 1_000_000_000,
-        delivery_grace_days:
-          effectiveSettings?.costPenalty.deliveryGraceDays ?? branch.deliveryGraceDays,
-        late_delivery_penalty_mode:
-          effectiveSettings?.costPenalty.lateDeliveryPenaltyMode ?? branch.lateDeliveryPenaltyMode,
-        late_delivery_penalty_value:
-          effectiveSettings?.costPenalty.lateDeliveryPenaltyValue ??
-          Number(branch.lateDeliveryPenaltyValue),
-        ...(effectiveSettings?.optimization.maxRoutesPerDay != null
-          ? { max_routes_per_day: effectiveSettings.optimization.maxRoutesPerDay }
+    let cachedMatrix: { key: string; matrix: RoadMatrixResult; queriedAt: Date } | undefined;
+    const runHorizon = async (dayCount: number, remainingSeconds: number) => {
+      let serviceDays: ServiceDayWindow[];
+      try {
+        serviceDays = buildServiceDayWindows(
+          planningEpoch,
+          branch.timezone,
+          effectiveWorkStartTime,
+          effectiveWorkEndTime,
+          dayCount,
+          {
+            scheduleMode,
+            effectiveStartTime,
+          },
+        );
+      } catch (error: any) {
+        throw new BadRequestException(
+          error.message || 'Không thể tạo cửa sổ thời gian điều phối',
+        );
+      }
+      const horizonSeconds = Math.max(dayCount * 86400, serviceDays[serviceDays.length - 1].endSec);
+      const windowConstraints = resolveDeliveryWindowConstraints({
+        planningEpoch,
+        horizonSeconds,
+        confirmedAppointments: confirmations,
+        changeRequestedAppointments: [
+          ...batchChangeRequests.map((row) => ({ ...row, strict: true })),
+          ...latestChangeRequests.map((row) => ({ ...row, strict: false })),
+        ],
+      });
+      const optimizerOrders = this.buildOptimizerOrders(orders, planningEpoch, windowConstraints, horizonSeconds);
+      const snapshot = {
+        vehicles: serviceDays.flatMap((day) =>
+          baseVehicles.filter(vehicle => freeInDay(vehicle.source_vehicle_id, day, 'vehicleId')).slice(0, baseDrivers.filter(driver => freeInDay(driver.source_driver_id, day, 'driverId')).length).map((vehicle) => ({
+            ...vehicle,
+            id: `${vehicle.source_vehicle_id}::day:${day.serviceDayIndex}`,
+            service_day_index: day.serviceDayIndex,
+            available_start_sec: day.startSec,
+            available_end_sec: day.endSec,
+          })),
+        ),
+        drivers: serviceDays.flatMap((day) =>
+          baseDrivers.filter(driver => freeInDay(driver.source_driver_id, day, 'driverId')).map((driver) => ({
+            ...driver,
+            id: `${driver.source_driver_id}::day:${day.serviceDayIndex}`,
+            service_day_index: day.serviceDayIndex,
+          })),
+        ),
+        orders: demoStacking ? optimizerOrders : splitOversizedOrdersAcrossFleet(optimizerOrders, baseVehicles),
+        policy: {
+          fuel_price_per_liter_vnd:
+            effectiveSettings?.costPenalty.fuelPricePerLiter ?? Number(branch.fuelPricePerLiter),
+          monthly_working_minutes:
+            effectiveSettings?.costPenalty.monthlyWorkingMinutes ?? branch.monthlyWorkingMinutes,
+          cargo_holding_cost_vnd_per_ton_hour:
+            effectiveSettings?.costPenalty.cargoHoldingCostVndPerTonHour ??
+            Number(branch.cargoHoldingCostVndPerTonHour),
+          unassigned_order_penalty_vnd:
+            effectiveSettings?.optimization.unassignedOrderPenaltyVnd ?? 1_000_000_000,
+          delivery_grace_days:
+            effectiveSettings?.costPenalty.deliveryGraceDays ?? branch.deliveryGraceDays,
+          late_delivery_penalty_mode:
+            effectiveSettings?.costPenalty.lateDeliveryPenaltyMode ?? branch.lateDeliveryPenaltyMode,
+          late_delivery_penalty_value:
+            effectiveSettings?.costPenalty.lateDeliveryPenaltyValue ??
+            Number(branch.lateDeliveryPenaltyValue),
+          ...(effectiveSettings?.optimization.maxRoutesPerDay != null
+            ? { max_routes_per_day: effectiveSettings.optimization.maxRoutesPerDay }
+            : {}),
+        },
+        planning_epoch_iso: planningEpoch.toISOString(),
+        max_time_seconds: remainingSeconds,
+        ...(earlyStopPatience > 0 ? { early_stop_patience: earlyStopPatience } : {}),
+        ...(effectiveSettings?.optimization.hybridSeedCount
+          ? { hybrid_seed_count: effectiveSettings.optimization.hybridSeedCount }
           : {}),
-      },
-      planning_epoch_iso: planningEpoch.toISOString(),
-      max_time_seconds: effectiveMaxTimeSeconds,
-      ...(earlyStopPatience > 0 ? { early_stop_patience: earlyStopPatience } : {}),
-      ...(effectiveSettings?.optimization.hybridSeedCount
-        ? { hybrid_seed_count: effectiveSettings.optimization.hybridSeedCount }
-        : {}),
-      ...(boundedSearchBudgetSeconds !== undefined
-        ? { search_time_seconds: boundedSearchBudgetSeconds }
-        : {}),
-    };
-    if (!snapshot.vehicles.length || !snapshot.drivers.length) throw new ConflictException('Không còn năng lực xe/tài xế ngoài các đợt đã giữ chỗ');
-    const vehicleCount = snapshot.vehicles.length;
-    const optimizationUnitCount = snapshot.orders.length;
-    const orderCount = orders.length;
-    const progressDetails = {
-      orderCount,
-      packageCount: snapshot.orders.reduce(
-        (total, order) => total + order.items.length,
-        0,
-      ),
-      physicalVehicleCount: candidateVehicles.length,
-      driverCount: drivers.length,
-      serviceSlotCount: vehicleCount,
-    };
-    await reportProgress?.({
-      stage: 'BUILDING_MATRIX',
-      details: progressDetails,
-    });
-    const firstDepot = snapshot.vehicles[0]?.depot;
-    const allSameDepot =
-      firstDepot &&
-      snapshot.vehicles.every(
-        (vehicle) =>
-          vehicle.depot.longitude === firstDepot.longitude &&
-          vehicle.depot.latitude === firstDepot.latitude,
-      );
-
-    const matrixQueriedAt = new Date();
-    let fullDistances: number[][];
-    let fullDurations: number[][];
-
-    if (allSameDepot && vehicleCount > 1) {
-      const compactCoordinates: [number, number][] = [
-        [firstDepot.longitude, firstDepot.latitude],
-        ...snapshot.orders.flatMap((order) => [
-          [order.pickup_location.longitude, order.pickup_location.latitude] as [
-            number,
-            number,
-          ],
-          [
-            order.delivery_location.longitude,
-            order.delivery_location.latitude,
-          ] as [number, number],
-        ]),
-      ];
-      const matrix = await this.mapboxService.getRoadMatrix(compactCoordinates);
-      const fullSize = vehicleCount + optimizationUnitCount * 2;
-      fullDistances = Array.from({ length: fullSize }, () =>
-        Array(fullSize).fill(0),
-      );
-      fullDurations = Array.from({ length: fullSize }, () =>
-        Array(fullSize).fill(0),
-      );
-
-      for (let i = 0; i < fullSize; i++) {
-        const mapboxI = i < vehicleCount ? 0 : i - vehicleCount + 1;
-        for (let j = 0; j < fullSize; j++) {
-          const mapboxJ = j < vehicleCount ? 0 : j - vehicleCount + 1;
-          if (i < vehicleCount && j < vehicleCount) continue;
-          fullDistances[i][j] = matrix.distancesMeters[mapboxI][mapboxJ];
-          fullDurations[i][j] = matrix.durationsSeconds[mapboxI][mapboxJ];
+        ...(boundedSearchBudgetSeconds !== undefined
+          ? { search_time_seconds: Math.min(remainingSeconds, boundedSearchBudgetSeconds) }
+          : {}),
+      };
+      if (!snapshot.vehicles.length || !snapshot.drivers.length) return null;
+      const vehicleCount = snapshot.vehicles.length;
+      const optimizationUnitCount = snapshot.orders.length;
+      const orderCount = orders.length;
+      const progressDetails = {
+        orderCount,
+        packageCount: snapshot.orders.reduce(
+          (total, order) => total + order.items.length,
+          0,
+        ),
+        physicalVehicleCount: candidateVehicles.length,
+        driverCount: drivers.length,
+        serviceSlotCount: vehicleCount,
+      };
+      await reportProgress?.({
+        stage: 'BUILDING_MATRIX',
+        details: progressDetails,
+      });
+      // Day slots at the same depot share one matrix node, including on retries.
+      const depots: [number, number][] = [];
+      const depotIndex = new Map<string, number>();
+      const indexes = snapshot.vehicles.map(({ depot }) => {
+        const key = JSON.stringify([depot.longitude, depot.latitude]);
+        const existing = depotIndex.get(key);
+        if (existing !== undefined) return existing;
+        const index = depots.length;
+        depots.push([depot.longitude, depot.latitude]);
+        depotIndex.set(key, index);
+        return index;
+      });
+      const coordinates = [...depots];
+      for (const order of snapshot.orders) {
+        for (const point of [order.pickup_location, order.delivery_location]) {
+          indexes.push(coordinates.length);
+          coordinates.push([point.longitude, point.latitude]);
         }
       }
-    } else {
-      const coordinates: [number, number][] = [
-        ...snapshot.vehicles.map(
-          (vehicle) =>
-            [vehicle.depot.longitude, vehicle.depot.latitude] as [
-              number,
-              number,
-            ],
-        ),
-        ...snapshot.orders.flatMap((order) => [
-          [order.pickup_location.longitude, order.pickup_location.latitude] as [
-            number,
-            number,
-          ],
-          [
-            order.delivery_location.longitude,
-            order.delivery_location.latitude,
-          ] as [number, number],
-        ]),
-      ];
-      const matrix = await this.mapboxService.getRoadMatrix(coordinates);
-      fullDistances = matrix.distancesMeters;
-      fullDurations = matrix.durationsSeconds;
-    }
-
-    const payload = {
-      job_id: persistedJobId ?? `request-${randomUUID()}`,
-      vehicles: snapshot.vehicles,
-      drivers: snapshot.drivers,
-      orders: snapshot.orders,
-      policy: snapshot.policy,
-      demo_stacking: demoStacking,
-      max_time_seconds: snapshot.max_time_seconds,
-      ...(snapshot.early_stop_patience !== undefined ? { early_stop_patience: snapshot.early_stop_patience } : {}),
-      ...(snapshot.hybrid_seed_count !== undefined ? { hybrid_seed_count: snapshot.hybrid_seed_count } : {}),
-      ...(snapshot.search_time_seconds !== undefined
-        ? { search_time_seconds: snapshot.search_time_seconds }
-        : {}),
-      distance_matrix_meters: fullDistances,
-      duration_matrix_seconds: fullDurations,
-    };
-
-    if (persistedJobId) {
-      const requestSnapshot = {
-        ...(deliveryBatchId ? { deliveryBatchId, confirmedAppointments: confirmations.map(row => ({ id: row.id, version: row.version, orderId: row.orderId, windowStart: row.windowStart.toISOString(), windowEnd: row.windowEnd.toISOString() })) } : {}),
-        branchId,
-        planningEpochIso: planningEpoch.toISOString(),
-        scheduleMode: scheduleMode ?? null,
-        searchBudgetSeconds: searchBudgetSeconds ?? null,
-        resources: {
-          orders: orders.map((order) => ({
-            id: order.id,
-            version: order.version,
-          })),
-          vehicles: candidateVehicles.map((vehicle) => ({
-            id: vehicle.id,
-            updatedAt: vehicle.updatedAt.toISOString(),
-            vehicleTypeUpdatedAt: vehicle.vehicleTypeRecord.updatedAt.toISOString(),
-          })),
-          drivers: drivers.map((driver) => ({
-            id: driver.id,
-            updatedAt: driver.updatedAt.toISOString(),
-          })),
-        },
-        vehicleLocationProvenance: candidateVehicles.map((vehicle) => ({
-          vehicleId: vehicle.id,
-          source: vehicle.planningStart.source,
-          depotLocationId: vehicle.planningStart.locationId,
-          depotLocationCode: vehicle.planningStart.locationCode,
-          lastGpsMeasuredAt: vehicle.lastLocationAt?.toISOString() ?? null,
-        })),
-        matrixProvenance: {
-          provider: 'MAPBOX',
-          profile: 'mapbox/driving',
-          queriedAt: matrixQueriedAt.toISOString(),
-          indexes: [
-            ...snapshot.vehicles.map((vehicle, index) => ({
-              index,
-              kind: 'VEHICLE_START',
-              id: vehicle.id,
-            })),
-            ...snapshot.orders.flatMap((order, orderIndex) => [
-              {
-                index: vehicleCount + orderIndex * 2,
-                kind: 'PICKUP',
-                id: order.pickup_location.id,
-                orderId: order.id,
-              },
-              {
-                index: vehicleCount + orderIndex * 2 + 1,
-                kind: 'DELIVERY',
-                id: order.delivery_location.id,
-                orderId: order.id,
-              },
-            ]),
-          ],
-        },
-        optimizerPayload: payload,
-      };
-      await this.prisma.optimizationJob.update({
-        where: { id: persistedJobId },
-        data: {
-          policyVersion: effectiveSettings?.policyVersion ?? null,
-          requestSnapshot: requestSnapshot as unknown as Prisma.InputJsonValue,
-          requestHash: createHash('sha256')
-            .update(JSON.stringify(requestSnapshot))
-            .digest('hex'),
-        },
-      });
-    }
-
-    await reportProgress?.({
-      stage: 'SEARCHING_SOLUTIONS',
-      details: progressDetails,
-    });
-
-    let rankedResults;
-    try {
-      const response = await axios.post(
-        `${this.optimizerUrl}/optimize-fleet/candidates`,
-        payload,
-        {
-          timeout: Math.max(
-            120000,
-            ((snapshot.early_stop_patience
-              ? snapshot.max_time_seconds
-              : snapshot.search_time_seconds ?? snapshot.max_time_seconds) + 90) * 1000,
-          ),
-        },
-      );
-      assertFleetOptimizationBatchResult(response.data);
-      rankedResults = response.data.candidates;
-      if (rankedResults.some(candidate => candidate.result.package_contract_version !== '1')) throw new Error('Optimizer chưa hỗ trợ hợp đồng Package v1');
-    } catch (error: any) {
-      const detail = error.response?.data?.detail;
-      const detailMsg = Array.isArray(detail)
-        ? detail.map((d: any) => `${d.loc?.join('.')}: ${d.msg}`).join('; ')
-        : typeof detail === 'string'
-          ? detail
-          : null;
-      const message =
-        detailMsg ||
-        error.response?.data?.message ||
-        error.message ||
-        'Không thể nhận chuỗi nghiệm từ Optimization Engine';
-      const isHttpTimeout =
-        error?.code === 'ECONNABORTED' ||
-        error?.code === 'ETIMEDOUT' ||
-        error?.response?.status === 504 ||
-        /timeout of \d+ms exceeded/i.test(String(error?.message ?? ''));
-      if (isHttpTimeout) {
-        throw new GatewayTimeoutException(message);
+      const key = JSON.stringify(coordinates);
+      if (cachedMatrix?.key !== key) {
+        const matrix = await this.mapboxService.getRoadMatrix(coordinates);
+        cachedMatrix = { key, matrix, queriedAt: new Date() };
       }
-      throw new ServiceUnavailableException(message);
-    }
+      const { matrix, queriedAt: matrixQueriedAt } = cachedMatrix;
+      const expand = (values: number[][]) => indexes.map(i => indexes.map(j => values[i][j]));
+      const fullDistances = expand(matrix.distancesMeters);
+      const fullDurations = expand(matrix.durationsSeconds);
 
-    await reportProgress?.({
-      stage: 'BUILDING_ROUTE_GEOMETRY',
-      details: {
-        ...progressDetails,
-        candidateCount: rankedResults.length,
-      },
-    });
+      const payload = {
+        job_id: persistedJobId ?? `request-${randomUUID()}`,
+        vehicles: snapshot.vehicles,
+        drivers: snapshot.drivers,
+        orders: snapshot.orders,
+        policy: snapshot.policy,
+        demo_stacking: demoStacking,
+        max_time_seconds: snapshot.max_time_seconds,
+        ...(snapshot.early_stop_patience !== undefined ? { early_stop_patience: snapshot.early_stop_patience } : {}),
+        ...(snapshot.hybrid_seed_count !== undefined ? { hybrid_seed_count: snapshot.hybrid_seed_count } : {}),
+        ...(snapshot.search_time_seconds !== undefined
+          ? { search_time_seconds: snapshot.search_time_seconds }
+          : {}),
+        distance_matrix_meters: fullDistances,
+        duration_matrix_seconds: fullDurations,
+      };
 
-    const expiresAt = new Date(
-      Date.now() + OPTIMIZATION_PROPOSAL_TTL_MS,
-    ).toISOString();
-    const feasibleResults = rankedResults.filter((candidate) =>
-      ['SUCCESS', 'PARTIAL'].includes(candidate.result.status),
-    );
-    if (feasibleResults.length === 0) {
-      const fallback = rankedResults[0];
-      if (fallback) {
-        const proposal: OptimizationProposal = {
+      if (persistedJobId) {
+        const requestSnapshot = {
+          ...(deliveryBatchId ? { deliveryBatchId, confirmedAppointments: confirmations.map(row => ({ id: row.id, version: row.version, orderId: row.orderId, windowStart: row.windowStart.toISOString(), windowEnd: row.windowEnd.toISOString() })) } : {}),
           branchId,
           planningEpochIso: planningEpoch.toISOString(),
-          scheduleMode: scheduleMode ?? (replanWithFleet && deliveryBatch ? AutomaticDispatchScheduleMode.NEXT_DAY : undefined),
-          expiresAt,
+          scheduleMode: scheduleMode ?? null,
+          searchBudgetSeconds: searchBudgetSeconds ?? null,
           resources: {
             orders: orders.map((order) => ({
               id: order.id,
@@ -2032,31 +1867,144 @@ export class TripsService {
               updatedAt: driver.updatedAt.toISOString(),
             })),
           },
-          result: JSON.parse(JSON.stringify(fallback.result)),
+          vehicleLocationProvenance: candidateVehicles.map((vehicle) => ({
+            vehicleId: vehicle.id,
+            source: vehicle.planningStart.source,
+            depotLocationId: vehicle.planningStart.locationId,
+            depotLocationCode: vehicle.planningStart.locationCode,
+            lastGpsMeasuredAt: vehicle.lastLocationAt?.toISOString() ?? null,
+          })),
+          matrixProvenance: {
+            provider: 'MAPBOX',
+            profile: 'mapbox/driving',
+            queriedAt: matrixQueriedAt.toISOString(),
+            indexes: [
+              ...snapshot.vehicles.map((vehicle, index) => ({
+                index,
+                kind: 'VEHICLE_START',
+                id: vehicle.id,
+              })),
+              ...snapshot.orders.flatMap((order, orderIndex) => [
+                {
+                  index: vehicleCount + orderIndex * 2,
+                  kind: 'PICKUP',
+                  id: order.pickup_location.id,
+                  orderId: order.id,
+                },
+                {
+                  index: vehicleCount + orderIndex * 2 + 1,
+                  kind: 'DELIVERY',
+                  id: order.delivery_location.id,
+                  orderId: order.id,
+                },
+              ]),
+            ],
+          },
+          optimizerPayload: payload,
         };
-        const best: StoredOptimizationCandidate = {
-          proposal,
-          signature: signOptimizationProposal(
-            proposal,
-            this.optimizationProposalSecret,
-          ),
-          rank: fallback.rank ?? 1,
-          searchStrategy: fallback.search_strategy ?? 'Khởi tạo',
-          solverObjective: fallback.solver_objective,
-          isBestFound: true,
-        };
-        return {
-          best,
-          candidates: [],
-        } satisfies StoredOptimizationCandidateBatch;
+        await this.prisma.optimizationJob.update({
+          where: { id: persistedJobId },
+          data: {
+            policyVersion: effectiveSettings?.policyVersion ?? null,
+            requestSnapshot: requestSnapshot as unknown as Prisma.InputJsonValue,
+            requestHash: createHash('sha256')
+              .update(JSON.stringify(requestSnapshot))
+              .digest('hex'),
+          },
+        });
       }
-      throw new ServiceUnavailableException(
-        'Optimization Engine không trả về nghiệm nào từ lần chạy solver',
-      );
+
+      await reportProgress?.({
+        stage: 'SEARCHING_SOLUTIONS',
+        details: progressDetails,
+      });
+
+      let rankedResults;
+      try {
+        const response = await axios.post(
+          `${this.optimizerUrl}/optimize-fleet/candidates`,
+          payload,
+          {
+            timeout: Math.max(
+              120000,
+              ((snapshot.early_stop_patience
+                ? snapshot.max_time_seconds
+                : snapshot.search_time_seconds ?? snapshot.max_time_seconds) + 90) * 1000,
+            ),
+          },
+        );
+        assertFleetOptimizationBatchResult(response.data);
+        if (!response.data.candidates.length) return null;
+        rankedResults = response.data.candidates;
+        if (rankedResults.some(candidate => candidate.result.package_contract_version !== '1')) throw new Error('Optimizer chưa hỗ trợ hợp đồng Package v1');
+      } catch (error: any) {
+        const detail = error.response?.data?.detail;
+        const detailMsg = Array.isArray(detail)
+          ? detail.map((d: any) => `${d.loc?.join('.')}: ${d.msg}`).join('; ')
+          : typeof detail === 'string'
+            ? detail
+            : null;
+        const message =
+          detailMsg ||
+          error.response?.data?.message ||
+          error.message ||
+          'Không thể nhận chuỗi nghiệm từ Optimization Engine';
+        const isHttpTimeout =
+          error?.code === 'ECONNABORTED' ||
+          error?.code === 'ETIMEDOUT' ||
+          error?.response?.status === 504 ||
+          /timeout of \d+ms exceeded/i.test(String(error?.message ?? ''));
+        if (isHttpTimeout) {
+          throw new GatewayTimeoutException(message);
+        }
+        throw new ServiceUnavailableException(message);
+      }
+
+      return { rankedResults, snapshot, progressDetails };
+    };
+
+    // Grow the available shifts on the same orders and resource snapshot.
+    // The worker's time budget limits search effort, not the delivery date.
+    const searchDeadline = Date.now() + effectiveMaxTimeSeconds * 1000;
+    const latestAppointment = [...confirmations.map(row => row.windowEnd), ...batchChangeRequests.map(row => row.requestedEnd), ...latestChangeRequests.map(row => row.requestedEnd)]
+      .reduce((latest, date) => Math.max(latest, date?.getTime() ?? 0), planningEpoch.getTime());
+    let dayCount = Math.max(INITIAL_PLANNING_DAYS, Math.ceil((latestAppointment - planningEpoch.getTime()) / 86_400_000) + 1);
+    let attempt = await runHorizon(dayCount, effectiveMaxTimeSeconds);
+    while (!attempt) {
+      const remainingSeconds = Math.floor((searchDeadline - Date.now()) / 1000);
+      if (remainingSeconds < 2) throw new GatewayTimeoutException('Chưa tìm được lịch giao đủ toàn bộ đơn và kiện trong thời gian tìm kiếm.');
+      dayCount += INITIAL_PLANNING_DAYS;
+      attempt = await runHorizon(dayCount, remainingSeconds);
     }
+    const { rankedResults, snapshot, progressDetails } = attempt;
+    await reportProgress?.({
+      stage: 'BUILDING_ROUTE_GEOMETRY',
+      details: {
+        ...progressDetails,
+        candidateCount: rankedResults.length,
+      },
+    });
+
+    const expiresAt = new Date(
+      Date.now() + OPTIMIZATION_PROPOSAL_TTL_MS,
+    ).toISOString();
     const candidates: StoredOptimizationCandidate[] = [];
-    for (const candidate of feasibleResults) {
+    for (const candidate of rankedResults) {
       const { result } = candidate;
+      const pendingPickup = new Map(orders.flatMap(order => order.items.flatMap(item =>
+        item.packages.map(pkg => [pkg.id, order.id] as const))));
+      const pendingDelivery = new Map(pendingPickup);
+      for (const route of result.routes) {
+        for (const stop of route.stops) {
+          const pickup = stop.stop_type === 'PICKUP';
+          const pending = pickup ? pendingPickup : pendingDelivery;
+          for (const id of pickup ? stop.items_loaded : stop.items_unloaded) {
+            if (pending.get(id) !== stop.order_id) throw new ServiceUnavailableException('Optimizer trả kiện trùng hoặc sai đơn.');
+            pending.delete(id);
+          }
+        }
+      }
+      if (pendingPickup.size || pendingDelivery.size) throw new ServiceUnavailableException('Optimizer trả phương án chưa đủ kiện.');
       await Promise.all(
         result.routes.map(async (route) => {
           const vehicle = snapshot.vehicles.find(
@@ -2179,7 +2127,7 @@ export class TripsService {
         'Kết quả tối ưu đã hết hạn; hãy chạy tối ưu lại',
       );
     }
-    if (!['SUCCESS', 'PARTIAL'].includes(proposal.result.status)) {
+    if (proposal.result.status !== 'SUCCESS' || proposal.result.unassigned_orders.length > 0) {
       throw new BadRequestException(
         `Không thể áp dụng kết quả ở trạng thái [${proposal.result.status}]`,
       );
@@ -2225,7 +2173,7 @@ export class TripsService {
             where: {
               id: sourceJobId,
               branchId,
-              status: { in: ['SUCCEEDED', 'PARTIAL'] },
+              status: 'SUCCEEDED',
             },
             data: { status: 'APPLYING' },
           });
@@ -2984,6 +2932,9 @@ export class TripsService {
     const assignedOrderIds = new Set(
       plannedTrips.flatMap((trip) => trip.orderIds),
     );
+    if (proposal.resources.orders.some(order => !assignedOrderIds.has(order.id))) {
+      throw new BadRequestException('Phương án chưa giao đủ toàn bộ đơn đã yêu cầu.');
+    }
     for (const orderId of assignedOrderIds) {
       const expected = expectedCargoByOrder.get(orderId);
       if (
@@ -3448,6 +3399,7 @@ export class TripsService {
     orders: OrderWithStopsAndItems[],
     planningEpoch: Date,
     confirmedWindows = new Map<string, DeliveryWindowConstraint>(),
+    horizonSeconds = INITIAL_PLANNING_DAYS * 86400,
   ) {
     // A negative offset preserves the waiting time before this planning day.
     const orderedSeconds = (value: Date) => Math.floor((value.getTime() - planningEpoch.getTime()) / 1000);
@@ -3457,7 +3409,7 @@ export class TripsService {
       if (order.status !== 'CONFIRMED') throw new ConflictException('Chỉ tối ưu đơn đã xác nhận');
       const commitment = confirmedWindows.get(order.id);
       const deliveryStart = commitment ? Math.max(0, Math.ceil((commitment.windowStart.getTime() - planningEpoch.getTime()) / 1000)) : Math.max(0, Math.ceil((order.orderedAt.getTime() - planningEpoch.getTime()) / 1000));
-      const deliveryEnd = commitment ? Math.min(604800, Math.floor((commitment.windowEnd.getTime() - planningEpoch.getTime()) / 1000)) : 604800;
+      const deliveryEnd = commitment ? Math.min(horizonSeconds, Math.floor((commitment.windowEnd.getTime() - planningEpoch.getTime()) / 1000)) : horizonSeconds;
       if (deliveryEnd < deliveryStart) {
         throw new ConflictException(
           commitment?.kind === 'CHANGE_REQUESTED'
@@ -3500,7 +3452,7 @@ export class TripsService {
         },
         items,
         pickup_window_start_sec: Math.max(0, Math.ceil((order.orderedAt.getTime() - planningEpoch.getTime()) / 1000)),
-        pickup_window_end_sec: 604800,
+        pickup_window_end_sec: horizonSeconds,
         delivery_window_start_sec: deliveryStart,
         delivery_window_end_sec: deliveryEnd,
         pickup_service_time_sec: pickup.serviceDurationMinutes * 60,
@@ -3572,6 +3524,9 @@ export class TripsService {
           case_id: dto.caseId,
           demo_stacking_enabled: demoStackingEnabled,
           demo_stacking_owner_mode: demoStackingOwnerMode,
+          ...(effectiveSettings?.stacking.maxTopLoadPercent != null
+            ? { demo_stacking_max_top_load_percent: effectiveSettings.stacking.maxTopLoadPercent }
+            : {}),
           time_budget_seconds: timeBudgetSeconds,
           ...(earlyStopPatience > 0
             ? { early_stop_patience: earlyStopPatience, max_time_seconds: maxTimeSeconds }
@@ -3602,7 +3557,7 @@ export class TripsService {
 
             if (waypoints.length >= 2) {
               try {
-                if (waypoints.length <= 25 && process.env.MAPBOX_ACCESS_TOKEN) {
+                if (!dto.caseId?.startsWith('corridor_') && waypoints.length <= 25 && process.env.MAPBOX_ACCESS_TOKEN) {
                   const routeDetails = await this.mapboxService.getRoute(waypoints);
                   if (routeDetails?.geometry) {
                     route.route_geometry = routeDetails.geometry;
@@ -3666,7 +3621,7 @@ export class TripsService {
       return {
         id: demoJobId,
         branchId: 'demo-branch',
-        status: bestCandidate?.status === 'SUCCESS' ? 'SUCCEEDED' : (bestCandidate?.status || 'SUCCEEDED'),
+        status: bestCandidate?.status === 'SUCCESS' ? 'SUCCEEDED' : (bestCandidate?.status || 'TIMEOUT'),
         schemaVersion: '1.0',
         planningEpochIso: new Date().toISOString(),
         scheduleMode: 'CURRENT_TIME',
@@ -3675,7 +3630,7 @@ export class TripsService {
         result: bestCandidate,
         candidates,
         candidateResults,
-        error: null,
+        error: bestCandidate ? null : { code: "NO_COMPLETE_PLAN", message: "Chưa tìm được lịch giao đủ toàn bộ đơn và kiện." },
         attemptCount: 1,
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),

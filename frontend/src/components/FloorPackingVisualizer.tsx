@@ -47,6 +47,7 @@ import {
 } from '@ant-design/icons';
 import { FloorStepStateUI, PlacedItemUI, Vehicle, OptimizedRouteUI } from '../types';
 import { computeWeightBalance, getWeightBalanceMeta } from '../utils/weightBalance';
+import { computeCargoStackingMetrics, formatKgVi } from '../utils/cargo3d';
 import { MAP_ROUTE_COLORS } from './MapboxMap';
 import Cargo3DVisualizer from './Cargo3DVisualizer';
 
@@ -61,6 +62,7 @@ interface Props {
   stepStates: FloorStepStateUI[];
   isValid: boolean;
   violations?: string[];
+  maxTopLoadPercent?: number;
   selectedStepIndex?: number;
   onStepChange?: (index: number) => void;
   // Props tích hợp khi đặt làm tracker chính phía trên
@@ -90,6 +92,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
   stepStates,
   isValid,
   violations = [],
+  maxTopLoadPercent,
   selectedStepIndex,
   onStepChange,
   route,
@@ -378,6 +381,17 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
 
     return map;
   }, [isStepEdited, currentPlacedItems, accessPathByItem, prevAccessPathByItem, bedLength, nextUnloadId]);
+
+  const effectiveMaxTopLoadPercent =
+    route?.spatial_validation?.demo_stacking?.max_top_load_percent ?? maxTopLoadPercent ?? 30;
+  const stackingMetrics = useMemo(
+    () => computeCargoStackingMetrics(currentPlacedItems, effectiveMaxTopLoadPercent),
+    [currentPlacedItems, effectiveMaxTopLoadPercent],
+  );
+  const currentItemById = useMemo(
+    () => new Map(currentPlacedItems.map((item) => [item.item_id, item])),
+    [currentPlacedItems],
+  );
 
   const isPathToDoorClear = (target: PlacedItemUI): boolean =>
     accessPathInfo.get(target.item_id)?.isClear === true;
@@ -1303,6 +1317,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           widthCm={bedWidth}
           heightCm={heightCm > 0 ? heightCm : undefined}
           items={currentPlacedItems}
+          maxTopLoadPercent={effectiveMaxTopLoadPercent}
           accessPaths={currentPlacedItems.map((item) => {
             const info = accessPathInfo.get(item.item_id);
             return {
@@ -1636,8 +1651,21 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                       }
                     }}
                   >
-                  {/* Tooltip gốc SVG hiển thị kích thước và khối lượng khi rê chuột */}
-                  <title>{`Kiện: ${label} (Đơn ${item.order_id ? item.order_id.slice(-6).toUpperCase() : 'N/A'})\nKích thước: ${item.length_cm} × ${item.width_cm} × ${item.height_cm || 40} cm\nKhối lượng: ${item.weight_kg.toFixed(1)} kg\nTọa độ: x=${item.x}cm, y=${item.y}cm, z=${Math.round((item.z ?? 0) * 10) / 10}cm\nĐặt trên: ${item.support_item_id || 'Sàn thùng xe'}${item.cargo_kind === 'FRAGILE' ? '\n⚠️ Hàng dễ vỡ' : ''}${item.no_top_load_requested ? '\n⛔ Cấm đặt hàng lên trên' : ''}${item.floor_rotation_locked ? '\n🔒 Khóa xoay 90° (LWH)' : ''}${isColliding ? '\n⚠️ Đang bị chồng lấn!' : ''}`}</title>
+                  {/* Tooltip gốc SVG hiển thị cân nặng, tải đang đè và kích thước khi rê chuột */}
+                  <title>
+                    {(() => {
+                      const m = stackingMetrics.byId.get(item.item_id);
+                      const sup = m?.supportItemId ? currentItemById.get(m.supportItemId) : undefined;
+                      const topLoadLine =
+                        m && m.maxTopLoadKg > 0
+                          ? `Đang tải phía trên: ${formatKgVi(m.aboveWeightKg)} / tối đa ${formatKgVi(m.maxTopLoadKg)} kg (${m.loadPercentOfOwnWeight}% / ngưỡng ${effectiveMaxTopLoadPercent}%)`
+                          : 'Đang tải phía trên: Không cho đặt đè';
+                      const supportLine = sup
+                        ? `Đặt trên: ${getItemShortLabel(sup)} (${formatKgVi(sup.weight_kg)} kg)`
+                        : 'Đặt trên: Sàn thùng xe';
+                      return `Kiện: ${label} (Tầng T${m?.tier ?? 1} · Đơn ${item.order_id ? item.order_id.slice(-6).toUpperCase() : 'N/A'})\nCân nặng: ${formatKgVi(item.weight_kg)} kg\n${topLoadLine}\n${supportLine}\nKích thước: ${item.length_cm} × ${item.width_cm} × ${item.height_cm || 40} cm\nTọa độ: x=${item.x}cm, y=${item.y}cm, z=${Math.round((item.z ?? 0) * 10) / 10}cm${item.cargo_kind === 'FRAGILE' ? '\n⚠️ Hàng dễ vỡ' : ''}${item.no_top_load_requested ? '\n⛔ Cấm đặt hàng lên trên' : ''}${item.floor_rotation_locked ? '\n🔒 Khóa xoay 90° (LWH)' : ''}${isColliding ? '\n⚠️ Đang bị chồng lấn!' : ''}`;
+                    })()}
+                  </title>
                   {/* Khối kiện hàng */}
                   <rect
                     x={rx}
@@ -2403,8 +2431,23 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                           {
                             title: 'Tải trọng',
                             key: 'weight',
-                            width: 80,
-                            render: (_, it) => <span><b>{it.weight_kg}</b> kg</span>,
+                            width: 120,
+                            render: (_, it) => {
+                              const m = stackingMetrics.byId.get(it.item_id);
+                              return (
+                                <span>
+                                  <b>{formatKgVi(it.weight_kg)}</b> kg
+                                  {m && m.maxTopLoadKg > 0 && (
+                                    <>
+                                      <br />
+                                      <span style={{ fontSize: 11, color: '#64748b' }}>
+                                        Đè trên: {formatKgVi(m.aboveWeightKg)}/{formatKgVi(m.maxTopLoadKg)} kg
+                                      </span>
+                                    </>
+                                  )}
+                                </span>
+                              );
+                            },
                           },
                           {
                             title: 'Lối ra cửa',

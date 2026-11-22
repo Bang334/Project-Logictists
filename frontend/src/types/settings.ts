@@ -14,6 +14,7 @@ export interface StackingSettings {
   ownerMode: StackingOwnerMode;
   maxTiers: number;
   liftClearanceMm: number;
+  maxTopLoadPercent: number;
 }
 
 export interface OptimizationSettings {
@@ -163,6 +164,7 @@ export const SETTING_FIELD_LABELS: Record<string, string> = {
   'stacking.ownerMode': 'Quy tắc chủ hàng khi xếp chồng',
   'stacking.maxTiers': 'Số tầng chồng tối đa',
   'stacking.liftClearanceMm': 'Khoảng hở nâng kiện (mm)',
+  'stacking.maxTopLoadPercent': 'Tải trọng đè tối đa lên kiện dưới (%)',
   'optimization.defaultSearchBudgetSeconds': 'Ngân sách tìm kiếm mặc định (giây)',
   'optimization.maxTimeSeconds': 'Trần thời gian tối đa (giây)',
   'optimization.hybridSeedCount': 'Số seed Hybrid ALNS',

@@ -23,8 +23,10 @@ from app.multi_start import (
 from app.search_strategies import SEARCH_STRATEGIES, SearchStrategy
 
 
-@pytest.mark.parametrize("refinement_times_out", [False, True])
-def test_one_seed_ending_does_not_discard_its_checkpoint_or_another_seed(monkeypatch, refinement_times_out):
+@pytest.mark.parametrize("refinement_times_out, compare_horizons", [(False, False), (True, False), (False, True)])
+def test_one_seed_ending_does_not_discard_its_checkpoint_or_another_seed(
+    monkeypatch, refinement_times_out, compare_horizons,
+):
     from concurrent.futures import Future
     import app.multi_start as module
     from test_benchmark_contract import comparison_request
@@ -52,18 +54,31 @@ def test_one_seed_ending_does_not_discard_its_checkpoint_or_another_seed(monkeyp
         plan.routes[0].route_id = f"route-{seed}"
         if seed == 0 and warm_plan:
             plan.diagnostics = ["Seed 0 dừng sớm sau 1 phương án hợp lệ liên tiếp không cải thiện."]
-        return seed, plan.model_dump(), {"selection_score_vnd": cost}, None
+        score = cost - (20 if compare_horizons and seed == 1 and warm_plan else 0)
+        trips = 2 if compare_horizons and seed == 1 and warm_plan else 1
+        return seed, plan.model_dump(), {"selection_score_vnd": score, "active_route_count": trips}, None
 
+    # This test isolates the two workers; the independent direct seed is covered separately.
+    monkeypatch.setattr(MultiStartFleetOptimizer, "_search_direct_span", lambda *args: None)
     monkeypatch.setattr(module.concurrent.futures, "ProcessPoolExecutor", ImmediatePool)
     monkeypatch.setattr(module, "_run_hybrid_seed_worker", worker)
     monkeypatch.setattr(module, "is_fully_served", lambda plan, *_args, **_kwargs: plan.status == "SUCCESS")
-    monkeypatch.setattr(module, "_candidate_lexicographic_key", lambda candidate: (candidate[2],))
+
     request = comparison_request().model_copy(update={"early_stop_patience": 1, "hybrid_seed_count": 2})
+    if compare_horizons:
+        vehicle = request.vehicles[0]
+        request.vehicles.append(vehicle.model_copy(update={"id": "day-1", "service_day_index": 1}))
+        for field in ("distance_matrix_meters", "duration_matrix_seconds"):
+            matrix = getattr(request, field)
+            node_order = [0, 0, *range(1, len(matrix))]
+            setattr(request, field, [[matrix[i][j] for j in node_order] for i in node_order])
     batch = MultiStartFleetOptimizer(request).solve()
 
     assert seen == [(0, False), (1, False), (0, True), (1, True)]
     assert batch.solver_run_count == 2
     assert batch.candidates[0].search_strategy.endswith("(seed 1)")
+    if compare_horizons:
+        assert batch.candidates[0].result.planning_objective.selection_score_vnd == 65
     assert batch.candidates[1].result.total_cost_vnd == 100
     assert any("dừng sớm" in note for note in batch.candidates[1].result.diagnostics) is not refinement_times_out
 
@@ -270,10 +285,8 @@ def test_select_ranked_candidates_fallback_when_none_fully_served():
     )
 
     assert fully_served == 0
-    assert len(candidates) == 1
-    # Fallback picks plan_2 because it has only 1 unassigned order vs 2
-    assert candidates[0].result.total_cost_vnd == 400_000
-    assert any("Cảnh báo" in d for d in diagnostics)
+    assert candidates == []
+    assert diagnostics
 
 
 def test_multi_start_fleet_optimizer_runs_strategies_and_returns_batch():
@@ -497,11 +510,9 @@ def test_optimizer_respects_max_routes_per_day_cap():
     )
 
     batch = MultiStartFleetOptimizer(request).solve(max_candidates=2)
-    assert len(batch.candidates) >= 1
-    assert all(len([r for r in candidate.result.routes if r.service_day_index == 0]) <= 1 for candidate in batch.candidates)
-    result = batch.candidates[0].result
-    assert len([r for r in result.routes if r.service_day_index == 0]) <= 1
-    assert len(result.unassigned_orders) == 1
+    assert batch.candidates == []
+    assert batch.fully_served_candidate_count == 0
+
 
 def test_pickup_only_and_missing_requested_item_are_rejected():
     plan = _mock_plan("regression", "SUCCESS", 100, ["o1"])
@@ -511,7 +522,7 @@ def test_pickup_only_and_missing_requested_item_are_rejected():
     plan.routes[0].end_time_sec = plan.routes[0].stops[-1].departure_time_sec
     assert not is_fully_served(plan, {"o1"})
 
-def test_direct_span_prefers_two_days_before_truncating_valid_candidates():
+def test_compare_horizons_keeps_two_days_and_a_cheaper_three_day_option():
     late = _mock_plan("job", "SUCCESS", 10, ["a", "b"])
     late.routes[0].service_day_index = 2
     early = _mock_plan("job", "SUCCESS", 20, ["a"])
@@ -519,18 +530,24 @@ def test_direct_span_prefers_two_days_before_truncating_valid_candidates():
     second.service_day_index = 1
     early.routes.append(second)
     runs = [(SEARCH_STRATEGIES[0], late, 10), (SEARCH_STRATEGIES[1], early, 20)]
+    another_late = late.model_copy(deep=True)
+    another_late.routes[0].route_id = "other"
+    runs.append((SEARCH_STRATEGIES[0], another_late, 12))
     ranked, count, _ = select_ranked_candidates(
-        runs, {"a", "b"}, max_candidates=1, target_span_days=2,
+        runs, {"a", "b"}, max_candidates=2, compare_horizons=True,
     )
-    assert count == 2
-    assert ranked[0].result == early
+    assert count == 3
+    assert [candidate.result for candidate in ranked] == [late, early]
 
 
-def test_direct_horizon_seed_rebuilds_two_days_of_trips_as_valid_hybrid_routes():
+@pytest.mark.parametrize("can_share_vehicle", [True, False])
+def test_direct_horizon_groups_orders_only_when_they_fit(can_share_vehicle):
     from test_benchmark_contract import comparison_request
 
     request = comparison_request()
     truck, driver = request.vehicles[0], request.drivers[0]
+    if not can_share_vehicle:
+        truck.payload_limit_kg = 15
     for day, order in enumerate(request.orders):
         order.split_group_id = None
         order.source_order_id = order.id
@@ -540,6 +557,7 @@ def test_direct_horizon_seed_rebuilds_two_days_of_trips_as_valid_hybrid_routes()
     request.orders[0].delivery_window_end_sec = 3600
     extra = request.orders[0].model_copy(deep=True)
     extra.id = extra.source_order_id = "extra"
+    extra.delivery_location.id = "extra-delivery"
     extra.items[0].id = "extra-pkg"
     extra.items[0].order_id = extra.id
     request.orders.append(extra)
@@ -550,9 +568,9 @@ def test_direct_horizon_seed_rebuilds_two_days_of_trips_as_valid_hybrid_routes()
     request.drivers = [driver.model_copy(update={
         "id": f"driver-{day}", "source_driver_id": driver.id, "service_day_index": day,
     }) for day in range(3)]
-    size = len(request.vehicles) + 2 * len(request.orders)
-    request.distance_matrix_meters = [[0 if i == j else 100 for j in range(size)] for i in range(size)]
-    request.duration_matrix_seconds = [[0 if i == j else 10 for j in range(size)] for i in range(size)]
+    positions = [0, 0, 0, 0, 10, 0, 5, 0, 12]
+    request.distance_matrix_meters = [[abs(a - b) * 1000 for b in positions] for a in positions]
+    request.duration_matrix_seconds = [[abs(a - b) * 10 for b in positions] for a in positions]
     optimizer = MultiStartFleetOptimizer(request)
     _, direct = optimizer._direct_benchmark()
     assert direct.is_feasible and direct.planning_span_days == 2
@@ -562,3 +580,27 @@ def test_direct_horizon_seed_rebuilds_two_days_of_trips_as_valid_hybrid_routes()
                            expected_items={o.id: {i.id for i in o.items} for o in request.orders})
     assert sorted(route.service_day_index for route in plan.routes) == [0, 1]
     assert len(direct.routes) == 3
+    day_one = next(route for route in plan.routes if route.service_day_index == 0)
+    peak_onboard = max(
+        len({item.order_id for item in step.placed_items})
+        for step in day_one.spatial_validation.step_states
+    )
+    if can_share_vehicle:
+        assert peak_onboard == 2
+        assert plan.total_distance_km < direct.total_distance_km
+        assert plan.total_duration_minutes < direct.total_duration_minutes
+    else:
+        assert peak_onboard == 1
+        assert plan.total_distance_km == direct.total_distance_km
+
+
+def test_multi_item_fixture_returns_all_ten_orders_and_every_package():
+    from benchmark_hybrid_regression import load_request
+
+    request = load_request("scenario_1_multi_item.json")
+    batch = MultiStartFleetOptimizer(request).solve()
+    expected = {order.id: {item.id for item in order.items} for order in request.orders}
+    assert len(expected) == 10
+    assert batch.candidates
+    assert all(is_fully_served(candidate.result, set(expected), expected_items=expected)
+               for candidate in batch.candidates)

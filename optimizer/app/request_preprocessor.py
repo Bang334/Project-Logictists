@@ -134,7 +134,7 @@ def _cargo_fits_vehicle(
     if cargo.height_cm > vehicle.height_cm + _GEOMETRY_TOLERANCE:
         return False
     orientations = [(cargo.length_cm, cargo.width_cm)]
-    if resolve_can_rotate(cargo, d11_default=True if demo_stacking is None else None):
+    if resolve_can_rotate(cargo, d11_default=True):
         orientations.append((cargo.width_cm, cargo.length_cm))
     return any(
         length <= vehicle.length_cm + _GEOMETRY_TOLERANCE

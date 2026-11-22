@@ -100,3 +100,33 @@ def test_vehicle_reassignment_swaps_to_cheaper_idle_vehicle():
     assert routes[0] == []  # expensive vehicle is now empty
     assert len(routes[1]) == 2  # cheap vehicle now has the stops
     assert cost < solver._plan_cost(initial_routes, [])
+
+
+@pytest.mark.parametrize("engine_name", ["evolved", "legacy"])
+@pytest.mark.parametrize(
+    "routes_by_order, start, requested, expected",
+    [
+        ([], 0, 4, []),
+        ([["A"]], 0, 4, ["A"]),
+        ([["A", "B"], ["C"]], 0, 4, ["A", "B"]),
+        ([["A", "B", "C"], ["D"]], 2, 2, ["C", "A"]),
+    ],
+)
+def test_string_destroy_removes_complete_unique_orders(engine_name, routes_by_order, start, requested, expected):
+    from types import SimpleNamespace
+
+    from app.hybrid_alns.legacy_solver import LegacyHybridALNSSolver
+
+    engine_type = HybridALNSSolver if engine_name == "evolved" else LegacyHybridALNSSolver
+    solver = object.__new__(engine_type)
+    solver.rng = SimpleNamespace(choice=lambda choices: choices[0], randrange=lambda size: start)
+    routes = [
+        [SimpleNamespace(order_id=order, stop_type=kind)
+         for order in orders for kind in ("PICKUP", "DELIVERY")]
+        for orders in routes_by_order
+    ]
+    retained, removed = solver._destroy_string(routes, requested)
+
+    assert removed == expected
+    assert retained == [[stop for stop in route if stop.order_id not in expected] for route in routes]
+    assert [len(route) for route in routes] == [2 * len(orders) for orders in routes_by_order]

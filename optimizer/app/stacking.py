@@ -1,3 +1,4 @@
+import time
 from collections import defaultdict
 from decimal import Decimal
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -16,6 +17,7 @@ from .models import (
 )
 from .packing_rules import (
     build_weight_balance_metrics,
+    exceeds_top_load_limit,
     is_floor_rotation_locked,
     resolve_can_rotate,
 )
@@ -88,6 +90,7 @@ def _can_stack_layer(
     ):
         return False
     above = Decimal(str(item.weight_kg))
+    max_pct = getattr(policy, "max_top_load_percent", 30)
     for layer in reversed(chain):
         weight = Decimal(str(layer.weight_kg))
         max_top_load_g = getattr(layer, "max_top_load_g", None)
@@ -96,9 +99,7 @@ def _can_stack_layer(
             or (compatible_stops is not None and not compatible_stops(layer, item))
             or getattr(layer, "cargo_kind", "UNCLASSIFIED") != "STANDARD"
             or bool(getattr(layer, "no_top_load_requested", False))
-            or max_top_load_g is None
-            or above * 10 >= weight * 3
-            or above * 1000 > max_top_load_g
+            or exceeds_top_load_limit(above, weight, max_top_load_g, max_pct)
         ):
             return False
         above += weight
@@ -277,16 +278,55 @@ class DemoStacks:
     def validate_stops(self, validator: SpatialValidator, stops: list[StopAction]) -> SpatialValidationResult:
         v_height = getattr(validator, "floor_height", None) or getattr(validator.vehicle, "height_cm", self.height_cm)
         v_payload = Decimal(str(getattr(validator.vehicle, "payload_limit_kg", self.payload_kg)))
+        has_unequal = has_unequal_stack_potential(self.policy, validator.vehicle, stops)
+        is_multistop = len(stops) > 2
+        total_budget = max(0.01, float(validator.max_time_seconds))
+        deadline = time.monotonic() + total_budget
+        split_for_unequal = has_unequal or is_multistop
+        eq_budget = (
+            min(total_budget * 0.35, 0.08 if (is_multistop and total_budget <= 1.0) else total_budget * 0.45)
+            if split_for_unequal
+            else total_budget
+        )
+        eq_nodes = min(validator.max_search_nodes, 250) if (is_multistop and not has_unequal) else (
+            min(validator.max_search_nodes, 500) if split_for_unequal else validator.max_search_nodes
+        )
+        eq_validator = SpatialValidator(
+            validator.vehicle,
+            max_search_nodes=eq_nodes,
+            max_time_seconds=eq_budget,
+        )
         self.members = {}
         bundled = self.bundle_stops(stops, max_height_cm=v_height, max_payload_kg=v_payload)
-        result = validator.validate_plan(bundled)
 
-        equal_result: SpatialValidationResult
+        # When there are no equal-footprint chains (self.members is empty) on a multi-stop
+        # or unequal route, unequal 3D validation covers both stacking and multi-lane floor
+        # layouts directly without wasting budget on unstacked 2D backtracking first.
+        if not self.members and split_for_unequal:
+            unequal_result = validate_unequal_stacked_stops(
+                self.policy,
+                validator.vehicle,
+                stops,
+                validator,
+                max_search_nodes=(150 if not has_unequal else None),
+                max_time_seconds=(min(total_budget * 0.65, 0.25 if not has_unequal else total_budget * 0.70)),
+            )
+            if unequal_result.is_valid:
+                return unequal_result
+            rem_fallback = max(0.02, deadline - time.monotonic())
+            eq_fallback = SpatialValidator(
+                validator.vehicle,
+                max_search_nodes=eq_nodes,
+                max_time_seconds=rem_fallback,
+            ).validate_plan(stops)
+            return eq_fallback if eq_fallback.is_valid else unequal_result
+
+        result = eq_validator.validate_plan(bundled)
+
+        equal_result: Optional[SpatialValidationResult] = None
         if not self.members:
             equal_result = result
-        elif not result.is_valid or len(result.step_states) != len(stops):
-            equal_result = validator.validate_plan(stops)
-        else:
+        elif result.is_valid and len(result.step_states) == len(stops):
             early_unloads: dict[int, list[str]] = defaultdict(list)
             door_clear = True
             for base_id, chain in self.members.items():
@@ -315,11 +355,9 @@ class DemoStacks:
                     floor_length_cm=getattr(validator.vehicle, "length_cm", None),
                     floor_width_cm=getattr(validator.vehicle, "width_cm", None),
                 )
-            else:
-                equal_result = validator.validate_plan(stops)
 
-        if has_unequal_stack_potential(self.policy, validator.vehicle, stops):
-            should_try_unequal = (not equal_result.is_valid) or (not self.members)
+        if has_unequal or equal_result is None or not equal_result.is_valid:
+            should_try_unequal = (equal_result is None) or (not equal_result.is_valid) or (not self.members)
             if not should_try_unequal:
                 stacked_ids = {item.id for chain in self.members.values() for item in chain}
                 should_try_unequal = any(
@@ -328,14 +366,18 @@ class DemoStacks:
                     for it in st.items_to_load
                 )
             if should_try_unequal:
+                rem_unequal = max(0.02, deadline - time.monotonic())
                 unequal_result = validate_unequal_stacked_stops(
                     self.policy,
                     validator.vehicle,
                     stops,
                     validator,
+                    max_search_nodes=(80 if not has_unequal else None),
+                    max_time_seconds=(min(0.05, rem_unequal) if not has_unequal else rem_unequal),
                 )
                 if unequal_result.is_valid and (
-                    not equal_result.is_valid
+                    equal_result is None
+                    or not equal_result.is_valid
                     or unequal_result.max_area_cm2 < equal_result.max_area_cm2 - _EPS
                     or (
                         not self.members
@@ -348,6 +390,14 @@ class DemoStacks:
                     )
                 ):
                     return unequal_result
+
+        if equal_result is None:
+            rem_eq = max(0.02, deadline - time.monotonic())
+            equal_result = SpatialValidator(
+                validator.vehicle,
+                max_search_nodes=eq_validator.max_search_nodes,
+                max_time_seconds=rem_eq,
+            ).validate_plan(stops)
         return equal_result
 
     def expand_ids(self, item_ids: list[str], *, unloading: bool = False) -> list[str]:

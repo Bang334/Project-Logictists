@@ -48,6 +48,8 @@ export function extractCompanySettingValues(companyRow: SystemSetting | null): {
       ownerMode: companyRow.stackingOwnerMode ?? defaults.stacking.ownerMode,
       maxTiers: companyRow.stackingMaxTiers ?? defaults.stacking.maxTiers,
       liftClearanceMm: companyRow.stackingLiftClearanceMm ?? defaults.stacking.liftClearanceMm,
+      maxTopLoadPercent:
+        companyRow.stackingMaxTopLoadPercent ?? defaults.stacking.maxTopLoadPercent,
     },
     optimization: {
       defaultSearchBudgetSeconds:
@@ -127,6 +129,8 @@ export function buildBranchScopedResponse(
         ownerMode: branchRow.stackingOwnerMode ?? company.stacking.ownerMode,
         maxTiers: branchRow.stackingMaxTiers ?? company.stacking.maxTiers,
         liftClearanceMm: branchRow.stackingLiftClearanceMm ?? company.stacking.liftClearanceMm,
+        maxTopLoadPercent:
+          branchRow.stackingMaxTopLoadPercent ?? company.stacking.maxTopLoadPercent,
       }
     : { ...company.stacking };
 
@@ -261,6 +265,7 @@ export function toResolvedStackingPolicy(stacking: StackingSettings): ResolvedSt
     max_tiers: stacking.maxTiers,
     lift_clearance_cm: Number((stacking.liftClearanceMm / 10).toFixed(2)),
     owner_mode: stacking.ownerMode,
+    max_top_load_percent: stacking.maxTopLoadPercent,
   };
 }
 
@@ -316,6 +321,7 @@ export function buildCompanySeedCreateData(
     stackingOwnerMode: d.stacking.ownerMode as StackingOwnerMode,
     stackingMaxTiers: d.stacking.maxTiers,
     stackingLiftClearanceMm: d.stacking.liftClearanceMm,
+    stackingMaxTopLoadPercent: d.stacking.maxTopLoadPercent,
     overrideOptimization: false,
     defaultSearchBudgetSeconds: d.optimization.defaultSearchBudgetSeconds,
     maxOptimizationTimeSeconds: d.optimization.maxTimeSeconds,

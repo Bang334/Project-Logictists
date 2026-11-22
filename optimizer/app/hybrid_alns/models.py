@@ -25,7 +25,7 @@ class CargoItem:
     customer_id: Optional[str] = None
     allowed_orientations: Optional[List[str]] = None
     cargo_kind: str = "STANDARD"
-    allow_upper_tier: bool = False
+    allow_upper_tier: bool = True
     no_top_load_requested: bool = False
     max_top_load_g: Optional[int] = None
 

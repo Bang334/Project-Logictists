@@ -1,0 +1,26 @@
+{
+  "corridor_03_rotate": {
+    "name": "3 kiện · kiện 1 phải xoay 90°",
+    "description": "Tuyến thẳng mô phỏng, mỗi điểm cách 3 km. Thùng 400 × 240 × 210 cm, tải 2.000 kg, cửa sau. Lấy 1 → 2 → 3; sau đó giao 1 → 2 → 3."
+  },
+  "corridor_04_fifo": {
+    "name": "4 kiện · lấy và giao cùng thứ tự",
+    "description": "Tuyến thẳng mô phỏng, mỗi điểm cách 3 km. Thùng 400 × 240 × 210 cm, tải 2.000 kg, cửa sau. Lấy 1 → 2 → 3 → 4; sau đó giao 1 → 2 → 3 → 4."
+  },
+  "corridor_05_fifo": {
+    "name": "5 kiện · giao 1–2–3–4–5",
+    "description": "Tuyến thẳng mô phỏng, mỗi điểm cách 3 km. Thùng 400 × 240 × 210 cm, tải 2.000 kg, cửa sau. Lấy 1 → 2 → 3 → 4 → 5; sau đó giao 1 → 2 → 3 → 4 → 5."
+  },
+  "corridor_05_swap": {
+    "name": "5 kiện · đổi điểm giao 2 và 4",
+    "description": "Tuyến thẳng mô phỏng, mỗi điểm cách 3 km. Thùng 400 × 240 × 210 cm, tải 2.000 kg, cửa sau. Lấy 1 → 2 → 3 → 4 → 5; sau đó giao 1 → 4 → 3 → 2 → 5."
+  },
+  "corridor_07_reverse": {
+    "name": "7 kiện ngang thùng · giao ngược",
+    "description": "Tuyến thẳng mô phỏng, mỗi điểm cách 3 km. Thùng 400 × 240 × 210 cm, tải 2.000 kg, cửa sau. Lấy 1 → 2 → 3 → 4 → 5 → 6 → 7; sau đó giao 7 → 6 → 5 → 4 → 3 → 2 → 1."
+  },
+  "corridor_10_fifo": {
+    "name": "10 kiện dài · giao lần lượt",
+    "description": "Tuyến thẳng mô phỏng, mỗi điểm cách 3 km. Thùng 400 × 240 × 210 cm, tải 2.000 kg, cửa sau. Lấy 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10; sau đó giao 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10."
+  }
+}

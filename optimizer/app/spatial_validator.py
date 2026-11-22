@@ -1,7 +1,7 @@
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Iterator, List, Optional, Set, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from .models import (
     CargoItem,
@@ -1179,6 +1179,7 @@ class SpatialValidator:
         allow_door_placement: bool = False,
         cargo_kind_by_id: Optional[Dict[str, str]] = None,
         has_remaining_cargo: bool = True,
+        has_time: Optional[Callable[[], bool]] = None,
     ) -> List[Tuple[float, float, float, float]]:
         can_rotate = resolve_can_rotate(item)
         orientations = [(item.length_cm, item.width_cm)]
@@ -1250,6 +1251,8 @@ class SpatialValidator:
                 if x < 0 or x + length > self.floor_length + tol:
                     continue
                 for raw_y in y_values:
+                    if has_time is not None and not has_time():
+                        return []
                     y = self._normalize_coordinate(raw_y)
                     if y < 0 or y + width > self.floor_width + tol:
                         continue

@@ -61,7 +61,12 @@ export type OptimizedRouteResult = {
   end_location?: OptimizedRouteResult['depot'] | null;
   stops: OptimizerStop[];
   spatial_validation: {
-    demo_stacking?: { max_tiers: number; lift_clearance_cm: number; owner_mode?: 'SAME_CUSTOMER' | 'ANY_CUSTOMER' } | null;
+    demo_stacking?: {
+      max_tiers: number;
+      lift_clearance_cm: number;
+      owner_mode?: 'SAME_CUSTOMER' | 'ANY_CUSTOMER';
+      max_top_load_percent?: number;
+    } | null;
     is_valid: boolean;
     violation_code?: string;
     violation_scenario?: string;
@@ -199,6 +204,8 @@ export type FleetOptimizationBatchResult = {
   fully_served_candidate_count: number;
   candidates: FleetOptimizationCandidateResult[];
   diagnostics?: string[];
+  rank_by_objective_first?: boolean;
+  no_plan_status?: "TIMEOUT" | "NO_COMPLETE_PLAN" | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -658,6 +665,8 @@ export function assertFleetOptimizationBatchResult(
   if (typeof value.job_id !== 'string' || !Array.isArray(value.candidates)) {
     throw new Error('Optimizer batch thiếu job_id/candidates hợp lệ');
   }
+  if (value.candidates.length === 0 && value.fully_served_candidate_count === 0 &&
+      (value.no_plan_status === 'TIMEOUT' || value.no_plan_status === 'NO_COMPLETE_PLAN')) return;
   if (value.candidates.length < 1 || value.candidates.length > 10) {
     throw new Error('Optimizer batch phải có từ 1 đến 10 nghiệm');
   }
@@ -707,17 +716,14 @@ export function assertFleetOptimizationBatchResult(
     throw new Error('Optimizer batch phải đặt đúng một nghiệm tốt nhất ở vị trí đầu (rank 1)');
   }
 
-  // Nếu có từ 2 phương án trở lên thì tất cả các phương án phải giao đủ 100% đơn
-  if (value.candidates.length >= 2) {
-    for (const candidate of value.candidates) {
-      if (
-        candidate.result.status !== 'SUCCESS' ||
-        candidate.result.unassigned_orders.length > 0
-      ) {
-        throw new Error(
-          `Phương án rank #${candidate.rank} không giao đủ 100% đơn (${candidate.result.unassigned_orders.length} đơn chưa xếp); không được xuất hiện trong danh sách so sánh`,
-        );
-      }
+  for (const candidate of value.candidates) {
+    if (
+      candidate.result.status !== 'SUCCESS' ||
+      candidate.result.unassigned_orders.length > 0
+    ) {
+      throw new Error(
+        `Phương án rank #${candidate.rank} không giao đủ 100% đơn (${candidate.result.unassigned_orders.length} đơn chưa xếp); không được xuất hiện trong danh sách so sánh`,
+      );
     }
   }
 
@@ -726,6 +732,10 @@ export function assertFleetOptimizationBatchResult(
   for (let index = 1; index < value.candidates.length; index += 1) {
     const prev = value.candidates[index - 1];
     const curr = value.candidates[index];
+    if (value.rank_by_objective_first === true && prev.solver_objective !== curr.solver_objective) {
+      if (curr.solver_objective < prev.solver_objective) throw new Error('Thứ hạng chi phí toàn đội không hợp lệ');
+      continue;
+    }
     const prevObj = prev.result.planning_objective;
     const currObj = curr.result.planning_objective;
     const hasGroupingRanking =

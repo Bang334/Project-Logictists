@@ -48,9 +48,14 @@ export function packagesToCargoUnits(items: PhysicalPackageLine[], customerId?: 
         length_cm: p.lengthMm / 10, width_cm: p.widthMm / 10, height_cm: p.heightMm / 10,
         weight_kg: Number(p.weightG) / 1000, can_rotate: canRotate,
         ...(allowedOrientations ? { allowed_orientations: allowedOrientations } : {}),
-        ...(p.cargoKind && p.cargoKind !== 'UNCLASSIFIED' ? {
-          cargo_kind: p.cargoKind, allow_upper_tier: p.allowUpperTier,
-          no_top_load_requested: p.noTopLoadRequested, max_top_load_g: p.maxTopLoadG,
+        ...(p.cargoKind ? {
+          cargo_kind: p.cargoKind,
+          allow_upper_tier:
+            p.cargoKind === 'STANDARD' && !p.noTopLoadRequested
+              ? (p.allowUpperTier ?? true)
+              : false,
+          no_top_load_requested: p.noTopLoadRequested ?? false,
+          max_top_load_g: p.maxTopLoadG ?? null,
         } : {}),
       };
     });

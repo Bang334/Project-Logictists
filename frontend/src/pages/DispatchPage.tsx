@@ -1046,6 +1046,7 @@ const DispatchPage: React.FC = () => {
               <FloorPackingVisualizer
                 key={optimizationResult.job_id}
                 vehicle={selectedVehicle}
+                maxTopLoadPercent={optimizationResult.spatial_validation?.demo_stacking?.max_top_load_percent ?? 30}
                 selectedStepIndex={packingStep}
                 onStepChange={setPackingStep}
                 isSimulating={isSimulating && packingMilestonesKm.length > 0}

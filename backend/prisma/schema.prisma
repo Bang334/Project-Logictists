@@ -1758,6 +1758,7 @@ model SystemSetting {
   stackingOwnerMode           StackingOwnerMode?
   stackingMaxTiers            Int?
   stackingLiftClearanceMm     Int?
+  stackingMaxTopLoadPercent   Int?
 
   overrideOptimization        Boolean                  @default(false)
   defaultSearchBudgetSeconds  Int?

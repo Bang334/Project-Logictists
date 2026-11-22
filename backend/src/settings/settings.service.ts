@@ -125,6 +125,7 @@ export class SettingsService {
     ownerMode: StackingOwnerMode;
     maxTiers: number;
     liftClearanceMm: number;
+    maxTopLoadPercent: number;
     policyVersion: string;
   }> {
     const effective = await this.resolveEffectiveSettings(branchId, db);
@@ -134,6 +135,7 @@ export class SettingsService {
       ownerMode: effective.stacking.ownerMode,
       maxTiers: effective.stacking.maxTiers,
       liftClearanceMm: effective.stacking.liftClearanceMm,
+      maxTopLoadPercent: effective.stacking.maxTopLoadPercent,
       policyVersion: effective.policyVersion,
     };
   }
@@ -192,6 +194,7 @@ export class SettingsService {
             stackingOwnerMode: nextStacking.ownerMode,
             stackingMaxTiers: nextStacking.maxTiers,
             stackingLiftClearanceMm: nextStacking.liftClearanceMm,
+            stackingMaxTopLoadPercent: nextStacking.maxTopLoadPercent,
             defaultSearchBudgetSeconds: nextOptimization.defaultSearchBudgetSeconds,
             maxOptimizationTimeSeconds: nextOptimization.maxTimeSeconds,
             hybridSeedCount: nextOptimization.hybridSeedCount,
@@ -337,6 +340,7 @@ export class SettingsService {
           stackingOwnerMode: nextOverrideStacking ? nextStacking.ownerMode : null,
           stackingMaxTiers: nextOverrideStacking ? nextStacking.maxTiers : null,
           stackingLiftClearanceMm: nextOverrideStacking ? nextStacking.liftClearanceMm : null,
+          stackingMaxTopLoadPercent: nextOverrideStacking ? nextStacking.maxTopLoadPercent : null,
 
           overrideOptimization: nextOverrideOptimization,
           defaultSearchBudgetSeconds: nextOverrideOptimization
@@ -517,6 +521,7 @@ export class SettingsService {
               stackingOwnerMode: null,
               stackingMaxTiers: null,
               stackingLiftClearanceMm: null,
+              stackingMaxTopLoadPercent: null,
             }
           : {}),
         ...(resetOptimization

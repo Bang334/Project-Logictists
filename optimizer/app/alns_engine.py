@@ -755,6 +755,16 @@ class ALNSFleetOptimizer:
         # 3. Post-process & Format Final Response
         return self._build_final_response(best_routes, best_unassigned)
 
+    def _spatial_cargo_item(self, item_id: str) -> CargoItem:
+        item = self.cargo_by_id[item_id]
+        can_rotate = resolve_can_rotate(
+            item,
+            d11_default=True,
+        )
+        return item if item.can_rotate == can_rotate else item.model_copy(
+            update={"can_rotate": can_rotate}
+        )
+
     def _validate_spatial_actions(
         self,
         vehicle_index: int,
@@ -773,6 +783,38 @@ class ALNSFleetOptimizer:
             **validator_kwargs,
         )
 
+    @staticmethod
+    def _join_direct_cycles(
+        trips: List[OptimizedRoute], stops: List[ScheduledStop],
+    ) -> Optional[SpatialValidationResult]:
+        """Reuse this solve's audited layouts only at consecutive empty-truck boundaries."""
+        if not trips or len(stops) != 2 * len(trips):
+            return None
+        states = []
+        for index, trip in enumerate(trips):
+            audit = trip.spatial_validation
+            pair = stops[2 * index:2 * index + 2]
+            if (not audit.is_valid or len(audit.step_states) != 2 or len(trip.stops) != 2
+                    or audit.step_states[-1].placed_items
+                    or [s.stop_type for s in pair] != ["PICKUP", "DELIVERY"]
+                    or set(pair[0].items_loaded) != set(pair[1].items_unloaded)):
+                return None
+            for step, original, actual in zip(audit.step_states, trip.stops, pair):
+                if (not step.is_valid or step.stop_id != actual.location_id
+                        or original.allocation_id != actual.allocation_id
+                        or original.items_loaded != actual.items_loaded
+                        or original.items_unloaded != actual.items_unloaded):
+                    return None
+                states.append(step.model_copy(update={"step_index": len(states) + 1}))
+        audits = [trip.spatial_validation for trip in trips]
+        imbalance = [a.max_lateral_imbalance_percent for a in audits if a.max_lateral_imbalance_percent is not None]
+        return SpatialValidationResult(
+            is_valid=True, step_states=states, demo_stacking=audits[0].demo_stacking,
+            max_weight_kg=max(a.max_weight_kg for a in audits),
+            max_area_cm2=max(a.max_area_cm2 for a in audits),
+            max_lateral_imbalance_percent=max(imbalance, default=None),
+        )
+
     def _build_final_response(
         self,
         routes_stops: List[List[ScheduledStop]],
@@ -780,6 +822,9 @@ class ALNSFleetOptimizer:
         *,
         include_benchmarks: bool = True,
         spatial_time_budget_seconds: Optional[float] = None,
+        audited_direct_trips: Optional[Dict[str, List[OptimizedRoute]]] = None,
+        polish_checkpoint: Optional[Tuple[float, FleetOptimizationResponse]] = None,
+        absolute_spatial_deadline: Optional[float] = None,
     ) -> FleetOptimizationResponse:
         optimized_routes: List[OptimizedRoute] = []
         total_dist_km = 0.0
@@ -849,9 +894,24 @@ class ALNSFleetOptimizer:
             if spatial_time_budget_seconds is not None
             else None
         )
+        if polish_checkpoint is not None:
+            spatial_deadline = polish_checkpoint[0]
+        if absolute_spatial_deadline is not None:
+            spatial_deadline = (
+                min(spatial_deadline, absolute_spatial_deadline)
+                if spatial_deadline is not None else absolute_spatial_deadline
+            )
+        has_multi_order_route = any(
+            sum(1 for stop in stops if stop.stop_type == "PICKUP") >= 2
+            for stops in routes_stops
+            if stops
+        )
+        salvage_ratio = 0.25 if has_multi_order_route else 0.12
         salvage_reserve = (
-            min(4.0, spatial_time_budget_seconds * 0.25)
-            if spatial_time_budget_seconds is not None and spatial_time_budget_seconds >= 6.0
+            min(4.0, spatial_time_budget_seconds * salvage_ratio)
+            if polish_checkpoint is None
+            and spatial_time_budget_seconds is not None
+            and spatial_time_budget_seconds >= 3.0
             else 0.0
         )
         route_audit_deadline = (
@@ -859,11 +919,24 @@ class ALNSFleetOptimizer:
             if spatial_deadline is not None
             else None
         )
-        remaining_route_count = sum(bool(stops) for stops in routes_stops)
+        route_item_counts = {
+            v_idx: sum(
+                len(order_by_id[stop.allocation_id or stop.order_id].items)
+                for stop in stops
+                if stop.stop_type == "PICKUP"
+                and (stop.allocation_id or stop.order_id) in order_by_id
+            )
+            for v_idx, stops in enumerate(routes_stops)
+            if stops
+        }
+        remaining_route_items = dict(route_item_counts)
 
         for v_idx, stops in enumerate(routes_stops):
             if not stops:
                 continue
+            route_items = route_item_counts.get(v_idx, 0)
+            if polish_checkpoint is not None and time.perf_counter() >= polish_checkpoint[0]:
+                return polish_checkpoint[1]
             v = self.vehicles[v_idx]
             route_order_ids = {
                 stop.allocation_id or stop.order_id
@@ -881,6 +954,7 @@ class ALNSFleetOptimizer:
             ]
             if disallowed_order_ids:
                 final_unassigned_ids.extend(disallowed_order_ids)
+                remaining_route_items.pop(v_idx, None)
                 diagnostics.append(
                     f"Bộ tìm kiếm loại tuyến {v.plate_number} vì có đơn "
                     "không cho phép xe vật lý này."
@@ -894,6 +968,7 @@ class ALNSFleetOptimizer:
                     if stop.stop_type == "PICKUP"
                     and (stop.allocation_id or stop.order_id)
                 )
+                remaining_route_items.pop(v_idx, None)
                 diagnostics.append(
                     f"Bộ tìm kiếm loại tuyến {v.plate_number} vì không còn thỏa time window/ca xe khi kiểm tra cuối."
                 )
@@ -942,14 +1017,7 @@ class ALNSFleetOptimizer:
                 formatted_stops.append(f_stop)
 
                 action_items_load = [
-                    self.cargo_by_id[item_id].model_copy(
-                        update={
-                            "can_rotate": resolve_can_rotate(
-                                self.cargo_by_id[item_id],
-                                d11_default=True if self.request.demo_stacking is None else None,
-                            )
-                        }
-                    )
+                    self._spatial_cargo_item(item_id)
                     for item_id in st.items_loaded
                     if item_id in self.cargo_by_id
                 ]
@@ -997,22 +1065,56 @@ class ALNSFleetOptimizer:
                 remaining_seconds = max(
                     0.01, route_audit_deadline - time.perf_counter()
                 )
+                remaining_route_count = len(remaining_route_items)
+                uniform_share = remaining_seconds / max(1, min(remaining_route_count, 8))
+                weighted_share = 0.0
+                if route_items >= 40:
+                    remaining_heavy_items = sum(
+                        cnt for cnt in remaining_route_items.values() if cnt >= 40
+                    )
+                    light_routes = sum(
+                        1 for cnt in remaining_route_items.values() if cnt < 40
+                    )
+                    reserve_for_light = min(remaining_seconds * 0.20, light_routes * 0.03)
+                    available_for_heavy = max(0.35, remaining_seconds - reserve_for_light)
+                    weighted_share = available_for_heavy * (
+                        route_items / max(1, remaining_heavy_items)
+                    )
+                elif route_items >= 20:
+                    total_rem_items = sum(remaining_route_items.values())
+                    weighted_share = remaining_seconds * (route_items / max(1, total_rem_items))
+                max_route_cap = 3.0 if route_items >= 80 else (2.0 if route_items >= 40 else 1.2)
                 spatial_route_budget = min(
-                    1.2,
-                    max(
-                        0.35,
-                        remaining_seconds / max(1, min(remaining_route_count, 8)),
-                    ),
+                    max_route_cap,
+                    max(0.35, uniform_share, weighted_share),
                 )
-            spatial_res = self._validate_spatial_actions(
-                v_idx,
-                stop_actions,
-                max_time_seconds=spatial_route_budget,
-            )
+            spatial_res = self._join_direct_cycles(audited_direct_trips.get(v.id, []), formatted_stops) if audited_direct_trips else None
+            if spatial_res is None:
+                if polish_checkpoint is not None:
+                    remaining = spatial_deadline - time.perf_counter()
+                    if remaining <= 0:
+                        return polish_checkpoint[1]
+                    spatial_route_budget = min(spatial_route_budget, remaining)
+                if absolute_spatial_deadline is not None:
+                    spatial_route_budget = min(
+                        spatial_route_budget, max(0.0, route_audit_deadline - time.perf_counter())
+                    )
+                if spatial_route_budget == 0.0:
+                    spatial_res = SpatialValidationResult(
+                        is_valid=False, violation_code="PLACEMENT_SEARCH_LIMIT_REACHED",
+                    )
+                else:
+                    spatial_res = self._validate_spatial_actions(
+                        v_idx, stop_actions, max_time_seconds=spatial_route_budget,
+                    )
+            if polish_checkpoint is not None and time.perf_counter() >= polish_checkpoint[0]:
+                return polish_checkpoint[1]
             if self.request.demo_stacking is not None:
                 formatted_stops = sync_route_stacking_unloads(formatted_stops, spatial_res)
-            remaining_route_count -= 1
+            remaining_route_items.pop(v_idx, None)
             if not spatial_res.is_valid:
+                if polish_checkpoint is not None:
+                    return polish_checkpoint[1]
                 final_unassigned_ids.extend(
                     stop.allocation_id or stop.order_id
                     for stop in formatted_stops
@@ -1078,6 +1180,8 @@ class ALNSFleetOptimizer:
             total_dur_min += route_dur_min
 
         # 3.5. Salvage unassigned orders to available empty vehicles
+        if polish_checkpoint is not None and final_unassigned_ids:
+            return polish_checkpoint[1]
         if final_unassigned_ids:
             used_v_indices = {
                 idx
@@ -1184,14 +1288,7 @@ class ALNSFleetOptimizer:
                     test_actions = []
                     for s_idx, st in enumerate(sched_test[0], start=1):
                         items_load = [
-                            self.cargo_by_id[item_id].model_copy(
-                                update={
-                                    "can_rotate": resolve_can_rotate(
-                                        self.cargo_by_id[item_id],
-                                        d11_default=True if self.request.demo_stacking is None else None,
-                                    )
-                                }
-                            )
+                            self._spatial_cargo_item(item_id)
                             for item_id in st.items_loaded
                             if item_id in self.cargo_by_id
                         ]
@@ -1200,6 +1297,7 @@ class ALNSFleetOptimizer:
                                 stop_id=st.location_id,
                                 sequence=s_idx,
                                 stop_type=st.stop_type,
+                                address=st.location_name,
                                 items_to_load=items_load,
                                 items_to_unload=st.items_unloaded,
                             )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, Iterable, Literal, Mapping, Optional, Sequence, Tuple
 
 from .models import CargoItem, PlacedItem, WeightBalanceMetrics
@@ -270,3 +271,21 @@ def is_heavy_package_blocking_center_preference(
     if has_future_pickups or remaining_items_at_stop:
         return False
     return True
+
+
+def exceeds_top_load_limit(
+    above_weight_kg: Decimal,
+    base_weight_kg: Any,
+    max_top_load_g: Optional[int],
+    max_top_load_percent: int,
+) -> bool:
+    """Reject stacking when cumulative upper weight exceeds policy percent or packaging max_top_load_g."""
+    if max_top_load_g is None:
+        return True
+    base_w = Decimal(str(base_weight_kg))
+    pct = Decimal(str(max_top_load_percent))
+    if above_weight_kg * Decimal("100") > base_w * pct:
+        return True
+    if above_weight_kg * Decimal("1000") > Decimal(str(max_top_load_g)):
+        return True
+    return False

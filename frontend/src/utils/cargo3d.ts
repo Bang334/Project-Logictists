@@ -166,6 +166,139 @@ export function projectPoint3D(ctx: ProjectionContext, pt: Point3DCm, explodeExt
   };
 }
 
+export interface CargoStackItemMetrics {
+  tier: number;
+  supportItemId: string | null;
+  aboveWeightKg: number;
+  maxTopLoadKg: number;
+  loadPercentOfOwnWeight: number;
+}
+
+export interface CargoStackingMetricsResult {
+  byId: Map<string, CargoStackItemMetrics>;
+  maxTierCount: number;
+}
+
+export function formatKgVi(kg: number): string {
+  const rounded = Math.round(kg * 100) / 100;
+  return rounded.toLocaleString('vi-VN', { maximumFractionDigits: 2 });
+}
+
+function roundCm(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+/**
+ * Tính đúng số tầng chồng thực tế (dựa theo chuỗi đỡ support_item_id hoặc tiếp xúc hình học Z/XY)
+ * và tổng khối lượng các kiện đang chồng phía trên từng kiện (để kiểm tra/hiển thị giới hạn tải đè %).
+ */
+export function computeCargoStackingMetrics(
+  items: PlacedItemUI[],
+  maxTopLoadPercent = 30,
+): CargoStackingMetricsResult {
+  const byItemId = new Map<string, PlacedItemUI>();
+  for (const item of items) {
+    byItemId.set(item.item_id, item);
+  }
+
+  const supportById = new Map<string, string | null>();
+  for (const item of items) {
+    const explicit = item.support_item_id;
+    if (explicit && explicit !== item.item_id && byItemId.has(explicit)) {
+      supportById.set(item.item_id, explicit);
+      continue;
+    }
+
+    const actualZ = roundCm(item.z ?? 0);
+    if (actualZ <= 0.1) {
+      supportById.set(item.item_id, null);
+      continue;
+    }
+
+    let bestSupportId: string | null = null;
+    let bestOverlapArea = 0;
+    const x0 = item.x;
+    const x1 = item.x + item.length_cm;
+    const y0 = item.y;
+    const y1 = item.y + item.width_cm;
+    for (const candidate of items) {
+      if (candidate.item_id === item.item_id) continue;
+      const candTop = roundCm((candidate.z ?? 0) + (candidate.height_cm || 35));
+      if (Math.abs(candTop - actualZ) > 0.6) continue;
+      const ox = Math.min(x1, candidate.x + candidate.length_cm) - Math.max(x0, candidate.x);
+      const oy = Math.min(y1, candidate.y + candidate.width_cm) - Math.max(y0, candidate.y);
+      if (ox > 0.1 && oy > 0.1) {
+        const area = ox * oy;
+        if (area > bestOverlapArea) {
+          bestOverlapArea = area;
+          bestSupportId = candidate.item_id;
+        }
+      }
+    }
+    supportById.set(item.item_id, bestSupportId);
+  }
+
+  const tierCache = new Map<string, number>();
+  const resolveTier = (itemId: string, visiting: Set<string>): number => {
+    const cached = tierCache.get(itemId);
+    if (cached !== undefined) return cached;
+    if (visiting.has(itemId)) return 1;
+    visiting.add(itemId);
+    const supportId = supportById.get(itemId) ?? null;
+    const tier = supportId ? resolveTier(supportId, visiting) + 1 : 1;
+    visiting.delete(itemId);
+    tierCache.set(itemId, tier);
+    return tier;
+  };
+
+  const aboveWeightMap = new Map<string, number>();
+  for (const item of items) {
+    const visited = new Set<string>([item.item_id]);
+    let currSupport = supportById.get(item.item_id) ?? null;
+    while (currSupport && !visited.has(currSupport)) {
+      visited.add(currSupport);
+      aboveWeightMap.set(
+        currSupport,
+        (aboveWeightMap.get(currSupport) ?? 0) + (Number(item.weight_kg) || 0),
+      );
+      currSupport = supportById.get(currSupport) ?? null;
+    }
+  }
+
+  const normalizedPct = Math.max(1, Math.min(100, Number(maxTopLoadPercent) || 30));
+  const byId = new Map<string, CargoStackItemMetrics>();
+  let maxTierCount = 0;
+
+  for (const item of items) {
+    const tier = resolveTier(item.item_id, new Set<string>());
+    maxTierCount = Math.max(maxTierCount, tier);
+    const weightKg = Number(item.weight_kg) || 0;
+    const aboveWeightKg = Math.round((aboveWeightMap.get(item.item_id) ?? 0) * 100) / 100;
+    const pctLimitKg = (weightKg * normalizedPct) / 100;
+    const explicitTopLimitKg =
+      item.max_top_load_g != null ? Math.max(0, Number(item.max_top_load_g) / 1000) : null;
+    const rawMaxTopLoadKg =
+      item.cargo_kind === 'FRAGILE' || item.no_top_load_requested
+        ? 0
+        : explicitTopLimitKg !== null
+          ? Math.min(pctLimitKg, explicitTopLimitKg)
+          : pctLimitKg;
+    const maxTopLoadKg = Math.round(rawMaxTopLoadKg * 100) / 100;
+    const loadPercentOfOwnWeight =
+      weightKg > 0 ? Math.round((aboveWeightKg / weightKg) * 1000) / 10 : 0;
+
+    byId.set(item.item_id, {
+      tier,
+      supportItemId: supportById.get(item.item_id) ?? null,
+      aboveWeightKg,
+      maxTopLoadKg,
+      loadPercentOfOwnWeight,
+    });
+  }
+
+  return { byId, maxTierCount };
+}
+
 /**
  * Sắp xếp thứ tự vẽ kiện hàng bằng Painter's topological sort trên 3 trục tọa độ
  * để xử lý đúng mọi góc xoay, tránh xuyên mặt phẳng khi nhìn ngang hoặc nhìn dọc.
@@ -175,17 +308,12 @@ export function buildSortedBoxes3D(
   ctx: ProjectionContext,
   explodeGapCm = 0,
 ): PositionedBox3D[] {
-  const sortedUniqueZ = Array.from(
-    new Set(items.map((item) => Math.round((item.z ?? 0) * 10) / 10)),
-  ).sort((a, b) => a - b);
-
-  const tierMap = new Map<number, number>();
-  sortedUniqueZ.forEach((zVal, idx) => tierMap.set(zVal, idx));
+  const { byId } = computeCargoStackingMetrics(items);
 
   const boxes: PositionedBox3D[] = items.map((item) => {
     const actualZ = item.z ?? 0;
-    const tierIndex = tierMap.get(Math.round(actualZ * 10) / 10) ?? 0;
-    const visualZ = actualZ + tierIndex * explodeGapCm;
+    const tierIndex = byId.get(item.item_id)?.tier ?? 1;
+    const visualZ = actualZ + (tierIndex - 1) * explodeGapCm;
     const height = Math.max(4, item.height_cm || 35);
     const center = projectPoint3D(ctx, {
       x: item.x + item.length_cm / 2,
@@ -194,7 +322,7 @@ export function buildSortedBoxes3D(
     });
     return {
       item,
-      tierIndex: tierIndex + 1,
+      tierIndex,
       actualZ,
       visualZ,
       x0: item.x,

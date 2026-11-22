@@ -11,7 +11,9 @@ import type { PackageAccessPathUI, PlacedItemUI } from '../types';
 import {
   buildSortedBoxes3D,
   CAMERA_3D_PRESETS,
+  computeCargoStackingMetrics,
   createProjectionContext,
+  formatKgVi,
   getVisibleBoxFaces,
   projectPoint3D,
   type Camera3DPresetKey,
@@ -29,6 +31,7 @@ export interface Cargo3DVisualizerProps {
   widthCm: number;
   heightCm?: number;
   items: PlacedItemUI[];
+  maxTopLoadPercent?: number;
   accessPaths?: PackageAccessPathUI[];
   showingUnload?: boolean;
   nextUnloadId?: string | null;
@@ -59,6 +62,7 @@ export const Cargo3DVisualizer: React.FC<Cargo3DVisualizerProps> = ({
   widthCm,
   heightCm,
   items,
+  maxTopLoadPercent = 30,
   accessPaths,
   showingUnload = false,
   nextUnloadId = null,
@@ -87,12 +91,12 @@ export const Cargo3DVisualizer: React.FC<Cargo3DVisualizerProps> = ({
   );
   const effectiveHeightCm = heightCm && heightCm > 0 ? heightCm : Math.max(180, maxStackTopCm + 30);
 
-  const distinctTiers = useMemo(() => {
-    const zLevels = Array.from(new Set(items.map((i) => Math.round((i.z ?? 0) * 10) / 10))).sort(
-      (a, b) => a - b,
-    );
-    return zLevels.length;
-  }, [items]);
+  const stackingMetrics = useMemo(
+    () => computeCargoStackingMetrics(items, maxTopLoadPercent),
+    [items, maxTopLoadPercent],
+  );
+  const itemById = useMemo(() => new Map(items.map((item) => [item.item_id, item])), [items]);
+  const distinctTiers = stackingMetrics.maxTierCount;
 
   const maxVisualExtraCm = Math.max(0, distinctTiers - 1) * explodeGapCm;
   const ctx = useMemo(
@@ -528,8 +532,9 @@ export const Cargo3DVisualizer: React.FC<Cargo3DVisualizerProps> = ({
           {/* Đường liên kết support khi tách tầng */}
           {explodeGapCm > 0 &&
             sortedBoxes.map((box) => {
-              if (!box.item.support_item_id) return null;
-              const sup = boxById.get(box.item.support_item_id);
+              const supportId = stackingMetrics.byId.get(box.item.item_id)?.supportItemId;
+              if (!supportId) return null;
+              const sup = boxById.get(supportId);
               if (!sup) return null;
               const topCenter = projectPoint3D(
                 ctx,
@@ -607,6 +612,16 @@ export const Cargo3DVisualizer: React.FC<Cargo3DVisualizerProps> = ({
               return adjustHexBrightness(color.bg, 0.65);
             };
 
+            const shortLabel = getItemShortLabel(item);
+            const metrics = stackingMetrics.byId.get(item.item_id);
+            const supportItem = metrics?.supportItemId
+              ? itemById.get(metrics.supportItemId)
+              : undefined;
+            const loadSummary =
+              metrics && metrics.maxTopLoadKg > 0
+                ? `${formatKgVi(metrics.aboveWeightKg)} / tối đa ${formatKgVi(metrics.maxTopLoadKg)} kg (${metrics.loadPercentOfOwnWeight}% / ngưỡng ${maxTopLoadPercent}%)`
+                : 'Không cho đặt đè phía trên';
+
             return (
               <g
                 key={item.item_id}
@@ -621,13 +636,18 @@ export const Cargo3DVisualizer: React.FC<Cargo3DVisualizerProps> = ({
               >
                 <title>
                   {[
-                    `Kiện: ${item.item_id} (Tầng T${box.tierIndex})`,
+                    `Kiện: ${shortLabel} (Tầng T${box.tierIndex})`,
+                    `Cân nặng: ${formatKgVi(item.weight_kg)} kg`,
+                    `Đang tải phía trên: ${loadSummary}`,
+                    `Đặt trên: ${
+                      supportItem
+                        ? `${getItemShortLabel(supportItem)} (${formatKgVi(supportItem.weight_kg)} kg)`
+                        : 'Sàn thùng xe'
+                    }`,
                     `Kích thước: ${item.length_cm} × ${item.width_cm} × ${item.height_cm || 35} cm`,
                     `Cao độ Z: ${Math.round(box.actualZ)} → ${Math.round(
                       box.actualZ + (item.height_cm || 35),
                     )} cm`,
-                    `Đặt trên: ${item.support_item_id || 'Sàn thùng xe'}`,
-                    `Khối lượng: ${item.weight_kg} kg`,
                     ...(item.cargo_kind === 'FRAGILE' ? ['Hàng dễ vỡ'] : []),
                     ...(item.no_top_load_requested ? ['Không đặt đè'] : []),
                     ...(item.floor_rotation_locked ? ['Khóa xoay 90° (LWH)'] : []),
@@ -720,23 +740,39 @@ export const Cargo3DVisualizer: React.FC<Cargo3DVisualizerProps> = ({
               {distinctTiers} tầng · Cao đỉnh {Math.round(maxStackTopCm)} cm
             </Tag>
           )}
-          {focusBox && (
-            <>
-              <Tag color={isPathToDoorClear(focusBox.item) ? 'success' : 'error'} style={{ margin: 0, fontSize: 11 }}>
-                {getItemShortLabel(focusBox.item)} (T{focusBox.tierIndex}, Z={Math.round(focusBox.actualZ)}cm)
-                {focusBox.item.support_item_id ? ` ↑ trên ${focusBox.item.support_item_id}` : ' · Trên sàn'}
-              </Tag>
-              {focusBox.item.cargo_kind === 'FRAGILE' && (
-                <Tag color="gold" style={{ margin: 0, fontSize: 11 }}>Dễ vỡ</Tag>
-              )}
-              {focusBox.item.no_top_load_requested && (
-                <Tag color="orange" style={{ margin: 0, fontSize: 11 }}>Cấm đè</Tag>
-              )}
-              {focusBox.item.floor_rotation_locked && (
-                <Tag color="purple" style={{ margin: 0, fontSize: 11 }}>Khóa xoay 90°</Tag>
-              )}
-            </>
-          )}
+          {focusBox && (() => {
+            const focusMetrics = stackingMetrics.byId.get(focusBox.item.item_id);
+            const focusSupportItem = focusMetrics?.supportItemId
+              ? itemById.get(focusMetrics.supportItemId)
+              : undefined;
+            const loadHudText =
+              focusMetrics && focusMetrics.maxTopLoadKg > 0
+                ? `Đè trên: ${formatKgVi(focusMetrics.aboveWeightKg)}/${formatKgVi(focusMetrics.maxTopLoadKg)} kg (${focusMetrics.loadPercentOfOwnWeight}%)`
+                : 'Không đặt đè lên trên';
+            const supportHudText = focusSupportItem
+              ? `Trên ${getItemShortLabel(focusSupportItem)} (${formatKgVi(focusSupportItem.weight_kg)} kg)`
+              : 'Trên sàn';
+
+            return (
+              <>
+                <Tag
+                  color={isPathToDoorClear(focusBox.item) ? 'success' : 'error'}
+                  style={{ margin: 0, fontSize: 11, whiteSpace: 'normal' }}
+                >
+                  {getItemShortLabel(focusBox.item)} · T{focusBox.tierIndex} · Nặng {formatKgVi(focusBox.item.weight_kg)} kg · {loadHudText} · {supportHudText}
+                </Tag>
+                {focusBox.item.cargo_kind === 'FRAGILE' && (
+                  <Tag color="gold" style={{ margin: 0, fontSize: 11 }}>Dễ vỡ</Tag>
+                )}
+                {focusBox.item.no_top_load_requested && (
+                  <Tag color="orange" style={{ margin: 0, fontSize: 11 }}>Cấm đè</Tag>
+                )}
+                {focusBox.item.floor_rotation_locked && (
+                  <Tag color="purple" style={{ margin: 0, fontSize: 11 }}>Khóa xoay 90°</Tag>
+                )}
+              </>
+            );
+          })()}
         </div>
 
         <div

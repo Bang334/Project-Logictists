@@ -161,4 +161,80 @@ describe('Cargo3DVisualizer', () => {
     expect(screen.getByText('Cấm đè')).toBeInTheDocument();
     expect(screen.getByText('Khóa xoay 90°')).toBeInTheDocument();
   });
+
+  it('computes real stacking tiers instead of distinct z elevations and shows weight + top load without raw UUIDs', () => {
+    const rawSupportUuid = 'e93c3340-82c8-4548-a1f5-bc5dec168ed7';
+    const rawUpperUuid = 'a11b22c3-82c8-4548-a1f5-bc5dec168eed';
+    const multiHeightFloorItems: PlacedItemUI[] = [
+      // Cột 1: kiện T1 cao 50cm (z=0), kiện T2 cao 30cm (z=50)
+      {
+        item_id: rawSupportUuid,
+        order_id: 'ord-1',
+        x: 0,
+        y: 0,
+        z: 0,
+        support_item_id: null,
+        length_cm: 100,
+        width_cm: 100,
+        height_cm: 50,
+        weight_kg: 100,
+      },
+      {
+        item_id: rawUpperUuid,
+        order_id: 'ord-1',
+        x: 0,
+        y: 0,
+        z: 50,
+        support_item_id: rawSupportUuid,
+        length_cm: 80,
+        width_cm: 80,
+        height_cm: 30,
+        weight_kg: 25,
+      },
+      // Cột 2 & 3 độc lập trên sàn có chiều cao khác nhau -> vẫn là T1 và T2, không nhảy thành T5/T8!
+      {
+        item_id: 'col2-base',
+        order_id: 'ord-2',
+        x: 120,
+        y: 0,
+        z: 0,
+        support_item_id: null,
+        length_cm: 80,
+        width_cm: 80,
+        height_cm: 70,
+        weight_kg: 80,
+      },
+      {
+        item_id: 'col2-top',
+        order_id: 'ord-2',
+        x: 120,
+        y: 0,
+        z: 70,
+        support_item_id: 'col2-base',
+        length_cm: 60,
+        width_cm: 60,
+        height_cm: 20,
+        weight_kg: 15,
+      },
+    ];
+
+    render(
+      <Cargo3DVisualizer
+        lengthCm={400}
+        widthCm={200}
+        heightCm={220}
+        items={multiHeightFloorItems}
+        maxTopLoadPercent={30}
+        hoveredItemId={rawSupportUuid}
+        getItemColor={() => ({ bg: '#2563eb', border: '#1d4ed8' })}
+        getItemShortLabel={(item) => item.item_id.slice(-4).toUpperCase()}
+        isPathToDoorClear={() => true}
+      />,
+    );
+
+    expect(screen.getByText('2 tầng · Cao đỉnh 90 cm')).toBeInTheDocument();
+    expect(screen.queryByText('T3')).not.toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(rawSupportUuid))).not.toBeInTheDocument();
+    expect(screen.getByText(/8ED7 · T1 · Nặng 100 kg · Đè trên: 25\/30 kg \(25%\) · Trên sàn/)).toBeInTheDocument();
+  });
 });
