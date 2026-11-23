@@ -189,6 +189,7 @@ export interface Order {
 }
 
 export interface TripStop {
+  deliveryAttempts?: { id: string; occurredAt: string; failureReason: string | null }[];
   id: string;
   sequence: number;
   stopType: 'DEPOT_START' | 'PICKUP' | 'DELIVERY' | 'DEPOT_END';

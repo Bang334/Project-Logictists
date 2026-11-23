@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, App, Button, Card, Checkbox, Col, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tag, Typography } from 'antd';
 import type { FormInstance } from 'antd';
 import axios from 'axios';
@@ -100,15 +100,19 @@ const OrdersPage: React.FC = () => {
   const busy = useRef(false), request = useRef(0);
   const command = useRef<{ payload: string; key: string }>();
   const confirmCommand = useRef<{ id: string; version: number; key: string }>();
-  const fetchRows = async () => {
+  const fetchRows = useCallback(async () => {
     const seq = ++request.current; setLoading(true); setError('');
     try {
       const data = await ordersApi.list({ branchId, page, pageSize, status, search: search || undefined });
       if (seq === request.current) { setRows(data.items); setTotal(data.total); }
     } catch (e) { if (seq === request.current && !axios.isCancel(e)) { setRows([]); setError(apiErrorMessage(e)); } }
     finally { if (seq === request.current) setLoading(false); }
-  };
-  useEffect(() => { void fetchRows(); return () => { request.current++; }; }, [branchId, page, pageSize, status, search]);
+  }, [branchId, page, pageSize, status, search]);
+  useEffect(() => {
+    const requestRef = request;
+    void fetchRows();
+    return () => { requestRef.current++; };
+  }, [fetchRows]);
   useEffect(() => {
     let live = true;
     void branchesApi.getAll().then(b => { if (live) setBranches(b.data); }).catch(e => { if (live && !axios.isCancel(e)) setError(apiErrorMessage(e)); });

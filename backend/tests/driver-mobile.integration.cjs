@@ -1,21 +1,23 @@
 const { test } = require("node:test");
+require("ts-node/register/transpile-only");
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
 const { NestFactory } = require("@nestjs/core");
 const { ValidationPipe } = require("@nestjs/common");
-const { AppModule } = require("../dist/src/app.module");
-const { PrismaService } = require("../dist/src/prisma/prisma.service");
+const { AppModule } = require("../src/app.module");
+const { PrismaService } = require("../src/prisma/prisma.service");
+const { DRIVER_PERMISSIONS } = require("../src/auth/access");
 const {
   seedDriverMobile,
   createDriverDemoTrip,
-} = require("../dist/prisma/seed-driver-mobile");
-const { seedAuth } = require("../dist/prisma/seed-auth");
+} = require("../prisma/seed-driver-mobile");
+const { seedAuth } = require("../prisma/seed-auth");
 
 test("Driver mobile HTTP + real PostgreSQL", { timeout: 120000 }, async (t) => {
   const target = new URL(process.env.DATABASE_URL);
   assert.ok(
     ["localhost", "127.0.0.1"].includes(target.hostname) &&
-      target.pathname === "/tms_driver_test_20261007",
+      /^\/tms_driver_test_\d{8}$/.test(target.pathname),
   );
   const app = await NestFactory.create(AppModule, { logger: false });
   app.useGlobalPipes(
@@ -44,6 +46,26 @@ test("Driver mobile HTTP + real PostgreSQL", { timeout: 120000 }, async (t) => {
     request("/auth/login", null, { username, password });
   try {
     await seedAuth(db);
+    await db.$transaction(async (tx) => {
+      const role = await tx.accessRole.upsert({
+        where: { code: "DRIVER" },
+        create: { code: "DRIVER", name: "Driver" },
+        update: {},
+      });
+      for (const code of DRIVER_PERMISSIONS) {
+        const permission = await tx.permission.upsert({
+          where: { code },
+          create: { code, description: code },
+          update: {},
+        });
+        const grant = { roleId: role.id, permissionId: permission.id };
+        await tx.rolePermission.upsert({
+          where: { roleId_permissionId: grant },
+          create: grant,
+          update: {},
+        });
+      }
+    });
     await seedDriverMobile(db);
     const demoA = await db.user.findUniqueOrThrow({
       where: { username: "demo_driver_a" },
@@ -437,6 +459,39 @@ test("Driver mobile HTTP + real PostgreSQL", { timeout: 120000 }, async (t) => {
         );
       },
     );
+    await t.test("delivery failure retains the parcel and retries exactly once", async () => {
+      const failedDelivery = await fresh("failed-delivery");
+      const path = "/driver/assignments/" + failedDelivery.assignment.id;
+      const { body: accepted, status } = await request(path + "/accept", token, failedDelivery.body, randomUUID());
+      assert.equal(status, 200);
+      const detail = (await request(path, token)).body;
+      const pickup = detail.trip.stops.flatMap((stop) => stop.tasks).find((task) => task.action === "LOAD");
+      const unload = detail.trip.stops.flatMap((stop) => stop.tasks).find((task) => task.action === "UNLOAD");
+      const endpoint = path + "/tasks/" + unload.id + "/delivery-failure";
+      const body = {
+        expectedVersion: accepted.version,
+        expectedTripVersion: detail.trip.version,
+        reason: "Người nhận bận",
+      };
+      assert.equal((await request(path + "/tasks/" + pickup.id + "/delivery-failure", token, body, randomUUID())).status, 404);
+      const key = randomUUID();
+      const [first, retry] = await Promise.all([request(endpoint, token, body, key), request(endpoint, token, body, key)]);
+      assert.equal(first.status, 200, JSON.stringify(first.body));
+      assert.deepEqual(retry, first);
+      assert.equal((await request(endpoint, token, { ...body, reason: "Lý do khác" }, key)).status, 409);
+      const task = await db.stopTask.findUniqueOrThrow({
+        where: { id: unload.id },
+        include: { allocation: { include: { package: true } }, deliveryResults: true },
+      });
+      assert.equal(task.actualQuantity, null);
+      assert.equal(task.allocation.package.status, "LOADED");
+      assert.equal(task.allocation.releasedAt, null);
+      assert.equal(task.deliveryResults.length, 1);
+      assert.equal(task.deliveryResults[0].result, "RETAINED_ON_VEHICLE");
+      const view = (await request(path, token)).body;
+      assert.equal(view.trip.status, "IN_PROGRESS");
+      assert.equal(view.trip.stops.flatMap((stop) => stop.tasks).find((entry) => entry.id === unload.id).retainedOnVehicle, true);
+    });
     await t.test("simultaneous accept/reject: exactly one wins", async () => {
       const path = "/driver/assignments/" + race.assignment.id;
       const results = await Promise.all([

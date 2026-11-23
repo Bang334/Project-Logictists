@@ -133,7 +133,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
     void fetchData();
   }, [fetchData]);
 
-  const { scopedBranches, scopedLocations, scopedTrips } = useMemo(
+  const { scopedBranches, scopedTrips } = useMemo(
     () =>
       scopeDashboardEntities({
         branches,

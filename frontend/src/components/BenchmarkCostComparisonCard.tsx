@@ -14,8 +14,6 @@ import {
   Alert,
   Button,
   Modal,
-  Badge,
-  Tabs,
 } from 'antd';
 import {
   ThunderboltOutlined,
@@ -26,8 +24,6 @@ import {
   SafetyCertificateOutlined,
   WarningOutlined,
   ExperimentOutlined,
-  BranchesOutlined,
-  NodeIndexOutlined,
 } from '@ant-design/icons';
 import {
   BenchmarkComparisonUI,

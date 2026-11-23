@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Branch, Driver, Location, Trip, Vehicle } from '../types';
+import type { Branch, Driver, Trip, Vehicle } from '../types';
 import {
   buildNetworkMarkers,
   buildNetworkPointItems,

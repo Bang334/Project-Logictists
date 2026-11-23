@@ -10,7 +10,7 @@ import { createHash, randomUUID } from "crypto";
 import { AuthService } from "../auth/auth.service";
 import { assertPermission, PermissionCode, Principal } from "../auth/access";
 import { PrismaService } from "../prisma/prisma.service";
-import { AssignmentQuery, AssignmentResponseDto } from "./driver-mobile.dto";
+import { AssignmentQuery, AssignmentResponseDto, FailedDeliveryDto } from "./driver-mobile.dto";
 
 const visibleStatuses: TripStatus[] = [
   "DISPATCHED",
@@ -191,6 +191,11 @@ export class DriverMobileService {
                         id: true,
                         action: true,
                         plannedQuantity: true,
+                        deliveryResults: {
+                          where: { result: "RETAINED_ON_VEHICLE" },
+                          select: { id: true },
+                          take: 1,
+                        },
                         orderStop: {
                           select: {
                             orderId: true,
@@ -273,6 +278,7 @@ export class DriverMobileService {
                   id: task.id,
                   action: task.action,
                   plannedQuantity: task.plannedQuantity,
+                  retainedOnVehicle: task.deliveryResults.length > 0,
                   allocationId: task.allocation?.id ?? null,
                   description: task.allocation?.orderItem.description ?? null,
                   order,
@@ -291,6 +297,124 @@ export class DriverMobileService {
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );
   }
+  reportDeliveryFailure(
+    user: Principal,
+    assignmentId: string,
+    taskId: string,
+    key: string | undefined,
+    dto: FailedDeliveryDto,
+  ) {
+    if (!key || !/^[A-Za-z0-9_-]{8,128}$/.test(key))
+      throw new BadRequestException("Idempotency-Key không hợp lệ");
+    const reason = dto.reason.trim();
+    const commandId = createHash("sha256").update(JSON.stringify([user.id, "delivery-failure", key])).digest("hex");
+    const requestHash = createHash("sha256").update(JSON.stringify([
+      assignmentId, taskId, dto.expectedVersion, dto.expectedTripVersion, reason,
+    ])).digest("hex");
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM users WHERE id = ${user.id} FOR SHARE`;
+      await tx.$queryRaw`SELECT id FROM drivers WHERE "userId" = ${user.id} FOR SHARE`;
+      const driver = await this.identity(user, "driver.assignments.respond", tx);
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(71007, hashtext(${commandId}))`;
+      await tx.$queryRaw`SELECT id FROM driver_assignments WHERE id = ${assignmentId} AND "driverId" = ${driver.id} FOR UPDATE`;
+      const assignment = await tx.driverAssignment.findFirst({
+        where: { id: assignmentId, driverId: driver.id },
+        select: { tripId: true, status: true, version: true, startStopId: true, endStopId: true },
+      });
+      if (!assignment) throw new NotFoundException("Không tìm thấy phân công");
+      const { tripId } = assignment;
+      const previous = await tx.executionEvent.findUnique({ where: { commandId } });
+      if (previous) {
+        const payload = previous.payload;
+        if (!payload || typeof payload !== "object" || Array.isArray(payload) || payload.requestHash !== requestHash)
+          throw new ConflictException("Idempotency key đã được dùng cho nội dung khác");
+        return { attemptId: payload.attemptId, tripVersion: payload.tripVersion };
+      }
+      await tx.$queryRaw`SELECT id FROM trips WHERE id = ${tripId} FOR UPDATE`;
+      const trip = await tx.trip.findUniqueOrThrow({ where: { id: tripId }, select: { status: true, version: true } });
+      if (assignment.version !== dto.expectedVersion || trip.version !== dto.expectedTripVersion)
+        throw new ConflictException("Kế hoạch hoặc phân công đã thay đổi. Hãy tải lại");
+      if (assignment.status !== "ACCEPTED" || !["DISPATCHED", "IN_PROGRESS"].includes(trip.status))
+        throw new ConflictException("Chuyến chưa ở trạng thái có thể báo giao hàng");
+
+      const task = await tx.stopTask.findFirst({
+        where: { id: taskId, action: "UNLOAD", tripStop: { tripId, stopType: "DELIVERY" } },
+        include: { tripStop: true, allocation: true },
+      });
+      if (!task) throw new NotFoundException("Không tìm thấy tác vụ giao hàng");
+      const boundaries = await tx.tripStop.findMany({
+        where: { tripId, id: { in: [assignment.startStopId, assignment.endStopId].filter((id): id is string => id !== null) } },
+        select: { id: true, sequence: true },
+      });
+      if (boundaries.length !== new Set([assignment.startStopId, assignment.endStopId].filter(Boolean)).size ||
+        boundaries.some(({ id, sequence }) =>
+        (id === assignment.startStopId && task.tripStop.sequence < sequence) ||
+        (id === assignment.endStopId && task.tripStop.sequence > sequence)))
+        throw new NotFoundException("Điểm giao nằm ngoài phạm vi phân công");
+      const allocation = task.allocation;
+      const packageId = allocation?.packageId;
+      if (!allocation || !packageId || allocation.tripId !== tripId || allocation.releasedAt ||
+        (task.packageId && task.packageId !== packageId) ||
+        (task.actualQuantity ?? 0) > 0 || ["COMPLETED", "SKIPPED"].includes(task.tripStop.status))
+        throw new ConflictException("Kiện đã xử lý hoặc không có phân bổ hợp lệ trên xe này");
+      const pickup = await tx.stopTask.findFirst({
+        where: { allocationId: allocation.id, action: "LOAD", tripStop: { tripId, sequence: { lt: task.tripStop.sequence } } },
+        select: { id: true },
+      });
+      const recorded = await tx.deliveryResult.findFirst({
+        where: { stopTaskId: taskId, result: "RETAINED_ON_VEHICLE" },
+        select: { id: true },
+      });
+      if (!pickup || recorded) throw new ConflictException("Kiện thiếu điểm lấy hàng hoặc đã báo giao thất bại");
+
+      // The driver explicitly confirms physical possession. Keep this parcel allocated to the trip.
+      const retained = await tx.package.updateMany({
+        where: { id: packageId, status: { in: ["ALLOCATED", "LOADED"] } },
+        data: { status: "LOADED", version: { increment: 1 } },
+      });
+      if (retained.count !== 1) throw new ConflictException("Trạng thái kiện đã thay đổi");
+      const occurredAt = new Date();
+      const { _max } = await tx.deliveryAttempt.aggregate({
+        where: { tripStopId: task.tripStopId },
+        _max: { attemptNumber: true },
+      });
+      const attempt = await tx.deliveryAttempt.create({
+        data: {
+          tripStopId: task.tripStopId,
+          attemptNumber: (_max.attemptNumber ?? 0) + 1,
+          occurredAt,
+          result: "FAILED",
+          failureReason: reason,
+          commandId,
+          results: { create: { stopTaskId: taskId, packageId, result: "RETAINED_ON_VEHICLE" } },
+        },
+        select: { id: true },
+      });
+      const updated = await tx.trip.update({
+        where: { id: tripId },
+        data: { status: "IN_PROGRESS", version: { increment: 1 } },
+        select: { version: true },
+      });
+      const result = { attemptId: attempt.id, tripVersion: updated.version };
+      await tx.executionEvent.create({
+        data: {
+          tripId, tripStopId: task.tripStopId, stopTaskId: taskId, eventType: "DELIVERY_FAILED",
+          occurredAt, actorUserId: user.id, commandId,
+          payload: { ...result, requestHash, packageId },
+        },
+      });
+      await tx.outboxEvent.create({
+        data: {
+          eventId: randomUUID(), aggregateType: "Trip", aggregateId: tripId,
+          aggregateVersion: updated.version, eventType: "TRIP_DELIVERY_FAILED",
+          payload: { attemptId: attempt.id },
+        },
+      });
+      return result;
+    });
+  }
+
   async respond(
     user: Principal,
     id: string,

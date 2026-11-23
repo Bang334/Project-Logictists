@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   Button,
   KeyboardAvoidingView,
@@ -205,6 +206,24 @@ export function DriverApp({
                               Khung bắt đầu phục vụ: {time(task.windowStart)} →{" "}
                               {time(task.windowEnd)}
                             </Text>
+                            {task.retainedOnVehicle ? (
+                              <Text>Giao chưa thành công · Kiện vẫn trên xe · Chờ điều phối</Text>
+                            ) : task.action === "UNLOAD" && task.package && task.allocationId &&
+                              detail.status === "ACCEPTED" &&
+                              ["DISPATCHED", "IN_PROGRESS"].includes(detail.trip.status) && (
+                                <Button
+                                  title="Báo người nhận không thể nhận hàng"
+                                  disabled={state.busy}
+                                  onPress={() => Alert.alert(
+                                    "Xác nhận kiện vẫn trên xe",
+                                    `Bạn xác nhận kiện ${task.package?.packageCode} chưa giao và đang ở trên xe này?`,
+                                    [
+                                      { text: "Hủy", style: "cancel" },
+                                      { text: "Báo điều phối", onPress: () => void store.reportRecipientUnavailable(task.id) },
+                                    ],
+                                  )}
+                                />
+                              )}
                           </View>
                         ))}
                       </View>

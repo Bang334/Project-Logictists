@@ -14,6 +14,7 @@ import { AuthRequest, RequirePermission } from "../auth/access";
 import {
   AssignmentQuery,
   AssignmentResponseDto,
+  FailedDeliveryDto,
   RejectAssignmentDto,
 } from "./driver-mobile.dto";
 import { DriverMobileService } from "./driver-mobile.service";
@@ -21,6 +22,18 @@ import { DriverMobileService } from "./driver-mobile.service";
 @Controller("driver")
 export class DriverMobileController {
   constructor(private readonly service: DriverMobileService) {}
+  @Post("assignments/:id/tasks/:taskId/delivery-failure")
+  @HttpCode(200)
+  @RequirePermission("driver.assignments.respond")
+  reportDeliveryFailure(
+    @Req() req: AuthRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("taskId", ParseUUIDPipe) taskId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() dto: FailedDeliveryDto,
+  ) {
+    return this.service.reportDeliveryFailure(req.user, id, taskId, key, dto);
+  }
   @Get("me")
   @RequirePermission("driver.profile.read")
   me(@Req() req: AuthRequest) {

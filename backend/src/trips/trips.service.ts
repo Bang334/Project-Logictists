@@ -199,7 +199,14 @@ export class TripsService {
         },
         stops: {
           orderBy: { sequence: "asc" },
-          include: { tasks: true },
+          include: {
+            tasks: true,
+            deliveryAttempts: {
+              where: { results: { some: { result: 'RETAINED_ON_VEHICLE', package: { status: 'LOADED' } } } },
+              select: { id: true, occurredAt: true, failureReason: true },
+              orderBy: { occurredAt: 'desc' },
+            },
+          },
         },
       },
       orderBy: { createdAt: "desc" },
@@ -1370,6 +1377,18 @@ export class TripsService {
    */
   async getLoadProfile(id: string, user: Principal) {
     const trip = await this.findOne(id, user);
+    const retained = await this.prisma.deliveryResult.findFirst({
+      where: {
+        result: 'RETAINED_ON_VEHICLE',
+        package: { status: 'LOADED' },
+        deliveryAttempt: { tripStop: { tripId: id } },
+      },
+      select: { id: true },
+    });
+    if (retained) throw new ConflictException({
+      code: 'LOAD_PLAN_REVIEW_REQUIRED',
+      message: 'Có kiện giao chưa thành công còn trên xe. Biểu đồ tải theo kế hoạch cần điều phối lại.',
+    });
     let weightG = 0n, volumeMm3 = 0n, maxWeightG = 0n, maxVolumeMm3 = 0n;
     const loadProfile = trip.stops.map((stop, stopIndex) => {
       let deltaG = 0n, deltaMm3 = 0n;
@@ -1783,7 +1802,6 @@ export class TripsService {
       };
       if (!snapshot.vehicles.length || !snapshot.drivers.length) return null;
       const vehicleCount = snapshot.vehicles.length;
-      const optimizationUnitCount = snapshot.orders.length;
       const orderCount = orders.length;
       const progressDetails = {
         orderCount,

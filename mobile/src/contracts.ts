@@ -63,6 +63,7 @@ export const detailSchema = assignment.extend({
             id: z.string(),
             action: z.enum(["LOAD", "UNLOAD"]),
             plannedQuantity: z.number(),
+            retainedOnVehicle: z.boolean().default(false),
             allocationId: z.string().nullable(),
             description: z.string().nullable(),
             order: z

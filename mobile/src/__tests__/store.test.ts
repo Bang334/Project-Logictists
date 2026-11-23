@@ -269,3 +269,95 @@ test('failed local logout never claims the token was erased', async () => {
   expect(h.store.snapshot().notice).not.toContain('Đã xóa');
   expect(h.store.snapshot().list).toBeNull(); expect(h.store.snapshot().profile).toBeNull();
 });
+test('reportRecipientUnavailable ignores non-ACCEPTED assignments and reuses idempotency key across retries', async () => {
+  const h = harness('token-a');
+  await h.store.restore();
+  await h.store.open('a');
+  // Detail currently has status === "ASSIGNED": guard must skip calling delivery-failure.
+  await h.store.reportRecipientUnavailable('task-unload');
+  expect(
+    h.fetcher.mock.calls.some(([url]) => String(url).includes('/delivery-failure')),
+  ).toBe(false);
+
+  const acceptedDetail = {
+    ...detail,
+    status: 'ACCEPTED' as const,
+    trip: {
+      ...detail.trip,
+      stops: [
+        detail.trip.stops[0],
+        {
+          ...detail.trip.stops[0],
+          id: 's2',
+          sequence: 2,
+          stopType: 'DELIVERY',
+          tasks: [
+            {
+              ...detail.trip.stops[0].tasks[0],
+              id: 'task-unload',
+              action: 'UNLOAD' as const,
+            },
+          ],
+        },
+      ],
+    },
+  };
+  const updatedDetail = {
+    ...acceptedDetail,
+    trip: {
+      ...acceptedDetail.trip,
+      version: 3,
+      stops: [
+        acceptedDetail.trip.stops[0],
+        {
+          ...acceptedDetail.trip.stops[1],
+          tasks: [
+            {
+              ...acceptedDetail.trip.stops[1].tasks[0],
+              retainedOnVehicle: true,
+            },
+          ],
+        },
+      ],
+    },
+  };
+  h.fetcher.mockResolvedValueOnce(reply(acceptedDetail));
+  await h.store.open('a');
+
+  // Transient error retains original idempotency key and payload on retry.
+  h.fetcher
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce(reply({ attemptId: 'att-1', tripVersion: 3 }))
+    .mockResolvedValueOnce(reply(updatedDetail));
+
+  await h.store.reportRecipientUnavailable('task-unload');
+  expect(h.store.snapshot().error).toContain('Không kết nối');
+
+  await h.store.reportRecipientUnavailable('task-unload');
+  const failureCalls = h.fetcher.mock.calls.filter(([url]) =>
+    String(url).endsWith('/tasks/task-unload/delivery-failure'),
+  );
+  expect(failureCalls).toHaveLength(2);
+  expect(failureCalls[0][1]?.body).toBe(failureCalls[1][1]?.body);
+  expect(failureCalls[0][1]?.headers).toEqual(failureCalls[1][1]?.headers);
+  expect(JSON.parse(String(failureCalls[0][1]?.body))).toEqual({
+    expectedVersion: 1,
+    expectedTripVersion: 2,
+    reason: 'Người nhận không thể nhận hàng',
+  });
+  expect(h.store.snapshot().notice).toContain('kiện còn trên xe');
+  expect(h.store.snapshot().detail?.trip.stops[1].tasks[0].retainedOnVehicle).toBe(true);
+});
+test('reportRecipientUnavailable reloads server state and clears pending command on 409', async () => {
+  const h = harness('token-a');
+  await h.store.restore();
+  const acceptedDetail = { ...detail, status: 'ACCEPTED' as const, version: 2 };
+  h.fetcher
+    .mockResolvedValueOnce(reply(acceptedDetail))
+    .mockResolvedValueOnce(reply({ code: 'VERSION_CONFLICT' }, 409))
+    .mockResolvedValueOnce(reply({ ...acceptedDetail, version: 3 }));
+  await h.store.open('a');
+  await h.store.reportRecipientUnavailable('task');
+  expect(h.store.snapshot().detail?.version).toBe(3);
+  expect(h.store.snapshot().error).toBeTruthy();
+});

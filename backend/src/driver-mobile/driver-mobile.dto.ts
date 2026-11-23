@@ -22,7 +22,7 @@ export class AssignmentResponseDto {
   @IsInt() @Min(1) expectedVersion: number;
   @IsInt() @Min(1) expectedTripVersion: number;
 }
-export class RejectAssignmentDto extends AssignmentResponseDto {
+export class AssignmentReasonDto extends AssignmentResponseDto {
   @Transform(({ value }: { value: unknown }) =>
     typeof value === "string" ? value.trim() : value,
   )
@@ -31,3 +31,7 @@ export class RejectAssignmentDto extends AssignmentResponseDto {
   @MaxLength(1000)
   reason: string;
 }
+
+export class RejectAssignmentDto extends AssignmentReasonDto {}
+
+export class FailedDeliveryDto extends AssignmentReasonDto {}

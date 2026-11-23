@@ -57,6 +57,12 @@ export class DriverStore {
   private epoch = 0;
   private listRequest = 0;
   private detailRequest = 0;
+  private deliveryFailureRequest?: {
+    assignmentId: string;
+    taskId: string;
+    key: string;
+    body: { expectedVersion: number; expectedTripVersion: number; reason: string };
+  };
   private storageTail: Promise<void> = Promise.resolve();
   private listeners = new Set<() => void>();
   constructor(
@@ -232,6 +238,48 @@ export class DriverStore {
     ++this.detailRequest;
     this.set({ detail: null, loadingDetail: false, error: null });
   }
+  async reportRecipientUnavailable(taskId: string) {
+    const { detail, busy } = this.state;
+    const token = this.token;
+    if (busy || !token || !detail || detail.status !== "ACCEPTED") return;
+    const epoch = this.epoch;
+    const previous = this.deliveryFailureRequest;
+    const command = previous?.assignmentId === detail.id && previous.taskId === taskId
+      ? previous
+      : {
+          assignmentId: detail.id,
+          taskId,
+          key: this.uuid(),
+          body: {
+            expectedVersion: detail.version,
+            expectedTripVersion: detail.trip.version,
+            reason: "Người nhận không thể nhận hàng",
+          },
+        };
+    this.deliveryFailureRequest = command;
+    this.set({ busy: true, error: null, notice: null });
+    try {
+      await this.api.call(
+        `/driver/assignments/${detail.id}/tasks/${taskId}/delivery-failure`,
+        z.object({ attemptId: z.string(), tripVersion: z.number().int() }),
+        token, command.body, command.key,
+      );
+      if (epoch !== this.epoch) return;
+      this.deliveryFailureRequest = undefined;
+      this.set({ notice: "Máy chủ đã ghi nhận kiện còn trên xe. Chờ điều phối trước khi tiếp tục." });
+      await this.open(detail.id);
+    } catch (error) {
+      if (epoch !== this.epoch) return;
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+        this.deliveryFailureRequest = undefined;
+        if (error.status === 409) await this.open(detail.id);
+      }
+      await this.failure(error, epoch);
+    } finally {
+      if (epoch === this.epoch) this.set({ busy: false });
+    }
+  }
+
   async respond(action: "accept" | "reject", reason = "") {
     if (this.state.busy || !this.token) return;
     const detail = this.state.detail;

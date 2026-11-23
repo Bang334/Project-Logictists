@@ -8,11 +8,11 @@ const dtoWithBudget = (searchBudgetSeconds: number) =>
   });
 
 describe('RunAutomaticOptimizationDto search budget', () => {
-  it('accepts an integer budget within the optimizer contract', async () => {
-    await expect(validate(dtoWithBudget(30))).resolves.toHaveLength(0);
+  it.each([30, 121, 1000])('accepts an integer budget within the optimizer contract: %s', async (value) => {
+    await expect(validate(dtoWithBudget(value))).resolves.toHaveLength(0);
   });
 
-  it.each([0, 121, 2.5])('rejects an invalid budget: %s', async (value) => {
+  it.each([0, 1001, 2.5])('rejects an invalid budget: %s', async (value) => {
     const errors = await validate(dtoWithBudget(value));
     expect(errors.some((error) => error.property === 'searchBudgetSeconds')).toBe(true);
   });

@@ -30,7 +30,7 @@ export class OutboxEventPublisher {
       await this.eventsGateway.emitTripUpdate({ id: payload.tripId });
       return;
     }
-    if (['TRIP_CREATED', 'TRIP_PUBLISHED', 'TRIP_PLAN_UPDATED', 'OPTIMIZATION_TRIP_APPLIED'].includes(event.eventType)) {
+    if (['TRIP_CREATED', 'TRIP_PUBLISHED', 'TRIP_PLAN_UPDATED', 'OPTIMIZATION_TRIP_APPLIED', 'TRIP_DELIVERY_FAILED'].includes(event.eventType)) {
       await this.eventsGateway.emitTripUpdate({ id: event.aggregateId });
       return;
     }

@@ -297,7 +297,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     return () => {
       active = false;
     };
-  }, [user?.id]);
+  }, [user?.id, message]);
 
   useEffect(() => {
     if (!settingsApi?.getEffective) return;

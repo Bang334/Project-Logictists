@@ -1,5 +1,6 @@
 import dayjs, { Dayjs } from 'dayjs';
 import { useAuth } from '../context/AuthContext';
+import { getRealtimeSocket } from '../api/realtime';
 import React, { startTransition, useCallback, useMemo, useEffect, useRef, useState } from 'react';
 import {
   Row,
@@ -84,6 +85,8 @@ const DispatchPage: React.FC = () => {
   const [activeTrip, setActiveTrip] = useState<Trip | null>(null);
   const [editingTripId, setEditingTripId] = useState<string | null>(null);
   const [loadProfile, setLoadProfile] = useState<LoadProfileResult | null>(null);
+  const retainedStops = (trips.find((trip) => trip.id === activeTrip?.id) ?? activeTrip)
+    ?.stops.filter((stop) => stop.deliveryAttempts?.length) ?? [];
   const [loadProfileError, setLoadProfileError] = useState('');
   const [profileLoading, setProfileLoading] = useState(false);
   const profileRequest = useRef(0);
@@ -137,6 +140,28 @@ const DispatchPage: React.FC = () => {
     // Initial load only; later refreshes are triggered explicitly after mutations.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const socket = getRealtimeSocket();
+    if (!socket) return;
+    let request = 0;
+    const refreshTrips = async () => {
+      const current = ++request;
+      try {
+        const response = await tripsApi.getAll();
+        if (current === request) setTrips(response.data);
+      } catch {
+        if (current === request) message.error('Lỗi khi cập nhật chuyến đi');
+      }
+    };
+    socket.on('trip:updated', refreshTrips);
+    socket.on('connect', refreshTrips);
+    return () => {
+      request++;
+      socket.off('trip:updated', refreshTrips);
+      socket.off('connect', refreshTrips);
+    };
+  }, [branchId, message]);
 
   const fetchLoadProfile = async (tripId: string) => {
     const request = ++profileRequest.current;
@@ -936,6 +961,9 @@ const DispatchPage: React.FC = () => {
                     <strong style={{ color: '#1d4ed8', fontSize: '14px' }}>{t.tripNumber}</strong>
                     <Tag color={t.status === 'DISPATCHED' ? 'cyan' : 'gold'}>{t.status}</Tag>
                   </div>
+                  {t.stops.some((stop) => stop.deliveryAttempts?.length) && (
+                    <Tag color="volcano">Chờ điều phối · Có kiện giao chưa thành công còn trên xe</Tag>
+                  )}
                   <div style={{ fontSize: '12px', color: '#475569', marginTop: '4px' }}>
                     Xe: <strong>{t.vehicle.plateNumber}</strong> ({t.vehicle.model}) | Tài xế:{' '}
                     <strong>{t.assignments[0]?.driver.fullName}</strong>
@@ -1063,8 +1091,20 @@ const DispatchPage: React.FC = () => {
 
           {/* BIỂU ĐỒ PHÂN TÍCH TẢI TRỌNG TỪNG CHẶNG (BR04 INVARIANT VERIFICATION) */}
           {profileLoading && <Spin tip="Đang tải dữ liệu tải trọng" />}
-          {loadProfileError && <Alert type="warning" showIcon message={loadProfileError} action={<Button onClick={() => activeTrip && void fetchLoadProfile(activeTrip.id)}>Thử lại</Button>} />}
-          {loadProfile && (
+          {retainedStops.length > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              message="Chờ điều phối"
+              description={retainedStops.map((stop) => (
+                <div key={stop.id}>
+                  {stop.address} · {stop.deliveryAttempts?.length} kiện còn trên xe
+                </div>
+              ))}
+            />
+          )}
+          {retainedStops.length === 0 && loadProfileError && <Alert type="warning" showIcon message={loadProfileError} action={<Button onClick={() => activeTrip && void fetchLoadProfile(activeTrip.id)}>Thử lại</Button>} />}
+          {retainedStops.length === 0 && loadProfile && (
             <Card
               title={
                 <Space>
