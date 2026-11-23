@@ -77,7 +77,7 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
     if (shouldGeocode && !manualAddress) {
       void reverseGeocodeCoords(lng, lat);
     }
-  }, [reverseGeocodeCoords]);
+  }, [manualAddress, reverseGeocodeCoords]);
 
   // Khởi tạo Mapbox Map khi Modal mở
   useEffect(() => {
@@ -161,7 +161,7 @@ export const MapLocationPickerModal: React.FC<MapLocationPickerModalProps> = ({
         markerRef.current = null;
       }
     };
-  }, [open, initialLocation, manualAddress]);
+  }, [open, initialLocation, manualAddress, reverseGeocodeCoords, setMarkerPosition]);
 
   // Tìm kiếm địa chỉ qua Geocoding để nhảy nhanh đến vị trí
   const handleSearch = async (query: string) => {

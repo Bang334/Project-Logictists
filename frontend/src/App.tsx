@@ -1,5 +1,5 @@
 import { canOpenTab, defaultTab } from './utils/navigationAccess';
-import React, { useEffect, useState, lazy, Suspense } from 'react';
+import React, { useEffect, useRef, useState, lazy, Suspense } from 'react';
 import AccountsPage from './pages/AccountsPage';
 import { canManageAccounts } from './types/accounts';
 import { Layout, ConfigProvider, theme, App as AntdApp, Spin, Alert, Button, Result } from 'antd';
@@ -23,6 +23,7 @@ const { Content } = Layout;
 const MainLayout: React.FC = () => {
   const { user, token, loading, error, retry, logout, scopeVersion, can } = useAuth();
   const [currentTab, setTab] = useState(() => window.location.pathname.slice(1) || 'dashboard');
+  const redirectedUserIdRef = useRef<string | null>(null);
   const setCurrentTab = (tab: string) => { setTab(tab); window.history.pushState(null, '', tab === 'dashboard' ? '/' : '/' + tab); };
   useEffect(() => {
     const pop = () => setTab(window.location.pathname.slice(1) || 'dashboard');
@@ -31,8 +32,16 @@ const MainLayout: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (user && window.location.pathname === '/' && defaultTab(user) !== 'dashboard') setCurrentTab(defaultTab(user));
-  }, [user?.id]);
+    if (!user) {
+      redirectedUserIdRef.current = null;
+      return;
+    }
+    if (redirectedUserIdRef.current === user.id) return;
+    redirectedUserIdRef.current = user.id;
+    if (window.location.pathname === '/' && defaultTab(user) !== 'dashboard') {
+      setCurrentTab(defaultTab(user));
+    }
+  }, [user]);
 
   if (loading) {
     return <Spin fullscreen aria-label="Đang kiểm tra phiên" />;

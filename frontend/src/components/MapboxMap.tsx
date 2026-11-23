@@ -162,6 +162,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   const truckMarkerRef = useRef<mapboxgl.Marker | null>(null);
   const truckElementRef = useRef<HTMLDivElement | null>(null);
   const simulationFocusRef = useRef(simulationFocus);
+  const initialMarkersRef = useRef(markers);
 
   // Simulation State
   const [isPlaying, setIsPlaying] = useState<boolean>(autoPlaySimulation && !prefersReducedMotion);
@@ -185,6 +186,10 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   useEffect(() => {
     simulationFocusRef.current = simulationFocus;
   }, [simulationFocus]);
+
+  useEffect(() => {
+    initialMarkersRef.current = markers;
+  }, [markers]);
 
   // Extract flat coordinates array for route profile
   const routeCoordinates = useMemo<[number, number][]>(() => {
@@ -240,11 +245,12 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
 
     mapboxgl.accessToken = token;
 
+    const initialMarkers = initialMarkersRef.current;
     const initialCenter: [number, number] =
       routeCoordinates.length > 0
         ? [routeCoordinates[0][0], routeCoordinates[0][1]]
-        : markers.length > 0
-          ? [markers[0].longitude, markers[0].latitude]
+        : initialMarkers.length > 0
+          ? [initialMarkers[0].longitude, initialMarkers[0].latitude]
           : [105.854, 21.0283];
 
     const map = new mapboxgl.Map({

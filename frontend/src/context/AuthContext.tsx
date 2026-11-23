@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useCallback, useContext, useState, useEffect, useRef } from 'react';
 import { disconnectRealtimeSocket } from '../api/realtime';
 import { User, parseUser } from '../types';
 import { authApi, resetRequests, setApiSession, apiErrorMessage } from '../api/client';
@@ -25,14 +25,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const operation = useRef(0);
   const userRef = useRef<User | null>(null);
   const branchRef = useRef<string | undefined>(branchId);
-  const invalidate = () => { resetRequests(); setScopeVersion(v => v + 1); };
-  const clear = () => {
+  const invalidate = useCallback(() => { resetRequests(); setScopeVersion(v => v + 1); }, []);
+  const clear = useCallback(() => {
     operation.current++; invalidate(); disconnectRealtimeSocket(); sessionStorage.removeItem('tms_token');
     sessionStorage.removeItem(BRANCH_STORAGE_KEY);
     localStorage.removeItem('tms_token'); setApiSession(null);
     setToken(null); setUser(null); userRef.current = null; setBranch(undefined); branchRef.current = undefined; setLoading(false);
-  };
-  const acceptProfile = (profile: User) => {
+  }, [invalidate]);
+  const acceptProfile = useCallback((profile: User) => {
     if (JSON.stringify(userRef.current) !== JSON.stringify(profile)) invalidate();
     userRef.current = profile; setUser(profile);
     let next = branchRef.current;
@@ -42,8 +42,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (next) sessionStorage.setItem(BRANCH_STORAGE_KEY, next);
     else sessionStorage.removeItem(BRANCH_STORAGE_KEY);
     setApiSession(sessionStorage.getItem('tms_token'), next);
-  };
-  const retry = async () => {
+  }, [invalidate]);
+  const retry = useCallback(async () => {
     const saved = sessionStorage.getItem('tms_token');
     if (!saved) { setLoading(false); return; }
     const seq = ++operation.current;
@@ -54,16 +54,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (e) {
       if (seq === operation.current) { setError(apiErrorMessage(e)); setUser(null); }
     } finally { if (seq === operation.current) setLoading(false); }
-  };
+  }, [acceptProfile]);
+  const isAuthenticated = Boolean(user);
   useEffect(() => {
     localStorage.removeItem('tms_token');
     void retry();
     const invalid = () => { clear(); setError('Phiên đã hết hạn, bị thu hồi hoặc tài khoản đã bị khóa. Vui lòng đăng nhập lại.'); };
     window.addEventListener('tms:unauthorized', invalid);
     return () => { window.removeEventListener('tms:unauthorized', invalid); };
-  }, []);
+  }, [clear, retry]);
   useEffect(() => {
-    if (!token || !user) return;
+    if (!token || !isAuthenticated) return;
     let disposed = false;
     const refresh = async () => {
       const seq = operation.current;
@@ -80,7 +81,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     window.addEventListener('focus', focus);
     window.addEventListener('tms:forbidden', forbidden);
     return () => { disposed = true; clearInterval(timer); window.removeEventListener('focus', focus); window.removeEventListener('tms:forbidden', forbidden); };
-  }, [token, !!user]);
+  }, [token, isAuthenticated, acceptProfile, invalidate]);
   const login = async (username: string, password: string) => {
     clear(); setError(null);
     const seq = ++operation.current;
