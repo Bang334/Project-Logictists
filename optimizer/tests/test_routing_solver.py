@@ -506,8 +506,8 @@ def test_fleet_solver_rounds_fractional_resequenced_route_end_time(monkeypatch):
     ]
 
     monkeypatch.setattr(
-        "app.routing_solver.SpatialValidator.validate_plan",
-        lambda *_: SpatialValidationResult(
+        "app.routing_solver.validate_stop_actions",
+        lambda *_, **__: SpatialValidationResult(
             is_valid=False,
             violation_code="BLOCKED_ACCESS",
             error_message="Buộc đi qua nhánh tái sắp xếp",

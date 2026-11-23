@@ -27,11 +27,13 @@ from .models import (
     VehicleFloor,
 )
 from .packing_rules import (
+    build_floor_balance_context,
     build_weight_balance_metrics,
     exceeds_top_load_limit,
     is_floor_rotation_locked,
     resolve_can_rotate,
     score_candidate_balance_and_fragility,
+    score_candidate_balance_and_fragility_ctx,
 )
 from .spatial_validator import SpatialValidator
 
@@ -1079,57 +1081,105 @@ def _solve_cycle_greedy(
         max_weight = 0.0
         max_area = 0.0
 
-        def _deck_place(item: Any, base: Dict[str, Any], item_deliv: int) -> Optional[Tuple[float, float, float, float, float]]:
+        def _deck_place(
+            item: Any,
+            base: Dict[str, Any],
+            item_deliv: int,
+            orients: Optional[List[Tuple[float, float]]] = None,
+        ) -> Optional[Tuple[float, float, float, float, float]]:
+            if orients is None:
+                orients = _permitted_orientations(item, vehicle)
+            base_l = base["l"]
+            base_w = base["w"]
+            fitting_orients = [(l_d, w_d) for l_d, w_d in orients if l_d <= base_l + _EPS and w_d <= base_w + _EPS]
+            if not fitting_orients:
+                return None
             u_z = base["z"] + base["h"]
             u_h = float(item.height_cm)
-            orients = _permitted_orientations(item, vehicle)
-            if not orients:
-                return None
             z_conflicts = [
-                e for e in onboard.values()
+                (e["x"], e["y"], e["x"] + e["l"], e["y"] + e["w"], e)
+                for e in onboard.values()
                 if not (e["z"] + e["h"] <= u_z + _EPS or u_z + u_h <= e["z"] + _EPS)
             ]
             ignored = {base["id"], *base["ancestors"]}
-            other_obs = [(e["x"], e["y"], e["l"], e["w"]) for oid, e in onboard.items() if oid not in ignored]
+            other_obs = [
+                (e["x"], e["y"], e["x"] + e["l"], e["y"] + e["w"])
+                for oid, e in onboard.items()
+                if oid not in ignored
+            ]
+            earlier_obs = [
+                (e["x"] + e["l"], e["y"], e["y"] + e["w"])
+                for oid, e in onboard.items()
+                if oid not in ignored and e["delivery_idx"] < item_deliv
+            ]
             cand_best: Optional[Tuple[float, float, float, float, float]] = None
             cand_score = float("inf")
+            base_x = base["x"]
+            base_y = base["y"]
+            base_x_end = base_x + base_l
+            base_y_end = base_y + base_w
 
-            for l_dim, w_dim in orients:
-                if l_dim > base["l"] + _EPS or w_dim > base["w"] + _EPS:
-                    continue
-                min_x, max_x = base["x"], base["x"] + base["l"] - l_dim
-                min_y, max_y = base["y"], base["y"] + base["w"] - w_dim
+            for l_dim, w_dim in fitting_orients:
+                min_x, max_x = base_x, base_x_end - l_dim
+                min_y, max_y = base_y, base_y_end - w_dim
                 x_raw = [min_x, max_x]
                 y_raw = [min_y, max_y]
-                for occ in z_conflicts:
-                    if _boxes_overlap_2d(base["x"], base["y"], base["l"], base["w"], occ["x"], occ["y"], occ["l"], occ["w"]):
-                        x_raw.extend((occ["x"] + occ["l"], occ["x"] - l_dim))
-                        y_raw.extend((occ["y"] + occ["w"], occ["y"] - w_dim))
+                for ox, oy, ox_end, oy_end, _ in z_conflicts:
+                    if (
+                        base_x_end > ox + _EPS
+                        and ox_end > base_x + _EPS
+                        and base_y_end > oy + _EPS
+                        and oy_end > base_y + _EPS
+                    ):
+                        x_raw.extend((ox_end, ox - l_dim))
+                        y_raw.extend((oy_end, oy - w_dim))
                 x_vals = [sx for rx in x_raw if (sx := _snap_inside_span(rx, min_x, max_x)) is not None]
                 y_vals = [sy for ry in y_raw if (sy := _snap_inside_span(ry, min_y, max_y)) is not None]
+                y_sorted = sorted(set(y_vals))
                 for xc in sorted(set(x_vals)):
-                    for yc in sorted(set(y_vals)):
-                        if any(_boxes_overlap_2d(xc, yc, l_dim, w_dim, occ["x"], occ["y"], occ["l"], occ["w"]) for occ in z_conflicts):
+                    x_term = (xc - min_x) * 1000.0
+                    if x_term >= cand_score:
+                        break
+                    xc_end = xc + l_dim
+                    xc_p = xc + _EPS
+                    xc_end_p = xc_end + _EPS
+                    check_corr = bed_l - xc_end > _EPS
+                    for yc in y_sorted:
+                        score = x_term + min(abs(yc - min_y), abs(max_y - yc)) * 10.0 + yc * 0.05
+                        if score >= cand_score:
                             continue
-                        if not _col_corridor_clear(xc, yc, l_dim, w_dim, bed_l, other_obs):
+                        yc_end = yc + w_dim
+                        yc_p = yc + _EPS
+                        blocked = False
+                        for ox, oy, ox_end, oy_end, _ in z_conflicts:
+                            if xc_end > ox + _EPS and ox_end > xc_p and yc_end > oy + _EPS and oy_end > yc_p:
+                                blocked = True
+                                break
+                        if blocked:
                             continue
-                        blocks_earlier = any(
-                            e["delivery_idx"] < item_deliv
-                            and xc > e["x"] + e["l"] - _EPS
-                            and not (yc + w_dim <= e["y"] + _EPS or e["y"] + e["w"] <= yc + _EPS)
-                            for oid, e in onboard.items()
-                            if oid not in ignored
-                        )
-                        if blocks_earlier:
-                            continue
-                        score = (xc - min_x) * 1000.0 + min(abs(yc - min_y), abs(max_y - yc)) * 10.0 + yc * 0.05
-                        if score < cand_score:
-                            cand_score = score
-                            cand_best = (xc, yc, u_z, l_dim, w_dim)
+                        if check_corr:
+                            for ox, oy, ox_end, oy_end in other_obs:
+                                if bed_l > ox + _EPS and ox_end > xc_end_p and yc_end > oy + _EPS and oy_end > yc_p:
+                                    blocked = True
+                                    break
+                            if blocked:
+                                continue
+                        if earlier_obs:
+                            for ex_end, ey, ey_end in earlier_obs:
+                                if xc > ex_end - _EPS and yc_end > ey + _EPS and ey_end > yc_p:
+                                    blocked = True
+                                    break
+                            if blocked:
+                                continue
+                        cand_score = score
+                        cand_best = (xc, yc, u_z, l_dim, w_dim)
             return cand_best
 
         def _try_stack_existing(item: Any, item_deliv: int) -> bool:
             if not bool(getattr(item, "allow_upper_tier", False)) or getattr(item, "cargo_kind", "UNCLASSIFIED") != "STANDARD":
+                return False
+            orients = _permitted_orientations(item, vehicle)
+            if not orients:
                 return False
             item_w = Decimal(str(item.weight_kg))
             u_pair = tuple(sorted((round(float(item.length_cm), 2), round(float(item.width_cm), 2))))
@@ -1143,10 +1193,16 @@ def _solve_cycle_greedy(
                     b["id"],
                 ),
             )
+            max_top_pct = getattr(policy, "max_top_load_percent", 30)
+            item_h = float(item.height_cm)
             for base in bases:
                 if base["tier"] + 1 > policy.max_tiers or base["delivery_idx"] < item_deliv:
                     continue
-                if base["z"] + base["h"] + float(item.height_cm) + policy.lift_clearance_cm > bed_h + _EPS:
+                if base["z"] + base["h"] + item_h + policy.lift_clearance_cm > bed_h + _EPS:
+                    continue
+                b_l = base["l"] + _EPS
+                b_w = base["w"] + _EPS
+                if not any(l_d <= b_l and w_d <= b_w for l_d, w_d in orients):
                     continue
                 anc_ids = (base["id"], *base["ancestors"])
                 ok_anc = True
@@ -1162,14 +1218,14 @@ def _solve_cycle_greedy(
                             anc["above_weight"] + item_w,
                             anc_it.weight_kg,
                             max_top,
-                            getattr(policy, "max_top_load_percent", 30),
+                            max_top_pct,
                         )
                     ):
                         ok_anc = False
                         break
                 if not ok_anc:
                     continue
-                placement = _deck_place(item, base, item_deliv)
+                placement = _deck_place(item, base, item_deliv, orients)
                 if placement is None:
                     continue
                 xc, yc, zc, lc, wc = placement
@@ -1178,7 +1234,7 @@ def _solve_cycle_greedy(
                 base["children"] += 1
                 onboard[item.id] = {
                     "id": item.id, "item": item, "x": xc, "y": yc, "z": zc,
-                    "l": lc, "w": wc, "h": float(item.height_cm),
+                    "l": lc, "w": wc, "h": item_h,
                     "delivery_idx": item_deliv, "tier": base["tier"] + 1,
                     "support_id": base["id"], "ancestors": anc_ids,
                     "above_weight": Decimal("0"), "children": 0,
@@ -1191,79 +1247,123 @@ def _solve_cycle_greedy(
             if not orients:
                 return False
             floor_entries = [e for e in onboard.values() if e["tier"] == 1]
-            floor_obs = [(e["x"], e["y"], e["l"], e["w"]) for e in floor_entries]
+            floor_rects = [(e["x"], e["y"], e["x"] + e["l"], e["y"] + e["w"]) for e in floor_entries]
             pts = {(0.0, 0.0)}
             for e in floor_entries:
-                if e["x"] + e["l"] <= bed_l:
-                    pts.add((e["x"] + e["l"], e["y"]))
-                    pts.add((e["x"] + e["l"], 0.0))
-                    pts.add((e["x"] + e["l"], e["y"] + e["w"]))
-                if e["y"] + e["w"] <= bed_w:
-                    pts.add((e["x"], e["y"] + e["w"]))
-                    pts.add((0.0, e["y"] + e["w"]))
+                ex_end = e["x"] + e["l"]
+                ey_end = e["y"] + e["w"]
+                if ex_end <= bed_l:
+                    pts.add((ex_end, e["y"]))
+                    pts.add((ex_end, 0.0))
+                    pts.add((ex_end, ey_end))
+                if ey_end <= bed_w:
+                    pts.add((e["x"], ey_end))
+                    pts.add((0.0, ey_end))
             for _, w_dim in orients:
                 if w_dim <= bed_w:
-                    pts.add((0.0, bed_w - w_dim))
+                    yw = bed_w - w_dim
+                    pts.add((0.0, yw))
                     for e in floor_entries:
-                        if e["x"] + e["l"] <= bed_l:
-                            pts.add((e["x"] + e["l"], bed_w - w_dim))
+                        ex_end = e["x"] + e["l"]
+                        if ex_end <= bed_l:
+                            pts.add((ex_end, yw))
 
-            placed_floor_list: Optional[List[PlacedItem]] = None
-            kind_map: Optional[Dict[str, str]] = None
+            diff_obs = [
+                (e["y"], e["y"] + e["w"])
+                for e in floor_entries
+                if e["delivery_idx"] != item_deliv
+            ] if strategy != "default" else []
+            earlier_obs = [
+                (e["x"] + e["l"], e["y"], e["y"] + e["w"])
+                for e in onboard.values()
+                if e["delivery_idx"] < item_deliv
+            ]
+            bal_ctx = build_floor_balance_context(
+                [
+                    (
+                        e["x"],
+                        e["y"],
+                        e["l"],
+                        e["w"],
+                        float(e["item"].weight_kg),
+                        getattr(e["item"], "cargo_kind", "UNCLASSIFIED"),
+                    )
+                    for e in floor_entries
+                ],
+                bed_w,
+            )
             item_kind = getattr(item, "cargo_kind", "UNCLASSIFIED")
             item_w = max(0.0, float(item.weight_kg))
             sorted_pts = sorted(pts)
 
             best_cand: Optional[Tuple[float, float, float, float]] = None
             best_score = float("inf")
+            is_default_strategy = strategy == "default"
+            is_lane_left = strategy == "lane_y_left"
             for l_dim, w_dim in orients:
+                diff_y_cache: Dict[float, bool] = {}
+                max_x_allowed = bed_l - l_dim + _EPS
+                max_y_allowed = bed_w - w_dim + _EPS
                 for xc, yc in sorted_pts:
-                    if strategy == "default" and xc * 1000.0 >= best_score:
+                    if is_default_strategy and xc * 1000.0 >= best_score:
                         break
-                    if xc + l_dim > bed_l + _EPS or yc + w_dim > bed_w + _EPS:
+                    if xc > max_x_allowed or yc > max_y_allowed:
                         continue
-                    if strategy == "default":
-                        corridor_pen = 150.0 if (yc > _EPS and yc + w_dim < bed_w - _EPS) else 0.0
+                    yc_end = yc + w_dim
+                    if is_default_strategy:
+                        corridor_pen = 150.0 if (yc > _EPS and yc_end < bed_w - _EPS) else 0.0
                         lb = xc * 1000.0 + corridor_pen + yc * 0.05
                     else:
-                        diff_y = any(
-                            e["delivery_idx"] != item_deliv
-                            and not (yc + w_dim <= e["y"] + _EPS or e["y"] + e["w"] <= yc + _EPS)
-                            for e in floor_entries
-                        )
-                        y_pref = (yc + w_dim) if strategy == "lane_y_left" else (bed_w - yc)
-                        lb = (1_000_000.0 if diff_y else 0.0) + y_pref * 1000.0 + xc * 10.0
+                        y_pref = yc_end if is_lane_left else (bed_w - yc)
+                        base_lb = y_pref * 1000.0 + xc * 10.0
+                        if base_lb >= best_score:
+                            continue
+                        diff_y = diff_y_cache.get(yc)
+                        if diff_y is None:
+                            yc_p_chk = yc + _EPS
+                            diff_y = False
+                            for ey, ey_end in diff_obs:
+                                if yc_end > ey + _EPS and ey_end > yc_p_chk:
+                                    diff_y = True
+                                    break
+                            diff_y_cache[yc] = diff_y
+                        lb = (1_000_000.0 if diff_y else 0.0) + base_lb
                     if lb >= best_score:
                         continue
-                    if any(_boxes_overlap_2d(xc, yc, l_dim, w_dim, ox, oy, ol, ow) for ox, oy, ol, ow in floor_obs):
+                    xc_end = xc + l_dim
+                    xc_p = xc + _EPS
+                    xc_end_p = xc_end + _EPS
+                    yc_p = yc + _EPS
+                    check_corr = bed_l - xc_end > _EPS
+                    blocked = False
+                    for ox, oy, ox_end, oy_end in floor_rects:
+                        if yc_end > oy + _EPS and oy_end > yc_p:
+                            if xc_end > ox + _EPS and ox_end > xc_p:
+                                blocked = True
+                                break
+                            if check_corr and bed_l > ox + _EPS and ox_end > xc_end_p:
+                                blocked = True
+                                break
+                    if blocked:
                         continue
-                    if not _col_corridor_clear(xc, yc, l_dim, w_dim, bed_l, floor_obs):
-                        continue
-                    if any(
-                        e["delivery_idx"] < item_deliv
-                        and xc > e["x"] + e["l"] - _EPS
-                        and not (yc + w_dim <= e["y"] + _EPS or e["y"] + e["w"] <= yc + _EPS)
-                        for e in onboard.values()
-                    ):
-                        continue
-                    if placed_floor_list is None:
-                        placed_floor_list = [
-                            PlacedItem(
-                                item_id=e["id"], order_id=e["item"].order_id,
-                                x=e["x"], y=e["y"], length_cm=e["l"], width_cm=e["w"],
-                                height_cm=e["h"], weight_kg=float(e["item"].weight_kg),
-                                cargo_kind=getattr(e["item"], "cargo_kind", "UNCLASSIFIED"),
-                            )
-                            for e in floor_entries
-                        ]
-                        kind_map = {e["id"]: getattr(e["item"], "cargo_kind", "UNCLASSIFIED") for e in floor_entries}
-                    lat_imb, fragile_adj = score_candidate_balance_and_fragility(
-                        cand_x=xc, cand_y=yc, cand_l=l_dim, cand_w=w_dim,
-                        cand_weight_kg=item_w, cand_cargo_kind=item_kind,
-                        current_placed=placed_floor_list, cargo_kind_by_id=kind_map,
-                        floor_length_cm=bed_l, floor_width_cm=bed_w,
+                    if earlier_obs:
+                        for ex_end, ey, ey_end in earlier_obs:
+                            if xc > ex_end - _EPS and yc_end > ey + _EPS and ey_end > yc_p:
+                                blocked = True
+                                break
+                        if blocked:
+                            continue
+                    lat_imb, fragile_adj = score_candidate_balance_and_fragility_ctx(
+                        bal_ctx,
+                        cand_x=xc,
+                        cand_y=yc,
+                        cand_l=l_dim,
+                        cand_w=w_dim,
+                        cand_weight_kg=item_w,
+                        cand_cargo_kind=item_kind,
+                        floor_width_cm=bed_w,
                     )
-                    extra = (lat_imb * 120.0 + fragile_adj * 140.0) if strategy == "default" else (lat_imb * 20.0 + fragile_adj * 25.0)
+                    extra = (lat_imb * 120.0 + fragile_adj * 140.0) if is_default_strategy else (lat_imb * 20.0 + fragile_adj * 25.0)
                     score = lb + extra
                     if score < best_score:
                         best_score = score

@@ -97,7 +97,10 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
                 break
             reduced = self._remove_order(routes, order_id)
             candidate_routes, failed = self._repair_greedy_insert(
-                copy.deepcopy(reduced), [order_id], start_time=started_at
+                copy.deepcopy(reduced),
+                [order_id],
+                start_time=started_at,
+                deadline=deadline,
             )
             candidate_unassigned = list(dict.fromkeys(unassigned + failed))
             candidate_key = self._candidate_key(
@@ -140,7 +143,11 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
             reduced = copy.deepcopy(routes)
             reduced[cand_v] = []
             rep_routes, failed = self._repair_greedy_insert(
-                reduced, cand_orders, start_time=started_at, randomize=False
+                reduced,
+                cand_orders,
+                start_time=started_at,
+                randomize=False,
+                deadline=deadline,
             )
             if not failed:
                 c_key = self._candidate_key(rep_routes, unassigned)
@@ -173,10 +180,20 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
                             return None
                         red = self._remove_order(routes, o1)
                         red = self._remove_order(red, o2)
-                        red2, f1 = self._repair_greedy_insert(copy.deepcopy(red), [o1], start_time=started_at)
+                        red2, f1 = self._repair_greedy_insert(
+                            copy.deepcopy(red),
+                            [o1],
+                            start_time=started_at,
+                            deadline=deadline,
+                        )
                         if f1:
                             continue
-                        red3, f2 = self._repair_greedy_insert(red2, [o2], start_time=started_at)
+                        red3, f2 = self._repair_greedy_insert(
+                            red2,
+                            [o2],
+                            start_time=started_at,
+                            deadline=deadline,
+                        )
                         if f2:
                             continue
                         c_key = self._candidate_key(red3, unassigned)
@@ -199,6 +216,8 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
         best_cand = None
         active_indices = [i for i, r in enumerate(routes) if r]
         empty_indices = [i for i, r in enumerate(routes) if not r]
+        if not active_indices or not empty_indices:
+            return None
 
         for src_i in active_indices:
             src_v = self.vehicles[src_i]
@@ -267,6 +286,7 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
             [order.id for order in self.orders],
             start_time=started_at,
             randomize=False,
+            deadline=deadline,
         )
         current_cost, _, _ = self._evaluate_plan_cost(
             current_routes, current_unassigned
@@ -341,7 +361,9 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
                     )
                 continue
 
-            reassigned = self._try_vehicle_reassignment(current_routes, current_unassigned)
+            reassigned = self._try_vehicle_reassignment(
+                current_routes, current_unassigned, deadline=deadline
+            )
             if reassigned is not None:
                 current_cost, current_routes, current_unassigned = reassigned
                 current_key = self._candidate_key(current_routes, current_unassigned)
@@ -373,6 +395,7 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
                 perturbed,
                 list(dict.fromkeys(best_unassigned + removed)),
                 start_time=started_at,
+                deadline=deadline,
             )
             current_unassigned = failed
             current_cost, _, _ = self._evaluate_plan_cost(
@@ -389,7 +412,9 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
                     (best_key, copy.deepcopy(best_routes), list(best_unassigned))
                 )
 
-        reassigned = self._try_vehicle_reassignment(best_routes, best_unassigned)
+        reassigned = self._try_vehicle_reassignment(
+            best_routes, best_unassigned, deadline=deadline
+        )
         if reassigned is not None:
             best_cost, best_routes, best_unassigned = reassigned
             best_key = self._candidate_key(best_routes, best_unassigned)

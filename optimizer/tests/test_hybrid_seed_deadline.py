@@ -107,7 +107,7 @@ def test_seed_search_rebuilds_partial_construction_before_relocating_served_ones
 
     def relocate(self, routes, unassigned, started_at, deadline):
         assert not unassigned, "Cost relocation started before repairing the missing order"
-        assert deadline-started_at == pytest.approx(2.4)
+        assert deadline - started_at == pytest.approx(2.35)
         clock[0] = deadline + 1
         return None
 

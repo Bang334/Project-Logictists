@@ -8,28 +8,40 @@ from test_benchmark_contract import comparison_request
 
 
 def test_ranked_repair_keeps_the_cheapest_valid_insertion_with_fewer_packing_probes(monkeypatch):
-    results, probe_counts = [], []
+    results, probe_counts, temporal_feasible_counts = [], [], []
     for ranked in [False, True]:
         engine = PackingAwareHybridALNSOptimizer(comparison_request(), time_budget_seconds=2)
         engine._allow_layout_search = False
         valid, seed = engine._can_insert_order(0, [], engine.orders[0], 0, 1)
         assert valid
         probes = []
-        original = engine._validate_stops_cached
+        temporal_feasible = []
+        original_pack = engine._validate_stops_cached
+        original_insert = engine._can_insert_order
 
         def packing(*args):
             probes.append(True)
-            return original(*args)
+            return original_pack(*args)
+
+        def can_insert(*args, **kwargs):
+            ok, stops = original_insert(*args, **kwargs)
+            if ok and kwargs.get("check_packing") is False:
+                temporal_feasible.append(True)
+            return ok, stops
 
         monkeypatch.setattr(engine, "_validate_stops_cached", packing)
+        monkeypatch.setattr(engine, "_can_insert_order", can_insert)
         repair = engine._repair_greedy_insert if ranked else lambda *a, **kw: ALNSFleetOptimizer._repair_greedy_insert(engine, *a, **kw)
         routes, missing = repair([copy.deepcopy(seed)], [engine.orders[1].id],
             randomize=False, deadline=time.perf_counter()+2)
         assert not missing
         results.append((engine._candidate_key(routes, missing), engine._state_signature(routes)))
         probe_counts.append(len(probes))
+        temporal_feasible_counts.append(len(temporal_feasible))
     assert results[0] == results[1]
-    assert 0 < probe_counts[1] < probe_counts[0]
+    assert 0 < probe_counts[1] <= probe_counts[0]
+    assert probe_counts[1] < temporal_feasible_counts[1]
+    assert probe_counts[0] < temporal_feasible_counts[0]
 
 
 def test_expired_ranked_repair_preserves_every_pending_order(monkeypatch):

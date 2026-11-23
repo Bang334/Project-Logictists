@@ -25,7 +25,7 @@ from app.hybrid_alns.models import OptimizationSolution
 from app.hybrid_alns.objective import solution_key
 from app.hybrid_alns_engine import PackingAwareHybridALNSOptimizer
 from app.models import (
-    FleetOptimizationRequest, FleetOptimizationResponse, ScheduledStop,
+    FleetOptimizationRequest, FleetOptimizationResponse, OptimizedRoute, ScheduledStop,
     SpatialValidationResult, StopAction, UnassignedOrder, VehicleFloor,
 )
 from app.ortools_seed import extract_ortools_seed_pool
@@ -1071,6 +1071,9 @@ class VariantHybridALNSOptimizer(PackingAwareHybridALNSOptimizer):
         *,
         include_benchmarks: bool = True,
         spatial_time_budget_seconds: Optional[float] = None,
+        audited_direct_trips: Optional[Dict[str, List[OptimizedRoute]]] = None,
+        polish_checkpoint: Optional[Tuple[float, FleetOptimizationResponse]] = None,
+        absolute_spatial_deadline: Optional[float] = None,
     ) -> FleetOptimizationResponse:
         prev_val_deadline = self._validation_deadline
         try:
@@ -1123,6 +1126,9 @@ class VariantHybridALNSOptimizer(PackingAwareHybridALNSOptimizer):
                 response = super()._build_final_response(
                     routes_stops, unassigned_ids, include_benchmarks=include_benchmarks,
                     spatial_time_budget_seconds=spatial_time_budget_seconds,
+                    audited_direct_trips=audited_direct_trips,
+                    polish_checkpoint=polish_checkpoint,
+                    absolute_spatial_deadline=absolute_spatial_deadline,
                 )
         finally:
             self._validation_deadline = prev_val_deadline

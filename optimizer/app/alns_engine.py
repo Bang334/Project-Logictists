@@ -207,6 +207,9 @@ class ALNSFleetOptimizer:
         self.rng = random.Random(random_seed)
 
         self.order_by_id = {o.id: o for o in self.orders}
+        self._order_weight_by_id = {
+            o.id: sum(it.weight_kg for it in o.items) for o in self.orders
+        }
         self.cargo_by_id = {it.id: it for o in self.orders for it in o.items}
         self.vehicle_by_id = {v.id: v for v in self.vehicles}
         self.order_node_indices = {
@@ -488,7 +491,7 @@ class ALNSFleetOptimizer:
 
         # 1. Capacity check along the route
         w = 0.0
-        order_weights = {o.id: sum(it.weight_kg for it in o.items) for o in self.orders}
+        order_weights = self._order_weight_by_id
         for st in cand_stops:
             if st.stop_type == "PICKUP":
                 w += order_weights.get(st.order_id, 0.0)
@@ -533,13 +536,19 @@ class ALNSFleetOptimizer:
                 ),
             )
 
-        for order in orders_to_insert:
-            if deadline is not None and time.perf_counter() >= deadline:
-                still_unassigned.append(order.id)
-                continue
-            if start_time is not None and time.perf_counter() - start_time >= self.time_limit_sec:
-                still_unassigned.append(order.id)
-                continue
+        effective_deadline = deadline
+        if start_time is not None:
+            start_deadline = start_time + self.time_limit_sec
+            effective_deadline = (
+                min(effective_deadline, start_deadline)
+                if effective_deadline is not None
+                else start_deadline
+            )
+
+        for order_idx, order in enumerate(orders_to_insert):
+            if effective_deadline is not None and time.perf_counter() >= effective_deadline:
+                still_unassigned.extend(o.id for o in orders_to_insert[order_idx:])
+                break
 
             best_incremental_cost = float("inf")
             best_v_idx: Optional[int] = None
@@ -560,7 +569,11 @@ class ALNSFleetOptimizer:
                 else 0
             }
 
+            timed_out = False
             for v_idx in range(len(self.vehicles)):
+                if effective_deadline is not None and time.perf_counter() >= effective_deadline:
+                    timed_out = True
+                    break
                 curr_stops = routes_stops[v_idx]
                 v = self.vehicles[v_idx]
 
@@ -578,6 +591,8 @@ class ALNSFleetOptimizer:
                 )
 
                 if len(curr_stops) == 0:
+                    if (v.fixed_operating_cost_vnd + 150_000 + calendar_extension) >= best_incremental_cost:
+                        continue
                     max_routes = getattr(self.request.policy, "max_routes_per_day", None)
                     if (
                         max_routes is not None
@@ -624,27 +639,43 @@ class ALNSFleetOptimizer:
                 )
 
                 for i, j in positions:
-                    feasible, cand_stops = self._can_insert_order(v_idx, curr_stops, order, i, j)
-                    if feasible:
-                        cand_dist = self._calc_route_distance_km(v_idx, cand_stops)
-                        inc_dist = cand_dist - base_dist
+                    if effective_deadline is not None and time.perf_counter() >= effective_deadline:
+                        timed_out = True
+                        break
+                    # Screen schedule and incremental cost before paying the
+                    # expensive 3D packing check on non-competitive candidates.
+                    feasible, cand_stops = self._can_insert_order(
+                        v_idx, curr_stops, order, i, j, check_packing=False
+                    )
+                    if not feasible:
+                        continue
+                    cand_dist = self._calc_route_distance_km(v_idx, cand_stops)
+                    inc_dist = cand_dist - base_dist
 
-                        inc_fuel = (v.fuel_consumption_liters_per_100_km / 100.0) * inc_dist * self.policy.fuel_price_per_liter_vnd
-                        inc_fixed = v.fixed_operating_cost_vnd if len(curr_stops) == 0 else 0
-                        inc_driver = (150_000 if len(curr_stops) == 0 else 0) + round(1_200 * inc_dist)
-                        inc_cost = inc_fuel + inc_fixed + inc_driver + calendar_extension
-                        if shares_source_order:
-                            inc_cost -= 50_000
+                    inc_fuel = (v.fuel_consumption_liters_per_100_km / 100.0) * inc_dist * self.policy.fuel_price_per_liter_vnd
+                    inc_fixed = v.fixed_operating_cost_vnd if len(curr_stops) == 0 else 0
+                    inc_driver = (150_000 if len(curr_stops) == 0 else 0) + round(1_200 * inc_dist)
+                    inc_cost = inc_fuel + inc_fixed + inc_driver + calendar_extension
+                    if shares_source_order:
+                        inc_cost -= 50_000
 
-                        if inc_cost < best_incremental_cost:
-                            best_incremental_cost = inc_cost
-                            best_v_idx = v_idx
-                            best_cand_stops = cand_stops
+                    if inc_cost >= best_incremental_cost:
+                        continue
+                    if not self._validate_stops_cached(v_idx, cand_stops):
+                        continue
+                    best_incremental_cost = inc_cost
+                    best_v_idx = v_idx
+                    best_cand_stops = cand_stops
+                if timed_out:
+                    break
 
             if best_v_idx is not None and best_cand_stops is not None:
                 routes_stops[best_v_idx] = best_cand_stops
             else:
                 still_unassigned.append(order.id)
+            if timed_out:
+                still_unassigned.extend(o.id for o in orders_to_insert[order_idx + 1 :])
+                break
 
         return routes_stops, still_unassigned
 
@@ -1213,13 +1244,22 @@ class ALNSFleetOptimizer:
                 if unassigned_members and not unassigned_members.issubset(set(unassigned_candidates)):
                     incomplete_split_groups.add(gid)
 
+            active_max_day = max(
+                (self.vehicles[idx].service_day_index for idx in used_v_indices),
+                default=0,
+            )
             empty_vehicle_order = sorted(
                 range(len(self.vehicles)),
                 key=lambda idx: (
-                    self.vehicles[idx].payload_limit_kg,
-                    self.vehicles[idx].length_cm * self.vehicles[idx].width_cm * self.vehicles[idx].height_cm,
+                    1 if self.vehicles[idx].service_day_index > active_max_day else 0,
+                    self.vehicles[idx].service_day_index,
+                    -self.vehicles[idx].payload_limit_kg,
+                    -(
+                        self.vehicles[idx].length_cm
+                        * self.vehicles[idx].width_cm
+                        * self.vehicles[idx].height_cm
+                    ),
                 ),
-                reverse=True,
             )
             for empty_v_idx in empty_vehicle_order:
                 v = self.vehicles[empty_v_idx]

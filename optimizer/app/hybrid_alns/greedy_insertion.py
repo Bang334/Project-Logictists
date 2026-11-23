@@ -36,6 +36,8 @@ def solve_greedy(
     sorted_orders = sorted(
         orders, key=lambda o: (o.total_weight_kg, o.total_volume_m3), reverse=True
     )
+    has_multi_day = len({v.service_day_index for v in vehicles}) > 1
+    vehicle_order = sorted(range(len(vehicles)), key=lambda idx: (vehicles[idx].service_day_index, idx))
 
     unassigned_orders: List[str] = []
     vehicle_routes: List[List[ScheduledStop]] = [[] for _ in vehicles]
@@ -49,8 +51,13 @@ def solve_greedy(
         best_d_pos: Optional[int] = None
         best_incremental_cost = float("inf")
         checked_empty_types = set()
+        current_span = max(
+            (vehicles[idx].service_day_index + 1 for idx, r in enumerate(vehicle_routes) if r),
+            default=0,
+        )
 
-        for v_idx, vehicle in enumerate(vehicles):
+        for v_idx in vehicle_order:
+            vehicle = vehicles[v_idx]
             if deadline is not None and time.perf_counter() >= deadline:
                 break
             current_stops = vehicle_routes[v_idx]
@@ -175,7 +182,11 @@ def solve_greedy(
                     else float("inf")
                 )
                 if len(current_stops) == 0:
-                    cand_cost += 1_000_000 + vehicle.service_day_index * 50_000
+                    day_weight = 250_000 if has_multi_day else 50_000
+                    span_penalty = 0
+                    if has_multi_day and (vehicle.service_day_index + 1) > current_span and current_span > 0:
+                        span_penalty = (vehicle.service_day_index + 1 - current_span) * 1_500_000
+                    cand_cost += 1_000_000 + vehicle.service_day_index * day_weight + span_penalty
                 elif shares_source_order:
                     cand_cost -= 2_000_000
 

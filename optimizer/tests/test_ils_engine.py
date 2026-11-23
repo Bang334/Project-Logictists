@@ -772,22 +772,98 @@ def test_multi_start_runs_one_ortools_fallback_when_hybrid_returns_no_route(monk
 def test_hybrid_first_splits_large_budget_across_two_seeds(monkeypatch) -> None:
     request = _request()
     source_order = request.orders[0]
+    orders = [
+        source_order.model_copy(
+            update={
+                "id": f"order-{index}",
+                "order_number": f"ORD-{index}",
+                "items": [
+                    source_order.items[0].model_copy(
+                        update={
+                            "id": f"item-{index}",
+                            "order_id": f"order-{index}",
+                        }
+                    )
+                ],
+            }
+        )
+        for index in range(8)
+    ]
+    node_count = len(request.vehicles) + 2 * len(orders)
     request = request.model_copy(
         update={
-            "orders": [
-                source_order.model_copy(
-                    update={
-                        "id": f"order-{index}",
-                        "order_number": f"ORD-{index}",
-                    }
-                )
-                for index in range(8)
-            ],
+            "orders": orders,
             "max_time_seconds": 120,
             "search_time_seconds": 48,
+            "distance_matrix_meters": [
+                [0 if i == j else 1_000 for j in range(node_count)]
+                for i in range(node_count)
+            ],
+            "duration_matrix_seconds": [
+                [0 if i == j else 100 for j in range(node_count)]
+                for i in range(node_count)
+            ],
         }
     )
-    hybrid_plan = _complete_plan(300_000, "hybrid-route")
+    hybrid_plan = FleetOptimizationResponse(
+        job_id="ils-test",
+        status="SUCCESS",
+        total_cost_vnd=300_000,
+        routes=[
+            OptimizedRoute(
+                route_id="hybrid-route",
+                vehicle_id="vehicle-1",
+                start_time_sec=200,
+                end_time_sec=440,
+                plate_number="29H-001",
+                vehicle_length_cm=400,
+                vehicle_width_cm=200,
+                total_distance_km=8,
+                total_duration_minutes=4,
+                stops=[
+                    stop
+                    for index in range(8)
+                    for stop in (
+                        ScheduledStop(
+                            sequence=2 * index + 1,
+                            location_id="pickup",
+                            location_name="Điểm lấy",
+                            stop_type="PICKUP",
+                            order_id=f"order-{index}",
+                            allocation_id=f"order-{index}",
+                            latitude=21.01,
+                            longitude=105.81,
+                            arrival_time_sec=210 + index * 30,
+                            departure_time_sec=215 + index * 30,
+                            travel_time_sec=10,
+                            waiting_time_sec=0,
+                            service_time_sec=5,
+                            items_loaded=[f"item-{index}"],
+                        ),
+                        ScheduledStop(
+                            sequence=2 * index + 2,
+                            location_id="delivery",
+                            location_name="Điểm giao",
+                            stop_type="DELIVERY",
+                            order_id=f"order-{index}",
+                            allocation_id=f"order-{index}",
+                            latitude=21.02,
+                            longitude=105.82,
+                            arrival_time_sec=225 + index * 30,
+                            departure_time_sec=230 + index * 30,
+                            travel_time_sec=10,
+                            waiting_time_sec=0,
+                            service_time_sec=5,
+                            items_unloaded=[f"item-{index}"],
+                        ),
+                    )
+                ],
+                return_travel_time_sec=0,
+                return_waiting_time_sec=0,
+                spatial_validation=SpatialValidationResult(is_valid=True),
+            )
+        ],
+    )
     captured = []
 
     class FakeHybridALNS:

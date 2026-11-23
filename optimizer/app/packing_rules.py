@@ -191,6 +191,115 @@ def _are_adjacent(
     return (x_gap <= gap_cm and y_ov > _EPS) or (y_gap <= gap_cm and x_ov > _EPS)
 
 
+class FloorBalanceContext:
+    """Precomputed floor CG and fragility subsets reused across candidate points."""
+
+    __slots__ = ("half_w", "base_total_w", "base_moment_y", "fragile_items", "non_fragile_items")
+
+    def __init__(
+        self,
+        *,
+        half_w: float,
+        base_total_w: float,
+        base_moment_y: float,
+        fragile_items: Tuple[Tuple[float, float, float, float, float], ...],
+        non_fragile_items: Tuple[Tuple[float, float, float, float, float], ...],
+    ) -> None:
+        self.half_w = half_w
+        self.base_total_w = base_total_w
+        self.base_moment_y = base_moment_y
+        self.fragile_items = fragile_items
+        self.non_fragile_items = non_fragile_items
+
+
+def build_floor_balance_context(
+    entries: Sequence[Tuple[float, float, float, float, float, str]],
+    floor_width_cm: float,
+) -> FloorBalanceContext:
+    """Precompute floor moment and fragile/non-fragile item geometry tuples."""
+    half_w = floor_width_cm / 2.0 if floor_width_cm > 0 else 1.0
+    base_total_w = 0.0
+    base_moment_y = 0.0
+    fragile_items = []
+    non_fragile_items = []
+    for ox, oy, ol, ow, weight_kg, kind in entries:
+        pw = float(weight_kg or 0.0)
+        if pw > 0:
+            base_total_w += pw
+            base_moment_y += pw * (oy + ow / 2.0)
+        geom = (ox, oy, ox + ol, oy + ow, pw)
+        if kind == "FRAGILE":
+            fragile_items.append(geom)
+        else:
+            non_fragile_items.append(geom)
+    return FloorBalanceContext(
+        half_w=half_w,
+        base_total_w=base_total_w,
+        base_moment_y=base_moment_y,
+        fragile_items=tuple(fragile_items),
+        non_fragile_items=tuple(non_fragile_items),
+    )
+
+
+def score_candidate_balance_and_fragility_ctx(
+    ctx: FloorBalanceContext,
+    *,
+    cand_x: float,
+    cand_y: float,
+    cand_l: float,
+    cand_w: float,
+    cand_weight_kg: float,
+    cand_cargo_kind: str,
+    floor_width_cm: float,
+) -> Tuple[float, float]:
+    """Score lateral imbalance and fragile adjacency against a precomputed context."""
+    cw = max(0.0, float(cand_weight_kg or 0.0))
+    total_w = ctx.base_total_w + cw
+    moment_y = ctx.base_moment_y + cw * (cand_y + cand_w / 2.0)
+    new_cg_y = (moment_y / total_w) if total_w > 1e-6 else ctx.half_w
+    lateral_imbalance = abs(new_cg_y - ctx.half_w) / ctx.half_w
+
+    cand_is_fragile = cand_cargo_kind == "FRAGILE"
+    if not cand_is_fragile and not ctx.fragile_items:
+        return round(lateral_imbalance, 4), 0.0
+
+    fragile_penalty = 0.0
+    left_pinch = cand_y <= _FRAGILE_PROXIMITY_CM
+    right_pinch = cand_y + cand_w >= floor_width_cm - _FRAGILE_PROXIMITY_CM
+    cand_x2 = cand_x + cand_l
+    cand_y2 = cand_y + cand_w
+
+    if cand_is_fragile:
+        for ox, oy, ox2, oy2, other_weight in ctx.non_fragile_items:
+            x_gap = ox - cand_x2 if ox > cand_x2 else (cand_x - ox2 if cand_x > ox2 else 0.0)
+            y_gap = oy - cand_y2 if oy > cand_y2 else (cand_y - oy2 if cand_y > oy2 else 0.0)
+            y_ov = (cand_y2 if cand_y2 < oy2 else oy2) - (cand_y if cand_y > oy else oy)
+            x_ov = (cand_x2 if cand_x2 < ox2 else ox2) - (cand_x if cand_x > ox else ox)
+            if not ((x_gap <= _FRAGILE_PROXIMITY_CM and y_ov > _EPS) or (y_gap <= _FRAGILE_PROXIMITY_CM and x_ov > _EPS)):
+                continue
+            if other_weight >= max(20.0, cw * 1.5):
+                fragile_penalty += min(4.0, other_weight / max(cw, 1.0) * 0.5)
+            if x_ov > _EPS:
+                if oy2 <= cand_y + _FRAGILE_PROXIMITY_CM:
+                    left_pinch = True
+                if oy >= cand_y2 - _FRAGILE_PROXIMITY_CM:
+                    right_pinch = True
+        if left_pinch and right_pinch:
+            fragile_penalty += 0.6
+    else:
+        for ox, oy, ox2, oy2, other_weight in ctx.fragile_items:
+            x_gap = ox - cand_x2 if ox > cand_x2 else (cand_x - ox2 if cand_x > ox2 else 0.0)
+            y_gap = oy - cand_y2 if oy > cand_y2 else (cand_y - oy2 if cand_y > oy2 else 0.0)
+            y_ov = (cand_y2 if cand_y2 < oy2 else oy2) - (cand_y if cand_y > oy else oy)
+            x_ov = (cand_x2 if cand_x2 < ox2 else ox2) - (cand_x if cand_x > ox else ox)
+            if not ((x_gap <= _FRAGILE_PROXIMITY_CM and y_ov > _EPS) or (y_gap <= _FRAGILE_PROXIMITY_CM and x_ov > _EPS)):
+                continue
+            if cw >= max(20.0, other_weight * 1.5):
+                fragile_penalty += min(4.0, cw / max(other_weight, 1.0) * 0.5)
+
+    return round(lateral_imbalance, 4), round(fragile_penalty, 4)
+
+
 def score_candidate_balance_and_fragility(
     *,
     cand_x: float,
@@ -212,54 +321,31 @@ def score_candidate_balance_and_fragility(
       next to much heavier items (or vice versa), and penalizes pinching FRAGILE on
       both lateral sides when a more open position exists.
     """
-    half_w = floor_width_cm / 2.0 if floor_width_cm > 0 else 1.0
-    total_w = 0.0
-    moment_y = 0.0
-    for placed in current_placed:
-        pw = float(getattr(placed, "weight_kg", 0.0) or 0.0)
-        if pw <= 0:
-            continue
-        total_w += pw
-        moment_y += pw * (float(placed.y) + float(placed.width_cm) / 2.0)
-
-    cw = max(0.0, float(cand_weight_kg or 0.0))
-    total_w += cw
-    moment_y += cw * (cand_y + cand_w / 2.0)
-    new_cg_y = (moment_y / total_w) if total_w > 1e-6 else half_w
-    lateral_imbalance = abs(new_cg_y - half_w) / half_w
-
-    fragile_penalty = 0.0
-    cand_is_fragile = cand_cargo_kind == "FRAGILE"
-
-    left_pinch = cand_y <= _FRAGILE_PROXIMITY_CM
-    right_pinch = cand_y + cand_w >= floor_width_cm - _FRAGILE_PROXIMITY_CM
-
-    for other in current_placed:
-        other_kind = cargo_kind_by_id.get(other.item_id, "UNCLASSIFIED")
-        other_weight = float(getattr(other, "weight_kg", 0.0) or 0.0)
-        if not _are_adjacent(
-            cand_x, cand_y, cand_l, cand_w,
-            float(other.x), float(other.y), float(other.length_cm), float(other.width_cm),
-        ):
-            continue
-
-        if cand_is_fragile and other_kind != "FRAGILE":
-            if other_weight >= max(20.0, cw * 1.5):
-                fragile_penalty += min(4.0, other_weight / max(cw, 1.0) * 0.5)
-            # Check lateral confinement for fragile package
-            if _interval_overlap(cand_x, cand_x + cand_l, float(other.x), float(other.x + other.length_cm)) > _EPS:
-                if float(other.y + other.width_cm) <= cand_y + _FRAGILE_PROXIMITY_CM:
-                    left_pinch = True
-                if float(other.y) >= cand_y + cand_w - _FRAGILE_PROXIMITY_CM:
-                    right_pinch = True
-        elif not cand_is_fragile and other_kind == "FRAGILE":
-            if cw >= max(20.0, other_weight * 1.5):
-                fragile_penalty += min(4.0, cw / max(other_weight, 1.0) * 0.5)
-
-    if cand_is_fragile and left_pinch and right_pinch:
-        fragile_penalty += 0.6
-
-    return round(lateral_imbalance, 4), round(fragile_penalty, 4)
+    del floor_length_cm
+    ctx = build_floor_balance_context(
+        [
+            (
+                float(p.x),
+                float(p.y),
+                float(p.length_cm),
+                float(p.width_cm),
+                float(getattr(p, "weight_kg", 0.0) or 0.0),
+                cargo_kind_by_id.get(p.item_id, "UNCLASSIFIED"),
+            )
+            for p in current_placed
+        ],
+        floor_width_cm,
+    )
+    return score_candidate_balance_and_fragility_ctx(
+        ctx,
+        cand_x=cand_x,
+        cand_y=cand_y,
+        cand_l=cand_l,
+        cand_w=cand_w,
+        cand_weight_kg=cand_weight_kg,
+        cand_cargo_kind=cand_cargo_kind,
+        floor_width_cm=floor_width_cm,
+    )
 
 
 def is_heavy_package_blocking_center_preference(

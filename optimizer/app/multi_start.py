@@ -45,6 +45,54 @@ DIRECT_BENCHMARK_BUDGET_SECONDS = 20.0
 MAX_PARALLEL_HYBRID_SEEDS = 3
 
 
+def _estimate_hybrid_lower_bound_days(request: FleetOptimizationRequest) -> int:
+    """Ước lượng cận dưới số ngày tối thiểu hoàn toàn dựa trên năng lực ca và thời gian đơn hàng."""
+    days = sorted({v.service_day_index for v in request.vehicles})
+    if len(days) <= 1 or not request.orders:
+        return len(days)
+    vehicles_by_day: Dict[int, List] = {}
+    for v in request.vehicles:
+        vehicles_by_day.setdefault(v.service_day_index, []).append(v)
+    route_limit = request.policy.max_routes_per_day
+    first_day = days[0]
+    first_day_vehicles = vehicles_by_day[first_day]
+    if route_limit is not None:
+        first_day_vehicles = sorted(
+            first_day_vehicles,
+            key=lambda v: v.available_end_sec - v.available_start_sec,
+            reverse=True,
+        )[:route_limit]
+    daily_capacity_sec = max(
+        1,
+        sum(max(0, v.available_end_sec - v.available_start_sec) for v in first_day_vehicles),
+    )
+    nv = len(request.vehicles)
+    dur = request.duration_matrix_seconds
+    min_work_sec = 0.0
+    earliest_span_needed = 1
+    for i, order in enumerate(request.orders):
+        p_idx = nv + 2 * i
+        d_idx = p_idx + 1
+        p_srv = order.pickup_service_time_sec if order.pickup_service_time_sec is not None else order.service_time_sec
+        d_srv = order.delivery_service_time_sec if order.delivery_service_time_sec is not None else order.service_time_sec
+        leg_sec = dur[p_idx][d_idx] if p_idx < len(dur) and d_idx < len(dur[p_idx]) else 0.0
+        min_work_sec += max(0.0, p_srv + d_srv + leg_sec)
+        for day in days:
+            d_vs = vehicles_by_day[day]
+            if any(
+                (t_p := max(v.available_start_sec, order.pickup_window_start_sec))
+                <= min(v.available_end_sec, order.pickup_window_end_sec)
+                and (t_d := max(t_p + p_srv + leg_sec, order.delivery_window_start_sec))
+                <= order.delivery_window_end_sec
+                and t_d + d_srv <= v.available_end_sec
+                for v in d_vs
+            ):
+                earliest_span_needed = max(earliest_span_needed, days.index(day) + 1)
+                break
+    work_lb = math.ceil(min_work_sec / daily_capacity_sec)
+    return max(1, min(len(days), max(work_lb, earliest_span_needed)))
+
+
 def _run_hybrid_seed_worker(
     request_dict: dict,
     objective_request_dict: dict,
@@ -57,20 +105,88 @@ def _run_hybrid_seed_worker(
         request = FleetOptimizationRequest(**request_dict)
         objective_request = FleetOptimizationRequest(**objective_request_dict)
         worker_deadline = time.perf_counter() + max(0.5, float(time_budget))
-        initial_plan = FleetOptimizationResponse.model_validate(warm_plan) if warm_plan is not None else None
         expected_items = {order.id: {item.id for item in order.items} for order in request.orders}
+        initial_plan = FleetOptimizationResponse.model_validate(warm_plan) if warm_plan is not None else None
+        distinct_days = sorted({v.service_day_index for v in request.vehicles})
+        compact_days_hint = (
+            _estimate_hybrid_lower_bound_days(request)
+            if seed == 0 and len(distinct_days) > 1 and len(request.orders) >= 12
+            else None
+        )
+
+        # Với seed 0 trên bài toán đa ngày khi chưa có warm_plan: tự dò từ cận dưới
+        # số ngày tối thiểu bằng chính Hybrid ALNS (tăng +1 nếu chưa đủ 100% đơn)
+        # thay vì cắt cứng theo Direct OR-Tools.
+        solver_request = request
+        compact_fallback_plan: Optional[FleetOptimizationResponse] = None
+        if compact_days_hint is not None and initial_plan is None and compact_days_hint < len(distinct_days):
+            probe_days = compact_days_hint
+            while probe_days < len(distinct_days):
+                rem = worker_deadline - time.perf_counter()
+                if rem < 2.0:
+                    break
+                allowed_day_set = set(distinct_days[:probe_days])
+                slots = [i for i, v in enumerate(request.vehicles) if v.service_day_index in allowed_day_set]
+                compact_req = request_with_vehicle_slots(request, slots)
+                if compact_req is None:
+                    probe_days += 1
+                    continue
+                probe_share = 0.72 if probe_days >= 2 else 0.45
+                probe_budget = min(rem, max(3.0, rem * probe_share))
+                probe_hybrid = PackingAwareHybridALNSOptimizer(
+                    compact_req,
+                    time_budget_seconds=probe_budget,
+                    random_seed=seed,
+                    should_split_orders=False,
+                    include_benchmarks=False,
+                )
+                probe_plan = probe_hybrid.solve(
+                    hard_deadline=min(worker_deadline, time.perf_counter() + probe_budget)
+                )
+                if is_fully_served(
+                    probe_plan,
+                    set(expected_items),
+                    request.policy.max_routes_per_day,
+                    expected_items,
+                ):
+                    obj = apply_planning_objective(objective_request, probe_plan)
+                    return seed, probe_plan.model_dump(), obj.model_dump(), None
+                if probe_plan.routes and compact_fallback_plan is None:
+                    compact_fallback_plan = probe_plan
+                probe_days += 1
+
+        # Nếu seed 0 nhận được warm_plan đã hoàn tất trong K ngày (< tổng số ngày mở),
+        # giữ bước tinh chỉnh tập trung trên đúng K ngày đó để tối ưu chi phí sâu hơn.
+        if (
+            seed == 0
+            and initial_plan is not None
+            and initial_plan.routes
+            and len(distinct_days) > 1
+            and is_fully_served(initial_plan, set(expected_items), request.policy.max_routes_per_day, expected_items)
+        ):
+            warm_days = max(r.service_day_index + 1 for r in initial_plan.routes)
+            if 1 <= warm_days < len(distinct_days):
+                allowed_day_set = set(distinct_days[:warm_days])
+                slots = [i for i, v in enumerate(request.vehicles) if v.service_day_index in allowed_day_set]
+                narrowed = request_with_vehicle_slots(request, slots)
+                if narrowed is not None:
+                    solver_request = narrowed
+
+        rem_budget = max(0.5, worker_deadline - time.perf_counter())
         hybrid = PackingAwareHybridALNSOptimizer(
-            request,
-            time_budget_seconds=time_budget,
+            solver_request,
+            time_budget_seconds=rem_budget,
             random_seed=seed,
             initial_plan=initial_plan,
             initial_plan_is_verified=initial_plan is not None and is_fully_served(
-                initial_plan, set(expected_items), request.policy.max_routes_per_day, expected_items,
+                initial_plan, set(expected_items), solver_request.policy.max_routes_per_day, expected_items,
             ),
             should_split_orders=False,
             include_benchmarks=False,
         )
         plan = hybrid.solve(hard_deadline=worker_deadline)
+        if not plan.routes and compact_fallback_plan is not None:
+            plan = compact_fallback_plan
         if not plan.routes:
             return seed, None, None, f"Packing-aware Hybrid ALNS (seed {seed}) không trả về tuyến."
         obj = apply_planning_objective(objective_request, plan)
@@ -549,32 +665,9 @@ class MultiStartFleetOptimizer:
         direct_metric = None
         short_plan = None
         target_days = 0
-        if not is_mocked:
-            started = time.perf_counter()
-            calculator, direct_metric = self._direct_benchmark()
-            job_deadline += time.perf_counter() - started  # Direct has its own budget.
-            if direct_metric.is_feasible and direct_metric.planning_span_days:
-                target_days = direct_metric.planning_span_days
-                slots = [i for i, v in enumerate(self.request.vehicles) if v.service_day_index < target_days]
-                remaining = job_deadline - time.perf_counter()
-                if remaining * 0.30 >= 0.5:
-                    try:
-                        challenger = self._search_direct_span(
-                            slots, direct_metric, time.perf_counter() + remaining * 0.30,
-                        )
-                        if challenger is not None and challenger.routes:
-                            objective = apply_planning_objective(self.objective_request, challenger)
-                            strategy = SearchStrategy(
-                                "hybrid-direct-span", f"Hybrid ALNS trong {target_days} ngày",
-                                DEFAULT_SEARCH_STRATEGY.first_solution_strategy,
-                                DEFAULT_SEARCH_STRATEGY.local_search_metaheuristic,
-                            )
-                            evaluated_runs.append((strategy, challenger, objective.selection_score_vnd))
-                            if is_fully_served(challenger, all_order_ids, self.request.policy.max_routes_per_day,
-                                               {o.id: {i.id for i in o.items} for o in self.request.orders}):
-                                short_plan = challenger
-                    except Exception as error:
-                        search_errors.append(f"Hybrid ALNS trong {target_days} ngày: {error}")
+        # Không ép trước horizon theo Direct OR-Tools; toàn bộ các seed Hybrid ALNS
+        # tự tìm và nén số ngày tốt nhất trên đầy đủ các ngày khả dụng. Direct chỉ chạy
+        # ở cuối để đối chuẩn "Chuyến đơn lẻ".
         total_items = sum(len(o.items) for o in self.request.orders)
         cpu_count = os.cpu_count() or 1
         use_single_seed_for_scale = (
@@ -620,10 +713,10 @@ class MultiStartFleetOptimizer:
                 for seed in hybrid_seeds:
                     initial = short_plan.model_dump() if seed == 0 and short_plan is not None else None
                     budget = effective_run_budget if seed == 0 else secondary_seed_budget
-                    bootstrap_budget = search_budget_seconds * 0.85
-                    if seed != 0 and len(hybrid_seeds) > parallel_workers:
-                        bootstrap_budget /= secondary_waves
-                    bootstrap_budget = min(budget, bootstrap_budget)
+                    min_bootstrap = 12.0 if len(self.request.orders) >= 50 and budget >= 20.0 else 0.0
+                    bootstrap_budget = min(budget, max(min_bootstrap, search_budget_seconds * 0.85))
+                    if seed != 0 and len(hybrid_seeds) > parallel_workers and secondary_seed_budget < 24.0:
+                        bootstrap_budget = min(budget, max(min_bootstrap * 0.8, search_budget_seconds * 0.85 / secondary_waves))
                     refine_budget = budget - bootstrap_budget if adaptive_search else 0
                     # Return an audited checkpoint before a longer refinement can
                     # exhaust its time. The parent keeps it across worker timeouts.
@@ -864,13 +957,6 @@ class MultiStartFleetOptimizer:
                 f"{seed_budget_detail}."
             ),
         ]
-        if target_days and not any(is_fully_served(plan, all_order_ids, self.request.policy.max_routes_per_day,
-                                                  {o.id: {i.id for i in o.items} for o in self.request.orders})
-                                   and _plan_days(plan) <= target_days for _, plan, _ in evaluated_runs):
-            batch_diagnostics.append(
-                f"Direct giao đủ trong {target_days} ngày. Trong ngân sách lần chạy này, "
-                "Hybrid chưa tìm được lịch ghép giao đủ trong cùng số ngày."
-            )
         if adaptive_search:
             batch_diagnostics.append(
                 f"Ngưỡng {self.request.early_stop_patience} phương án hợp lệ không cải thiện "

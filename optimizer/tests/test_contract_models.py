@@ -97,13 +97,12 @@ def test_request_rejects_reversed_order_time_window():
 
 def test_request_accepts_only_bounded_explicit_search_time():
     payload = minimal_fleet_request()
-    payload["search_time_seconds"] = 45
+    for valid_value in (45, 121, 1000):
+        payload["search_time_seconds"] = valid_value
+        request = FleetOptimizationRequest.model_validate(payload)
+        assert request.search_time_seconds == valid_value
 
-    request = FleetOptimizationRequest.model_validate(payload)
-
-    assert request.search_time_seconds == 45
-
-    for invalid_value in (0, 121):
+    for invalid_value in (0, 1001):
         payload["search_time_seconds"] = invalid_value
         with pytest.raises(ValidationError):
             FleetOptimizationRequest.model_validate(payload)

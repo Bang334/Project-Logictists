@@ -112,7 +112,8 @@ class HybridALNSSolver:
         ] = []
         self._vehicle_guidance_vnd = 1_000_000
         self._same_order_guidance_vnd = 2_000_000
-        self._day_guidance_vnd = 50_000
+        self._has_multi_day = len({vehicle.service_day_index for vehicle in vehicles}) > 1
+        self._day_guidance_vnd = 250_000 if self._has_multi_day else 50_000
         self._calendar_salary_cache: Dict[int, int] = {}
         self._allow_empty_insertion_competition = False
         self._route_pool: List[Tuple[int, List[ScheduledStop]]] = []
@@ -122,6 +123,7 @@ class HybridALNSSolver:
         ] = {
             "route": self._destroy_route,
             "small": self._destroy_small_routes,
+            "late_day": self._destroy_late_days,
             "cluster": self._destroy_cluster,
             "worst": self._destroy_worst,
             "related": self._destroy_related,
@@ -133,6 +135,7 @@ class HybridALNSSolver:
         self.destroy_weights = {
             "route": 2.0,
             "small": 2.0,
+            "late_day": 2.4 if self._has_multi_day else 0.5,
             "cluster": 1.8,
             "worst": 1.5,
             "related": 1.2,
@@ -724,6 +727,48 @@ class HybridALNSSolver:
                 if s.order_id and s.order_id not in removed_orders:
                     removed_orders.append(s.order_id)
             new_routes[idx] = []
+        return new_routes, removed_orders
+
+    def _destroy_late_days(
+        self, routes: List[List[ScheduledStop]], remove_count: int
+    ) -> Tuple[List[List[ScheduledStop]], List[str]]:
+        """Phá các tuyến ở ngày phục vụ muộn nhất để _repair dồn đơn về ngày sớm hơn."""
+        nonempty_indices = [idx for idx, r in enumerate(routes) if r]
+        if not nonempty_indices:
+            return routes, []
+        max_day = max(self.vehicles[idx].service_day_index for idx in nonempty_indices)
+        min_day = min(self.vehicles[idx].service_day_index for idx in nonempty_indices)
+        if max_day <= min_day:
+            return self._destroy_route(routes, remove_count)
+        late_indices = [
+            idx for idx in nonempty_indices if self.vehicles[idx].service_day_index == max_day
+        ]
+        late_indices.sort(
+            key=lambda idx: len({s.order_id for s in routes[idx] if s.order_id}),
+        )
+        new_routes = [copy.deepcopy(r) for r in routes]
+        removed_orders: List[str] = []
+        target_budget = max(1, remove_count)
+        for idx in late_indices:
+            route_orders = list(
+                dict.fromkeys(
+                    s.order_id
+                    for s in new_routes[idx]
+                    if s.stop_type == "PICKUP" and s.order_id
+                )
+            )
+            if not route_orders:
+                continue
+            if removed_orders and len(removed_orders) + len(route_orders) > target_budget + 4:
+                continue
+            for oid in route_orders:
+                if oid not in removed_orders:
+                    removed_orders.append(oid)
+            new_routes[idx] = []
+            if len(removed_orders) >= target_budget:
+                break
+        if not removed_orders:
+            return self._destroy_route(routes, remove_count)
         return new_routes, removed_orders
 
     def _destroy_cluster(
@@ -2533,7 +2578,13 @@ class HybridALNSSolver:
                 elite_candidates.append(
                     (current_cost, copy.deepcopy(current_routes), list(current_unassigned))
                 )
-        elif not refine_warm_start and sum(bool(route) for route in current_routes) >= 2:
+        should_consolidate = (
+            not refine_warm_start
+            or self._has_multi_day
+            or any(len(route) == 2 for route in current_routes if route)
+        )
+        elif_cond = should_consolidate and sum(bool(route) for route in current_routes) >= 2
+        if not current_unassigned and elif_cond:
             consolidation_remaining = max(
                 0.0,
                 deadline - time.perf_counter(),
@@ -3564,5 +3615,7 @@ def solve_hybrid_alns(
         )
         solution.random_seed = random_seed
         solution.execution_time_sec = round(time.perf_counter() - started_at, 3)
-    solution._stopped_for_patience = alns_solver.stopped_for_patience
+    solution._stopped_for_patience = bool(
+        getattr(alns_solver, "stopped_for_patience", False)
+    )
     return solution
