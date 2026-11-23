@@ -33,11 +33,14 @@ from .search_strategies import (
     find_search_strategy,
 )
 from .hybrid_alns_engine import PackingAwareHybridALNSOptimizer
+from .ils_engine import PackingAwareILSOptimizer
 from .ortools_seed import extract_ortools_seed_pool
 from .planning_objective import apply_planning_objective, plan_lexicographic_key
 from .baseline_calculator import BaselineCostCalculator
+from .spatial_cache import scoped_spatial_cache
 
 _REAL_HYBRID_OPTIMIZER = PackingAwareHybridALNSOptimizer
+_REAL_ILS_OPTIMIZER = PackingAwareILSOptimizer
 # Order splitting is a reduction, not the search itself; cap its share so
 # package-heavy batches still leave the solver most of the budget.
 ORDER_SPLIT_BUDGET_SHARE = 0.2
@@ -131,7 +134,11 @@ def _run_hybrid_seed_worker(
                 if compact_req is None:
                     probe_days += 1
                     continue
-                probe_share = 0.72 if probe_days >= 2 else 0.45
+                probe_share = (
+                    0.35
+                    if probe_days == 1 and len(distinct_days) >= 3
+                    else (0.50 if probe_days < len(distinct_days) - 1 else 0.72)
+                )
                 probe_budget = min(rem, max(3.0, rem * probe_share))
                 probe_hybrid = PackingAwareHybridALNSOptimizer(
                     compact_req,
@@ -191,6 +198,39 @@ def _run_hybrid_seed_worker(
             return seed, None, None, f"Packing-aware Hybrid ALNS (seed {seed}) không trả về tuyến."
         obj = apply_planning_objective(objective_request, plan)
         return seed, plan.model_dump(), obj.model_dump(), None
+    except Exception as exc:
+        return seed, None, None, str(exc)
+
+
+_REAL_HYBRID_WORKER = _run_hybrid_seed_worker
+
+
+def _run_ils_seed_worker(
+    request_dict: dict,
+    objective_request_dict: dict,
+    seed: int,
+    time_budget: float,
+) -> Tuple[int, Optional[dict], Optional[dict], Optional[str]]:
+    """Worker function for concurrent Packing-aware ILS compatible with Windows spawn."""
+    try:
+        with scoped_spatial_cache():
+            request = FleetOptimizationRequest(**request_dict)
+            objective_request = FleetOptimizationRequest(**objective_request_dict)
+            effective_budget = max(0.5, float(time_budget))
+            worker_deadline = time.perf_counter() + effective_budget
+            optimizer = PackingAwareILSOptimizer(
+                request,
+                max_iterations=400,
+                time_budget_seconds=effective_budget,
+                random_seed=seed,
+                include_benchmarks=False,
+                should_split_orders=False,
+            )
+            plan = optimizer.solve(hard_deadline=worker_deadline)
+            if not plan.routes:
+                return seed, None, None, f"Packing-aware ILS (seed {seed}) không trả về tuyến."
+            obj = apply_planning_objective(objective_request, plan)
+            return seed, plan.model_dump(), obj.model_dump(), None
     except Exception as exc:
         return seed, None, None, str(exc)
 
@@ -587,6 +627,10 @@ class MultiStartFleetOptimizer:
         ]
 
     def solve(self, max_candidates: int = 3) -> FleetOptimizationBatchResponse:
+        with scoped_spatial_cache():
+            return self._solve_with_cache(max_candidates=max_candidates)
+
+    def _solve_with_cache(self, max_candidates: int = 3) -> FleetOptimizationBatchResponse:
         job_started_at = getattr(self, "_created_at", time.perf_counter())
         search_budget_seconds = float(self.policy.time_budget_seconds)
         adaptive_search = self.request.early_stop_patience > 0
@@ -685,17 +729,36 @@ class MultiStartFleetOptimizer:
 
         compare_horizons = len({v.service_day_index for v in self.request.vehicles}) > 1
         timed_out_seed_plan: Optional[FleetOptimizationResponse] = None
-        if (adaptive_search or len(hybrid_seeds) > 1) and not is_mocked:
+        budget_headroom = float(self.request.max_time_seconds) - search_budget_seconds
+        run_concurrent_ils = (
+            not is_mocked
+            and _run_hybrid_seed_worker is _REAL_HYBRID_WORKER
+            and PackingAwareILSOptimizer is _REAL_ILS_OPTIMIZER
+            and self.request.hybrid_seed_count == 0
+            and len(self.request.orders) >= 4
+            and cpu_count >= 2
+            and search_budget_seconds >= 8.0
+            and budget_headroom >= 6.0
+        )
+        if (adaptive_search or len(hybrid_seeds) > 1 or run_concurrent_ils) and not is_mocked:
             objective_request_dict = self.objective_request.model_dump()
             remaining_parallel = max(1.0, job_deadline - time.perf_counter())
             effective_run_budget = min(
                 remaining_parallel,
                 remaining_parallel * 0.9 if adaptive_search
-                else max(hybrid_run_budget, search_budget_seconds * 0.85),
+                else (
+                    search_budget_seconds
+                    if len(hybrid_seeds) == 1
+                    else max(hybrid_run_budget, search_budget_seconds * 0.85)
+                ),
             )
-            parallel_workers = min(len(hybrid_seeds), MAX_PARALLEL_HYBRID_SEEDS)
+            worker_slots_needed = len(hybrid_seeds) + (1 if run_concurrent_ils else 0)
+            parallel_workers = min(worker_slots_needed, MAX_PARALLEL_HYBRID_SEEDS)
             secondary_seed_budget = effective_run_budget
             seed_budget_detail = f"{effective_run_budget:g} giây/seed"
+            if run_concurrent_ils:
+                seed_budget_detail = f"{effective_run_budget:g} giây/luồng (+ Packing-aware ILS song song)"
+            secondary_waves = 1
             if len(hybrid_seeds) > parallel_workers:
                 # Keep one deeper search while the other workers test more seeds.
                 secondary_waves = math.ceil((len(hybrid_seeds) - 1) / (parallel_workers - 1))
@@ -731,9 +794,26 @@ class MultiStartFleetOptimizer:
                         future = executor.submit(
                             _run_hybrid_seed_worker, request_dict, objective_request_dict, seed, budget, initial,
                         )
-                    futures[future] = (seed, refine_budget)
+                    futures[future] = ("hybrid", seed, refine_budget)
 
-                pool_deadline = job_deadline + (0 if adaptive_search else 2.0)
+                if run_concurrent_ils:
+                    spawn_audit_grace = 12.0 if len(self.request.orders) >= 50 else 8.0
+                    max_ceiling = job_started_at + float(self.request.max_time_seconds)
+                    ils_budget = min(
+                        max(2.0, max_ceiling - time.perf_counter() - 1.0),
+                        search_budget_seconds + min(4.0, spawn_audit_grace * 0.4),
+                    )
+                    ils_future = executor.submit(
+                        _run_ils_seed_worker, request_dict, objective_request_dict, 0, ils_budget,
+                    )
+                    futures[ils_future] = ("ils", 0, 0)
+
+                if adaptive_search:
+                    pool_deadline = job_deadline
+                else:
+                    spawn_audit_grace = 12.0 if len(self.request.orders) >= 50 else 8.0
+                    max_ceiling = job_started_at + float(self.request.max_time_seconds)
+                    pool_deadline = max(job_deadline, min(max_ceiling, job_deadline + spawn_audit_grace))
                 while futures:
                     done, _ = concurrent.futures.wait(
                         futures, timeout=max(0.0, pool_deadline - time.perf_counter()),
@@ -741,56 +821,72 @@ class MultiStartFleetOptimizer:
                     )
                     if not done:
                         break
-                    for future in sorted(done, key=lambda item: futures[item][0]):
-                        seed, refine_budget = futures.pop(future)
+                    for future in sorted(
+                        done,
+                        key=lambda item: (0 if futures[item][0] == "hybrid" else 1, futures[item][1]),
+                    ):
+                        family, seed, refine_budget = futures.pop(future)
                         warm_plan = None
+                        label_prefix = (
+                            f"Packing-aware Hybrid ALNS (seed {seed})"
+                            if family == "hybrid"
+                            else f"Packing-aware ILS (seed {seed})"
+                        )
+                        key_prefix = (
+                            f"packing-aware-hybrid-alns-seed-{seed}"
+                            if family == "hybrid"
+                            else f"packing-aware-ils-seed-{seed}"
+                        )
                         try:
                             _, plan_dict, obj_dict, error = future.result()
                             if error or plan_dict is None or obj_dict is None:
                                 raise RuntimeError(error or "Không có phương án đã kiểm chứng")
-                            hybrid_plan = FleetOptimizationResponse.model_validate(plan_dict)
+                            solver_plan = FleetOptimizationResponse.model_validate(plan_dict)
                             planning_obj = PlanningObjectiveBreakdown.model_validate(obj_dict)
-                            hybrid_plan.planning_objective = planning_obj
-                            hybrid_strategy = SearchStrategy(
-                                f"packing-aware-hybrid-alns-seed-{seed}",
-                                f"Packing-aware Hybrid ALNS (seed {seed})",
+                            solver_plan.planning_objective = planning_obj
+                            strategy = SearchStrategy(
+                                key_prefix,
+                                label_prefix,
                                 DEFAULT_SEARCH_STRATEGY.first_solution_strategy,
                                 DEFAULT_SEARCH_STRATEGY.local_search_metaheuristic,
                             )
-                            candidate = (hybrid_strategy, hybrid_plan, planning_obj.selection_score_vnd)
+                            candidate = (strategy, solver_plan, planning_obj.selection_score_vnd)
                             complete = is_fully_served(
-                                hybrid_plan, all_order_ids, self.request.policy.max_routes_per_day, expected_items,
+                                solver_plan, all_order_ids, self.request.policy.max_routes_per_day, expected_items,
                             )
                             rank = (
                                 not complete,
-                                len(hybrid_plan.unassigned_orders),
+                                len(solver_plan.unassigned_orders),
                                 *_candidate_selection_key(candidate, compare_horizons),
                             )
-                            bucket = (seed, _plan_days(hybrid_plan))
+                            bucket = (family, seed, _plan_days(solver_plan))
                             previous = best_by_seed.get(bucket)
                             if previous is None or rank <= previous[0]:
                                 best_by_seed[bucket] = (rank, candidate)
                             else:
                                 previous[1][1].diagnostics.extend(
-                                    note for note in hybrid_plan.diagnostics if note.startswith(f"Seed {seed} dừng sớm")
+                                    note for note in solver_plan.diagnostics if note.startswith(f"Seed {seed} dừng sớm")
                                 )
-                            if complete:
+                            if complete and family == "hybrid":
                                 warm_plan = plan_dict
                         except Exception as error:
-                            search_errors.append(f"Packing-aware Hybrid ALNS (seed {seed}): {error}")
+                            if family == "hybrid" or not any(k[0] == "hybrid" for k in best_by_seed):
+                                search_errors.append(f"{label_prefix}: {error}")
 
-                        remaining_refine_budget = min(refine_budget, job_deadline - time.perf_counter())
-                        if remaining_refine_budget >= 2:
-                            refinement = executor.submit(
-                                _run_hybrid_seed_worker, request_dict, objective_request_dict,
-                                seed, remaining_refine_budget, warm_plan,
-                            )
-                            futures[refinement] = (seed, 0)
+                        if family == "hybrid":
+                            remaining_refine_budget = min(refine_budget, job_deadline - time.perf_counter())
+                            if remaining_refine_budget >= 2:
+                                refinement = executor.submit(
+                                    _run_hybrid_seed_worker, request_dict, objective_request_dict,
+                                    seed, remaining_refine_budget, warm_plan,
+                                )
+                                futures[refinement] = ("hybrid", seed, 0)
 
-                for future, (seed, _) in futures.items():
+                for future, (family, seed, _) in futures.items():
                     future.cancel()
-                    search_errors.append(f"Packing-aware Hybrid ALNS (seed {seed}): vượt quá giới hạn thời gian.")
-                evaluated_runs.extend(best_by_seed[seed][1] for seed in sorted(best_by_seed))
+                    if family == "hybrid":
+                        search_errors.append(f"Packing-aware Hybrid ALNS (seed {seed}): vượt quá giới hạn thời gian.")
+                evaluated_runs.extend(best_by_seed[key][1] for key in sorted(best_by_seed))
             finally:
                 processes = getattr(executor, "_processes", None)
                 if processes:
@@ -869,7 +965,16 @@ class MultiStartFleetOptimizer:
                         f"Packing-aware Hybrid ALNS (seed {seed}): {exc}"
                     )
 
-        hybrid_success_count = len({strategy.key for strategy, _, _ in evaluated_runs if strategy.key != "hybrid-direct-span"})
+        hybrid_success_count = len({
+            strategy.key
+            for strategy, _, _ in evaluated_runs
+            if strategy.key.startswith("packing-aware-hybrid-alns-seed-")
+        })
+        ils_success_count = len({
+            strategy.key
+            for strategy, _, _ in evaluated_runs
+            if strategy.key.startswith("packing-aware-ils-seed-")
+        })
         ortools_fallback_used = False
         expected_items = {o.id: {i.id for i in o.items} for o in self.request.orders}
         if not any(is_fully_served(plan, all_order_ids, self.request.policy.max_routes_per_day, expected_items)
@@ -957,6 +1062,11 @@ class MultiStartFleetOptimizer:
                 f"{seed_budget_detail}."
             ),
         ]
+        if ils_success_count:
+            batch_diagnostics.append(
+                "Đa họ thuật toán: đã đánh giá thêm Packing-aware ILS song song "
+                "và xếp hạng chung theo chuẩn tối ưu sản xuất."
+            )
         if adaptive_search:
             batch_diagnostics.append(
                 f"Ngưỡng {self.request.early_stop_patience} phương án hợp lệ không cải thiện "

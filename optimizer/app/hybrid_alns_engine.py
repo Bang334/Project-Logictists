@@ -53,6 +53,7 @@ from .models import (
 )
 from .planning_objective import apply_planning_objective, calendar_salary_for_span, plan_lexicographic_key
 from .packing_rules import resolve_can_rotate
+from .spatial_cache import scoped_spatial_cache
 from .stacking import effective_floor_capacity_cm2
 from .route_costing import calculate_late_delivery_penalty, calculate_route_economic_metrics
 Insertion = Tuple[float, int, List[ScheduledStop]]
@@ -1667,10 +1668,21 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 for src_i in active_indices:
                     src_v = self.vehicles[src_i]
                     stops = cur_routes[src_i]
+                    w = 0.0
+                    max_w = 0.0
+                    for s in stops:
+                        oid = s.allocation_id or s.order_id
+                        ord_obj = self.order_by_id.get(oid) if oid else None
+                        if ord_obj is not None:
+                            w += ord_obj.total_weight_kg if s.stop_type == "PICKUP" else -ord_obj.total_weight_kg
+                            if w > max_w:
+                                max_w = w
                     for tgt_i in empty_indices:
                         if deadline is not None and time.perf_counter() >= deadline:
                             break
                         tgt_v = self.vehicles[tgt_i]
+                        if max_w > tgt_v.payload_limit_kg + 0.01:
+                            continue
                         max_routes = getattr(self.request.policy, "max_routes_per_day", None)
                         if (
                             max_routes is not None
@@ -3294,7 +3306,11 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             else:
                 search_started_at = time.perf_counter()
                 remaining_search = max(0.0, hard_search_deadline - search_started_at)
-                ils_share = 0.28 if (self._ortools_seed_pool and not cur_unassigned) else 0.45
+                ils_share = (
+                    0.28
+                    if not cur_unassigned and (self._ortools_seed_pool or (self.time_limit_sec or 0.0) >= 10.0)
+                    else 0.45
+                )
                 budget_p1 = min(
                     remaining_search * ils_share,
                     max(0.05, (self.time_limit_sec or 2.0) * ils_share),
@@ -3529,6 +3545,12 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
         )
 
     def solve(self, hard_deadline: Optional[float] = None) -> FleetOptimizationResponse:
+        with scoped_spatial_cache():
+            return self._solve_with_cache(hard_deadline=hard_deadline)
+
+    def _solve_with_cache(
+        self, hard_deadline: Optional[float] = None
+    ) -> FleetOptimizationResponse:
         self._verified_construction_plan = None
         solve_started_at = time.perf_counter()
         solve_deadline = solve_started_at + max(0.5, float(self.time_limit_sec or 2.0))
@@ -3743,6 +3765,11 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
         construction_deadline = search_deadline
         if self.request.early_stop_patience and self.request.search_time_seconds:
             construction_deadline = min(search_deadline, solve_started_at + self.request.search_time_seconds)
+        else:
+            available_search = max(0.0, search_deadline - time.perf_counter())
+            if len(self.orders) >= 12 and available_search >= 8.0:
+                # Keep at least 40% of remaining search time for native ALNS + vehicle downsizing.
+                construction_deadline = time.perf_counter() + available_search * 0.60
         initial_solution = self._build_hybrid_initial_solution(
             vehicles,
             drivers,

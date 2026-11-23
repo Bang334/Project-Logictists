@@ -21,6 +21,7 @@ from .packing_rules import (
     is_floor_rotation_locked,
     resolve_can_rotate,
 )
+from .spatial_cache import get_active_spatial_cache
 from .spatial_validator import SpatialValidator
 from .stacking_unequal import (
     fast_validate_unequal_stacked_route,
@@ -582,6 +583,18 @@ def validate_stop_actions(
         door_position=getattr(vehicle, "door_position", "REAR"),
         door_width_cm=getattr(vehicle, "door_width_cm", None),
     )
+    cache = get_active_spatial_cache()
+    cache_key = None
+    if cache is not None:
+        cache_key = cache.build_key(policy, floor, actions)
+        cached = cache.get(
+            cache_key,
+            actions,
+            max_search_nodes=max_search_nodes,
+            max_time_seconds=max_time_seconds,
+        )
+        if cached is not None:
+            return cached
     kwargs: dict[str, Any] = {}
     if max_search_nodes is not None:
         kwargs["max_search_nodes"] = max_search_nodes
@@ -589,8 +602,17 @@ def validate_stop_actions(
         kwargs["max_time_seconds"] = max_time_seconds
     validator = SpatialValidator(floor, **kwargs)
     if policy is None:
-        return validator.validate_plan(actions)
-    return DemoStacks(policy, [floor]).validate_stops(validator, actions)
+        result = validator.validate_plan(actions)
+    else:
+        result = DemoStacks(policy, [floor]).validate_stops(validator, actions)
+    if cache is not None and cache_key is not None:
+        cache.put(
+            cache_key,
+            result,
+            max_search_nodes=max_search_nodes,
+            max_time_seconds=max_time_seconds,
+        )
+    return result
 
 
 def sync_route_stacking_unloads(

@@ -14,6 +14,7 @@ from .alns_engine import ALNSFleetOptimizer
 from .baseline_calculator import BaselineCostCalculator
 from .models import FleetOptimizationRequest, FleetOptimizationResponse, ScheduledStop
 from .planning_objective import plan_lexicographic_key
+from .spatial_cache import scoped_spatial_cache
 
 
 class PackingAwareILSOptimizer(ALNSFleetOptimizer):
@@ -274,9 +275,23 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
             return (best_cand[1], best_cand[2], best_cand[3])
         return None
 
-    def solve(self) -> FleetOptimizationResponse:
+    def solve(self, hard_deadline: Optional[float] = None) -> FleetOptimizationResponse:
+        with scoped_spatial_cache():
+            return self._solve_with_cache(hard_deadline=hard_deadline)
+
+    def _solve_with_cache(
+        self, hard_deadline: Optional[float] = None
+    ) -> FleetOptimizationResponse:
         started_at = time.perf_counter()
         deadline = started_at + self.time_limit_sec
+        if hard_deadline is not None:
+            remaining_total = max(0.5, hard_deadline - started_at)
+            audit_reserve = (
+                min(5.0, max(1.0, remaining_total * 0.20))
+                if remaining_total >= 4.0
+                else remaining_total * 0.15
+            )
+            deadline = min(deadline, max(started_at + 0.25, hard_deadline - audit_reserve))
         current_routes: List[List[ScheduledStop]] = [
             [] for _ in self.vehicles
         ]
@@ -432,18 +447,26 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
             if len(unique_elites) >= 3:
                 break
 
-        def _safe_build(c_routes, c_unassigned, *, include_benchmarks=True, spatial_budget=None):
+        def _safe_build(
+            c_routes, c_unassigned, *, include_benchmarks=True, spatial_budget=None
+        ):
             try:
                 return self._build_final_response(
                     c_routes,
                     c_unassigned,
                     include_benchmarks=include_benchmarks and getattr(self, "include_benchmarks", True),
                     spatial_time_budget_seconds=spatial_budget,
+                    absolute_spatial_deadline=hard_deadline,
                 )
             except TypeError:
                 return self._build_final_response(c_routes, c_unassigned)
 
-        spatial_budget = min(1.5, max(0.5, self.time_limit_sec * 0.35))
+        remaining_spatial = (
+            max(0.5, hard_deadline - time.perf_counter())
+            if hard_deadline is not None
+            else self.time_limit_sec * 0.35
+        )
+        spatial_budget = min(3.0, max(0.5, min(max(self.time_limit_sec * 0.35, 1.5), remaining_spatial)))
         valid_responses: List[FleetOptimizationResponse] = []
         for _key, cand_routes, cand_unassigned in unique_elites:
             resp = _safe_build(
