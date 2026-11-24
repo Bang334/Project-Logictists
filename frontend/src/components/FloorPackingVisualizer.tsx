@@ -70,6 +70,7 @@ interface Props {
   allRoutes?: OptimizedRouteUI[];
   onSelectRoute?: (routeId: string) => void;
   isSimulating?: boolean;
+  simulationPlayback?: { playing: boolean; onToggle: () => void };
 }
 
 // Bảng màu sang trọng và đồng nhất theo đơn hàng
@@ -99,6 +100,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
   allRoutes,
   onSelectRoute,
   isSimulating,
+  simulationPlayback,
 }) => {
   const [internalStep, setInternalStep] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -170,6 +172,9 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
   };
 
   const lastStep = effectiveStepStates.length - 1;
+  const playback = isSimulating ? simulationPlayback : undefined;
+  const controlsLocked = Boolean(isSimulating && !playback);
+  const playing = playback?.playing ?? isPlaying;
 
   useEffect(() => {
     if (!isPlaying || isSimulating || clampedStep >= lastStep) return;
@@ -888,34 +893,38 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             <Tooltip title="Về điểm đầu tiên">
               <Button
                 icon={<StepBackwardOutlined />}
-                disabled={isSimulating || clampedStep === 0}
+                disabled={controlsLocked || clampedStep === 0}
                 onClick={() => handleStepChange(0)}
               />
             </Tooltip>
             <Tooltip title="Điểm trước">
               <Button
-                disabled={isSimulating || clampedStep === 0}
+                disabled={controlsLocked || clampedStep === 0}
                 onClick={() => handleStepChange(clampedStep - 1)}
               >
                 Trước
               </Button>
             </Tooltip>
-            <Tooltip title={isPlaying ? 'Tạm dừng' : 'Trình chiếu trạng thái sau từng điểm dừng'}>
+            <Tooltip title={playing ? 'Tạm dừng' : playback ? 'Tiếp tục mô phỏng xe' : 'Trình chiếu trạng thái sau từng điểm dừng'}>
               <Button
-                type={isPlaying ? 'primary' : 'default'}
-                icon={isPlaying ? <PauseOutlined /> : <CaretRightOutlined />}
-                disabled={isSimulating || isManualMode}
+                type={playing ? 'primary' : 'default'}
+                icon={playing ? <PauseOutlined /> : <CaretRightOutlined />}
+                disabled={controlsLocked || isManualMode}
                 onClick={() => {
+                  if (playback) {
+                    playback.onToggle();
+                    return;
+                  }
                   if (!isPlaying && clampedStep === lastStep) handleStepChange(0);
                   setIsPlaying(!isPlaying);
                 }}
               >
-                {isPlaying ? 'Dừng' : 'Chiếu'}
+                {playing ? 'Dừng' : 'Chiếu'}
               </Button>
             </Tooltip>
             <Tooltip title="Điểm tiếp theo">
               <Button
-                disabled={isSimulating || clampedStep === lastStep}
+                disabled={controlsLocked || clampedStep === lastStep}
                 onClick={() => handleStepChange(clampedStep + 1)}
               >
                 Tiếp
@@ -924,7 +933,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             <Tooltip title="Đến điểm cuối cùng">
               <Button
                 icon={<StepForwardOutlined />}
-                disabled={isSimulating || clampedStep === lastStep}
+                disabled={controlsLocked || clampedStep === lastStep}
                 onClick={() => handleStepChange(effectiveStepStates.length - 1)}
               />
             </Tooltip>

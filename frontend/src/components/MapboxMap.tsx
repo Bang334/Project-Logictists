@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback, useLayoutEffect, useImperativeHandle } from 'react';
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import {
@@ -32,6 +32,9 @@ export const MAP_ROUTE_COLORS = [
   '#0891b2', // Tuyến 6: Xanh lơ cyan
 ];
 
+export type SimulationPositionSource = 'animation' | 'interaction';
+export type MapSimulationControls = { togglePlayback: () => void };
+
 interface MapboxMapProps {
   markers?: MapMarker[];
   routeGeometry?: any; // GeoJSON LineString or FeatureCollection
@@ -39,6 +42,8 @@ interface MapboxMapProps {
   height?: string | number;
   interactive?: boolean;
   onMarkerClick?: (marker: MapMarker) => void;
+  groupCoincidentStops?: boolean;
+  completedStopSequence?: number;
 
   // Realtime Simulation Props
   enableSimulation?: boolean;
@@ -54,8 +59,11 @@ interface MapboxMapProps {
     currentCoord: [number, number],
     speedKmh: number,
     traveledKm: number,
+    source: SimulationPositionSource,
   ) => void;
   onSimulationStop?: () => void;
+  simulationControlsRef?: React.Ref<MapSimulationControls>;
+  onSimulationPlayingChange?: (playing: boolean) => void;
 }
 
 const TRUCK_SVG_HTML = `
@@ -134,8 +142,19 @@ const ROUTE_COLOR_EXPRESSION = [
 
 const EMPTY_MAP_MARKERS: MapMarker[] = [];
 const EMPTY_MILESTONES: readonly number[] = [];
+function updateSharedStopPin(pin: HTMLElement, visits: MapMarker[], completed: number) {
+  const next = visits.find(visit => (visit.sequence ?? 0) > completed);
+  const visit = next ?? visits[visits.length - 1];
+  pin.textContent = String(visit.sequence);
+  pin.dataset.stopType = visit.type;
+  pin.dataset.complete = String(!next);
+}
 const STOP_FOCUS_ZOOM = 13;
-const VEHICLE_FOLLOW_ZOOM = 14;
+const VEHICLE_FOLLOW_ZOOM = 12;
+const SIMULATION_BASE_ZOOM = 14;
+// Hệ số nhịp phát ở hai đầu thang zoom. Zoom 14 luôn giữ nhịp cơ sở.
+const SIMULATION_CLOSEUP_SPEED = 0.0025; // Zoom 20 trở lên. Giảm để xe chạy chậm hơn khi xem gần.
+const SIMULATION_OVERVIEW_SPEED = 2; // Zoom 10 trở xuống. Tăng để xe chạy nhanh hơn khi xem xa.
 
 const MapboxMap: React.FC<MapboxMapProps> = ({
   markers = EMPTY_MAP_MARKERS,
@@ -144,6 +163,8 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   height = '100%',
   interactive = true,
   onMarkerClick,
+  groupCoincidentStops = false,
+  completedStopSequence = 0,
   enableSimulation = false,
   autoPlaySimulation = false,
   followSimulationVehicle = false,
@@ -154,11 +175,19 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   driverName = 'Tài xế',
   onSimulationProgress,
   onSimulationStop,
+  simulationControlsRef,
+  onSimulationPlayingChange,
 }) => {
   const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
+  const sharedStopsRef = useRef<{ pin: HTMLElement; visits: MapMarker[] }[]>([]);
+  const completedStopRef = useRef(completedStopSequence);
+  useLayoutEffect(() => {
+    completedStopRef.current = completedStopSequence;
+    sharedStopsRef.current.forEach(({ pin, visits }) => updateSharedStopPin(pin, visits, completedStopSequence));
+  }, [completedStopSequence]);
   const truckMarkerRef = useRef<mapboxgl.Marker | null>(null);
   const truckElementRef = useRef<HTMLDivElement | null>(null);
   const simulationFocusRef = useRef(simulationFocus);
@@ -333,18 +362,37 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
 
     const bounds = new mapboxgl.LngLatBounds();
 
+    sharedStopsRef.current = [];
+    const markerGroups = new Map<string, MapMarker[]>();
+    markers.forEach((marker, index) => {
+      const canGroup = groupCoincidentStops && (marker.type === 'PICKUP' || marker.type === 'DELIVERY')
+        && marker.sequence !== undefined;
+      const key = canGroup
+        ? `stop:${marker.longitude.toFixed(6)},${marker.latitude.toFixed(6)}`
+        : `marker:${index}`;
+      const group = markerGroups.get(key);
+      if (group) group.push(marker);
+      else markerGroups.set(key, [marker]);
+    });
+
     // Thêm markers mới
-    markers.forEach((marker) => {
+    markerGroups.forEach((visits) => {
+      visits.sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
+      const marker = visits[0];
+      const sharedStop = visits.length > 1;
+      const title = sharedStop
+        ? `Các điểm dừng ${visits.map(visit => visit.sequence).join(', ')}`
+        : marker.title;
       // Wrapper gốc cho Mapbox GL JS quản lý vị trí pixel tuyệt đối
       const el = document.createElement('div');
       el.className = 'tms-map-marker-container';
 
       // Pin nội dung trực quan bên trong (độc lập với transform định vị của Mapbox)
       const pin = document.createElement('div');
-      pin.className = `custom-marker-pin marker-${marker.type.toLowerCase()}`;
+      pin.className = `custom-marker-pin ${sharedStop ? 'marker-shared-stop' : `marker-${marker.type.toLowerCase()}`}`;
       pin.setAttribute('role', 'button');
-      pin.setAttribute('aria-label', [marker.title, marker.subtitle].filter(Boolean).join('. '));
-      pin.setAttribute('title', marker.title);
+      pin.setAttribute('aria-label', sharedStop ? title : [title, marker.subtitle].filter(Boolean).join('. '));
+      if (!sharedStop) pin.title = title;
       pin.tabIndex = 0;
 
       const routeColor =
@@ -357,7 +405,10 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       pin.style.borderWidth = '3px';
       pin.style.boxShadow = `0 3px 8px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255,255,255,0.85)`;
 
-      if (marker.type === 'DEPOT') {
+      if (sharedStop) {
+        updateSharedStopPin(pin, visits, completedStopRef.current);
+        sharedStopsRef.current.push({ pin, visits });
+      } else if (marker.type === 'DEPOT') {
         pin.innerHTML = DEPOT_SVG_HTML;
       } else if (marker.type === 'WAREHOUSE') {
         pin.innerHTML = WAREHOUSE_SVG_HTML;
@@ -374,6 +425,59 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       }
 
       el.appendChild(pin);
+
+      if (sharedStop) {
+        el.classList.add('map-shared-stop');
+        const stopList = document.createElement('div');
+        stopList.className = 'map-shared-stop-list';
+        const setOpen = (open: boolean) => {
+          stopList.hidden = !open;
+          pin.setAttribute('aria-expanded', String(open));
+        };
+        setOpen(false);
+        visits.forEach(visit => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.dataset.stopType = visit.type;
+          button.textContent = String(visit.sequence);
+          button.title = `${visit.type === 'PICKUP' ? 'Nhận hàng' : 'Giao hàng'}${visit.subtitle ? ` · ${visit.subtitle}` : ''}`;
+          button.setAttribute('aria-label', `Điểm ${visit.sequence} · ${button.title}`);
+          button.addEventListener('click', event => {
+            event.stopPropagation();
+            setOpen(false);
+            onMarkerClick?.(visit);
+          });
+          stopList.appendChild(button);
+        });
+        el.appendChild(stopList);
+        el.addEventListener('mouseenter', () => setOpen(true));
+        el.addEventListener('mouseleave', () => {
+          if (!stopList.contains(document.activeElement)) setOpen(false);
+        });
+        el.addEventListener('focusout', event => {
+          if (!(event.relatedTarget instanceof Node) || !el.contains(event.relatedTarget)) setOpen(false);
+        });
+        pin.addEventListener('click', event => {
+          event.stopPropagation();
+          setOpen(true);
+        });
+        el.addEventListener('keydown', event => {
+          if (event.key === 'Escape') {
+            if (stopList.hidden) return;
+            event.stopPropagation();
+            pin.focus();
+            setOpen(false);
+          } else if (event.target === pin && (event.key === 'Enter' || event.key === ' ')) {
+            event.preventDefault();
+            setOpen(true);
+            stopList.querySelector('button')?.focus();
+          }
+        });
+        markersRef.current.push(new mapboxgl.Marker({ element: el, anchor: 'center' })
+          .setLngLat([marker.longitude, marker.latitude]).addTo(map));
+        bounds.extend([marker.longitude, marker.latitude]);
+        return;
+      }
 
       const popupContent = document.createElement('div');
       popupContent.className = 'map-popup';
@@ -396,7 +500,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       const popupTitle = document.createElement('div');
       popupTitle.style.fontWeight = 'bold';
       popupTitle.style.fontSize = '12px';
-      popupTitle.textContent = marker.title;
+      popupTitle.textContent = title;
       popupContent.appendChild(popupTitle);
 
       if (marker.subtitle) {
@@ -577,12 +681,13 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     routeCoordinates,
     allRouteCoordinates,
     onMarkerClick,
+    groupCoincidentStops,
     enableSimulation,
   ]);
 
   // Cập nhật vị trí xe và các đoạn đường theo tiến độ mô phỏng.
   const updateTruckPosition = useCallback(
-    (currentProg: number, refreshTrail = true, notifyProgress = true) => {
+    (currentProg: number, refreshTrail = true, source: SimulationPositionSource | null = 'interaction') => {
       const map = mapRef.current;
       const truck = truckMarkerRef.current;
       const truckEl = truckElementRef.current;
@@ -652,7 +757,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         }
       }
 
-      if (notifyProgress) onSimulationProgress?.(currentProg, coord, simulatedSpeed, traveledKm);
+      if (source) onSimulationProgress?.(currentProg, coord, simulatedSpeed, traveledKm, source);
       return coord;
     },
     [routeProfile, onSimulationProgress, simulationMilestonesKm],
@@ -701,7 +806,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
 
     if (!simulationFocus) updateTruckPosition(progressRef.current);
 
-    const refreshAfterLoad = () => updateTruckPosition(progressRef.current, true, false);
+    const refreshAfterLoad = () => updateTruckPosition(progressRef.current, true, null);
     if (!map.getSource('route') && !map.isStyleLoaded()) {
       map.once('load', refreshAfterLoad);
       return () => { map.off('load', refreshAfterLoad); };
@@ -717,7 +822,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     lastTimestampRef.current = null;
     progressRef.current = simulationFocus.progress;
     setProgress(simulationFocus.progress);
-    updateTruckPosition(simulationFocus.progress, true, false);
+    updateTruckPosition(simulationFocus.progress, true, null);
     const center = routeProfile.totalDistanceKm > 0
       ? interpolateAlongRoute(routeProfile, simulationFocus.progress).coord
       : simulationFocus.coordinate;
@@ -741,9 +846,12 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
 
       if (isPlayingRef.current && routeProfile.totalDistanceKm > 0) {
         const map = mapRef.current;
-        const cameraZoom = map?.getZoom() ?? VEHICLE_FOLLOW_ZOOM;
-        // Thay đổi nhịp phát từ từ để vẫn theo kịp xe khi xem toàn tuyến.
-        const zoomSpeedMultiplier = Math.max(0.35, Math.min(2, 2 ** ((VEHICLE_FOLLOW_ZOOM - cameraZoom) / 4)));
+        const cameraZoom = map?.getZoom() ?? SIMULATION_BASE_ZOOM;
+        // Nội suy theo cấp số nhân vì tỉ lệ bản đồ cũng thay đổi theo cấp số nhân khi zoom.
+        const zoomOffset = cameraZoom - SIMULATION_BASE_ZOOM;
+        const zoomSpeedMultiplier = zoomOffset >= 0
+          ? SIMULATION_CLOSEUP_SPEED ** Math.min(1, zoomOffset / (20 - SIMULATION_BASE_ZOOM))
+          : SIMULATION_OVERVIEW_SPEED ** Math.min(1, -zoomOffset / (SIMULATION_BASE_ZOOM - 10));
         const baseDurationSeconds = 75;
         const progressIncrement =
           (deltaSeconds / baseDurationSeconds) * speedMultiplierRef.current * zoomSpeedMultiplier;
@@ -761,7 +869,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
           lastProgressUpdateRef.current = timestamp;
         }
         progressRef.current = nextProgress;
-        const center = updateTruckPosition(nextProgress, refreshTrail);
+        const center = updateTruckPosition(nextProgress, refreshTrail, 'animation');
         // jumpTo would interrupt Mapbox's zoom animation, including the +/− controls.
         if (followSimulationVehicle && center && map && !map.isZooming()) {
           if (hasManualZoomRef.current) {
@@ -813,6 +921,11 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     setIsPlaying(isPlayingRef.current);
     updateTruckPosition(progressRef.current);
   };
+
+  useImperativeHandle(simulationControlsRef, () => ({ togglePlayback: handleTogglePlay }));
+  useEffect(() => {
+    onSimulationPlayingChange?.(isPlaying);
+  }, [isPlaying, onSimulationPlayingChange]);
 
   return (
     <div

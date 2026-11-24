@@ -54,11 +54,21 @@ const mapboxMocks = vi.hoisted(() => {
     fitBounds() {}
   }
 
+  class MockPopup {
+    content?: HTMLElement;
+    remove = vi.fn();
+    setDOMContent(content: HTMLElement) {
+      this.content = content;
+      return this;
+    }
+  }
+
   class MockMarker {
     readonly element?: HTMLElement;
     addedMap?: MockMap;
     removed = false;
     coordinate?: [number, number];
+    popup?: MockPopup;
 
     constructor(options?: { element?: HTMLElement }) {
       this.element = options?.element;
@@ -66,26 +76,24 @@ const mapboxMocks = vi.hoisted(() => {
     }
 
     setLngLat(coordinate: [number, number]) { this.coordinate = coordinate; return this; }
-    setPopup() { return this; }
-    getPopup() { return undefined; }
+    setPopup(popup: MockPopup) { this.popup = popup; return this; }
+    getPopup() { return this.popup; }
     addTo(map: MockMap) {
       this.addedMap = map;
       return this;
     }
     remove() { this.removed = true; }
-    togglePopup() {}
+    togglePopup = vi.fn();
   }
 
-  return { mapInstances, markerInstances, MockBounds, MockMap, MockMarker };
+  return { mapInstances, markerInstances, MockBounds, MockMap, MockMarker, MockPopup };
 });
 
 vi.mock('mapbox-gl', () => ({
   default: {
     Map: mapboxMocks.MockMap,
     Marker: mapboxMocks.MockMarker,
-    Popup: class {
-      setDOMContent() { return this; }
-    },
+    Popup: mapboxMocks.MockPopup,
     LngLatBounds: mapboxMocks.MockBounds,
     NavigationControl: class {},
     FullscreenControl: class {},
@@ -93,7 +101,7 @@ vi.mock('mapbox-gl', () => ({
   },
 }));
 
-import MapboxMap from '../components/MapboxMap';
+import MapboxMap, { type MapMarker, type MapSimulationControls } from '../components/MapboxMap';
 import { buildRouteProfile } from '../utils/geoSimulation';
 
 const firstRoute = {
@@ -107,6 +115,50 @@ const secondRoute = {
 };
 
 describe('MapboxMap vehicle simulation lifecycle', () => {
+  it('updates a shared pin to the next visit and reveals every colored stop on hover', () => {
+    const stops: MapMarker[] = [
+      { id: '4', type: 'PICKUP', title: 'Nhận hàng', sequence: 4, longitude: 108.2, latitude: 16.05 },
+      { id: '8', type: 'DELIVERY', title: 'Giao hàng', sequence: 8, longitude: 108.20000000001, latitude: 16.05 },
+      { id: '10', type: 'PICKUP', title: 'Nhận hàng', sequence: 10, longitude: 108.2, latitude: 16.05 },
+      { id: '12', type: 'DELIVERY', title: 'Giao hàng', sequence: 12, longitude: 108.2, latitude: 16.05 },
+      { id: '9', type: 'DELIVERY', title: 'Điểm kế tiếp', sequence: 9, longitude: 108.201, latitude: 16.05 },
+    ];
+    const onMarkerClick = vi.fn();
+    const { rerender } = render(<MapboxMap markers={stops} groupCoincidentStops onMarkerClick={onMarkerClick} />);
+
+    const [shared, separate] = mapboxMocks.markerInstances as InstanceType<typeof mapboxMocks.MockMarker>[];
+    expect(mapboxMocks.markerInstances).toHaveLength(2);
+    const pin = shared.element?.querySelector('[role="button"]');
+    const list = shared.element?.querySelector('.map-shared-stop-list');
+    if (!pin || !list || !shared.element || !separate.element) throw new Error('Missing map marker');
+    expect(pin).toHaveTextContent('4');
+    expect(pin).toHaveAttribute('aria-label', 'Các điểm dừng 4, 8, 10, 12');
+    expect(list).toHaveAttribute('hidden');
+    rerender(<MapboxMap markers={stops} groupCoincidentStops completedStopSequence={5} onMarkerClick={onMarkerClick} />);
+    expect(mapboxMocks.markerInstances).toHaveLength(2);
+    expect(pin).toHaveTextContent('8');
+    expect(pin).toHaveAttribute('data-stop-type', 'DELIVERY');
+    fireEvent.mouseEnter(shared.element);
+    expect(list).not.toHaveAttribute('hidden');
+    expect(onMarkerClick).not.toHaveBeenCalled();
+    fireEvent.mouseLeave(shared.element);
+    expect(list).toHaveAttribute('hidden');
+    fireEvent.keyDown(pin, { key: 'Enter' });
+    expect(list).not.toHaveAttribute('hidden');
+    const choices = list.querySelectorAll('button');
+    expect(Array.from(choices, choice => [choice.textContent, choice.dataset.stopType])).toEqual([
+      ['4', 'PICKUP'], ['8', 'DELIVERY'], ['10', 'PICKUP'], ['12', 'DELIVERY'],
+    ]);
+    fireEvent.click(choices[1]);
+    expect(onMarkerClick).toHaveBeenLastCalledWith(stops[1]);
+    expect(list).toHaveAttribute('hidden');
+    fireEvent.mouseEnter(shared.element);
+    fireEvent.click(choices[0]);
+    expect(onMarkerClick).toHaveBeenLastCalledWith(stops[0]);
+    fireEvent.click(separate.element);
+    expect(onMarkerClick).toHaveBeenLastCalledWith(stops[4]);
+  });
+
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
@@ -198,6 +250,8 @@ describe('MapboxMap vehicle simulation lifecycle', () => {
     const { cumulativeDistances, totalDistanceKm } = buildRouteProfile(coordinates);
     const routeGeometry = { type: 'LineString', coordinates };
     const simulationMilestonesKm = cumulativeDistances.slice(1);
+    const simulationControlsRef = React.createRef<MapSimulationControls>();
+    const onSimulationPlayingChange = vi.fn();
     const { getByRole, rerender } = render(
       <MapboxMap routeGeometry={routeGeometry} enableSimulation autoPlaySimulation simulationMilestonesKm={simulationMilestonesKm} />,
     );
@@ -207,6 +261,8 @@ describe('MapboxMap vehicle simulation lifecycle', () => {
         routeGeometry={routeGeometry}
         enableSimulation
         followSimulationVehicle
+        simulationControlsRef={simulationControlsRef}
+        onSimulationPlayingChange={onSimulationPlayingChange}
         simulationMilestonesKm={simulationMilestonesKm}
         simulationFocus={{ coordinate: coordinates[1], progress: cumulativeDistances[1] / totalDistanceKm }}
       />,
@@ -220,28 +276,31 @@ describe('MapboxMap vehicle simulation lifecycle', () => {
       geometry: { type: 'LineString', coordinates: [coordinates[1], coordinates[2]] },
     }));
 
-    fireEvent.click(getByRole('button', { name: 'Chạy mô phỏng' }));
+    expect(onSimulationPlayingChange).toHaveBeenLastCalledWith(false);
+    act(() => simulationControlsRef.current?.togglePlayback());
+    expect(onSimulationPlayingChange).toHaveBeenLastCalledWith(true);
     act(() => {
-      for (let timestamp = 1000; timestamp <= 1700; timestamp += 20) nextFrame?.(timestamp);
+      for (let timestamp = 1000; timestamp <= 1800; timestamp += 20) nextFrame?.(timestamp);
     });
     expect(truck).not.toMatchObject({ coordinate: coordinates[1] });
-    expect(map.jumpTo).toHaveBeenLastCalledWith({ center: (truck as InstanceType<typeof mapboxMocks.MockMarker>).coordinate, zoom: 14 });
+    expect(map.jumpTo).toHaveBeenLastCalledWith({ center: (truck as InstanceType<typeof mapboxMocks.MockMarker>).coordinate, zoom: 12 });
 
     const updatesBeforeZoom = map.jumpTo.mock.calls.length;
     map.zooming = true;
     map.zoomStart?.({ originalEvent: new MouseEvent('click') });
-    act(() => nextFrame?.(1720));
+    act(() => nextFrame?.(1820));
     expect(map.jumpTo).toHaveBeenCalledTimes(updatesBeforeZoom);
 
-    map.zoom = 10;
+    map.zoom = 11;
     map.zooming = false;
-    act(() => nextFrame?.(1740));
+    act(() => nextFrame?.(1840));
     expect(map.jumpTo).toHaveBeenLastCalledWith({ center: (truck as InstanceType<typeof mapboxMocks.MockMarker>).coordinate });
-    expect(map.getZoom()).toBe(10);
+    expect(map.getZoom()).toBe(11);
 
-    fireEvent.click(getByRole('button', { name: 'Tạm dừng mô phỏng' }));
+    act(() => simulationControlsRef.current?.togglePlayback());
+    expect(onSimulationPlayingChange).toHaveBeenLastCalledWith(false);
     const cameraUpdates = map.jumpTo.mock.calls.length;
-    act(() => nextFrame?.(1760));
+    act(() => nextFrame?.(1860));
     expect(map.jumpTo).toHaveBeenCalledTimes(cameraUpdates);
   });
 
@@ -261,6 +320,7 @@ describe('MapboxMap vehicle simulation lifecycle', () => {
 
     act(() => nextFrame?.(1016));
     const beforeStopUpdate = onSimulationProgress.mock.lastCall?.[0];
+    expect(onSimulationProgress.mock.lastCall?.[4]).toBe('animation');
     act(() => nextFrame?.(1216));
     const afterStopUpdate = onSimulationProgress.mock.lastCall?.[0];
 
@@ -291,13 +351,24 @@ describe('MapboxMap vehicle simulation lifecycle', () => {
     };
     const normalSpeed = advance(14);
     expect(normalSpeed).toBeCloseTo(0.02 / 75, 8);
-    expect(advance(10)).toBeCloseTo(normalSpeed * 2, 8);
-    expect(advance(18)).toBeCloseTo(normalSpeed / 2, 8);
-    expect(advance(6)).toBeCloseTo(normalSpeed * 2, 8);
+    const overviewSpeed = advance(10);
+    const closeupSpeed = advance(20);
+    expect(overviewSpeed).toBeCloseTo(normalSpeed * 2, 8);
+    expect(closeupSpeed).toBeCloseTo(normalSpeed * 0.0025, 8);
+    expect(advance(6)).toBeCloseTo(overviewSpeed, 8);
+    expect(advance(22)).toBeCloseTo(closeupSpeed, 8);
+    expect(advance(12)).toBeCloseTo(normalSpeed * Math.SQRT2, 8);
+    const streetSpeed = advance(16);
+    const buildingSpeed = advance(18);
+    expect(streetSpeed).toBeLessThan(normalSpeed);
+    expect(buildingSpeed).toBeLessThan(streetSpeed);
+    expect(buildingSpeed).toBeLessThan(normalSpeed * 0.02);
+    expect(buildingSpeed).toBeGreaterThan(closeupSpeed);
 
     const speedInput = getByRole('textbox', { name: 'Hệ số tốc độ mô phỏng' });
     fireEvent.change(speedInput, { target: { value: '0.5' } });
     fireEvent.keyDown(speedInput, { key: 'Enter' });
-    expect(advance(10)).toBeCloseTo(normalSpeed, 8);
+    expect(advance(10)).toBeCloseTo(overviewSpeed / 2, 8);
+    expect(advance(20)).toBeCloseTo(closeupSpeed / 2, 8);
   });
 });

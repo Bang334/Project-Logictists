@@ -409,6 +409,7 @@ export interface BenchmarkMetricUI {
   physical_vehicle_count?: number;
   driver_calendar_salary_vnd?: number;
   driver_idle_salary_allocation_vnd?: number;
+  operational_late_penalty_vnd?: number;
   selection_score_vnd?: number;
   is_feasible: boolean;
   violations: string[];
@@ -532,6 +533,14 @@ export interface AutomaticOptimizationResponseUI {
   updatedAt: string;
 }
 
+export interface CandidateCostBreakdownUI {
+  fuelCostVnd: number;
+  vehicleFixedCostVnd: number;
+  driverCostVnd: number;
+  cargoHoldingCostVnd: number;
+  lateDeliveryPenaltyVnd: number;
+}
+
 export interface OptimizationCandidateSummaryUI {
   candidateNumber: number;
   rank?: number;
@@ -556,6 +565,7 @@ export interface OptimizationCandidateSummaryUI {
   activeRouteCount?: number;
   physicalVehicleCount?: number;
   deliveryVisitCount?: number;
+  costBreakdown?: CandidateCostBreakdownUI;
 }
 
 export interface OptimizationCandidateDetailUI {

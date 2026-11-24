@@ -62,6 +62,28 @@ it('keeps pre-stop cargo until the truck reaches a nearby stop', () => {
   expect(getStepIndexForDistance([0.1, 0.14], 0.14)).toBe(2);
 });
 
+it('lets the user change stops and toggle the map playback while simulating', () => {
+  const onStepChange = vi.fn();
+  const onToggle = vi.fn();
+  const props = {
+    stepStates: [pickup, delivery], isValid: true, selectedStepIndex: 1,
+    vehicleDimensions: { lengthCm: 400, widthCm: 200 },
+    onStepChange, isSimulating: true,
+  };
+  const { rerender } = render(<FloorPackingVisualizer {...props} simulationPlayback={{ playing: true, onToggle }} />);
+  fireEvent.click(screen.getByText('Trước'));
+  expect(onStepChange).toHaveBeenLastCalledWith(0);
+  fireEvent.click(screen.getByText('Tiếp'));
+  expect(onStepChange).toHaveBeenLastCalledWith(2);
+  fireEvent.click(screen.getByText('Dừng'));
+  expect(onToggle).toHaveBeenCalledTimes(1);
+
+  rerender(<FloorPackingVisualizer {...props} selectedStepIndex={2} simulationPlayback={{ playing: false, onToggle }} />);
+  expect(screen.getByText('Tiếp').closest('button')).toBeDisabled();
+  fireEvent.click(screen.getByText('Chiếu'));
+  expect(onToggle).toHaveBeenCalledTimes(2);
+}, 20_000);
+
 it('defaults stacked plans to 3D container view, shows vehicle height, and toggles cleanly to 2D', () => {
   render(
     <FloorPackingVisualizer

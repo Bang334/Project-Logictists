@@ -279,7 +279,7 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
                   ...prev,
                   optimization: {
                     ...prev.optimization,
-                    defaultSearchBudgetSeconds: value ?? 10,
+                    defaultSearchBudgetSeconds: value ?? 60,
                   },
                 }))
               }
@@ -304,7 +304,7 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
                   ...prev,
                   optimization: {
                     ...prev.optimization,
-                    maxTimeSeconds: value ?? 120,
+                    maxTimeSeconds: value ?? 240,
                   },
                 }))
               }
@@ -351,12 +351,12 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
               max={1000}
               precision={0}
               style={{ width: '100%' }}
-              value={displayedOptimization.earlyStopPatience ?? 30}
+              value={displayedOptimization.earlyStopPatience ?? 0}
               disabled={!isOptimizationEditable}
               onChange={(value) =>
                 onChangeDraft((prev) => ({
                   ...prev,
-                  optimization: { ...prev.optimization, earlyStopPatience: value ?? 30 },
+                  optimization: { ...prev.optimization, earlyStopPatience: value ?? 0 },
                 }))
               }
             />

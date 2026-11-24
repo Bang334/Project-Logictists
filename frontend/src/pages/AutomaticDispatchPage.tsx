@@ -1,5 +1,6 @@
 import { corridorDemos, demoCases } from '../corridorDemos';
-import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import axios from 'axios';
 import { DispatcherDeliveryPlanning } from '../components/DeliveryAppointments';
 import {
@@ -56,7 +57,7 @@ import {
 } from '@ant-design/icons';
 import { branchesApi, driversApi, mapboxApi, ordersApi, settingsApi, tripsApi, vehiclesApi } from '../api/client';
 import { getRealtimeSocket } from '../api/realtime';
-import MapboxMap, { MAP_ROUTE_COLORS, MapMarker } from '../components/MapboxMap';
+import MapboxMap, { MAP_ROUTE_COLORS, MapMarker, type MapSimulationControls, type SimulationPositionSource } from '../components/MapboxMap';
 import FloorPackingVisualizer from '../components/FloorPackingVisualizer';
 import { BenchmarkCostComparisonCard } from '../components/BenchmarkCostComparisonCard';
 import { EditDriverModal } from '../components/EditDriverModal';
@@ -83,9 +84,11 @@ import {
 import { EffectiveSettings, STACKING_OWNER_MODE_LABELS } from '../types/settings';
 import { useAuth } from '../context/AuthContext';
 import {
+  calculateDistanceKm,
   calculateStopMilestonesKm,
   getStepIndexForDistance,
   buildRouteProfile,
+  interpolateAlongRoute,
 } from '../utils/geoSimulation';
 import {
   clearAutoDispatchState,
@@ -102,6 +105,7 @@ const { Text, Title, Paragraph } = Typography;
 const currency = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' });
 const getRouteKey = (route: OptimizedRouteUI) => route.route_id;
 const DIRECT_COMPARISON = 0;
+const ACTIVE_OPTIMIZATION_STATUSES = new Set(['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED']);
 
 function RouteDetails({ route, render }: { route: OptimizedRouteUI; render: (route: OptimizedRouteUI) => React.ReactNode }) {
   return <>{render(route)}</>;
@@ -126,14 +130,19 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   const countRequest = useRef(0);
   const [optimization, setOptimization] = useState<AutomaticOptimizationResponseUI | null>(null);
   const [selectedCandidateNumber, setSelectedCandidateNumber] = useState(1);
+  const [lastNonDirectCandidateNumber, setLastNonDirectCandidateNumber] = useState(1);
   const [selectedCandidateResult, setSelectedCandidateResult] = useState<FleetOptimizationResultUI | null>(null);
+  const [loadedCandidateResults, setLoadedCandidateResults] = useState<Record<number, FleetOptimizationResultUI>>({});
   const [loadingCandidate, setLoadingCandidate] = useState(false);
   const [exportingCandidates, setExportingCandidates] = useState(false);
-  const [starting, setStarting] = useState(false);
+  const [submittingOptimization, setSubmittingOptimization] = useState(false);
+  const [requestingCancellation, setRequestingCancellation] = useState(false);
   const [applying, setApplying] = useState(false);
   const [appliedTripCount, setAppliedTripCount] = useState<number | null>(null);
   const [selectedVehicleForMap, setSelectedVehicleForMap] = useState<string | 'ALL'>('ALL');
   const [enableSim, setEnableSim] = useState<boolean>(false);
+  const simulationControlsRef = useRef<MapSimulationControls>(null);
+  const [mapPlaying, setMapPlaying] = useState(false);
   const [directRoadAttempt, setDirectRoadAttempt] = useState(0);
   const [directRoad, setDirectRoad] = useState<{
     route: OptimizedRouteUI;
@@ -141,6 +150,10 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     coordinates: [number, number][] | null;
   }>();
   const [activeStepIndex, setActiveStepIndex] = useState<number>(0);
+  const displayedStepRef = useRef(0);
+  useLayoutEffect(() => {
+    displayedStepRef.current = activeStepIndex;
+  }, [activeStepIndex]);
   const [mapStopSelection, setMapStopSelection] = useState<{ route: OptimizedRouteUI; step: number }>();
   const [mapLayoutMode, setMapLayoutMode] = useState<'HALF' | 'FULL'>('HALF');
   const [scheduleMode, setScheduleMode] = useState<AutomaticDispatchScheduleModeUI>('CURRENT_TIME');
@@ -215,8 +228,9 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
           return false;
         }
       }
-      if (restoreRequestIdRef.current !== reqId || !job || job.branchId !== branchId
-        || isAutoDispatchJobDismissed(branchId, job.createdAt)) return false;
+      if (restoreRequestIdRef.current !== reqId || !job || job.branchId !== branchId) return false;
+      const dismissed = isAutoDispatchJobDismissed(branchId, job.createdAt);
+      if (dismissed && job.status !== 'CANCEL_REQUESTED') return false;
 
       const preferences = stored?.optimizationJobId === job.id ? stored : null;
       const restoredScheduleMode = preferences?.scheduleMode ?? job.scheduleMode ?? 'CURRENT_TIME';
@@ -228,7 +242,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       setUseCustomTime(restoredUseCustomTime);
       setCustomStartTime(restoredCustomStart ? dayjs(restoredCustomStart) : null);
       setIsRestoredFromStorage(true);
-      saveAutoDispatchState({
+      if (!dismissed) saveAutoDispatchState({
         branchId,
         optimizationJobId: job.id,
         appliedTripCount: preferences?.appliedTripCount ?? null,
@@ -342,7 +356,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     setActiveStepIndex(0);
 
     void restoreStateForBranch(selectedBranchId, currentReqId);
-    void loadCounts(selectedBranchId, () => active && restoreRequestIdRef.current === currentReqId);
+    void loadCounts(selectedBranchId, () => active);
     return () => {
       active = false;
     };
@@ -351,10 +365,50 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   const activeOptimizationJobId = optimization?.id;
   const activeOptimizationStatus = optimization?.status;
   const activeOptimizationBranchId = optimization?.branchId;
+  const starting = submittingOptimization || (
+    activeOptimizationBranchId === selectedBranchId &&
+    ACTIVE_OPTIMIZATION_STATUSES.has(activeOptimizationStatus ?? '')
+  );
+  const canceling = requestingCancellation || activeOptimizationStatus === 'CANCEL_REQUESTED';
+
+  const updateOptimizationSnapshot = useCallback((snapshot: AutomaticOptimizationResponseUI) => {
+    setOptimization(current => {
+      if (current?.id !== snapshot.id) return current;
+      if (ACTIVE_OPTIMIZATION_STATUSES.has(snapshot.status) &&
+        (!ACTIVE_OPTIMIZATION_STATUSES.has(current.status) ||
+          (current.status === 'CANCEL_REQUESTED' && snapshot.status !== 'CANCEL_REQUESTED'))) return current;
+      return snapshot;
+    });
+  }, []);
+
+  const resetOptimizationView = useCallback(() => {
+    restoreRequestIdRef.current += 1;
+    optimizationIdempotencyKeyRef.current = null;
+    setOptimization(null);
+    setSelectedCandidateNumber(1);
+    setLastNonDirectCandidateNumber(1);
+    setSelectedCandidateResult(null);
+    setLoadedCandidateResults({});
+    setAppliedTripCount(null);
+    setSelectedVehicleForMap('ALL');
+    setEnableSim(false);
+    setActiveStepIndex(0);
+    setMapStopSelection(undefined);
+    setIsRestoredFromStorage(false);
+  }, []);
+
+  useEffect(() => {
+    if (requestingCancellation || !optimization || ACTIVE_OPTIMIZATION_STATUSES.has(optimization.status)
+      || !isAutoDispatchJobDismissed(optimization.branchId, optimization.createdAt)) return;
+    resetOptimizationView();
+    message.success('Đã đóng phương án. Bạn có thể chạy tối ưu mới.');
+  }, [message, optimization, requestingCancellation, resetOptimizationView]);
 
   useEffect(() => {
     setSelectedCandidateNumber(1);
+    setLastNonDirectCandidateNumber(1);
     setSelectedCandidateResult(null);
+    setLoadedCandidateResults({});
     const stored = activeOptimizationBranchId ? getAutoDispatchState(activeOptimizationBranchId) : null;
     setSelectedVehicleForMap(stored && stored.optimizationJobId === activeOptimizationJobId
       ? stored.selectedVehicleForMap ?? 'ALL'
@@ -370,13 +424,8 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       return;
     }
 
-    const activeStatuses = ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED'];
-    if (!activeStatuses.includes(activeOptimizationStatus)) {
-      setStarting(false);
-      return;
-    }
+    if (!ACTIVE_OPTIMIZATION_STATUSES.has(activeOptimizationStatus)) return;
 
-    setStarting(true);
     let cancelled = false;
     let timer: number | undefined;
     const poll = async () => {
@@ -385,12 +434,11 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
         if (cancelled) return;
         // BẢO VỆ: Chỉ setOptimization nếu response thuộc đúng selectedBranchId đang chọn
         if (response.data.branchId === selectedBranchId) {
-          setOptimization(response.data);
-          if (activeStatuses.includes(response.data.status)) {
+          updateOptimizationSnapshot(response.data);
+          if (ACTIVE_OPTIMIZATION_STATUSES.has(response.data.status)) {
             timer = window.setTimeout(poll, 1500);
           } else {
-            setStarting(false);
-            if (response.data.status === 'SUCCEEDED') {
+            if (response.data.status === 'SUCCEEDED' && !isAutoDispatchJobDismissed(selectedBranchId, response.data.createdAt)) {
               message.success('Phương án tối ưu đã sẵn sàng để kiểm tra');
             } else if (response.data.error?.message) {
               message.error(response.data.error.message);
@@ -412,6 +460,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     activeOptimizationStatus,
     message,
     selectedBranchId,
+    updateOptimizationSnapshot,
   ]);
 
   useEffect(() => {
@@ -426,7 +475,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
           activeOptimizationJobId,
         );
         if (!disposed && response.data.branchId === selectedBranchId) {
-          setOptimization(response.data);
+          updateOptimizationSnapshot(response.data);
         }
       } catch {
         // Polling effect remains the bounded fallback when realtime reload fails.
@@ -449,7 +498,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     };
     socket.on('connect', onConnect);
     socket.on('optimization:job-updated', onJobUpdate);
-    if (socket.connected && ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED'].includes(activeOptimizationStatus ?? '')) {
+    if (socket.connected && ACTIVE_OPTIMIZATION_STATUSES.has(activeOptimizationStatus ?? '')) {
       void reloadSnapshot();
     }
     return () => {
@@ -457,7 +506,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       socket.off('connect', onConnect);
       socket.off('optimization:job-updated', onJobUpdate);
     };
-  }, [activeOptimizationJobId, activeOptimizationStatus, selectedBranchId]);
+  }, [activeOptimizationJobId, activeOptimizationStatus, selectedBranchId, updateOptimizationSnapshot]);
 
   const startOptimization = async () => {
     if (!selectedBranchId) {
@@ -465,7 +514,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       return;
     }
     try {
-      setStarting(true);
+      setSubmittingOptimization(true);
       setAppliedTripCount(null);
       const payload: RunAutomaticOptimizationPayloadUI = {
         idempotencyKey:
@@ -504,7 +553,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     } catch (error: any) {
       message.error(error.response?.data?.message || 'Không thể bắt đầu tối ưu tự động');
     } finally {
-      setStarting(false);
+      setSubmittingOptimization(false);
     }
   };
 
@@ -560,45 +609,25 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   };
 
   const clearOptimization = async () => {
-    // Hủy bỏ bất kỳ request khôi phục nào đang chạy dở
-    restoreRequestIdRef.current += 1;
-
-    const optId = optimization?.id;
-    const optStatus = optimization?.status;
-    const optBranchId = optimization?.branchId;
-
-    // 1. DỌN SẠCH LOCALSTORAGE NGAY LẬP TỨC
-    if (selectedBranchId) {
-      if (optimization?.branchId === selectedBranchId) {
-        dismissAutoDispatchState(selectedBranchId, optimization.createdAt);
-      } else {
-        clearAutoDispatchState(selectedBranchId);
+    if (requestingCancellation) return;
+    if (optimization && ACTIVE_OPTIMIZATION_STATUSES.has(optimization.status)) {
+      setRequestingCancellation(true);
+      try {
+        const { data } = await tripsApi.cancelAutomaticOptimization(optimization.id);
+        dismissAutoDispatchState(optimization.branchId, optimization.createdAt);
+        updateOptimizationSnapshot(data);
+      } catch (error: unknown) {
+        message.error(axios.isAxiosError(error) && error.response?.data?.message
+          || 'Chưa hủy được lượt tối ưu. Vui lòng thử lại.');
+      } finally {
+        setRequestingCancellation(false);
       }
+      return;
     }
-    if (optimization && optBranchId && optBranchId !== selectedBranchId) {
-      dismissAutoDispatchState(optBranchId, optimization.createdAt);
-    }
-
-    // 2. DỌN SẠCH TOÀN BỘ REACT STATE
-    setOptimization(null);
-    setSelectedCandidateNumber(1);
-    setSelectedCandidateResult(null);
-    setAppliedTripCount(null);
-    setSelectedVehicleForMap('ALL');
-    setEnableSim(false);
-    setActiveStepIndex(0);
-    setIsRestoredFromStorage(false);
-
-    message.success('Đã xóa phương án và làm mới bộ nhớ tạm. Bạn có thể tiến hành tối ưu mới.');
-
-    // 3. HỦY JOB NGẦM NẾU ĐANG CHẠY
-    if (
-      optId &&
-      optStatus &&
-      ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED'].includes(optStatus)
-    ) {
-      tripsApi.cancelAutomaticOptimization(optId).catch(() => undefined);
-    }
+    if (optimization) dismissAutoDispatchState(optimization.branchId, optimization.createdAt);
+    else if (selectedBranchId) clearAutoDispatchState(selectedBranchId);
+    resetOptimizationView();
+    message.success('Đã đóng phương án. Bạn có thể chạy tối ưu mới.');
   };
 
   const changeBranch = (branchId: string) => {
@@ -608,7 +637,9 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     // Reset sạch sẽ state của chi nhánh cũ ngay lập tức để không bị treo phương án cũ
     setOptimization(null);
     setSelectedCandidateNumber(1);
+    setLastNonDirectCandidateNumber(1);
     setSelectedCandidateResult(null);
+    setLoadedCandidateResults({});
     setAppliedTripCount(null);
     setIsRestoredFromStorage(false);
     setSelectedVehicleForMap('ALL');
@@ -636,9 +667,11 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     }
     try {
       setRunningDemo(true);
-      setStarting(true);
+      setSubmittingOptimization(true);
       setSelectedCandidateResult(null);
+      setLoadedCandidateResults({});
       setSelectedCandidateNumber(1);
+      setLastNonDirectCandidateNumber(1);
       setSelectedVehicleForMap('ALL');
       setActiveStepIndex(0);
       setEnableSim(false);
@@ -684,14 +717,16 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       message.error(err.response?.data?.message || err.message || 'Không thể chạy tối ưu demo');
     } finally {
       setRunningDemo(false);
-      setStarting(false);
+      setSubmittingOptimization(false);
     }
   };
 
   const clearDemoOptimization = () => {
     setOptimization(null);
     setSelectedCandidateNumber(1);
+    setLastNonDirectCandidateNumber(1);
     setSelectedCandidateResult(null);
+    setLoadedCandidateResults({});
     setSelectedVehicleForMap('ALL');
     setActiveStepIndex(0);
     setEnableSim(false);
@@ -728,7 +763,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     planningSpanDays: directMetric.planning_span_days ?? 0,
     driverCalendarSalaryVnd: directMetric.driver_calendar_salary_vnd ?? 0,
     driverIdleSalaryAllocationVnd: directMetric.driver_idle_salary_allocation_vnd ?? 0,
-    operationalLatePenaltyVnd: 0,
+    operationalLatePenaltyVnd: directMetric.operational_late_penalty_vnd ?? 0,
     isBestFound: false,
     feasibilityStatus: 'SUCCESS',
     totalCostVnd: directMetric.total_cost_vnd,
@@ -739,13 +774,36 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     deliveryVisitCount: directRoutes.reduce((total, route) => total + route.stops.filter(stop => stop.stop_type === 'DELIVERY').length, 0),
     unassignedOrderCount: 0,
   } : undefined;
+  const displayedCandidateNumber =
+    selectedCandidateNumber === DIRECT_COMPARISON
+      ? lastNonDirectCandidateNumber
+      : selectedCandidateNumber;
+  const comparisonCandidateResults = useMemo(() => {
+    const merged: Record<number, FleetOptimizationResultUI> = {
+      ...(demoCandidatesMap ?? {}),
+      ...loadedCandidateResults,
+    };
+    if (optimization?.result) {
+      merged[1] = optimization.result;
+    }
+    if (selectedCandidateResult && selectedCandidateNumber !== DIRECT_COMPARISON) {
+      merged[selectedCandidateNumber] = selectedCandidateResult;
+    }
+    return merged;
+  }, [
+    demoCandidatesMap,
+    loadedCandidateResults,
+    optimization?.result,
+    selectedCandidateNumber,
+    selectedCandidateResult,
+  ]);
   const activePlanningObjective = useMemo<PlanningObjectiveBreakdownUI | null>(() => {
     if (!optimizerResult) return null;
     if (optimizerResult.planning_objective && optimizerResult.planning_objective.selection_score_vnd > 0) {
       return optimizerResult.planning_objective;
     }
     const matchedCandidate = optimization?.candidates.find(
-      (candidate) => candidate.candidateNumber === selectedCandidateNumber,
+      (candidate) => candidate.candidateNumber === displayedCandidateNumber,
     ) ?? optimization?.candidates[0];
     if (
       matchedCandidate &&
@@ -763,7 +821,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       };
     }
     return null;
-  }, [optimizerResult, optimization, selectedCandidateNumber]);
+  }, [displayedCandidateNumber, optimizerResult, optimization]);
   const canProposeDeliveryWindow = useMemo(() => {
     if (showingDirect || appliedTripCount !== null || starting || applying || loadingCandidate
       || optimization?.scheduleMode !== 'NEXT_DAY' || optimization.status !== 'SUCCEEDED' || !result) return false;
@@ -810,6 +868,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     }
     if (pageMode === 'DEMO' && demoCandidatesMap && demoCandidatesMap[candidateNumber]) {
       setSelectedCandidateNumber(candidateNumber);
+      setLastNonDirectCandidateNumber(candidateNumber);
       setSelectedCandidateResult(demoCandidatesMap[candidateNumber]);
       setSelectedVehicleForMap('ALL');
       setActiveStepIndex(0);
@@ -823,7 +882,12 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
         candidateNumber,
       );
       setSelectedCandidateNumber(candidateNumber);
+      setLastNonDirectCandidateNumber(candidateNumber);
       setSelectedCandidateResult(response.data.result);
+      setLoadedCandidateResults((prev) => ({
+        ...prev,
+        [candidateNumber]: response.data.result,
+      }));
       setSelectedVehicleForMap('ALL');
       setActiveStepIndex(0);
       setEnableSim(false);
@@ -961,6 +1025,13 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       showingDirect ? undefined : currentActiveRoute.route_geometry?.waypoint_indices);
   }, [routeProfileForSim, currentActiveRoute, showingDirect]);
 
+  const stopCoordinatesOnRoute = useMemo(() => {
+    if (!routeProfileForSim || routeProfileForSim.totalDistanceKm <= 0) return [];
+    return stopMilestonesKm.map(distance =>
+      interpolateAlongRoute(routeProfileForSim, distance / routeProfileForSim.totalDistanceKm).coord,
+    );
+  }, [routeProfileForSim, stopMilestonesKm]);
+
   const hasReturnLeg = (currentActiveRoute?.return_travel_time_sec ?? 0) > 0;
   const simulationFocus = useMemo(() => {
     if (!mapStopSelection || mapStopSelection.route !== currentActiveRoute) return undefined;
@@ -972,11 +1043,19 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     const distance = step === 0 ? 0 : stopMilestonesKm[step - 1] ?? routeProfileForSim?.totalDistanceKm ?? 0;
     const total = routeProfileForSim?.totalDistanceKm ?? 0;
     return {
-      coordinate: [location.longitude, location.latitude] as [number, number],
+      coordinate: stopCoordinatesOnRoute[step - 1] ?? [location.longitude, location.latitude] as [number, number],
       progress: total > 0 ? distance / total : 0,
     };
-  }, [mapStopSelection, currentActiveRoute, resolveDepot, routeProfileForSim, stopMilestonesKm]);
+  }, [mapStopSelection, currentActiveRoute, resolveDepot, routeProfileForSim, stopMilestonesKm, stopCoordinatesOnRoute]);
   const showSimulation = isSimulating || Boolean(simulationFocus);
+  const changePackingStep = useCallback((step: number) => {
+    if (showSimulation && canSimulate && currentActiveRoute) {
+      selectMapRoute(getRouteKey(currentActiveRoute), step);
+    } else {
+      setActiveStepIndex(step);
+    }
+  }, [showSimulation, canSimulate, currentActiveRoute, selectMapRoute]);
+  const toggleMapPlayback = useCallback(() => simulationControlsRef.current?.togglePlayback(), []);
   const journeyArrowClass = (step: number) => {
     if (!showSimulation) return 'journey-arrow';
     if (step <= activeStepIndex) return 'journey-arrow journey-arrow-traveled';
@@ -984,11 +1063,16 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     return 'journey-arrow';
   };
 
-  const syncSimulationStep = useCallback((progress: number, _coordinate: [number, number], _speed: number, traveledKm: number) => {
+  const syncSimulationStep = useCallback((progress: number, _coordinate: [number, number], _speed: number, traveledKm: number, source: SimulationPositionSource) => {
     const step = progress === 1 && hasReturnLeg
       ? stopMilestonesKm.length + 1
       : getStepIndexForDistance(stopMilestonesKm, traveledKm);
-    startTransition(() => setActiveStepIndex(step));
+    if (step === displayedStepRef.current) return;
+    if (source === 'animation') {
+      flushSync(() => setActiveStepIndex(step));
+      return;
+    }
+    setActiveStepIndex(step);
   }, [hasReturnLeg, stopMilestonesKm]);
 
   const selectMapMarker = useCallback((marker: MapMarker) => {
@@ -1034,24 +1118,34 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       }
 
       stopMarkers.push(
-        ...route.stops.map((stop) => ({
-          id: `${getRouteKey(route)}-${stop.sequence}-${stop.location_id}`,
-          latitude: stop.latitude,
-          longitude: stop.longitude,
-          title: `${route.plate_number} (${route.driver_name}) · ${stop.stop_type === 'PICKUP' ? 'Nhận' : 'Giao'} hàng`,
-          subtitle: stop.location_name,
-          type: stop.stop_type,
-          sequence: stop.sequence,
-          routeIndex: originalIndex,
-          color: routeColor,
-          plateNumber: route.plate_number,
-          driverName: route.driver_name,
-        })),
+        ...route.stops.map((stop, index) => {
+          // For the selected route, the pin and the cargo change use the same road waypoint.
+          const roadCoordinate = route === currentActiveRoute ? stopCoordinatesOnRoute[index] : undefined;
+          const [longitude, latitude] = roadCoordinate ?? [stop.longitude, stop.latitude];
+          const offsetMetres = roadCoordinate
+            ? Math.round(calculateDistanceKm(stop.latitude, stop.longitude, latitude, longitude) * 1000)
+            : 0;
+          return {
+            id: `${getRouteKey(route)}-${stop.sequence}-${stop.location_id}`,
+            latitude,
+            longitude,
+            title: `${route.plate_number} (${route.driver_name}) · ${stop.stop_type === 'PICKUP' ? 'Nhận' : 'Giao'} hàng`,
+            subtitle: offsetMetres > 15
+              ? `${stop.location_name} · Điểm dừng trên tuyến cách địa chỉ ${formatDecimal(offsetMetres, 0)} m`
+              : stop.location_name,
+            type: stop.stop_type,
+            sequence: stop.sequence,
+            routeIndex: originalIndex,
+            color: routeColor,
+            plateNumber: route.plate_number,
+            driverName: route.driver_name,
+          };
+        }),
       );
     });
 
     return [...depotMarkers.values(), ...stopMarkers];
-  }, [activeRoutesForMap, result, resolveDepot, showingDirect]);
+  }, [activeRoutesForMap, currentActiveRoute, result, resolveDepot, showingDirect, stopCoordinatesOnRoute]);
 
   const routeGeometry = useMemo(
     () => ({
@@ -2699,12 +2793,13 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
             type="primary"
             size="large"
             icon={<ThunderboltOutlined style={{ fontSize: 18, color: '#fbbf24' }} />}
-            loading={starting}
+            loading={starting && !canceling}
             disabled={
               !selectedBranchId
               || loadingCounts.orders || loadingCounts.vehicles || loadingCounts.drivers
               || counts.orders === 0
               || applying
+              || starting || canceling
             }
             onClick={startOptimization}
             style={{
@@ -2717,7 +2812,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
               borderRadius: 8,
             }}
           >
-            Tối ưu toàn bộ
+            {canceling ? 'Đang hủy lượt tối ưu…' : 'Tối ưu toàn bộ'}
           </Button>
           <Button
             size="large"
@@ -2795,17 +2890,17 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
             ) : (
               <Popconfirm
                 title="Xóa phương án đề xuất này?"
-                description="Phương án này sẽ được xóa sạch khỏi bộ nhớ tạm để bạn tối ưu lại từ đầu."
+                description={starting ? 'Lượt đang chạy sẽ được hủy trước khi đóng phương án.' : 'Phương án sẽ được đóng trên màn hình để bạn có thể tối ưu lại.'}
                 onConfirm={clearOptimization}
                 okText="Xóa phương án"
                 cancelText="Hủy"
-                disabled={applying}
+                disabled={applying || requestingCancellation}
               >
                 <Button
                   size="large"
                   danger
                   icon={<DeleteOutlined />}
-                  disabled={applying}
+                  disabled={applying || requestingCancellation}
                 >
                   Xóa phương án
                 </Button>
@@ -3113,6 +3208,10 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
               optimizationStatus={optimizerResult.status}
               unassignedOrderCount={optimizerResult.unassigned_orders.length}
               planningObjective={activePlanningObjective}
+              candidates={optimization?.candidates}
+              candidateResults={comparisonCandidateResults}
+              selectedCandidateNumber={selectedCandidateNumber}
+              displayedCandidateNumber={displayedCandidateNumber}
               onSelectDirect={directCandidate ? () => void selectCandidate(DIRECT_COMPARISON) : undefined}
               showingDirect={showingDirect}
             />
@@ -3490,7 +3589,11 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                   driverName={currentActiveRoute?.driver_name}
                   onSimulationProgress={syncSimulationStep}
                   onSimulationStop={stopSimulation}
+                  simulationControlsRef={simulationControlsRef}
+                  onSimulationPlayingChange={setMapPlaying}
                   onMarkerClick={selectMapMarker}
+                  groupCoincidentStops={Boolean(currentActiveRoute)}
+                  completedStopSequence={showSimulation ? activeStepIndex : 0}
                 />
               </Card>
             </Col>
@@ -3523,8 +3626,9 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                     : []
                 }
                 selectedStepIndex={activeStepIndex}
-                onStepChange={setActiveStepIndex}
+                onStepChange={changePackingStep}
                 isSimulating={showSimulation && canSimulate}
+                simulationPlayback={{ playing: mapPlaying, onToggle: toggleMapPlayback }}
               /> : <Card title="Sơ đồ xếp dỡ thùng xe" className="card-elevation">
                 <Empty description="Chọn một tuyến xe trên bản đồ để xem hàng trên xe." />
               </Card>}

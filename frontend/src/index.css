@@ -1224,6 +1224,66 @@ body {
   transform: scale(1.12);
 }
 
+.marker-shared-stop {
+  width: 28px;
+  height: 28px;
+  border: 2px solid #fff;
+  border-radius: 14px;
+}
+
+.map-shared-stop:hover,
+.map-shared-stop:focus-within {
+  z-index: 21;
+}
+
+.map-shared-stop-list:not([hidden]) {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  z-index: 11;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  width: max-content;
+  max-width: 160px;
+  padding: 5px;
+  transform: translateX(-50%);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgb(15 23 42 / 30%);
+}
+
+.map-shared-stop-list button {
+  min-width: 28px;
+  height: 28px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 14px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.map-shared-stop [data-stop-type='PICKUP'] {
+  background: #047857;
+}
+
+.map-shared-stop [data-stop-type='DELIVERY'] {
+  background: #c2410c;
+}
+
+.marker-shared-stop[data-complete='true'] {
+  opacity: 0.65;
+}
+
+.map-shared-stop-list button:hover,
+.map-shared-stop-list button:focus-visible {
+  outline: 2px solid #0f172a;
+  outline-offset: 1px;
+}
+
 .marker-depot {
   width: 42px;
   height: 42px;

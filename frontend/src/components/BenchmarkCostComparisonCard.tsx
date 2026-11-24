@@ -25,12 +25,18 @@ import {
   WarningOutlined,
   ExperimentOutlined,
 } from '@ant-design/icons';
+import type { TableColumnsType } from 'antd';
 import {
   BenchmarkComparisonUI,
   BenchmarkMetricUI,
   FleetOptimizationResultUI,
+  OptimizationCandidateSummaryUI,
   PlanningObjectiveBreakdownUI,
 } from '../types';
+import {
+  BenchmarkBreakdownPlanColumn,
+  buildBenchmarkBreakdownModel,
+} from '../utils/benchmarkBreakdown';
 import { formatCurrency, formatDecimal } from '../utils/format';
 
 const { Text, Title, Paragraph } = Typography;
@@ -40,8 +46,26 @@ interface Props {
   optimizationStatus?: FleetOptimizationResultUI['status'];
   unassignedOrderCount?: number;
   planningObjective?: PlanningObjectiveBreakdownUI | null;
+  candidates?: OptimizationCandidateSummaryUI[];
+  candidateResults?: Record<number, FleetOptimizationResultUI>;
+  selectedCandidateNumber?: number;
+  displayedCandidateNumber?: number;
   onSelectDirect?: () => void;
   showingDirect?: boolean;
+}
+
+interface BreakdownCellValue {
+  amount: number | null;
+  suffix?: string;
+  diffVsBest?: number | null;
+}
+
+interface BreakdownRow {
+  key: string;
+  category: string;
+  isSummary?: boolean;
+  isTotal?: boolean;
+  getCell: (col: BenchmarkBreakdownPlanColumn) => BreakdownCellValue;
 }
 
 export const BenchmarkCostComparisonCard: React.FC<Props> = ({
@@ -49,6 +73,10 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
   optimizationStatus,
   unassignedOrderCount = 0,
   planningObjective,
+  candidates,
+  candidateResults,
+  selectedCandidateNumber,
+  displayedCandidateNumber,
   onSelectDirect,
   showingDirect = false,
 }) => {
@@ -112,6 +140,9 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
     : 0;
   const directCalendarSalaryVnd = directHasCompanyObjective
     ? (direct_dedicated.driver_calendar_salary_vnd ?? 0)
+    : 0;
+  const directOperationalPenaltyVnd = directHasCompanyObjective
+    ? (direct_dedicated.operational_late_penalty_vnd ?? 0)
     : 0;
   const directEffectiveCostVnd =
     hasCompanyObjective && directHasCompanyObjective
@@ -192,99 +223,277 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
     />
   );
 
-  const breakdownColumns = [
+  const activeCandidateNumber =
+    displayedCandidateNumber ??
+    (selectedCandidateNumber && selectedCandidateNumber !== 0
+      ? selectedCandidateNumber
+      : 1);
+  const activeCandidate = candidates?.find(
+    (candidate) => candidate.candidateNumber === activeCandidateNumber,
+  );
+  const hasMultipleCandidates = Boolean(candidates && candidates.length > 1);
+  const isViewingSecondaryCandidate = Boolean(
+    hasMultipleCandidates &&
+      activeCandidate &&
+      activeCandidate.candidateNumber !== 1 &&
+      !activeCandidate.isBestFound,
+  );
+
+  const breakdownModel = buildBenchmarkBreakdownModel({
+    benchmarks,
+    planningObjective,
+    candidates,
+    candidateResults,
+    selectedCandidateNumber,
+    displayedCandidateNumber: activeCandidateNumber,
+    showingDirect,
+  });
+  const isMultiPlanBreakdown = breakdownModel.columns.length > 2;
+
+  const renderPlanHeader = (col: BenchmarkBreakdownPlanColumn) => {
+    if (!isMultiPlanBreakdown && (!candidates || candidates.length === 0)) {
+      return col.title;
+    }
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-end',
+          gap: 3,
+        }}
+      >
+        <Space size={4} wrap style={{ justifyContent: 'flex-end' }}>
+          {col.kind === 'direct' ? (
+            <Tag color="blue" style={{ margin: 0 }}>
+              Đối chuẩn
+            </Tag>
+          ) : col.candidateNumber === 1 ? (
+            <Tag color="green" style={{ margin: 0 }}>
+              #1 tốt nhất
+            </Tag>
+          ) : (
+            <Tag style={{ margin: 0 }}>#{col.candidateNumber}</Tag>
+          )}
+          {isMultiPlanBreakdown && col.isSelected && (
+            <Tag color="geekblue" style={{ margin: 0 }}>
+              Đang xem
+            </Tag>
+          )}
+        </Space>
+        <Text
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            color: col.isBest
+              ? '#047857'
+              : col.kind === 'direct'
+                ? '#475569'
+                : '#0f172a',
+          }}
+        >
+          {col.title}
+        </Text>
+      </div>
+    );
+  };
+
+  const renderPlanCell = (col: BenchmarkBreakdownPlanColumn, row: BreakdownRow) => {
+    const cell = row.getCell(col);
+    if (cell.amount === null) {
+      return (
+        <Tooltip title={col.kind === 'direct' && !col.isCompleteFeasible ? 'Phương án đối chuẩn không hợp lệ' : 'Chưa có dữ liệu chi tiết'}>
+          <Text type="secondary">—</Text>
+        </Tooltip>
+      );
+    }
+
+    const textColor = col.isBest
+      ? '#059669'
+      : col.kind === 'direct'
+        ? undefined
+        : '#0f172a';
+    const fontWeight = row.isTotal
+      ? 700
+      : row.isSummary || col.isBest
+        ? 600
+        : 500;
+
+    return (
+      <div>
+        <Text
+          type={col.kind === 'direct' && !col.isBest ? 'secondary' : undefined}
+          style={{
+            ...(textColor ? { color: textColor } : {}),
+            fontWeight,
+          }}
+        >
+          {formatCurrency(cell.amount)}
+        </Text>
+        {cell.suffix && (
+          <div style={{ fontSize: 11, color: '#64748b', fontWeight: 400 }}>
+            {cell.suffix}
+          </div>
+        )}
+        {cell.diffVsBest !== undefined && cell.diffVsBest !== null && (
+          <div
+            style={{
+              fontSize: 11,
+              color: cell.diffVsBest === 0 ? '#059669' : '#64748b',
+              fontWeight: cell.diffVsBest === 0 ? 500 : 400,
+            }}
+          >
+            {cell.diffVsBest === 0
+              ? 'Thấp nhất'
+              : `+${formatCurrency(cell.diffVsBest)}`}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const breakdownColumns: TableColumnsType<BreakdownRow> = [
     {
       title: 'Khoản mục chi phí',
       dataIndex: 'category',
       key: 'category',
+      width: isMultiPlanBreakdown ? 270 : undefined,
+      fixed: isMultiPlanBreakdown ? 'left' : undefined,
       render: (text: string) => <Text strong>{text}</Text>,
     },
-    {
-      title: 'Hybrid ALNS (Tối ưu)',
-      dataIndex: 'or_tools',
-      key: 'or_tools',
-      render: (val: number) => (
-        <Text style={{ color: '#059669', fontWeight: 600 }}>{formatCurrency(val)}</Text>
-      ),
-    },
-    {
-      title: 'Chuyến đơn lẻ (Direct Dedicated)',
-      dataIndex: 'direct',
-      key: 'direct',
-      render: (val: number) => <Text type="secondary">{direct_dedicated.is_feasible ? formatCurrency(val) : '—'}</Text>,
-    },
+    ...breakdownModel.columns.map((col) => ({
+      title: renderPlanHeader(col),
+      key: col.key,
+      width: isMultiPlanBreakdown ? 190 : undefined,
+      onHeaderCell: () =>
+        isMultiPlanBreakdown && col.isSelected
+          ? { style: { background: '#eaf4ff' } }
+          : {},
+      onCell: () =>
+        isMultiPlanBreakdown && col.isSelected
+          ? { style: { background: '#f8fbff' } }
+          : {},
+      render: (_: unknown, row: BreakdownRow) => renderPlanCell(col, row),
+    })),
   ];
 
-  const breakdownData = [
+  const breakdownData: BreakdownRow[] = [
     {
       key: 'fuel',
       category: '⛽ Nhiên liệu xăng dầu',
-      or_tools: or_tools.fuel_cost_vnd,
-      direct: direct_dedicated.fuel_cost_vnd,
+      getCell: (col) => ({
+        amount: col.hasData && col.costBreakdown ? col.costBreakdown.fuelCostVnd : null,
+      }),
     },
     {
       key: 'vehicle',
       category: '🚚 Khấu hao & phí cố định xe',
-      or_tools: or_tools.vehicle_fixed_cost_vnd,
-      direct: direct_dedicated.vehicle_fixed_cost_vnd,
+      getCell: (col) => ({
+        amount:
+          col.hasData && col.costBreakdown
+            ? col.costBreakdown.vehicleFixedCostVnd
+            : null,
+      }),
     },
     {
       key: 'driver',
       category: '👨‍✈️ Lương & thù lao tài xế (trên chuyến chạy)',
-      or_tools: or_tools.driver_cost_vnd,
-      direct: direct_dedicated.driver_cost_vnd,
+      getCell: (col) => ({
+        amount:
+          col.hasData && col.costBreakdown ? col.costBreakdown.driverCostVnd : null,
+      }),
     },
     {
       key: 'holding',
       category: '📦 Chi phí lưu hàng trên xe',
-      or_tools: or_tools.cargo_holding_cost_vnd,
-      direct: direct_dedicated.cargo_holding_cost_vnd,
+      getCell: (col) => ({
+        amount:
+          col.hasData && col.costBreakdown
+            ? col.costBreakdown.cargoHoldingCostVnd
+            : null,
+      }),
     },
     {
       key: 'late-delivery',
       category: '⏱️ Phạt giao trễ dự kiến',
-      or_tools: or_tools.late_delivery_penalty_vnd,
-      direct: direct_dedicated.late_delivery_penalty_vnd,
+      getCell: (col) => ({
+        amount:
+          col.hasData && col.costBreakdown
+            ? col.costBreakdown.lateDeliveryPenaltyVnd
+            : null,
+      }),
     },
-    ...(hasCompanyObjective
+    ...(breakdownModel.hasCompanyObjective
       ? [
           {
             key: 'route-subtotal',
             category: '🛣️ Tổng chi phí vận hành trực tiếp các chuyến',
-            or_tools: orToolsRouteCostVnd,
-            direct: direct_dedicated.total_cost_vnd,
+            isSummary: true,
+            getCell: (col: BenchmarkBreakdownPlanColumn) => ({
+              amount: col.hasData ? col.routeSubtotalVnd : null,
+            }),
           },
           {
             key: 'idle-driver-salary',
-            category: directSpanDays > 0
-              ? `🗓️ Lương cứng tài xế chờ lịch (${orToolsSpanDays} ngày so với ${directSpanDays} ngày)`
-              : `🗓️ Lương cứng tài xế chờ lịch (${orToolsSpanDays} ngày)`,
-            or_tools: orToolsIdleSalaryVnd,
-            direct: directIdleSalaryVnd,
+            category: isMultiPlanBreakdown
+              ? '🗓️ Lương cứng tài xế chờ lịch'
+              : directSpanDays > 0
+                ? `🗓️ Lương cứng tài xế chờ lịch (${orToolsSpanDays} ngày so với ${directSpanDays} ngày)`
+                : `🗓️ Lương cứng tài xế chờ lịch (${orToolsSpanDays} ngày)`,
+            getCell: (col: BenchmarkBreakdownPlanColumn) => ({
+              amount: col.hasData ? col.idleSalaryVnd : null,
+              suffix:
+                isMultiPlanBreakdown && col.hasData && col.planningSpanDays > 0
+                  ? `${col.planningSpanDays} ngày`
+                  : undefined,
+            }),
           },
-          ...(orToolsOperationalPenaltyVnd > 0
+          ...(breakdownModel.showOperationalPenaltyRow
             ? [
                 {
                   key: 'operational-penalty',
                   category: '⚠️ Phạt trễ vận hành quy đổi',
-                  or_tools: orToolsOperationalPenaltyVnd,
-                  direct: 0,
+                  getCell: (col: BenchmarkBreakdownPlanColumn) => ({
+                    amount: col.hasData ? col.operationalPenaltyVnd : null,
+                  }),
                 },
               ]
             : []),
           {
             key: 'total',
             category: '🏆 TỔNG CHI PHÍ TOÀN ĐỘI (Điểm xếp hạng)',
-            or_tools: orToolsEffectiveCostVnd,
-            direct: directEffectiveCostVnd,
+            isTotal: true,
+            getCell: (col: BenchmarkBreakdownPlanColumn) => ({
+              amount: col.hasData ? col.effectiveCostVnd : null,
+              diffVsBest:
+                isMultiPlanBreakdown &&
+                col.isCompleteFeasible &&
+                breakdownModel.bestEffectiveCostVnd !== null
+                  ? Math.max(
+                      0,
+                      col.effectiveCostVnd - breakdownModel.bestEffectiveCostVnd,
+                    )
+                  : null,
+            }),
           },
         ]
       : [
           {
             key: 'total',
             category: '💰 TỔNG CHI PHÍ TẠM TÍNH',
-            or_tools: or_tools.total_cost_vnd,
-            direct: direct_dedicated.total_cost_vnd,
+            isTotal: true,
+            getCell: (col: BenchmarkBreakdownPlanColumn) => ({
+              amount: col.hasData ? col.routeSubtotalVnd : null,
+              diffVsBest:
+                isMultiPlanBreakdown &&
+                col.isCompleteFeasible &&
+                breakdownModel.bestEffectiveCostVnd !== null
+                  ? Math.max(
+                      0,
+                      col.effectiveCostVnd - breakdownModel.bestEffectiveCostVnd,
+                    )
+                  : null,
+            }),
           },
         ]),
   ];
@@ -377,12 +586,22 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
               <Text strong style={{ color: '#047857', fontSize: 15 }}>
                 <ThunderboltOutlined style={{ marginRight: 6 }} />
-                Hybrid ALNS (Tối Ưu Ghép Chuyến)
+                {hasMultipleCandidates && activeCandidate
+                  ? `#${activeCandidate.candidateNumber} · ${activeCandidate.searchStrategy || 'Hybrid ALNS (Tối Ưu Ghép Chuyến)'}`
+                  : 'Hybrid ALNS (Tối Ưu Ghép Chuyến)'}
               </Text>
-              {feasibilityTag(or_tools, bestMethod?.key === 'or_tools', isPartialOrTools)}
+              {isViewingSecondaryCandidate && or_tools.is_feasible && !isPartialOrTools ? (
+                <Tag color="processing" icon={<CheckCircleOutlined />}>
+                  Phương án #{activeCandidate!.candidateNumber} đang chọn
+                </Tag>
+              ) : (
+                feasibilityTag(or_tools, bestMethod?.key === 'or_tools', isPartialOrTools)
+              )}
             </div>
             <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 12, minHeight: 32 }}>
-              Nghiệm khả thi tốt nhất tìm thấy trong thời gian cho phép; không khẳng định tối ưu toàn cục
+              {isViewingSecondaryCandidate
+                ? `Phương án #${activeCandidate!.candidateNumber} đang được chọn để đối chiếu với Chuyến đơn lẻ; không khẳng định tối ưu toàn cục`
+                : 'Nghiệm khả thi tốt nhất tìm thấy trong thời gian cho phép; không khẳng định tối ưu toàn cục'}
             </Paragraph>
 
             <Statistic
@@ -538,14 +757,24 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
                   </Text>
                 </div>
                 {hasCompanyObjective && directHasCompanyObjective && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <Text type="secondary">
-                      + Lương cứng tài xế chờ lịch ({directSpanDays} ngày):
-                    </Text>
-                    <Text strong style={{ color: '#475569' }}>
-                      +{formatCurrency(directIdleSalaryVnd)}
-                    </Text>
-                  </div>
+                  <>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <Text type="secondary">
+                        + Lương cứng tài xế chờ lịch ({directSpanDays} ngày):
+                      </Text>
+                      <Text strong style={{ color: '#475569' }}>
+                        +{formatCurrency(directIdleSalaryVnd)}
+                      </Text>
+                    </div>
+                    {directOperationalPenaltyVnd > 0 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                        <Text type="secondary">+ Phạt trễ vận hành quy đổi:</Text>
+                        <Text strong style={{ color: '#b45309' }}>
+                          +{formatCurrency(directOperationalPenaltyVnd)}
+                        </Text>
+                      </div>
+                    )}
+                  </>
                 )}
                 <div
                   style={{
@@ -661,7 +890,11 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
           style={{ fontSize: 13, color: '#2563eb', textDecoration: 'underline', cursor: 'pointer' }}
           onClick={() => setShowDetails(!showDetails)}
         >
-          {showDetails ? '▲ Thu gọn chi tiết phân rã' : '▼ Xem chi tiết phân rã chi phí'}
+          {showDetails
+            ? '▲ Thu gọn chi tiết phân rã'
+            : isMultiPlanBreakdown
+              ? `▼ Xem chi tiết phân rã chi phí (${breakdownModel.columns.length} phương án)`
+              : '▼ Xem chi tiết phân rã chi phí'}
         </a>
       </div>
 
@@ -674,7 +907,11 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
             dataSource={breakdownData}
             pagination={false}
             size="small"
-            scroll={{ x: 560 }}
+            scroll={{
+              x: isMultiPlanBreakdown
+                ? 270 + breakdownModel.columns.length * 190
+                : 560,
+            }}
           />
         </div>
       )}
