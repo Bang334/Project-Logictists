@@ -301,6 +301,9 @@ def _solve_hybrid_worker_bundle(
                         compare_horizons,
                     )
                     alt_dicts = _extract_distinct_alternative_route_dicts(chosen_probe, extra_probe)
+                    probe_stubs = getattr(probe_plan, "_alns_pool_route_dicts", None)
+                    if probe_stubs:
+                        alt_dicts.extend(probe_stubs)
                     return seed, chosen_probe.model_dump(), obj.model_dump(), alt_dicts, None
                 if probe_plan.routes and compact_fallback_plan is None:
                     compact_fallback_plan = probe_plan
@@ -369,6 +372,9 @@ def _solve_hybrid_worker_bundle(
             compare_horizons,
         )
         alt_dicts = _extract_distinct_alternative_route_dicts(chosen_plan, extra_plans)
+        pool_stubs = getattr(plan, "_alns_pool_route_dicts", None)
+        if pool_stubs:
+            alt_dicts.extend(pool_stubs)
         return seed, chosen_plan.model_dump(), obj.model_dump(), alt_dicts, None
     except Exception as exc:
         return seed, None, None, [], str(exc)
@@ -1333,6 +1339,9 @@ class MultiStartFleetOptimizer:
                     )
                     if extra_complete_plans:
                         setattr(chosen_hybrid, "_audited_alternatives", extra_complete_plans)
+                    seq_pool_stubs = getattr(hybrid_plan, "_alns_pool_route_dicts", None)
+                    if seq_pool_stubs:
+                        setattr(chosen_hybrid, "_alns_pool_route_dicts", seq_pool_stubs)
                     hybrid_strategy = SearchStrategy(
                         f"packing-aware-hybrid-alns-seed-{seed}",
                         f"Packing-aware Hybrid ALNS (seed {seed})",
@@ -1437,14 +1446,31 @@ class MultiStartFleetOptimizer:
                         if r_key not in seen_extra_keys:
                             seen_extra_keys.add(r_key)
                             extra_routes.append(route)
+            alns_pool_stubs: List[OptimizedRoute] = []
+            seen_stub_keys: Set[Tuple] = set(seen_extra_keys)
+            for _s, plan_obj, _sc in complete_runs:
+                for route_dict in getattr(plan_obj, "_alns_pool_route_dicts", ()):
+                    clean_dict = {k: v for k, v in route_dict.items() if k != "_pool_stub"}
+                    stub_route = OptimizedRoute.model_validate(clean_dict)
+                    r_key = _alt_route_dedup_key(stub_route)
+                    if r_key not in seen_stub_keys:
+                        seen_stub_keys.add(r_key)
+                        alns_pool_stubs.append(stub_route)
             for route_dict in pooled_alt_route_dicts:
-                route = OptimizedRoute.model_validate(route_dict)
+                is_stub_dict = bool(route_dict.get("_pool_stub"))
+                clean_dict = {k: v for k, v in route_dict.items() if k != "_pool_stub"} if is_stub_dict else route_dict
+                route = OptimizedRoute.model_validate(clean_dict)
                 r_key = _alt_route_dedup_key(route)
-                if r_key not in seen_extra_keys:
-                    seen_extra_keys.add(r_key)
-                    extra_routes.append(route)
+                if is_stub_dict:
+                    if r_key not in seen_stub_keys and r_key not in seen_extra_keys:
+                        seen_stub_keys.add(r_key)
+                        alns_pool_stubs.append(route)
+                else:
+                    if r_key not in seen_extra_keys:
+                        seen_extra_keys.add(r_key)
+                        extra_routes.append(route)
 
-            if complete_runs and (len(complete_runs) >= 2 or extra_routes):
+            if complete_runs and (len(complete_runs) >= 2 or extra_routes or alns_pool_stubs):
                 best_pre_run = min(
                     complete_runs,
                     key=lambda run: _candidate_selection_key(run, compare_horizons),
@@ -1452,14 +1478,52 @@ class MultiStartFleetOptimizer:
                 pre_strategy, pre_plan, pre_score = best_pre_run
                 best_existing_key = _candidate_selection_key(best_pre_run, compare_horizons)
                 cross_started = time.perf_counter()
-                combined = solve_cross_seed_set_partitioning(
-                    self.objective_request,
-                    [run[1] for run in complete_runs],
-                    expected_items,
-                    compare_horizons=compare_horizons,
-                    extra_routes=extra_routes,
-                    time_limit_sec=1.5,
-                )
+
+                pass2a_result = None
+                if len(complete_runs) >= 2 or extra_routes:
+                    pass2a_result = solve_cross_seed_set_partitioning(
+                        self.objective_request,
+                        [run[1] for run in complete_runs],
+                        expected_items,
+                        compare_horizons=compare_horizons,
+                        extra_routes=extra_routes,
+                        time_limit_sec=1.5,
+                    )
+
+                pass2b_result = None
+                if alns_pool_stubs:
+                    from .alns_engine import ALNSFleetOptimizer
+                    from .spatial_cache import scoped_spatial_cache
+
+                    slot_idx_map = {v.id: i for i, v in enumerate(self.objective_request.vehicles)}
+                    auditor_holder: Dict[str, Any] = {"opt": None}
+
+                    def _route_auditor(cand_route: OptimizedRoute) -> Optional[OptimizedRoute]:
+                        slot_id = cand_route.route_id or cand_route.vehicle_id
+                        v_idx = slot_idx_map.get(slot_id)
+                        if v_idx is None:
+                            return None
+                        if auditor_holder["opt"] is None:
+                            auditor_holder["opt"] = ALNSFleetOptimizer(self.objective_request)
+                        return auditor_holder["opt"].audit_pool_route_stub(
+                            v_idx,
+                            list(cand_route.stops),
+                            max_time_seconds=0.8,
+                        )
+
+                    with scoped_spatial_cache():
+                        pass2b_result = solve_cross_seed_set_partitioning(
+                            self.objective_request,
+                            [run[1] for run in complete_runs],
+                            expected_items,
+                            compare_horizons=compare_horizons,
+                            extra_routes=extra_routes,
+                            alns_pool_stubs=alns_pool_stubs,
+                            route_auditor=_route_auditor,
+                            time_limit_sec=4.0,
+                            max_audit_retries=3,
+                        )
+
                 cross_elapsed = time.perf_counter() - cross_started
                 cross_seed_telemetry = {
                     "pre_merge_strategy": pre_strategy.label,
@@ -1468,6 +1532,10 @@ class MultiStartFleetOptimizer:
                     "pre_merge_routes": len(pre_plan.routes),
                     "complete_seed_count": len(complete_runs),
                     "extra_route_count": len(extra_routes),
+                    "pool_stub_count": len(alns_pool_stubs),
+                    "pass2a_score": None,
+                    "pass2b_score": None,
+                    "winning_pass": None,
                     "post_merge_score": None,
                     "post_merge_operating_cost": None,
                     "post_merge_routes": None,
@@ -1475,34 +1543,65 @@ class MultiStartFleetOptimizer:
                     "accepted": False,
                     "elapsed_sec": round(cross_elapsed, 4),
                 }
-                if combined is not None:
-                    combined_plan, combined_obj = combined
-                    if is_fully_served(
-                        combined_plan,
+
+                valid_merges = []
+                for pass_name, strat_key, strat_label, res in (
+                    (
+                        "pass2a_audited",
+                        "packing-aware-cross-seed-cpsat",
+                        "Packing-aware Cross-Seed CP-SAT",
+                        pass2a_result,
+                    ),
+                    (
+                        "pass2b_alns_pool",
+                        "packing-aware-cross-seed-alns-pool-cpsat",
+                        "Packing-aware Cross-Seed ALNS-Pool CP-SAT",
+                        pass2b_result,
+                    ),
+                ):
+                    if res is None:
+                        continue
+                    c_plan, c_obj = res
+                    if not is_fully_served(
+                        c_plan,
                         all_order_ids,
                         max_routes_per_day=self.request.policy.max_routes_per_day,
                         expected_items=expected_items,
                     ):
-                        cross_strategy = SearchStrategy(
-                            "packing-aware-cross-seed-cpsat",
-                            "Packing-aware Cross-Seed CP-SAT",
+                        continue
+                    c_score = int(c_obj.selection_score_vnd)
+                    if pass_name == "pass2a_audited":
+                        cross_seed_telemetry["pass2a_score"] = c_score
+                    else:
+                        cross_seed_telemetry["pass2b_score"] = c_score
+                    c_cand = (
+                        SearchStrategy(
+                            strat_key,
+                            strat_label,
                             DEFAULT_SEARCH_STRATEGY.first_solution_strategy,
                             DEFAULT_SEARCH_STRATEGY.local_search_metaheuristic,
-                        )
-                        cross_candidate = (
-                            cross_strategy,
-                            combined_plan,
-                            combined_obj.selection_score_vnd,
-                        )
-                        post_score = int(combined_obj.selection_score_vnd)
-                        cross_seed_telemetry["post_merge_score"] = post_score
-                        cross_seed_telemetry["post_merge_operating_cost"] = int(combined_plan.total_cost_vnd)
-                        cross_seed_telemetry["post_merge_routes"] = len(combined_plan.routes)
-                        cross_seed_telemetry["delta_score"] = post_score - int(pre_score)
-                        if _candidate_selection_key(cross_candidate, compare_horizons) < best_existing_key:
-                            evaluated_runs.append(cross_candidate)
-                            cross_seed_applied = True
-                            cross_seed_telemetry["accepted"] = True
+                        ),
+                        c_plan,
+                        c_obj.selection_score_vnd,
+                    )
+                    valid_merges.append((pass_name, c_cand))
+
+                if valid_merges:
+                    best_pass_name, best_merge_cand = min(
+                        valid_merges,
+                        key=lambda item: _candidate_selection_key(item[1], compare_horizons),
+                    )
+                    best_merge_plan = best_merge_cand[1]
+                    post_score = int(best_merge_cand[2])
+                    cross_seed_telemetry["post_merge_score"] = post_score
+                    cross_seed_telemetry["post_merge_operating_cost"] = int(best_merge_plan.total_cost_vnd)
+                    cross_seed_telemetry["post_merge_routes"] = len(best_merge_plan.routes)
+                    cross_seed_telemetry["delta_score"] = post_score - int(pre_score)
+                    if _candidate_selection_key(best_merge_cand, compare_horizons) < best_existing_key:
+                        evaluated_runs.append(best_merge_cand)
+                        cross_seed_applied = True
+                        cross_seed_telemetry["accepted"] = True
+                        cross_seed_telemetry["winning_pass"] = best_pass_name
         self.last_cross_seed_telemetry = cross_seed_telemetry
 
         candidates, fully_served_count, diagnostics = select_ranked_candidates(

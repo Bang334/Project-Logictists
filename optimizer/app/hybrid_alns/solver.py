@@ -13,7 +13,7 @@ import random
 import sys
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if project_root not in sys.path:
@@ -28,7 +28,7 @@ from .models import (
     OrderPair,
     ScheduledStop,
 )
-from .route_evaluator import RouteEvaluation, schedule_and_evaluate_route
+from .route_evaluator import RouteEvaluation, clone_route_evaluation, clone_stops, schedule_and_evaluate_route
 from .solution_validator import audit_solution, repair_and_audit_solution
 from .greedy_insertion import solve_greedy
 from .objective import solution_key
@@ -65,6 +65,7 @@ class HybridALNSSolver:
         post_audit_reserve_sec: float = 0.0,
         early_stop_patience: int = 0,
         has_verified_plan: bool = False,
+        enable_repair_option_cache: bool = True,
     ):
         if time_limit_sec <= 0:
             raise ValueError("time_limit_sec must be greater than zero")
@@ -102,6 +103,8 @@ class HybridALNSSolver:
             Tuple[Tuple[object, ...], Tuple[Tuple[str, str], ...]],
             RouteEvaluation,
         ] = {}
+        self.enable_repair_option_cache = enable_repair_option_cache
+        self._packing_cache: Dict[Tuple[object, ...], Tuple[bool, str]] = {}
         self._resource_profile_cache: Dict[int, Tuple[object, ...]] = {}
         self._last_elimination_path: List[List[List[ScheduledStop]]] = []
         self._last_split_candidates: List[
@@ -117,6 +120,7 @@ class HybridALNSSolver:
         self._calendar_salary_cache: Dict[int, int] = {}
         self._allow_empty_insertion_competition = False
         self._route_pool: List[Tuple[int, List[ScheduledStop]]] = []
+        self._route_pool_index: Dict[Tuple[int, FrozenSet[str]], Tuple[int, int]] = {}
 
         self.destroy_operators: Dict[
             str, Callable[[List[List[ScheduledStop]], int], Tuple[List[List[ScheduledStop]], List[str]]]
@@ -215,7 +219,7 @@ class HybridALNSSolver:
         )
         cached = self._route_cache.get(key)
         if cached is not None:
-            return copy.deepcopy(cached)
+            return clone_route_evaluation(cached)
         evaluation = schedule_and_evaluate_route(
             self.vehicles[vehicle_index],
             self.drivers[vehicle_index],
@@ -227,8 +231,9 @@ class HybridALNSSolver:
             self.duration_matrix,
             self.node_id_to_index,
             allow_layout_search=allow_layout_search,
+            packing_cache=self._packing_cache,
         )
-        self._route_cache[key] = copy.deepcopy(evaluation)
+        self._route_cache[key] = clone_route_evaluation(evaluation)
         return evaluation
 
     def _evaluate_route_without_packing(
@@ -238,7 +243,7 @@ class HybridALNSSolver:
         key = (self._resource_profile(vehicle_index), self._route_key(stops))
         cached = self._quick_route_cache.get(key)
         if cached is not None:
-            return copy.deepcopy(cached)
+            return clone_route_evaluation(cached)
         evaluation = schedule_and_evaluate_route(
             self.vehicles[vehicle_index],
             self.drivers[vehicle_index],
@@ -251,8 +256,96 @@ class HybridALNSSolver:
             self.node_id_to_index,
             use_fast_packing=False,
         )
-        self._quick_route_cache[key] = copy.deepcopy(evaluation)
+        self._quick_route_cache[key] = clone_route_evaluation(evaluation)
         return evaluation
+
+    @staticmethod
+    def _clone_routes(routes: Sequence[Sequence[ScheduledStop]]) -> List[List[ScheduledStop]]:
+        return [clone_stops(route) for route in routes]
+
+    def _record_pool_routes(
+        self, routes: Sequence[Sequence[ScheduledStop]]
+    ) -> None:
+        """Deduplicate and record feasible single routes into self._route_pool."""
+        for v_idx, stops in enumerate(routes):
+            if not stops:
+                continue
+            ev = self._evaluate_route(v_idx, list(stops))
+            if not ev.feasible or ev.cost is None:
+                continue
+            orders_served = frozenset(
+                stop.order_id
+                for stop in ev.stops
+                if stop.stop_type == "PICKUP" and stop.order_id
+            )
+            if not orders_served:
+                continue
+            route_cost = int(ev.cost.total_cost_vnd)
+            pool_key = (v_idx, orders_served)
+            existing = self._route_pool_index.get(pool_key)
+            if existing is not None:
+                pos, old_cost = existing
+                if route_cost < old_cost:
+                    self._route_pool[pos] = (v_idx, clone_stops(ev.stops))
+                    self._route_pool_index[pool_key] = (pos, route_cost)
+            elif len(self._route_pool) < 1200:
+                pos = len(self._route_pool)
+                self._route_pool.append((v_idx, clone_stops(ev.stops)))
+                self._route_pool_index[pool_key] = (pos, route_cost)
+
+    def _export_alns_route_pool(
+        self, max_routes: int = 160
+    ) -> List[Tuple[str, List[ScheduledStop]]]:
+        """Export diverse, cost-efficient ALNS pool routes keyed by vehicle slot ID."""
+        if not self._route_pool or max_routes <= 0:
+            return []
+        ranked: List[Tuple[float, int, int, int, FrozenSet[str], List[ScheduledStop]]] = []
+        seen_sig: Set[Tuple[int, Tuple[Tuple[str, str], ...]]] = set()
+        for v_idx, stops in self._route_pool:
+            if not stops or v_idx >= len(self.vehicles):
+                continue
+            r_key = (v_idx, self._route_key(stops))
+            if r_key in seen_sig:
+                continue
+            ev = self._evaluate_route(v_idx, stops)
+            if not ev.feasible or ev.cost is None:
+                continue
+            orders_served = frozenset(
+                s.order_id for s in ev.stops if s.stop_type == "PICKUP" and s.order_id
+            )
+            if not orders_served:
+                continue
+            seen_sig.add(r_key)
+            r_cost = int(ev.cost.total_cost_vnd)
+            cost_per_order = r_cost / max(1, len(orders_served))
+            ranked.append((cost_per_order, -len(orders_served), r_cost, v_idx, orders_served, ev.stops))
+
+        ranked.sort(key=lambda row: (row[0], row[1], row[2], row[3]))
+        selected_positions: List[int] = []
+        selected_set: Set[int] = set()
+        by_order_counts: Dict[str, int] = {oid: 0 for oid in self.order_by_id}
+        for pos, (_cpo, _neg_cnt, _cost, _v_idx, orders_served, _stops) in enumerate(ranked):
+            if any(by_order_counts.get(oid, 0) < 2 for oid in orders_served):
+                selected_positions.append(pos)
+                selected_set.add(pos)
+                for oid in orders_served:
+                    if oid in by_order_counts:
+                        by_order_counts[oid] += 1
+                if len(selected_positions) >= max_routes:
+                    break
+        if len(selected_positions) < max_routes:
+            for pos in range(len(ranked)):
+                if pos in selected_set:
+                    continue
+                selected_positions.append(pos)
+                selected_set.add(pos)
+                if len(selected_positions) >= max_routes:
+                    break
+
+        return [
+            (self.vehicles[ranked[pos][3]].id, clone_stops(ranked[pos][5]))
+            for pos in selected_positions
+        ]
 
     def _route_cost(self, vehicle_index: int, stops: List[ScheduledStop]) -> int:
         if not stops:
@@ -402,6 +495,204 @@ class HybridALNSSolver:
             )
         return selected
 
+    def _prepare_route_prescreen(
+        self, vehicle: FleetVehicle, current: List[ScheduledStop]
+    ) -> Optional[Tuple[
+        int,
+        int,
+        List[int],
+        List[float],
+        List[float],
+        List[float],
+        List[int],
+        List[Optional[str]],
+        List[int],
+    ]]:
+        """Precompute exact O(len(current)) payload, window and prefix departure data."""
+        depot_idx = self.node_id_to_index.get(vehicle.depot.id)
+        end_depot = vehicle.end_depot or vehicle.depot
+        end_depot_idx = self.node_id_to_index.get(end_depot.id)
+        if depot_idx is None or end_depot_idx is None:
+            return None
+        stop_nodes: List[int] = []
+        stop_win_starts: List[float] = []
+        stop_win_ends: List[float] = []
+        stop_svcs: List[int] = []
+        stop_split_groups: List[Optional[str]] = []
+        exact_weights: List[float] = []
+        cur_w = 0.0
+        for s in current:
+            n_idx = self.node_id_to_index.get(s.location_id)
+            o = self.order_by_id.get(s.order_id or "")
+            if n_idx is None or o is None:
+                return None
+            stop_nodes.append(n_idx)
+            stop_split_groups.append(o.split_group_id)
+            if s.stop_type == "PICKUP":
+                cur_w += o.total_weight_kg
+                stop_win_starts.append(float(o.pickup_window_start_sec))
+                stop_win_ends.append(float(o.pickup_window_end_sec))
+                stop_svcs.append(o.service_seconds("PICKUP"))
+            else:
+                cur_w -= o.total_weight_kg
+                stop_win_starts.append(float(o.delivery_window_start_sec))
+                stop_win_ends.append(float(o.delivery_window_end_sec))
+                stop_svcs.append(o.service_seconds("DELIVERY"))
+            exact_weights.append(cur_w)
+
+        prefix_dep: List[int] = []
+        prev_n = depot_idx
+        curr_t = 0.0
+        for idx_s in range(len(current)):
+            n_idx = stop_nodes[idx_s]
+            tr = float(self.duration_matrix[prev_n][n_idx])
+            if tr < 0:
+                break
+            if idx_s == 0:
+                curr_t = max(float(vehicle.available_start_sec), stop_win_starts[0] - tr)
+            arr_s = max(curr_t + tr, stop_win_starts[idx_s])
+            if arr_s > stop_win_ends[idx_s] + 0.01:
+                break
+            dep_s = int(round(arr_s)) + stop_svcs[idx_s]
+            if dep_s > vehicle.available_end_sec:
+                break
+            prefix_dep.append(dep_s)
+            curr_t = float(dep_s)
+            prev_n = n_idx
+
+        return (
+            depot_idx,
+            end_depot_idx,
+            stop_nodes,
+            stop_win_starts,
+            stop_win_ends,
+            exact_weights,
+            stop_svcs,
+            stop_split_groups,
+            prefix_dep,
+        )
+
+    def _passes_insertion_prescreen(
+        self,
+        vehicle: FleetVehicle,
+        current: List[ScheduledStop],
+        order: OrderPair,
+        pickup_pos: int,
+        delivery_pos: int,
+        pickup_node_idx: int,
+        delivery_node_idx: int,
+        pickup_svc: int,
+        delivery_svc: int,
+        ctx: Tuple[
+            int,
+            int,
+            List[int],
+            List[float],
+            List[float],
+            List[float],
+            List[int],
+            List[Optional[str]],
+            List[int],
+        ],
+    ) -> bool:
+        """Lossless scalar feasibility screen matching schedule_and_evaluate_route."""
+        (
+            depot_idx,
+            end_depot_idx,
+            stop_nodes,
+            stop_win_starts,
+            stop_win_ends,
+            exact_weights,
+            stop_svcs,
+            stop_split_groups,
+            prefix_dep,
+        ) = ctx
+        if pickup_pos > len(prefix_dep):
+            return False
+        payload_limit = vehicle.payload_limit_kg + 0.01
+        order_weight = order.total_weight_kg
+        w_before = exact_weights[pickup_pos - 1] if pickup_pos > 0 else 0.0
+        if w_before + order_weight > payload_limit:
+            return False
+        for k in range(pickup_pos, delivery_pos - 1):
+            if exact_weights[k] + order_weight > payload_limit:
+                return False
+        if order.split_group_id:
+            sg = order.split_group_id
+            for k in range(pickup_pos):
+                if stop_split_groups[k] == sg and current[k].stop_type == "DELIVERY":
+                    return False
+            for k in range(delivery_pos - 1, len(current)):
+                if stop_split_groups[k] == sg and current[k].stop_type == "PICKUP":
+                    return False
+
+        p_win_start = float(order.pickup_window_start_sec)
+        p_win_end = float(order.pickup_window_end_sec)
+        d_win_start = float(order.delivery_window_start_sec)
+        d_win_end = float(order.delivery_window_end_sec)
+        dur = self.duration_matrix
+        if pickup_pos == 0:
+            t_dp = float(dur[depot_idx][pickup_node_idx])
+            if t_dp < 0:
+                return False
+            dep_depot = max(float(vehicle.available_start_sec), p_win_start - t_dp)
+            arr_p = max(dep_depot + t_dp, p_win_start)
+        else:
+            t_prev_p = float(dur[stop_nodes[pickup_pos - 1]][pickup_node_idx])
+            if t_prev_p < 0:
+                return False
+            arr_p = max(float(prefix_dep[pickup_pos - 1]) + t_prev_p, p_win_start)
+        if arr_p > p_win_end + 0.01:
+            return False
+        dep_p = int(round(arr_p)) + pickup_svc
+        if dep_p > vehicle.available_end_sec:
+            return False
+
+        n_stops = len(current)
+        if delivery_pos == pickup_pos + 1:
+            t_pd = float(dur[pickup_node_idx][delivery_node_idx])
+            if t_pd < 0:
+                return False
+            arr_d = max(float(dep_p) + t_pd, d_win_start)
+            if arr_d > d_win_end + 0.01:
+                return False
+            dep_d = int(round(arr_d)) + delivery_svc
+            if dep_d > vehicle.available_end_sec:
+                return False
+            if pickup_pos < n_stops:
+                t_dn = float(dur[delivery_node_idx][stop_nodes[pickup_pos]])
+                if t_dn < 0 or float(dep_d) + t_dn > stop_win_ends[pickup_pos] + 0.01:
+                    return False
+            else:
+                t_de = float(dur[delivery_node_idx][end_depot_idx])
+                if t_de < 0 or float(dep_d) + t_de > vehicle.available_end_sec:
+                    return False
+        else:
+            t_pn = float(dur[pickup_node_idx][stop_nodes[pickup_pos]])
+            if t_pn < 0 or float(dep_p) + t_pn > stop_win_ends[pickup_pos] + 0.01:
+                return False
+            pred_idx = delivery_pos - 2
+            min_pred_dep = stop_win_starts[pred_idx] + stop_svcs[pred_idx]
+            t_pred_d = float(dur[stop_nodes[pred_idx]][delivery_node_idx])
+            if t_pred_d < 0:
+                return False
+            arr_d_lb = max(min_pred_dep + t_pred_d, d_win_start)
+            if arr_d_lb > d_win_end + 0.01:
+                return False
+            dep_d_lb = int(round(arr_d_lb)) + delivery_svc
+            if dep_d_lb > vehicle.available_end_sec:
+                return False
+            after_idx = delivery_pos - 1
+            if after_idx < n_stops:
+                t_dn = float(dur[delivery_node_idx][stop_nodes[after_idx]])
+                if t_dn < 0 or float(dep_d_lb) + t_dn > stop_win_ends[after_idx] + 0.01:
+                    return False
+            else:
+                t_de = float(dur[delivery_node_idx][end_depot_idx])
+                if t_de < 0 or float(dep_d_lb) + t_de > vehicle.available_end_sec:
+                    return False
+        return True
+
     def _insertions_on_vehicles(
         self,
         order_id: str,
@@ -409,6 +700,8 @@ class HybridALNSSolver:
         vehicle_indices: Sequence[int],
         deadline: float,
         limit: int,
+        *,
+        min_full_best_delta: Optional[int] = None,
     ) -> List[_Insertion]:
         """Return cheapest packing-feasible insertions on explicit vehicles.
 
@@ -421,6 +714,10 @@ class HybridALNSSolver:
             return []
         order = self.order_by_id[order_id]
         pickup, delivery = self._make_stops(order)
+        pickup_node_idx = self.node_id_to_index.get(pickup.location_id)
+        delivery_node_idx = self.node_id_to_index.get(delivery.location_id)
+        pickup_svc = order.service_seconds("PICKUP")
+        delivery_svc = order.service_seconds("DELIVERY")
         existing_span = max(
             (
                 self.vehicles[idx].service_day_index + 1
@@ -447,6 +744,9 @@ class HybridALNSSolver:
             ):
                 continue
             current = routes[vehicle_index]
+            prescreen_ctx = None
+            if pickup_node_idx is not None and delivery_node_idx is not None:
+                prescreen_ctx = self._prepare_route_prescreen(vehicle, current)
             span = max(existing_span, vehicle.service_day_index + 1)
             calendar_extension = self._calendar_salary_for_span(span) - base_span_salary
             target_source_id = order.source_order_id or order.id
@@ -466,6 +766,22 @@ class HybridALNSSolver:
                     continue
                 pred_deliv_idx = delivery_pos - 2
                 if 0 <= pred_deliv_idx < len(current) and current[pred_deliv_idx].departure_time_sec > order.delivery_window_end_sec:
+                    continue
+                if (
+                    prescreen_ctx is not None
+                    and not self._passes_insertion_prescreen(
+                        vehicle,
+                        current,
+                        order,
+                        pickup_pos,
+                        delivery_pos,
+                        pickup_node_idx,
+                        delivery_node_idx,
+                        pickup_svc,
+                        delivery_svc,
+                        prescreen_ctx,
+                    )
+                ):
                     continue
                 candidate = (
                     current[:pickup_pos]
@@ -535,10 +851,18 @@ class HybridALNSSolver:
                 break
 
         # Tier 2: Bounded spatial fallback on at most 2 top rejected candidates if needed
-        need_fallback = len(options) < limit or (
-            options
-            and rejected_for_fallback
-            and rejected_for_fallback[0][0] < options[0].delta_cost
+        effective_best_delta = options[0].delta_cost if options else None
+        if min_full_best_delta is not None:
+            effective_best_delta = (
+                min_full_best_delta
+                if effective_best_delta is None
+                else min(effective_best_delta, min_full_best_delta)
+            )
+        has_enough_options = len(options) >= limit or min_full_best_delta is not None
+        need_fallback = (not has_enough_options) or (
+            effective_best_delta is not None
+            and bool(rejected_for_fallback)
+            and rejected_for_fallback[0][0] < effective_best_delta
         )
         if need_fallback and rejected_for_fallback:
             for _r_delta, v_idx, cand_stops in rejected_for_fallback[:2]:
@@ -573,7 +897,7 @@ class HybridALNSSolver:
                     )
                 )
 
-        options.sort(key=lambda opt: opt.delta_cost)
+        options.sort(key=lambda opt: (opt.delta_cost, opt.evaluation.distance_km))
         return options[:limit]
 
     def _repair(
@@ -586,12 +910,60 @@ class HybridALNSSolver:
         pending = list(dict.fromkeys(pool))
         unassigned: List[str] = []
         regret_k = 1 if operator == "greedy" else (2 if operator == "regret2" else 3)
+        cached_options: Dict[str, List[_Insertion]] = {}
+        last_changed_v: Optional[int] = None
+        last_span: Optional[int] = None
 
         while pending and time.perf_counter() < deadline:
+            cur_span = max(
+                (self.vehicles[idx].service_day_index + 1 for idx, r in enumerate(routes) if r),
+                default=0,
+            )
+            if last_span is not None and cur_span != last_span:
+                cached_options.clear()
+            last_span = cur_span
+
             choices = []
             impossible = []
             for order_id in pending:
-                options = self._insertions_for_order(order_id, routes, deadline, regret_k)
+                options: Optional[List[_Insertion]] = None
+                if (
+                    self.enable_repair_option_cache
+                    and last_changed_v is not None
+                    and not self._allow_empty_insertion_competition
+                ):
+                    prev_opts = cached_options.get(order_id)
+                    if (
+                        prev_opts is not None
+                        and len(prev_opts) >= regret_k
+                        and not any(opt.vehicle_index == last_changed_v for opt in prev_opts)
+                        and all(bool(routes[opt.vehicle_index]) for opt in prev_opts)
+                    ):
+                        new_opts = self._insertions_on_vehicles(
+                            order_id,
+                            routes,
+                            [last_changed_v],
+                            deadline,
+                            regret_k,
+                            min_full_best_delta=prev_opts[0].delta_cost,
+                        )
+                        if not new_opts:
+                            options = prev_opts
+                        elif any(
+                            (n_opt.delta_cost, n_opt.evaluation.distance_km)
+                            == (p_opt.delta_cost, p_opt.evaluation.distance_km)
+                            for n_opt in new_opts
+                            for p_opt in prev_opts
+                        ):
+                            options = None
+                        else:
+                            options = sorted(
+                                [*prev_opts, *new_opts],
+                                key=lambda option: (option.delta_cost, option.evaluation.distance_km),
+                            )[:regret_k]
+                if options is None:
+                    options = self._insertions_for_order(order_id, routes, deadline, regret_k)
+                cached_options[order_id] = options
                 if not options:
                     impossible.append(order_id)
                     continue
@@ -607,6 +979,7 @@ class HybridALNSSolver:
             for order_id in impossible:
                 if order_id in pending:
                     pending.remove(order_id)
+                    cached_options.pop(order_id, None)
                     unassigned.append(order_id)
             if not choices:
                 break
@@ -615,6 +988,8 @@ class HybridALNSSolver:
             else:
                 _, _, chosen_id, chosen = max(choices, key=lambda row: (row[0], row[1]))
             routes[chosen.vehicle_index] = chosen.stops
+            last_changed_v = chosen.vehicle_index
+            cached_options.pop(chosen_id, None)
             pending.remove(chosen_id)
 
         unassigned.extend(pending)
@@ -3119,12 +3494,9 @@ class HybridALNSSolver:
                 current_unassigned = candidate_unassigned
                 current_cost = candidate_cost
                 score = 1.0
+                self._record_pool_routes(candidate_routes)
                 if delta < 0:
                     score = 3.0
-                    if len(self._route_pool) < 800:
-                        for v_i, r_stops in enumerate(candidate_routes):
-                            if r_stops:
-                                self._route_pool.append((v_i, copy.deepcopy(r_stops)))
                 if cand_nonempty < best_nonempty and len(candidate_unassigned) == 0:
                     score = 10.0
 
@@ -3134,15 +3506,15 @@ class HybridALNSSolver:
                     if prev_rc is None or econ < prev_rc[0]:
                         best_by_route_count[cand_nonempty] = (
                             econ,
-                            copy.deepcopy(candidate_routes),
+                            self._clone_routes(candidate_routes),
                             candidate_cost,
                         )
                         elite_candidates.append(
-                            (candidate_cost, copy.deepcopy(candidate_routes), list(candidate_unassigned))
+                            (candidate_cost, self._clone_routes(candidate_routes), list(candidate_unassigned))
                         )
 
                 if self._candidate_key(candidate_routes, candidate_unassigned) < self._candidate_key(best_routes, best_unassigned):
-                    best_routes = copy.deepcopy(candidate_routes)
+                    best_routes = self._clone_routes(candidate_routes)
                     best_unassigned = list(candidate_unassigned)
                     best_cost = candidate_cost
                     best_nonempty = cand_nonempty
@@ -3151,7 +3523,7 @@ class HybridALNSSolver:
                     stagnant_iters = 0
                     improved_best = True
                     if len(best_unassigned) == 0:
-                        elite_candidates.append((best_cost, copy.deepcopy(best_routes), list(best_unassigned)))
+                        elite_candidates.append((best_cost, self._clone_routes(best_routes), list(best_unassigned)))
 
             if not improved_best:
                 stagnant_iters += 1
@@ -3267,7 +3639,9 @@ class HybridALNSSolver:
 
         # Bảo đảm nghiệm kinh tế tốt nhất ở từng mức số chuyến đều góp mặt trước khi lọc.
         for _econ_cost, rc_routes, rc_plan_cost in best_by_route_count.values():
-            elite_candidates.append((rc_plan_cost, copy.deepcopy(rc_routes), []))
+            elite_candidates.append((rc_plan_cost, self._clone_routes(rc_routes), []))
+        for _cand_cost, cand_routes, _cand_unassigned in elite_candidates:
+            self._record_pool_routes(cand_routes)
 
         # Lọc các ứng viên duy nhất trong elite candidates đã giao đủ 100% đơn
         unique_candidates: List[Tuple[int, List[List[ScheduledStop]], List[str]]] = []
@@ -3405,7 +3779,9 @@ class HybridALNSSolver:
             # The audit portfolio is already bounded. The production caller
             # prices calendar salary/lateness, which this lightweight model
             # does not know; do not truncate audited alternatives by its cost.
+            alns_pool = self._export_alns_route_pool()
             setattr(best_valid_solution, "_candidate_solutions", valid_elite_solutions)
+            setattr(best_valid_solution, "_alns_route_pool", alns_pool)
             return best_valid_solution
 
         # Bảo vệ toàn vẹn: nếu tất cả elite không đạt, thử audit fallback_compact trước khi về sol_gr
@@ -3436,6 +3812,7 @@ class HybridALNSSolver:
                 and fallback_sol.fulfillment_rate >= 99.9
             ):
                 fallback_sol.execution_time_sec = round(time.perf_counter() - started_at, 3)
+                setattr(fallback_sol, "_alns_route_pool", self._export_alns_route_pool())
                 return fallback_sol
 
         # Fallback an toàn cuối cùng về nghiệm Greedy
@@ -3465,6 +3842,7 @@ class HybridALNSSolver:
             if sol_gr_valid:
                 fallback.solver_name = f"Hybrid ALNS (safe fallback, {iteration} iters)"
                 fallback.execution_time_sec = round(time.perf_counter() - started_at, 3)
+                setattr(fallback, "_alns_route_pool", self._export_alns_route_pool())
                 return fallback
 
         # Nghiệm mặc định
@@ -3488,6 +3866,7 @@ class HybridALNSSolver:
                 repair_time_limit_sec=min(self.final_repair_time_limit_sec, max(0.05, rem_def * 0.45)),
             )
         default_sol.execution_time_sec = round(time.perf_counter() - started_at, 3)
+        setattr(default_sol, "_alns_route_pool", self._export_alns_route_pool())
         return default_sol
 
 
@@ -3746,6 +4125,7 @@ def solve_hybrid_alns(
         has_verified_plan=has_verified_plan,
     )
     solution = alns_solver.solve()
+    exported_pool = list(getattr(solution, "_alns_route_pool", []))
     if operator_weights_out is not None:
         operator_weights_out["destroy"] = dict(alns_solver.destroy_weights)
         operator_weights_out["repair"] = dict(alns_solver.repair_weights)
@@ -3753,7 +4133,10 @@ def solve_hybrid_alns(
         best_seed_solution is not None
         and solution_key(best_seed_solution, orders) < solution_key(solution, orders)
     ):
+        seed_pool = list(getattr(best_seed_solution, "_alns_route_pool", []))
         solution = copy.deepcopy(best_seed_solution)
+        if exported_pool or seed_pool:
+            setattr(solution, "_alns_route_pool", exported_pool or seed_pool)
     if use_sa_seed:
         solution.solver_name = (
             f"Hybrid adaptive SA seed | {solution.solver_name}"

@@ -1,8 +1,7 @@
 """Shared route scheduling and economic evaluation for algorithm benchmarks."""
 
-from copy import deepcopy
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+from dataclasses import dataclass, replace
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .cost_evaluator import calculate_route_cost
 from .models import (
@@ -11,6 +10,7 @@ from .models import (
     DriverOption,
     FleetVehicle,
     OrderPair,
+    PlacedItem,
     RouteCostBreakdown,
     ScheduledStop,
 )
@@ -27,10 +27,109 @@ class RouteEvaluation:
     duration_minutes: float = 0.0
 
 
+def clone_stops(stops: Sequence[ScheduledStop]) -> List[ScheduledStop]:
+    return [
+        ScheduledStop(
+            sequence=s.sequence,
+            stop_type=s.stop_type,
+            location_id=s.location_id,
+            location_name=s.location_name,
+            order_id=s.order_id,
+            order_number=s.order_number,
+            arrival_time_sec=s.arrival_time_sec,
+            departure_time_sec=s.departure_time_sec,
+            current_weight_kg=s.current_weight_kg,
+            items_loaded=list(s.items_loaded),
+            items_unloaded=list(s.items_unloaded),
+            placed_items=[
+                PlacedItem(
+                    item_id=p.item_id,
+                    order_id=p.order_id,
+                    x=p.x,
+                    y=p.y,
+                    length_cm=p.length_cm,
+                    width_cm=p.width_cm,
+                    weight_kg=p.weight_kg,
+                    cargo_kind=p.cargo_kind,
+                )
+                for p in s.placed_items
+            ]
+            if s.placed_items
+            else [],
+        )
+        for s in stops
+    ]
+
+
+def clone_route_evaluation(evaluation: RouteEvaluation) -> RouteEvaluation:
+    return RouteEvaluation(
+        feasible=evaluation.feasible,
+        stops=clone_stops(evaluation.stops),
+        reason=evaluation.reason,
+        cost=replace(evaluation.cost) if evaluation.cost is not None else None,
+        distance_km=evaluation.distance_km,
+        duration_minutes=evaluation.duration_minutes,
+    )
+
+
 def _matrix_index(node_id_to_index: Dict[str, int], node_id: str) -> int:
     if node_id not in node_id_to_index:
         raise ValueError(f"Không tìm thấy node {node_id} trong ma trận")
     return node_id_to_index[node_id]
+
+
+def _validate_route_packing_cached(
+    vehicle: FleetVehicle,
+    scheduled: List[ScheduledStop],
+    cargo_by_id: Dict[str, CargoItem],
+    policy: CostPolicy,
+    *,
+    allow_layout_search: bool,
+    packing_cache: Optional[Dict[Tuple[object, ...], Tuple[bool, str]]],
+) -> Tuple[bool, str]:
+    demo_stacking = getattr(policy, "demo_stacking", None)
+    packing_key: Optional[Tuple[object, ...]] = None
+    if packing_cache is not None:
+        stacking_key = (
+            None
+            if demo_stacking is None
+            else (
+                demo_stacking.max_tiers,
+                demo_stacking.lift_clearance_cm,
+                demo_stacking.owner_mode,
+                getattr(demo_stacking, "max_top_load_percent", 30),
+            )
+        )
+        packing_key = (
+            float(vehicle.length_cm),
+            float(vehicle.width_cm),
+            float(vehicle.height_cm),
+            float(vehicle.payload_limit_kg),
+            vehicle.door_position,
+            getattr(vehicle, "door_width_cm", None),
+            stacking_key,
+            allow_layout_search,
+            tuple(
+                (
+                    stop.stop_type,
+                    stop.order_id or "",
+                    tuple(stop.items_loaded),
+                    tuple(stop.items_unloaded),
+                )
+                for stop in scheduled
+            ),
+        )
+        cached = packing_cache.get(packing_key)
+        if cached is not None:
+            return cached
+    result = FastPackingChecker(
+        vehicle,
+        allow_layout_search=allow_layout_search,
+        demo_stacking=demo_stacking,
+    ).validate_route_stops(scheduled, cargo_by_id)
+    if packing_cache is not None and packing_key is not None:
+        packing_cache[packing_key] = result
+    return result
 
 
 def schedule_and_evaluate_route(
@@ -46,6 +145,7 @@ def schedule_and_evaluate_route(
     *,
     use_fast_packing: bool = True,
     allow_layout_search: bool = True,
+    packing_cache: Optional[Dict[Tuple[object, ...], Tuple[bool, str]]] = None,
 ) -> RouteEvaluation:
     """Schedule a fixed stop sequence with waiting and enforce hard constraints."""
     if not stops:
@@ -53,11 +153,11 @@ def schedule_and_evaluate_route(
     if driver.service_day_index != vehicle.service_day_index:
         return RouteEvaluation(
             False,
-            deepcopy(stops),
+            clone_stops(stops),
             "Tài xế và xe không cùng ngày phục vụ",
         )
 
-    scheduled = deepcopy(stops)
+    scheduled = clone_stops(stops)
     depot_idx = _matrix_index(node_id_to_index, vehicle.depot.id)
 
     first = scheduled[0]
@@ -188,10 +288,13 @@ def schedule_and_evaluate_route(
         )
 
     if use_fast_packing:
-        packing_ok, packing_reason = FastPackingChecker(
-            vehicle, allow_layout_search=allow_layout_search, demo_stacking=getattr(policy, "demo_stacking", None)
-        ).validate_route_stops(
-            scheduled, cargo_by_id
+        packing_ok, packing_reason = _validate_route_packing_cached(
+            vehicle,
+            scheduled,
+            cargo_by_id,
+            policy,
+            allow_layout_search=allow_layout_search,
+            packing_cache=packing_cache,
         )
         if not packing_ok:
             return RouteEvaluation(False, scheduled, packing_reason)

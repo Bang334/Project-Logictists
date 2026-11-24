@@ -484,3 +484,145 @@ def test_cross_seed_materialization_avoids_cross_day_physical_vehicle_overlap():
     assert o1_route.route_id == "v1::day:1"
     assert o1_route.vehicle_id == "v1"
     assert o1_route.driver_id == "drv1"
+
+
+def test_solve_cross_seed_with_alns_pool_stubs_triggers_targeted_audit():
+    req, vehicles, orders, expected = _sample_problem()
+    r0_base = _route_for_orders(vehicle=vehicles[0], orders=[orders[0]], cost_vnd=600_000)
+    r1_base = _route_for_orders(vehicle=vehicles[1], orders=[orders[1]], cost_vnd=600_000)
+    plan_base = FleetOptimizationResponse(job_id="base", status="SUCCESS", routes=[r0_base, r1_base])
+
+    stub_marker = SpatialValidationResult(
+        is_valid=False,
+        violation_code="UNAUDITED_POOL_STUB",
+        step_states=[],
+    )
+    stub_good = _route_for_orders(vehicle=vehicles[0], orders=[orders[0]], cost_vnd=250_000).model_copy(
+        update={"spatial_validation": stub_marker}
+    )
+    stub_unselected = _route_for_orders(vehicle=vehicles[1], orders=[orders[1]], cost_vnd=900_000).model_copy(
+        update={"spatial_validation": stub_marker}
+    )
+
+    audited_orders = []
+
+    def fake_auditor(cand_route: OptimizedRoute):
+        audited_orders.append([s.order_id for s in cand_route.stops if s.stop_type == "PICKUP"])
+        return cand_route.model_copy(
+            update={
+                "spatial_validation": SpatialValidationResult(
+                    is_valid=True,
+                    max_weight_kg=50.0,
+                    max_area_cm2=2000.0,
+                    step_states=[],
+                )
+            }
+        )
+
+    res = solve_cross_seed_set_partitioning(
+        req,
+        [plan_base],
+        expected,
+        compare_horizons=False,
+        alns_pool_stubs=[stub_good, stub_unselected],
+        route_auditor=fake_auditor,
+    )
+    assert res is not None
+    combined, _ = res
+    assert combined.total_cost_vnd < 1_200_000
+    assert all(r.spatial_validation.is_valid for r in combined.routes)
+    # Only the chosen stub (o0), NOT already-audited r1_base or stub_unselected, should be audited.
+    assert audited_orders == [["o0"]]
+
+
+def test_solve_cross_seed_nogood_cuts_rejected_pool_stub_and_retries():
+    req, vehicles, orders, expected = _sample_problem()
+    v2 = vehicles[1].model_copy(update={"id": "v2#d0", "source_vehicle_id": "v2", "plate_number": "43C-002", "length_cm": 500})
+    vehicles.append(v2)
+    req = req.model_copy(
+        update={
+            "vehicles": vehicles,
+            "drivers": [
+                *req.drivers,
+                req.drivers[0].model_copy(update={"id": "drv2#d0", "source_driver_id": "drv2"}),
+            ],
+            "distance_matrix_meters": [[0 if a == b else 1000 for b in range(7)] for a in range(7)],
+            "duration_matrix_seconds": [[0 if a == b else 60 for b in range(7)] for a in range(7)],
+        }
+    )
+
+    r0_base = _route_for_orders(vehicle=vehicles[0], orders=[orders[0]], cost_vnd=700_000)
+    r1_base = _route_for_orders(vehicle=vehicles[1], orders=[orders[1]], cost_vnd=700_000)
+    plan_base = FleetOptimizationResponse(job_id="base", status="SUCCESS", routes=[r0_base, r1_base])
+
+    # Cheapest stub for o0 on v0 fails 3D audit; retry must cut it and pick good stub on v2 (different box).
+    stub_marker = SpatialValidationResult(
+        is_valid=False,
+        violation_code="UNAUDITED_POOL_STUB",
+        step_states=[],
+    )
+    stub_bad = _route_for_orders(vehicle=vehicles[0], orders=[orders[0]], cost_vnd=150_000).model_copy(
+        update={"spatial_validation": stub_marker}
+    )
+    stub_good = _route_for_orders(vehicle=v2, orders=[orders[0]], cost_vnd=300_000).model_copy(
+        update={"spatial_validation": stub_marker}
+    )
+
+    seen_calls = []
+
+    def selective_auditor(cand_route: OptimizedRoute):
+        seen_calls.append(cand_route.route_id)
+        if cand_route.route_id == "v0#d0":
+            return None
+        return cand_route.model_copy(
+            update={
+                "spatial_validation": SpatialValidationResult(
+                    is_valid=True,
+                    max_weight_kg=50.0,
+                    max_area_cm2=2000.0,
+                    step_states=[],
+                )
+            }
+        )
+
+    res = solve_cross_seed_set_partitioning(
+        req,
+        [plan_base],
+        expected,
+        compare_horizons=False,
+        alns_pool_stubs=[stub_bad, stub_good],
+        route_auditor=selective_auditor,
+        max_audit_retries=3,
+    )
+    assert res is not None
+    combined, _ = res
+    assert seen_calls == ["v0#d0", "v2#d0"]
+    assert combined.total_cost_vnd < 1_400_000
+    assert any(r.route_id == "v2#d0" and r.spatial_validation.is_valid for r in combined.routes)
+
+
+def test_solve_cross_seed_ignores_stubs_without_route_auditor():
+    req, vehicles, orders, expected = _sample_problem()
+    r0 = _route_for_orders(vehicle=vehicles[0], orders=[orders[0]], cost_vnd=600_000)
+    r1 = _route_for_orders(vehicle=vehicles[1], orders=[orders[1]], cost_vnd=600_000)
+    plan_base = FleetOptimizationResponse(job_id="base", status="SUCCESS", routes=[r0, r1])
+    stub = _route_for_orders(vehicle=vehicles[0], orders=[orders[0]], cost_vnd=100_000).model_copy(
+        update={
+            "spatial_validation": SpatialValidationResult(
+                is_valid=False,
+                violation_code="UNAUDITED_POOL_STUB",
+                step_states=[],
+            )
+        }
+    )
+    assert (
+        solve_cross_seed_set_partitioning(
+            req,
+            [plan_base],
+            expected,
+            compare_horizons=False,
+            alns_pool_stubs=[stub],
+            route_auditor=None,
+        )
+        is None
+    )

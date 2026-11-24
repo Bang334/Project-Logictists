@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 import copy
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, FrozenSet, List, Optional, Sequence, Set, Tuple
 
 from ortools.sat.python import cp_model
 
@@ -39,16 +39,19 @@ class _PoolRouteEntry:
     linear_score_vnd: int
     payload_limit_kg: float
     vehicle_type: str
+    is_stub: bool = False
 
 
 def _validate_and_extract_orders(
     route: OptimizedRoute,
     expected_items: Dict[str, Set[str]],
+    *,
+    allow_unaudited_stub: bool = False,
 ) -> Optional[FrozenSet[str]]:
     """Return served allocation IDs only when a route covers complete orders safely."""
     if not route.stops:
         return None
-    if not (route.spatial_validation and route.spatial_validation.is_valid):
+    if not allow_unaudited_stub and not (route.spatial_validation and route.spatial_validation.is_valid):
         return None
     if route.cost is None:
         return None
@@ -359,6 +362,42 @@ def _eligible_driver_overlap_free(
     return True
 
 
+def _stop_order_signature(route: OptimizedRoute) -> Tuple:
+    return tuple(
+        (
+            stop.stop_type,
+            stop.allocation_id or stop.order_id or "",
+            tuple(stop.items_loaded),
+            tuple(stop.items_unloaded),
+        )
+        for stop in route.stops
+    )
+
+
+def _route_box_geometry(
+    entry: _PoolRouteEntry,
+    vehicle_by_id: Dict[str, FleetVehicle],
+) -> Tuple:
+    veh = vehicle_by_id.get(entry.slot_id)
+    if veh is None:
+        return (
+            float(entry.route.vehicle_length_cm),
+            float(entry.route.vehicle_width_cm),
+            float(entry.route.vehicle_height_cm),
+            float(entry.payload_limit_kg),
+            "REAR",
+            None,
+        )
+    return (
+        float(veh.length_cm),
+        float(veh.width_cm),
+        float(veh.height_cm),
+        float(veh.payload_limit_kg),
+        veh.door_position,
+        float(veh.door_width_cm) if veh.door_width_cm is not None else None,
+    )
+
+
 def _ingest_pool_route(
     route: OptimizedRoute,
     *,
@@ -367,9 +406,13 @@ def _ingest_pool_route(
     order_by_id: dict,
     request: FleetOptimizationRequest,
     has_daily_resource_slots: bool,
+    drivers_by_day: Optional[Dict[int, List[DriverOption]]] = None,
     pool_by_sig: Dict[Tuple, _PoolRouteEntry],
+    allow_unaudited_stub: bool = False,
 ) -> None:
-    served = _validate_and_extract_orders(route, expected_items)
+    served = _validate_and_extract_orders(
+        route, expected_items, allow_unaudited_stub=allow_unaudited_stub
+    )
     if served is None:
         return
 
@@ -377,13 +420,30 @@ def _ingest_pool_route(
     veh = vehicle_by_id.get(slot_id)
     phys_veh_id = route.vehicle_id or (veh.source_vehicle_id or veh.id if veh else slot_id)
     plate = route.plate_number or (veh.plate_number if veh else phys_veh_id)
+    payload_limit_kg = float(veh.payload_limit_kg) if veh else 0.0
+    vehicle_type = (veh.vehicle_type or veh.model or "") if veh else ""
+
     op_cost = int(route.cost.total_cost_vnd) if route.cost else 0
     active_sal = int(route.cost.driver_fixed_salary_allocation_vnd) if route.cost else 0
+    trip_pay = int(route.cost.driver_trip_pay_vnd) if route.cost else 0
+    est_trip_pay = trip_pay
+    if drivers_by_day is not None and route.cost is not None:
+        eligible_drivers = [
+            drv
+            for drv in drivers_by_day.get(int(route.service_day_index), [])
+            if can_driver_drive_vehicle(drv.license_class, payload_limit_kg, vehicle_type)
+        ]
+        if eligible_drivers:
+            est_trip_pay = min(
+                int(drv.trip_base_pay_vnd + round(float(route.total_distance_km) * float(drv.per_km_pay_vnd)))
+                for drv in eligible_drivers
+            )
     late_pen = route_operational_late_penalty(request, route.stops, order_by_id=order_by_id)
     linear_score = max(
         0,
-        op_cost - (active_sal if has_daily_resource_slots else 0) + late_pen,
+        op_cost - (active_sal if has_daily_resource_slots else 0) - trip_pay + est_trip_pay + late_pen,
     )
+    is_stub = not bool(route.spatial_validation and route.spatial_validation.is_valid)
 
     entry = _PoolRouteEntry(
         route=route,
@@ -395,12 +455,21 @@ def _ingest_pool_route(
         start_sec=int(route.start_time_sec),
         end_sec=int(route.end_time_sec),
         linear_score_vnd=linear_score,
-        payload_limit_kg=float(veh.payload_limit_kg) if veh else 0.0,
-        vehicle_type=(veh.vehicle_type or veh.model or "") if veh else "",
+        payload_limit_kg=payload_limit_kg,
+        vehicle_type=vehicle_type,
+        is_stub=is_stub,
     )
     sig = _route_pool_signature(route)
     existing = pool_by_sig.get(sig)
-    if existing is None or entry.linear_score_vnd < existing.linear_score_vnd:
+    if (
+        existing is None
+        or entry.linear_score_vnd < existing.linear_score_vnd
+        or (
+            entry.linear_score_vnd == existing.linear_score_vnd
+            and existing.is_stub
+            and not entry.is_stub
+        )
+    ):
         pool_by_sig[sig] = entry
 
 
@@ -411,14 +480,23 @@ def solve_cross_seed_set_partitioning(
     *,
     compare_horizons: bool,
     extra_routes: Sequence[OptimizedRoute] = (),
+    alns_pool_stubs: Sequence[OptimizedRoute] = (),
+    route_auditor: Optional[Callable[[OptimizedRoute], Optional[OptimizedRoute]]] = None,
     allow_vehicle_profile_reassignment: bool = True,
     time_limit_sec: float = 1.5,
+    max_audit_retries: int = 3,
 ) -> Optional[Tuple[FleetOptimizationResponse, PlanningObjectiveBreakdown]]:
-    """Combine already-audited 3D routes across seeds using CP-SAT set partitioning."""
-    if not complete_plans or (len(complete_plans) < 2 and not extra_routes):
+    """Combine routes across seeds using CP-SAT, auditing any selected pool stubs on demand."""
+    use_stubs = bool(alns_pool_stubs and route_auditor is not None)
+    if not complete_plans or (len(complete_plans) < 2 and not extra_routes and not use_stubs):
         return None
     if not expected_items or not request.drivers:
         return None
+
+    import time
+
+    started_at = time.perf_counter()
+    deadline = started_at + max(0.3, float(time_limit_sec))
 
     vehicle_by_id: Dict[str, FleetVehicle] = {v.id: v for v in request.vehicles}
     order_by_id = {o.id: o for o in request.orders}
@@ -426,6 +504,10 @@ def solve_cross_seed_set_partitioning(
     has_daily_resource_slots = any(
         vehicle.source_vehicle_id is not None for vehicle in request.vehicles
     ) and any(driver.source_driver_id is not None for driver in request.drivers)
+
+    drivers_by_day: Dict[int, List[DriverOption]] = defaultdict(list)
+    for driver in request.drivers:
+        drivers_by_day[driver.service_day_index].append(driver)
 
     pool_by_sig: Dict[Tuple, _PoolRouteEntry] = {}
     for plan in complete_plans:
@@ -437,6 +519,7 @@ def solve_cross_seed_set_partitioning(
                 order_by_id=order_by_id,
                 request=request,
                 has_daily_resource_slots=has_daily_resource_slots,
+                drivers_by_day=drivers_by_day,
                 pool_by_sig=pool_by_sig,
             )
     for route in extra_routes:
@@ -447,8 +530,22 @@ def solve_cross_seed_set_partitioning(
             order_by_id=order_by_id,
             request=request,
             has_daily_resource_slots=has_daily_resource_slots,
+            drivers_by_day=drivers_by_day,
             pool_by_sig=pool_by_sig,
         )
+    if use_stubs:
+        for route in alns_pool_stubs:
+            _ingest_pool_route(
+                route,
+                expected_items=expected_items,
+                vehicle_by_id=vehicle_by_id,
+                order_by_id=order_by_id,
+                request=request,
+                has_daily_resource_slots=has_daily_resource_slots,
+                drivers_by_day=drivers_by_day,
+                pool_by_sig=pool_by_sig,
+                allow_unaudited_stub=True,
+            )
 
     pool_entries: List[_PoolRouteEntry] = list(pool_by_sig.values())
 
@@ -523,10 +620,6 @@ def solve_cross_seed_set_partitioning(
                 if ei.day_index != ej.day_index and ei.start_sec < ej.end_sec and ej.start_sec < ei.end_sec:
                     model.Add(x[i] + x[j] <= 1)
 
-    drivers_by_day: Dict[int, List[DriverOption]] = defaultdict(list)
-    for driver in request.drivers:
-        drivers_by_day[driver.service_day_index].append(driver)
-
     max_routes_per_day = request.policy.max_routes_per_day
     for day, indices in by_day.items():
         day_drivers = drivers_by_day.get(day, [])
@@ -584,54 +677,119 @@ def solve_cross_seed_set_partitioning(
         model.Minimize(route_weight * sum(x) + sum(linear_terms) + sum(calendar_terms))
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = max(0.2, float(time_limit_sec))
     solver.parameters.num_workers = 1
-    status = solver.Solve(model)
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return None
 
-    selected_pos = [
-        idx for idx in range(len(pool_entries)) if solver.Value(x[idx]) == 1
-    ]
-    if not selected_pos:
-        return None
-    selected_routes = _materialize_selected_routes(
-        [pool_entries[idx] for idx in selected_pos],
-        [entry_groups[idx] for idx in selected_pos],
-        [entry_flexible[idx] for idx in selected_pos],
-        group_slots,
-        request,
-        vehicle_by_id,
-    )
-    if not selected_routes or not _physical_vehicle_overlap_free(selected_routes):
-        return None
+    max_attempts = max(1, int(max_audit_retries)) if use_stubs else 1
+    attempt = 0
+    audited_stub_cache: Dict[Tuple, Optional[OptimizedRoute]] = {}
 
-    selected_routes.sort(
-        key=lambda r: (r.service_day_index, r.start_time_sec, r.route_id or r.vehicle_id)
-    )
-    try:
-        DriverMatcher(request).assign_drivers_to_routes(selected_routes)
-    except ValueError:
-        return None
+    while attempt < max_attempts:
+        rem_time = deadline - time.perf_counter()
+        if attempt > 0 and rem_time < 0.15:
+            return None
+        attempt += 1
+        solver.parameters.max_time_in_seconds = max(0.2, min(1.5, rem_time))
+        status = solver.Solve(model)
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            return None
 
-    if not _eligible_driver_overlap_free(request, selected_routes):
-        return None
+        selected_pos = [
+            idx for idx in range(len(pool_entries)) if solver.Value(x[idx]) == 1
+        ]
+        if not selected_pos:
+            return None
 
-    total_distance_km = round(sum(r.total_distance_km for r in selected_routes), 2)
-    total_duration_minutes = round(sum(r.total_duration_minutes for r in selected_routes), 2)
-    total_cost_vnd = sum(r.cost.total_cost_vnd for r in selected_routes if r.cost is not None)
+        selected_routes = _materialize_selected_routes(
+            [pool_entries[idx] for idx in selected_pos],
+            [entry_groups[idx] for idx in selected_pos],
+            [entry_flexible[idx] for idx in selected_pos],
+            group_slots,
+            request,
+            vehicle_by_id,
+        )
+        if not selected_routes or not _physical_vehicle_overlap_free(selected_routes):
+            model.Add(sum(x[idx] for idx in selected_pos) <= len(selected_pos) - 1)
+            continue
 
-    combined = FleetOptimizationResponse(
-        job_id=request.job_id,
-        status="SUCCESS",
-        total_distance_km=total_distance_km,
-        total_duration_minutes=total_duration_minutes,
-        total_cost_vnd=total_cost_vnd,
-        routes=selected_routes,
-        unassigned_orders=[],
-        diagnostics=[
-            "Cross-seed CP-SAT: đã tổ hợp các tuyến đã kiểm chứng 3D từ nhiều seed song song."
-        ],
-    )
-    breakdown = apply_planning_objective(request, combined)
-    return combined, breakdown
+        used_stub_count = 0
+        failed_audit = False
+        if route_auditor is not None:
+            for pos_in_sel, entry_idx in enumerate(selected_pos):
+                entry = pool_entries[entry_idx]
+                if not entry.is_stub:
+                    continue
+                if time.perf_counter() >= deadline:
+                    return None
+                cand_route = selected_routes[pos_in_sel]
+                geom_key = _route_box_geometry(entry, vehicle_by_id)
+                seq_key = _stop_order_signature(cand_route)
+                cache_key = (cand_route.route_id or cand_route.vehicle_id, geom_key, seq_key)
+                if cache_key in audited_stub_cache:
+                    audited_route = copy.deepcopy(audited_stub_cache[cache_key])
+                else:
+                    audited_route = route_auditor(cand_route)
+                    audited_stub_cache[cache_key] = (
+                        copy.deepcopy(audited_route) if audited_route is not None else None
+                    )
+                if (
+                    audited_route is None
+                    or audited_route.spatial_validation is None
+                    or not audited_route.spatial_validation.is_valid
+                ):
+                    for j, other in enumerate(pool_entries):
+                        if (
+                            other.is_stub
+                            and _route_box_geometry(other, vehicle_by_id) == geom_key
+                            and _stop_order_signature(other.route) == seq_key
+                        ):
+                            model.Add(x[j] == 0)
+                    failed_audit = True
+                else:
+                    selected_routes[pos_in_sel] = audited_route
+                    used_stub_count += 1
+        if failed_audit:
+            continue
+
+        if any(r.spatial_validation is None or not r.spatial_validation.is_valid for r in selected_routes):
+            return None
+
+        if not _physical_vehicle_overlap_free(selected_routes):
+            model.Add(sum(x[idx] for idx in selected_pos) <= len(selected_pos) - 1)
+            continue
+
+        selected_routes.sort(
+            key=lambda r: (r.service_day_index, r.start_time_sec, r.route_id or r.vehicle_id)
+        )
+        try:
+            DriverMatcher(request).assign_drivers_to_routes(selected_routes)
+        except ValueError:
+            model.Add(sum(x[idx] for idx in selected_pos) <= len(selected_pos) - 1)
+            continue
+
+        if not _eligible_driver_overlap_free(request, selected_routes):
+            model.Add(sum(x[idx] for idx in selected_pos) <= len(selected_pos) - 1)
+            continue
+
+        total_distance_km = round(sum(r.total_distance_km for r in selected_routes), 2)
+        total_duration_minutes = round(sum(r.total_duration_minutes for r in selected_routes), 2)
+        total_cost_vnd = sum(r.cost.total_cost_vnd for r in selected_routes if r.cost is not None)
+
+        diag_msg = (
+            f"Cross-seed CP-SAT (ALNS route pool): đã tổ hợp và kiểm chứng 3D {used_stub_count} tuyến từ bể tuyến đa seed."
+            if used_stub_count > 0
+            else "Cross-seed CP-SAT: đã tổ hợp các tuyến đã kiểm chứng 3D từ nhiều seed song song."
+        )
+        combined = FleetOptimizationResponse(
+            job_id=request.job_id,
+            status="SUCCESS",
+            total_distance_km=total_distance_km,
+            total_duration_minutes=total_duration_minutes,
+            total_cost_vnd=total_cost_vnd,
+            routes=selected_routes,
+            unassigned_orders=[],
+            diagnostics=[diag_msg],
+        )
+        breakdown = apply_planning_objective(request, combined)
+        return combined, breakdown
+
+    return None

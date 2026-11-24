@@ -13,7 +13,7 @@ import random
 import math
 import time
 from itertools import permutations
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .alns_engine import ALNSFleetOptimizer
 from .driver_matcher import DriverMatcher
@@ -3894,6 +3894,102 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             random_seed=self.random_seed,
         )
 
+    def _convert_hybrid_stops_to_prod(self, stops: Sequence[HybridScheduledStop]) -> List[ScheduledStop]:
+        converted_stops: List[ScheduledStop] = []
+        for sequence, stop in enumerate(stops, start=1):
+            order = self.order_by_id.get(stop.order_id or "")
+            if order is None:
+                continue
+            location = (
+                order.pickup_location
+                if stop.stop_type == "PICKUP"
+                else order.delivery_location
+            )
+            converted_stops.append(
+                ScheduledStop(
+                    sequence=sequence,
+                    stop_type=stop.stop_type,
+                    location_id=location.id,
+                    location_name=location.name,
+                    order_id=order.id,
+                    allocation_id=order.id,
+                    latitude=location.latitude,
+                    longitude=location.longitude,
+                    arrival_time_sec=int(stop.arrival_time_sec),
+                    departure_time_sec=int(stop.departure_time_sec),
+                    items_loaded=list(stop.items_loaded),
+                    items_unloaded=list(stop.items_unloaded),
+                )
+            )
+        return converted_stops
+
+    def _build_alns_pool_route_dicts(
+        self,
+        solution: Optional[HybridOptimizationSolution],
+        original_index_by_vehicle_id: Dict[str, int],
+        all_candidate_plans: Sequence[Tuple[List[List[ScheduledStop]], List[str]]],
+        audited_responses: Sequence[FleetOptimizationResponse],
+        *,
+        max_stubs: int = 180,
+    ) -> List[Dict[str, Any]]:
+        if max_stubs <= 0:
+            return []
+        already_audited_keys: Set[Tuple[str, Tuple[Tuple[str, str], ...]]] = set()
+        for resp in audited_responses:
+            for route in resp.routes:
+                slot_id = route.route_id or route.vehicle_id
+                sig = tuple(
+                    (stop.stop_type, stop.allocation_id or stop.order_id or "")
+                    for stop in route.stops
+                )
+                already_audited_keys.add((slot_id, sig))
+
+        seen_keys: Set[Tuple[str, Tuple[Tuple[str, str], ...]]] = set(already_audited_keys)
+        candidates: List[Tuple[int, List[ScheduledStop]]] = []
+
+        for cand_routes_stops, _unassigned in all_candidate_plans:
+            for v_idx, prod_stops in enumerate(cand_routes_stops):
+                if not prod_stops:
+                    continue
+                slot_id = self.vehicles[v_idx].id
+                sig = tuple(
+                    (stop.stop_type, stop.allocation_id or stop.order_id or "")
+                    for stop in prod_stops
+                )
+                if (slot_id, sig) in seen_keys:
+                    continue
+                seen_keys.add((slot_id, sig))
+                candidates.append((v_idx, prod_stops))
+
+        if solution is not None:
+            for vehicle_slot_id, hybrid_stops in getattr(solution, "_alns_route_pool", []):
+                v_idx = original_index_by_vehicle_id.get(vehicle_slot_id)
+                if v_idx is None or not hybrid_stops:
+                    continue
+                prod_stops = self._convert_hybrid_stops_to_prod(hybrid_stops)
+                if not prod_stops:
+                    continue
+                sig = tuple(
+                    (stop.stop_type, stop.allocation_id or stop.order_id or "")
+                    for stop in prod_stops
+                )
+                if (vehicle_slot_id, sig) in seen_keys:
+                    continue
+                seen_keys.add((vehicle_slot_id, sig))
+                candidates.append((v_idx, prod_stops))
+
+        stub_dicts: List[Dict[str, Any]] = []
+        for v_idx, prod_stops in candidates:
+            if len(stub_dicts) >= max_stubs:
+                break
+            stub_route = self.build_pool_route_stub(v_idx, prod_stops)
+            if stub_route is None or stub_route.cost is None:
+                continue
+            dumped = stub_route.model_dump()
+            dumped["_pool_stub"] = True
+            stub_dicts.append(dumped)
+        return stub_dicts
+
     def solve(self, hard_deadline: Optional[float] = None) -> FleetOptimizationResponse:
         with scoped_spatial_cache():
             return self._solve_with_cache(hard_deadline=hard_deadline)
@@ -4233,33 +4329,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 vehicle_index = original_index_by_vehicle_id.get(route.vehicle.id)
                 if vehicle_index is None:
                     continue
-                converted_stops: List[ScheduledStop] = []
-                for sequence, stop in enumerate(route.stops, start=1):
-                    order = self.order_by_id.get(stop.order_id or "")
-                    if order is None:
-                        continue
-                    location = (
-                        order.pickup_location
-                        if stop.stop_type == "PICKUP"
-                        else order.delivery_location
-                    )
-                    converted_stops.append(
-                        ScheduledStop(
-                            sequence=sequence,
-                            stop_type=stop.stop_type,
-                            location_id=location.id,
-                            location_name=location.name,
-                            order_id=order.id,
-                            allocation_id=order.id,
-                            latitude=location.latitude,
-                            longitude=location.longitude,
-                            arrival_time_sec=int(stop.arrival_time_sec),
-                            departure_time_sec=int(stop.departure_time_sec),
-                            items_loaded=list(stop.items_loaded),
-                            items_unloaded=list(stop.items_unloaded),
-                        )
-                    )
-                c_routes_stops[vehicle_index] = converted_stops
+                c_routes_stops[vehicle_index] = self._convert_hybrid_stops_to_prod(route.stops)
 
             unassigned_ids = [
                 order_id_by_number.get(value, value)
@@ -4494,6 +4564,16 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     seen_alt_ids.add(id(resp))
                     alternatives.append(resp)
             setattr(result, "_audited_alternatives", alternatives)
+            setattr(
+                result,
+                "_alns_pool_route_dicts",
+                self._build_alns_pool_route_dicts(
+                    solution,
+                    original_index_by_vehicle_id,
+                    all_candidate_plans,
+                    [result, *alternatives],
+                ),
+            )
         else:
             result = self._best_audited_response(valid_responses)
             if time.perf_counter() + 0.05 < polish_deadline:
