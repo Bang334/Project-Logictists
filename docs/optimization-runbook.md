@@ -45,8 +45,9 @@ Policy và ngân sách thực được ghi trong `diagnostics` của batch. Vớ
         └─→ Lỗi hệ thống / Crash ─────────→ (RETRYING) → Tối đa 3 lần → (FAILED)
 ```
 
-- **Lease Heartbeat:** Trong khi job đang chạy, worker định kỳ gửi heartbeat gia hạn `leaseUntil` thêm 5 phút mỗi 60 giây.
-- **Worker Crash Recovery:** Nếu tiến trình worker bị sập đột ngột, sau khi `leaseUntil` quá hạn, `OptimizationRecoveryService` (chạy nền mỗi 5 giây) sẽ phát hiện job mồ côi và tự động chuyển về `RETRYING` để worker khác nhận xử lý.
+- **Lease Heartbeat:** Mỗi 10 giây, worker gia hạn `leaseUntil` thêm 5 phút nếu truy vấn heartbeat trước đã kết thúc.
+- **Worker Crash Recovery:** Sau khi `leaseUntil` quá hạn, `OptimizationRecoveryService` quét mỗi 15 giây để tìm job mồ côi và chuyển về `RETRYING`.
+- **Hủy lượt tối ưu:** Khi worker đang chạy, API ghi `CANCEL_REQUESTED` và gửi tín hiệu dừng. Gửi lại yêu cầu hủy vẫn trả trạng thái đang hủy cho đến khi worker xác nhận `CANCELLED`. Màn Điều phối tự động theo dõi job tới trạng thái cuối rồi đóng phương án và mở lại nút tối ưu. Bản ghi PostgreSQL vẫn phục vụ truy vết.
 
 ---
 
@@ -82,8 +83,9 @@ Authorization: Bearer <ADMIN_JWT_TOKEN>
 }
 ```
 
-- `expiredLeaseRunningJobs > 0`: Cảnh báo có worker bị crash hoặc lag mạng làm job bị kẹt. Hệ thống tự phục hồi sau 5s.
-- `averageQueueLagSeconds`: Thời gian từ lúc tạo job đến lúc worker bắt đầu xử lý (đo độ nghẽn hàng đợi).
+- `expiredLeaseRunningJobs > 0` cho biết có job đang chạy với lease đã hết hạn. Recovery xử lý ở chu kỳ quét tiếp theo khi PostgreSQL và Redis phản hồi.
+- `averageQueueLagSeconds` và trường log `queueLagSeconds` đo từ lúc tạo job đến lần claim đầu tiên.
+- `persistenceDurationMs` trong log `optimization_job_finished` đo thời gian chuẩn bị và lưu kết quả. Worker cập nhật trạng thái và thay danh sách phương án trong cùng một lệnh PostgreSQL có kiểm tra chủ sở hữu lease.
 
 ---
 
@@ -108,6 +110,12 @@ Khi các sự kiện xuất bản hoặc cập nhật trạng thái không thể
    ```http
    POST /admin/outbox/:id/retry
    ```
+
+### 4.3. Prisma chờ kết nối quá hạn
+
+`P2024` cho biết truy vấn hết thời gian chờ lấy kết nối từ pool của backend. Nếu lỗi lặp lại, đối chiếu thời điểm xuất hiện trong log outbox và recovery với số kết nối đang bận, truy vấn kéo dài và lượt chờ khóa trên PostgreSQL hoặc pooler. Kiểm tra giới hạn theo từng tiến trình backend và giới hạn tổng của pooler trước khi đổi cấu hình.
+
+Nếu log worker cùng thời điểm báo `P2028`, kiểm tra bước lưu kết quả và thời lượng của transaction trong log. Bản ghi job chỉ chuyển sang thành công khi toàn bộ danh sách phương án đã được lưu.
 
 ---
 
