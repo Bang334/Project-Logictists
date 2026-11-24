@@ -257,3 +257,230 @@ def test_cross_seed_combines_single_plan_with_audited_extra_routes():
     assert len(combined.routes) == 2
     assert combined.total_cost_vnd < 700_000
     assert combined.routes[0].driver_id != combined.routes[1].driver_id
+
+
+def test_cross_seed_reassigns_interchangeable_vehicle_profile_across_seeds():
+    req, vehicles, orders, expected = _sample_problem()
+    v0, v1 = vehicles[0], vehicles[1]
+    # Use realistic backend daily slot IDs for both vehicles and drivers.
+    v0 = v0.model_copy(update={"id": "v0::day:0", "source_vehicle_id": "v0"})
+    v1 = v1.model_copy(update={"id": "v1::day:0", "source_vehicle_id": "v1"})
+    d0 = req.drivers[0].model_copy(update={"id": "drv0::day:0", "source_driver_id": "drv0"})
+    d1 = req.drivers[1].model_copy(update={"id": "drv1::day:0", "source_driver_id": "drv1"})
+    req = req.model_copy(update={"vehicles": [v0, v1], "drivers": [d0, d1]})
+
+    # Seed 0 puts cheap o0 on v0 and expensive o1 on v1 (score ~ 1,000,000).
+    plan_s0 = FleetOptimizationResponse(
+        job_id="cross-seed-profile",
+        status="SUCCESS",
+        total_cost_vnd=1_000_000,
+        routes=[
+            _route_for_orders(vehicle=v0, orders=[orders[0]], cost_vnd=300_000),
+            _route_for_orders(vehicle=v1, orders=[orders[1]], cost_vnd=700_000),
+        ],
+    )
+    # Seed 1 puts cheap o1 ALSO on v0, and expensive o0 on v1.
+    plan_s1 = FleetOptimizationResponse(
+        job_id="cross-seed-profile",
+        status="SUCCESS",
+        total_cost_vnd=1_020_000,
+        routes=[
+            _route_for_orders(vehicle=v1, orders=[orders[0]], cost_vnd=720_000),
+            _route_for_orders(vehicle=v0, orders=[orders[1]], cost_vnd=300_000),
+        ],
+    )
+
+    # Without profile equivalence (v6 baseline), both cheap routes collide on v0.
+    disabled = solve_cross_seed_set_partitioning(
+        req,
+        [plan_s0, plan_s1],
+        expected,
+        compare_horizons=False,
+        allow_vehicle_profile_reassignment=False,
+    )
+    assert disabled is not None
+    disabled_plan, _ = disabled
+
+    # With interchangeable vehicle_profile enabled on the exact same pool,
+    # Cross-Seed selects both 300k routes and remaps one cleanly onto v1::day:0 / v1.
+    enabled = solve_cross_seed_set_partitioning(
+        req,
+        [plan_s0, plan_s1],
+        expected,
+        compare_horizons=False,
+        allow_vehicle_profile_reassignment=True,
+    )
+    assert enabled is not None
+    combined, _ = enabled
+
+    assert combined.total_cost_vnd < disabled_plan.total_cost_vnd
+    assert len(combined.routes) == 2
+    assert {r.route_id for r in combined.routes} == {"v0::day:0", "v1::day:0"}
+    assert {r.vehicle_id for r in combined.routes} == {"v0", "v1"}
+    assert {r.plate_number for r in combined.routes} == {"43C-000", "43C-001"}
+    # Driver IDs are normalized to physical source_driver_id values for backend DB apply.
+    assert {r.driver_id for r in combined.routes} == {"drv0", "drv1"}
+
+
+def test_cross_seed_respects_allowed_source_vehicle_ids_and_cost_diffs():
+    req, vehicles, orders, expected = _sample_problem()
+    # Restrict o1 to v0 only -> cheap v0 route for o1 cannot swap to v1.
+    restricted_orders = [
+        orders[0],
+        orders[1].model_copy(update={"allowed_source_vehicle_ids": ["v0"]}),
+    ]
+    req = req.model_copy(update={"orders": restricted_orders})
+    plan_s0 = FleetOptimizationResponse(
+        job_id="cross-seed-restricted",
+        status="SUCCESS",
+        total_cost_vnd=1_000_000,
+        routes=[
+            _route_for_orders(vehicle=vehicles[0], orders=[restricted_orders[0]], cost_vnd=300_000),
+            _route_for_orders(vehicle=vehicles[1], orders=[restricted_orders[1]], cost_vnd=700_000),
+        ],
+    )
+    plan_s1 = FleetOptimizationResponse(
+        job_id="cross-seed-restricted",
+        status="SUCCESS",
+        total_cost_vnd=900_000,
+        routes=[
+            _route_for_orders(vehicle=vehicles[1], orders=[restricted_orders[0]], cost_vnd=600_000),
+            _route_for_orders(vehicle=vehicles[0], orders=[restricted_orders[1]], cost_vnd=300_000),
+        ],
+    )
+    res = solve_cross_seed_set_partitioning(
+        req,
+        [plan_s0, plan_s1],
+        expected,
+        compare_horizons=False,
+        allow_vehicle_profile_reassignment=True,
+    )
+    assert res is not None
+    combined, _ = res
+    o1_route = next(r for r in combined.routes if any(st.order_id == "o1" for st in r.stops))
+    assert o1_route.vehicle_id == "v0"
+
+    # Non-identical operating cost also prevents grouping even without allowed_source_vehicle_ids.
+    diff_cost_vehicles = [
+        vehicles[0],
+        vehicles[1].model_copy(update={"fixed_operating_cost_vnd": 250_000}),
+    ]
+    req_diff = req.model_copy(update={"vehicles": diff_cost_vehicles, "orders": orders})
+    res_diff = solve_cross_seed_set_partitioning(
+        req_diff,
+        [plan_s0, plan_s1],
+        expected,
+        compare_horizons=False,
+        allow_vehicle_profile_reassignment=True,
+    )
+    assert res_diff is not None
+    combined_diff, _ = res_diff
+    o1_diff_route = next(r for r in combined_diff.routes if any(st.order_id == "o1" for st in r.stops))
+    assert o1_diff_route.vehicle_id == "v0"
+
+
+def test_cross_seed_materialization_avoids_cross_day_physical_vehicle_overlap():
+    depot = _loc("depot")
+    v0_d0 = FleetVehicle(
+        id="v0::day:0",
+        source_vehicle_id="v0",
+        service_day_index=0,
+        plate_number="43C-000",
+        length_cm=400,
+        width_cm=200,
+        height_cm=200,
+        payload_limit_kg=5000,
+        available_start_sec=0,
+        available_end_sec=86_400,
+        depot=depot,
+        fuel_consumption_liters_per_100_km=12.0,
+        fixed_operating_cost_vnd=100_000,
+    )
+    v0_d1 = v0_d0.model_copy(
+        update={
+            "id": "v0::day:1",
+            "service_day_index": 1,
+            "available_start_sec": 86_400,
+            "available_end_sec": 172_800,
+        }
+    )
+    v1_d1 = v0_d1.model_copy(
+        update={
+            "id": "v1::day:1",
+            "source_vehicle_id": "v1",
+            "plate_number": "43C-001",
+        }
+    )
+    vehicles = [v0_d0, v0_d1, v1_d1]
+    drivers = [
+        DriverOption(
+            id="drv0::day:0",
+            source_driver_id="drv0",
+            service_day_index=0,
+            full_name="Driver 0",
+            license_class="C",
+            fixed_salary_monthly_vnd=15_000_000,
+            trip_base_pay_vnd=0,
+            per_km_pay_vnd=0,
+        ),
+        DriverOption(
+            id="drv1::day:1",
+            source_driver_id="drv1",
+            service_day_index=1,
+            full_name="Driver 1",
+            license_class="C",
+            fixed_salary_monthly_vnd=15_000_000,
+            trip_base_pay_vnd=0,
+            per_km_pay_vnd=0,
+        ),
+    ]
+    orders = [
+        OrderPair(
+            id=f"o{i}",
+            order_number=f"ORD-{i}",
+            pickup_location=_loc(f"p{i}"),
+            delivery_location=_loc(f"d{i}"),
+            items=[CargoItem(id=f"it{i}", order_id=f"o{i}", length_cm=50, width_cm=40, height_cm=40, weight_kg=50)],
+        )
+        for i in range(2)
+    ]
+    n = len(vehicles) + 2 * len(orders)
+    req = FleetOptimizationRequest(
+        job_id="cross-seed-overnight",
+        vehicles=vehicles,
+        drivers=drivers,
+        orders=orders,
+        policy=CostPolicy(fuel_price_per_liter_vnd=24_000, monthly_working_minutes=12_480),
+        distance_matrix_meters=[[0 if a == b else 1000 for b in range(n)] for a in range(n)],
+        duration_matrix_seconds=[[0 if a == b else 60 for b in range(n)] for a in range(n)],
+    )
+    expected = {o.id: {it.id for it in o.items} for o in orders}
+
+    # Day 0 overnight route on v0::day:0 ends at 95,000s (pinned).
+    # Day 1 cheap flexible route for o1 starts on v0::day:1 at 90,000s -> overlaps v0's Day 0 trip,
+    # so materialization must move it onto interchangeable v1::day:1!
+    overnight_v0 = _route_for_orders(
+        vehicle=v0_d0, orders=[orders[0]], cost_vnd=300_000, start_sec=70_000, end_sec=95_000,
+    )
+    day1_v0_conflict = _route_for_orders(
+        vehicle=v0_d1, orders=[orders[1]], cost_vnd=300_000, start_sec=90_000, end_sec=100_000,
+    )
+    day1_v1_expensive = _route_for_orders(
+        vehicle=v1_d1, orders=[orders[1]], cost_vnd=700_000, start_sec=90_000, end_sec=100_000,
+    )
+
+    plan_a = FleetOptimizationResponse(job_id="t", status="SUCCESS", routes=[overnight_v0, day1_v1_expensive])
+    res = solve_cross_seed_set_partitioning(
+        req,
+        [plan_a],
+        expected,
+        compare_horizons=True,
+        extra_routes=[day1_v0_conflict],
+        allow_vehicle_profile_reassignment=True,
+    )
+    assert res is not None
+    combined, _ = res
+    o1_route = next(r for r in combined.routes if any(st.order_id == "o1" for st in r.stops))
+    assert o1_route.route_id == "v1::day:1"
+    assert o1_route.vehicle_id == "v1"
+    assert o1_route.driver_id == "drv1"

@@ -96,6 +96,248 @@ def route_pool_signature(route: OptimizedRoute) -> Tuple:
 _route_pool_signature = route_pool_signature
 
 
+def _physical_vehicle_overlap_free(
+    routes: Sequence[OptimizedRoute],
+) -> bool:
+    """Verify physical trucks do not run twice in a day or overlap across days."""
+    intervals_by_vehicle: Dict[str, List[Tuple[int, int, int, str]]] = defaultdict(list)
+    for route in routes:
+        phys_id = route.vehicle_id or route.plate_number
+        if not phys_id:
+            continue
+        start_s = int(route.start_time_sec)
+        end_s = int(route.end_time_sec)
+        day_idx = int(route.service_day_index)
+        plate = route.plate_number
+        for prev_day, prev_start, prev_end, prev_plate in intervals_by_vehicle[phys_id]:
+            if day_idx == prev_day:
+                return False
+            if start_s < prev_end and prev_start < end_s:
+                return False
+            if plate and prev_plate and plate == prev_plate and start_s < prev_end and prev_start < end_s:
+                return False
+        intervals_by_vehicle[phys_id].append((day_idx, start_s, end_s, plate))
+    return True
+
+
+def _build_interchangeable_vehicle_groups(
+    request: FleetOptimizationRequest,
+) -> Tuple[Dict[str, Tuple], Dict[Tuple, List[int]]]:
+    """Group same-day vehicles with identical geometry, cost, shift window, and matrix rows."""
+    nv = len(request.vehicles)
+    if nv < 2:
+        return {}, {}
+
+    dist_m = request.distance_matrix_meters
+    dur_s = request.duration_matrix_seconds
+
+    phys_intervals: Dict[str, List[Tuple[int, int, int]]] = defaultdict(list)
+    day_plate_counts: Dict[Tuple[int, str], int] = defaultdict(int)
+    day_phys_counts: Dict[Tuple[int, str], int] = defaultdict(int)
+    for v in request.vehicles:
+        phys_id = v.source_vehicle_id or v.id
+        phys_intervals[phys_id].append((v.service_day_index, v.available_start_sec, v.available_end_sec))
+        if v.plate_number:
+            day_plate_counts[(v.service_day_index, v.plate_number)] += 1
+        day_phys_counts[(v.service_day_index, phys_id)] += 1
+
+    cross_day_overlap_phys: Set[str] = set()
+    for phys_id, slots in phys_intervals.items():
+        if len(slots) <= 1:
+            continue
+        for i in range(len(slots)):
+            d1, s1, e1 = slots[i]
+            for j in range(i + 1, len(slots)):
+                d2, s2, e2 = slots[j]
+                if d1 != d2 and s1 < e2 and s2 < e1:
+                    cross_day_overlap_phys.add(phys_id)
+                    break
+            if phys_id in cross_day_overlap_phys:
+                break
+
+    raw_groups: Dict[Tuple, List[int]] = defaultdict(list)
+    for v_idx, v in enumerate(request.vehicles):
+        phys_id = v.source_vehicle_id or v.id
+        if phys_id in cross_day_overlap_phys:
+            continue
+        if v.plate_number and day_plate_counts[(v.service_day_index, v.plate_number)] > 1:
+            continue
+        if day_phys_counts[(v.service_day_index, phys_id)] > 1:
+            continue
+        profile = (
+            v.service_day_index,
+            v.available_start_sec,
+            v.available_end_sec,
+            float(v.length_cm),
+            float(v.width_cm),
+            float(v.height_cm),
+            float(v.payload_limit_kg),
+            v.door_position,
+            float(v.door_width_cm) if v.door_width_cm is not None else None,
+            v.vehicle_type or "",
+            v.model or "",
+            int(v.fixed_operating_cost_vnd),
+            float(v.fuel_consumption_liters_per_100_km),
+            float(v.load_fuel_surcharge_percent_at_full_payload),
+            round(float(v.depot.latitude), 6),
+            round(float(v.depot.longitude), 6),
+            tuple(dist_m[v_idx][nv:]),
+            tuple(row[v_idx] for row in dist_m[nv:]),
+            tuple(dur_s[v_idx][nv:]),
+            tuple(row[v_idx] for row in dur_s[nv:]),
+        )
+        raw_groups[profile].append(v_idx)
+
+    group_slots: Dict[Tuple, List[int]] = {
+        profile: indices for profile, indices in raw_groups.items() if len(indices) >= 2
+    }
+    slot_to_group: Dict[str, Tuple] = {
+        request.vehicles[v_idx].id: profile
+        for profile, indices in group_slots.items()
+        for v_idx in indices
+    }
+    return slot_to_group, group_slots
+
+
+def _is_entry_flexible_in_group(
+    entry: _PoolRouteEntry,
+    group_key: Optional[Tuple],
+    group_slots: Dict[Tuple, List[int]],
+    request: FleetOptimizationRequest,
+    order_by_id: dict,
+    vehicle_by_id: Dict[str, FleetVehicle],
+) -> bool:
+    if group_key is None:
+        return False
+    orig_veh = vehicle_by_id.get(entry.slot_id)
+    if orig_veh is None:
+        return False
+    if entry.start_sec < orig_veh.available_start_sec or entry.end_sec > orig_veh.available_end_sec:
+        return False
+
+    group_vehicles = [request.vehicles[idx] for idx in group_slots[group_key]]
+    for oid in entry.served_orders:
+        order = order_by_id.get(oid)
+        if order is None:
+            return False
+        allowed = order.allowed_source_vehicle_ids
+        if not allowed:
+            continue
+        allowed_set = set(allowed)
+        if not all(
+            (v.id in allowed_set) or ((v.source_vehicle_id or v.id) in allowed_set)
+            for v in group_vehicles
+        ):
+            return False
+    return True
+
+
+def _materialize_selected_routes(
+    selected_entries: Sequence[_PoolRouteEntry],
+    entry_groups: Sequence[Optional[Tuple]],
+    entry_flexible: Sequence[bool],
+    group_slots: Dict[Tuple, List[int]],
+    request: FleetOptimizationRequest,
+    vehicle_by_id: Dict[str, FleetVehicle],
+) -> Optional[List[OptimizedRoute]]:
+    """Assign pinned routes to exact slots and map flexible routes onto free identical slots."""
+    used_slots: Set[str] = set()
+    used_day_plates: Set[Tuple[int, str]] = set()
+    used_day_phys: Set[Tuple[int, str]] = set()
+    intervals_by_phys: Dict[str, List[Tuple[int, int]]] = defaultdict(list)
+    materialized: List[Optional[OptimizedRoute]] = [None] * len(selected_entries)
+
+    def _claim(slot_id: str, day_idx: int, plate: str, phys_id: str, start_s: int, end_s: int) -> bool:
+        if slot_id in used_slots:
+            return False
+        if plate and (day_idx, plate) in used_day_plates:
+            return False
+        if phys_id and (day_idx, phys_id) in used_day_phys:
+            return False
+        if phys_id:
+            for prev_start, prev_end in intervals_by_phys[phys_id]:
+                if start_s < prev_end and prev_start < end_s:
+                    return False
+        used_slots.add(slot_id)
+        if plate:
+            used_day_plates.add((day_idx, plate))
+        if phys_id:
+            used_day_phys.add((day_idx, phys_id))
+            intervals_by_phys[phys_id].append((start_s, end_s))
+        return True
+
+    # 1. Place all pinned routes on their original vehicle slots first.
+    flexible_indices: List[int] = []
+    for pos, entry in enumerate(selected_entries):
+        if not entry_flexible[pos]:
+            if not _claim(
+                entry.slot_id,
+                entry.day_index,
+                entry.plate_number,
+                entry.physical_vehicle_id,
+                entry.start_sec,
+                entry.end_sec,
+            ):
+                return None
+            materialized[pos] = copy.deepcopy(entry.route)
+        else:
+            flexible_indices.append(pos)
+
+    # 2. Keep original slots for flexible routes when available; reassign collisions within group.
+    deferred_indices: List[int] = []
+    for pos in flexible_indices:
+        entry = selected_entries[pos]
+        if _claim(
+            entry.slot_id,
+            entry.day_index,
+            entry.plate_number,
+            entry.physical_vehicle_id,
+            entry.start_sec,
+            entry.end_sec,
+        ):
+            materialized[pos] = copy.deepcopy(entry.route)
+        else:
+            deferred_indices.append(pos)
+
+    for pos in deferred_indices:
+        entry = selected_entries[pos]
+        group_key = entry_groups[pos]
+        if group_key is None:
+            return None
+        orig_veh = vehicle_by_id.get(entry.slot_id)
+        assigned_route: Optional[OptimizedRoute] = None
+        for v_idx in group_slots[group_key]:
+            cand_veh = request.vehicles[v_idx]
+            cand_phys = cand_veh.source_vehicle_id or cand_veh.id
+            if not _claim(
+                cand_veh.id,
+                cand_veh.service_day_index,
+                cand_veh.plate_number,
+                cand_phys,
+                entry.start_sec,
+                entry.end_sec,
+            ):
+                continue
+            cloned = copy.deepcopy(entry.route)
+            cloned.route_id = cand_veh.id
+            cloned.vehicle_id = cand_phys
+            cloned.plate_number = cand_veh.plate_number
+            if cloned.depot is not None:
+                cloned.depot = cand_veh.depot.model_copy()
+            if cloned.end_location is not None and (
+                (orig_veh is not None and cloned.end_location.id == orig_veh.depot.id)
+                or cloned.end_location.id == entry.slot_id
+            ):
+                cloned.end_location = cand_veh.depot.model_copy()
+            assigned_route = cloned
+            break
+        if assigned_route is None:
+            return None
+        materialized[pos] = assigned_route
+
+    return [r for r in materialized if r is not None]
+
+
 def _eligible_driver_overlap_free(
     request: FleetOptimizationRequest,
     routes: Sequence[OptimizedRoute],
@@ -169,6 +411,7 @@ def solve_cross_seed_set_partitioning(
     *,
     compare_horizons: bool,
     extra_routes: Sequence[OptimizedRoute] = (),
+    allow_vehicle_profile_reassignment: bool = True,
     time_limit_sec: float = 1.5,
 ) -> Optional[Tuple[FleetOptimizationResponse, PlanningObjectiveBreakdown]]:
     """Combine already-audited 3D routes across seeds using CP-SAT set partitioning."""
@@ -225,22 +468,47 @@ def solve_cross_seed_set_partitioning(
     for indices in routes_by_order.values():
         model.Add(sum(x[i] for i in indices) == 1)
 
+    if allow_vehicle_profile_reassignment:
+        slot_to_group, group_slots = _build_interchangeable_vehicle_groups(request)
+    else:
+        slot_to_group, group_slots = {}, {}
+    entry_groups: List[Optional[Tuple]] = []
+    entry_flexible: List[bool] = []
+    for entry in pool_entries:
+        g_key = slot_to_group.get(entry.slot_id)
+        entry_groups.append(g_key)
+        entry_flexible.append(
+            _is_entry_flexible_in_group(
+                entry, g_key, group_slots, request, order_by_id, vehicle_by_id,
+            )
+        )
+
     by_slot: Dict[str, List[int]] = defaultdict(list)
     by_day_plate: Dict[Tuple[int, str], List[int]] = defaultdict(list)
     by_day_phys_veh: Dict[Tuple[int, str], List[int]] = defaultdict(list)
     by_phys_veh: Dict[str, List[int]] = defaultdict(list)
+    by_profile_group: Dict[Tuple, List[int]] = defaultdict(list)
     by_day: Dict[int, List[int]] = defaultdict(list)
 
     for idx, entry in enumerate(pool_entries):
-        by_slot[entry.slot_id].append(idx)
-        by_day_plate[(entry.day_index, entry.plate_number)].append(idx)
-        by_day_phys_veh[(entry.day_index, entry.physical_vehicle_id)].append(idx)
-        by_phys_veh[entry.physical_vehicle_id].append(idx)
+        g_key = entry_groups[idx]
+        if g_key is not None:
+            by_profile_group[g_key].append(idx)
+        if not entry_flexible[idx]:
+            by_slot[entry.slot_id].append(idx)
+            by_day_plate[(entry.day_index, entry.plate_number)].append(idx)
+            by_day_phys_veh[(entry.day_index, entry.physical_vehicle_id)].append(idx)
+            by_phys_veh[entry.physical_vehicle_id].append(idx)
         by_day[entry.day_index].append(idx)
 
     for group in (*by_slot.values(), *by_day_plate.values(), *by_day_phys_veh.values()):
         if len(group) > 1:
             model.Add(sum(x[i] for i in group) <= 1)
+
+    for g_key, group_indices in by_profile_group.items():
+        cap = len(group_slots[g_key])
+        if len(group_indices) > cap:
+            model.Add(sum(x[i] for i in group_indices) <= cap)
 
     # Prevent cross-day physical truck schedule overlaps (e.g. overnight routes).
     for indices in by_phys_veh.values():
@@ -322,12 +590,20 @@ def solve_cross_seed_set_partitioning(
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return None
 
-    selected_routes = [
-        copy.deepcopy(pool_entries[idx].route)
-        for idx in range(len(pool_entries))
-        if solver.Value(x[idx]) == 1
+    selected_pos = [
+        idx for idx in range(len(pool_entries)) if solver.Value(x[idx]) == 1
     ]
-    if not selected_routes:
+    if not selected_pos:
+        return None
+    selected_routes = _materialize_selected_routes(
+        [pool_entries[idx] for idx in selected_pos],
+        [entry_groups[idx] for idx in selected_pos],
+        [entry_flexible[idx] for idx in selected_pos],
+        group_slots,
+        request,
+        vehicle_by_id,
+    )
+    if not selected_routes or not _physical_vehicle_overlap_free(selected_routes):
         return None
 
     selected_routes.sort(

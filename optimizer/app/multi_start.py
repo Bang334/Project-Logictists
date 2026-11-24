@@ -828,6 +828,7 @@ class MultiStartFleetOptimizer:
         self.request = split_outcome.request
         self.split_order_count = split_outcome.split_order_count
         self.unchecked_split_order_count = split_outcome.unchecked_order_count
+        self.last_cross_seed_telemetry: Optional[Dict[str, Any]] = None
         self.objective_request = (
             self.request if self.split_order_count else request
         )
@@ -1416,6 +1417,7 @@ class MultiStartFleetOptimizer:
             ortools_fallback_used = True
 
         cross_seed_applied = False
+        cross_seed_telemetry: Optional[Dict[str, Any]] = None
         if not is_mocked and not self._is_cancelled() and len(self.request.orders) >= 8:
             complete_runs = [
                 run for run in evaluated_runs
@@ -1443,6 +1445,13 @@ class MultiStartFleetOptimizer:
                     extra_routes.append(route)
 
             if complete_runs and (len(complete_runs) >= 2 or extra_routes):
+                best_pre_run = min(
+                    complete_runs,
+                    key=lambda run: _candidate_selection_key(run, compare_horizons),
+                )
+                pre_strategy, pre_plan, pre_score = best_pre_run
+                best_existing_key = _candidate_selection_key(best_pre_run, compare_horizons)
+                cross_started = time.perf_counter()
                 combined = solve_cross_seed_set_partitioning(
                     self.objective_request,
                     [run[1] for run in complete_runs],
@@ -1451,6 +1460,21 @@ class MultiStartFleetOptimizer:
                     extra_routes=extra_routes,
                     time_limit_sec=1.5,
                 )
+                cross_elapsed = time.perf_counter() - cross_started
+                cross_seed_telemetry = {
+                    "pre_merge_strategy": pre_strategy.label,
+                    "pre_merge_score": int(pre_score),
+                    "pre_merge_operating_cost": int(pre_plan.total_cost_vnd),
+                    "pre_merge_routes": len(pre_plan.routes),
+                    "complete_seed_count": len(complete_runs),
+                    "extra_route_count": len(extra_routes),
+                    "post_merge_score": None,
+                    "post_merge_operating_cost": None,
+                    "post_merge_routes": None,
+                    "delta_score": None,
+                    "accepted": False,
+                    "elapsed_sec": round(cross_elapsed, 4),
+                }
                 if combined is not None:
                     combined_plan, combined_obj = combined
                     if is_fully_served(
@@ -1470,13 +1494,16 @@ class MultiStartFleetOptimizer:
                             combined_plan,
                             combined_obj.selection_score_vnd,
                         )
-                        best_existing_key = min(
-                            _candidate_selection_key(run, compare_horizons)
-                            for run in complete_runs
-                        )
+                        post_score = int(combined_obj.selection_score_vnd)
+                        cross_seed_telemetry["post_merge_score"] = post_score
+                        cross_seed_telemetry["post_merge_operating_cost"] = int(combined_plan.total_cost_vnd)
+                        cross_seed_telemetry["post_merge_routes"] = len(combined_plan.routes)
+                        cross_seed_telemetry["delta_score"] = post_score - int(pre_score)
                         if _candidate_selection_key(cross_candidate, compare_horizons) < best_existing_key:
                             evaluated_runs.append(cross_candidate)
                             cross_seed_applied = True
+                            cross_seed_telemetry["accepted"] = True
+        self.last_cross_seed_telemetry = cross_seed_telemetry
 
         candidates, fully_served_count, diagnostics = select_ranked_candidates(
             evaluated_runs,
@@ -1518,6 +1545,18 @@ class MultiStartFleetOptimizer:
         if cross_seed_applied:
             batch_diagnostics.append(
                 "Tổ hợp chéo đa seed: CP-SAT đã ghép các tuyến 3D hợp lệ từ nhiều seed để cải thiện nghiệm."
+            )
+        if cross_seed_telemetry is not None:
+            post_part = (
+                f"post_merge={cross_seed_telemetry['post_merge_score']} (r={cross_seed_telemetry['post_merge_routes']}), "
+                f"delta={cross_seed_telemetry['delta_score']:+d}"
+                if cross_seed_telemetry["post_merge_score"] is not None
+                else "post_merge=NONE"
+            )
+            batch_diagnostics.append(
+                "Cross-seed CP-SAT telemetry: "
+                f"pre_best={cross_seed_telemetry['pre_merge_score']} ({cross_seed_telemetry['pre_merge_strategy']}, r={cross_seed_telemetry['pre_merge_routes']}), "
+                f"{post_part}, accepted={cross_seed_telemetry['accepted']}, time={cross_seed_telemetry['elapsed_sec']:.4f}s."
             )
         if adaptive_search:
             batch_diagnostics.append(

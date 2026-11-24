@@ -88,7 +88,7 @@ class DriverMatcher:
                 assigned_driver = day_drivers[d_j]
                 route = day_routes[r_i]
 
-                route.driver_id = assigned_driver.id
+                route.driver_id = assigned_driver.source_driver_id or assigned_driver.id
                 route.driver_name = assigned_driver.full_name
                 route.driver_license_class = assigned_driver.license_class
 

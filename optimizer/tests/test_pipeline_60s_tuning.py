@@ -287,3 +287,75 @@ def test_multistart_pool_forwards_worker_alternatives_to_cross_seed(monkeypatch)
     assert batch.candidates[0].search_strategy == "Packing-aware Cross-Seed CP-SAT"
     assert any("Tổ hợp chéo đa seed" in msg for msg in batch.diagnostics)
     assert sum(r.cost.fuel_cost_vnd for r in batch.candidates[0].result.routes) == 380_000
+
+
+def test_multistart_records_pre_and_post_merge_cross_seed_telemetry(monkeypatch):
+    from concurrent.futures import Future
+    import app.multi_start as module
+
+    req, vehicles, orders, _expected = _sample_problem()
+    base_o = orders[0]
+    req.orders = [
+        base_o.model_copy(update={
+            "id": f"o{i}",
+            "order_number": f"ORD-{i}",
+            "source_order_id": f"o{i}",
+            "pickup_location": req.orders[i % 2].pickup_location.model_copy(update={"id": f"p{i}"}),
+            "delivery_location": req.orders[i % 2].delivery_location.model_copy(update={"id": f"d{i}"}),
+            "items": [base_o.items[0].model_copy(update={"id": f"it{i}", "order_id": f"o{i}"})],
+        })
+        for i in range(8)
+    ]
+    nv = len(req.vehicles) + 2 * len(req.orders)
+    req.distance_matrix_meters = [[0 if a == b else 1000 for b in range(nv)] for a in range(nv)]
+    req.duration_matrix_seconds = [[0 if a == b else 60 for b in range(nv)] for a in range(nv)]
+    req = req.model_copy(update={"hybrid_seed_count": 2, "early_stop_patience": 0, "search_time_seconds": 10, "max_time_seconds": 30})
+
+    class ImmediatePool:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def submit(self, fn, *args):
+            fut = Future()
+            fut.set_result(fn(*args))
+            return fut
+
+        def shutdown(self, **kwargs):
+            pass
+
+    r0_cheap = _route_for_orders(vehicle=vehicles[0], orders=req.orders[:4], cost_vnd=300_000)
+    r1_exp = _route_for_orders(vehicle=vehicles[1], orders=req.orders[4:], cost_vnd=600_000)
+    alt_r0_exp = _route_for_orders(vehicle=vehicles[1], orders=req.orders[:4], cost_vnd=700_000)
+    alt_r1_cheap = _route_for_orders(vehicle=vehicles[0], orders=req.orders[4:], cost_vnd=280_000)
+
+    class FakeHybrid:
+        def __init__(self, *_a, random_seed=0, **_k):
+            self.random_seed = random_seed
+
+        def solve(self, hard_deadline=None):
+            if self.random_seed == 0:
+                p = _mock_plan("p0", "SUCCESS", 900_000, [o.id for o in req.orders])
+                p.routes = [r0_cheap.model_copy(deep=True), r1_exp.model_copy(deep=True)]
+                return p
+            p1 = _mock_plan("p1", "SUCCESS", 980_000, [o.id for o in req.orders])
+            p1.routes = [alt_r0_exp.model_copy(deep=True), alt_r1_cheap.model_copy(deep=True)]
+            return p1
+
+    monkeypatch.setattr(module.concurrent.futures, "ProcessPoolExecutor", ImmediatePool)
+    monkeypatch.setattr(module, "PackingAwareHybridALNSOptimizer", FakeHybrid)
+    monkeypatch.setattr(module, "_REAL_HYBRID_OPTIMIZER", FakeHybrid)
+    monkeypatch.setattr(module, "PackingAwareILSOptimizer", object())
+    monkeypatch.setattr(module, "_extract_safe_ortools_seed_pool", lambda *_a, **_k: None)
+    monkeypatch.setattr(module.MultiStartFleetOptimizer, "_direct_benchmark", lambda self: (None, None))
+
+    opt = MultiStartFleetOptimizer(req)
+    batch = opt.solve()
+
+    assert opt.last_cross_seed_telemetry is not None
+    tel = opt.last_cross_seed_telemetry
+    assert tel["accepted"] is True
+    assert tel["post_merge_score"] < tel["pre_merge_score"]
+    assert tel["delta_score"] == tel["post_merge_score"] - tel["pre_merge_score"]
+    assert tel["elapsed_sec"] >= 0.0
+    assert any("Cross-seed CP-SAT telemetry:" in msg and "pre_best=" in msg and "post_merge=" in msg for msg in batch.diagnostics)
+    assert batch.candidates[0].search_strategy == "Packing-aware Cross-Seed CP-SAT"
