@@ -36,3 +36,57 @@ logs/
 
 # Local algorithm research/benchmarks (kept outside production source control)
 /algo_lab/
+
+# Environment and private credentials
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.p8
+*.keystore
+*.jks
+google-services.json
+
+# Expo / React Native local files
+.expo/
+.expo-shared/
+.expo-internal/
+*.apk
+*.aab
+*.ipa
+*.hprof
+
+# Android / Gradle generated files
+.gradle/
+.cxx/
+.externalNativeBuild/
+local.properties
+captures/
+*.hprof
+
+# Python test and analysis caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
+
+# Test reports and generated artifacts
+test-results/
+playwright-report/
+blob-report/
+*.lcov
+*.tsbuildinfo
+
+# Personal editor / AI configuration
+.claude/settings.local.json
+.codex/
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+*.rej

@@ -1,10 +1,46 @@
 import { ForbiddenException } from '@nestjs/common';
 import { Role } from '@prisma/client';
 import {
+  assertBranchAccess,
   assertLocationAccess,
   resolveBranchScope,
   resolveLocationScope,
 } from '../../src/auth/branch-scope';
+
+describe('assertBranchAccess', () => {
+  it('cho phép ADMIN truy cập mọi chi nhánh', () => {
+    expect(() =>
+      assertBranchAccess(
+        { role: Role.ADMIN, branchId: null },
+        'branch-hn',
+      ),
+    ).not.toThrow();
+  });
+
+  it('cho phép DISPATCHER truy cập đúng chi nhánh', () => {
+    expect(() =>
+      assertBranchAccess(
+        { role: Role.DISPATCHER, branchId: 'branch-sgn' },
+        'branch-sgn',
+      ),
+    ).not.toThrow();
+  });
+
+  it('từ chối DISPATCHER khác chi nhánh hoặc không có branch', () => {
+    expect(() =>
+      assertBranchAccess(
+        { role: Role.DISPATCHER, branchId: 'branch-sgn' },
+        'branch-hn',
+      ),
+    ).toThrow(ForbiddenException);
+    expect(() =>
+      assertBranchAccess(
+        { role: Role.DISPATCHER, branchId: null },
+        'branch-hn',
+      ),
+    ).toThrow(ForbiddenException);
+  });
+});
 
 describe('resolveBranchScope', () => {
   it('cho phép admin chọn một chi nhánh khác', () => {

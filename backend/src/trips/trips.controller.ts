@@ -26,6 +26,7 @@ import { ApplyOptimizationCandidateDto } from './dto/apply-optimization-candidat
 
 @Controller('trips')
 @UseGuards(AuthGuard('jwt'), RolesGuard)
+@Roles(Role.ADMIN, Role.DISPATCHER)
 export class TripsController {
   constructor(
     private readonly tripsService: TripsService,
@@ -133,7 +134,7 @@ export class TripsController {
   }
 
   @Get(':id/load-plan')
-  @Roles(Role.ADMIN, Role.DISPATCHER, Role.DRIVER)
+  @Roles(Role.ADMIN, Role.DISPATCHER)
   getLoadPlan(
     @Req() req: { user: { branchId?: string; role: Role } },
     @Param('id') id: string,

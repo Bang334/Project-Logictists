@@ -154,16 +154,20 @@ export class TripsService {
   ) {}
 
   async findAll(status?: TripStatus, user?: { branchId?: string; role: Role }) {
+    const branchId =
+      user && user.role !== Role.ADMIN
+        ? resolveBranchScope(user)
+        : undefined;
     return this.prisma.trip.findMany({
       where: {
         ...(status ? { status } : {}),
-        ...(user && user.role !== Role.ADMIN
+        ...(branchId
           ? {
               OR: [
-                { managingBranchId: user.branchId },
+                { managingBranchId: branchId },
                 {
                   managingBranchId: null,
-                  vehicle: { homeBranchId: user.branchId },
+                  vehicle: { homeBranchId: branchId },
                 },
               ],
             }

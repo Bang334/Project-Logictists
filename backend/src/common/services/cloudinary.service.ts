@@ -10,6 +10,19 @@ export interface CloudinaryUploadResponse {
   format: string;
 }
 
+export interface CloudinaryPodAsset {
+  publicId: string;
+  bytes: number;
+  format: string;
+}
+
+interface CloudinaryApiError {
+  http_code?: number;
+  error?: {
+    http_code?: number;
+  };
+}
+
 @Injectable()
 export class CloudinaryService {
   private readonly logger = new Logger(CloudinaryService.name);
@@ -78,6 +91,87 @@ export class CloudinaryService {
       readableStream.push(buffer);
       readableStream.push(null);
       readableStream.pipe(uploadStream);
+    });
+  }
+
+  async uploadPodImage(
+    buffer: Buffer,
+    storageKey: string,
+  ): Promise<CloudinaryPodAsset> {
+    if (!this.isConfigured) {
+      throw new BadRequestException('Dịch vụ Cloudinary chưa được cấu hình');
+    }
+    if (!buffer.length) {
+      throw new BadRequestException('Tệp rỗng hoặc không hợp lệ');
+    }
+
+    return new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          public_id: storageKey,
+          resource_type: 'image',
+          type: 'authenticated',
+          overwrite: false,
+          unique_filename: false,
+          use_filename: false,
+        },
+        (error, result: UploadApiResponse | undefined) => {
+          if (error || !result) {
+            this.logger.error('Lỗi upload POD lên Cloudinary');
+            return reject(
+              new BadRequestException(
+                error?.message || 'Không thể upload POD lên Cloudinary',
+              ),
+            );
+          }
+          resolve({
+            publicId: result.public_id,
+            bytes: result.bytes,
+            format: result.format,
+          });
+        },
+      );
+      Readable.from(buffer).pipe(uploadStream);
+    });
+  }
+
+  async findPodImage(storageKey: string): Promise<CloudinaryPodAsset | null> {
+    if (!this.isConfigured) {
+      throw new BadRequestException('Dịch vụ Cloudinary chưa được cấu hình');
+    }
+    try {
+      const result = await cloudinary.api.resource(storageKey, {
+        resource_type: 'image',
+        type: 'authenticated',
+      });
+      return {
+        publicId: result.public_id as string,
+        bytes: result.bytes as number,
+        format: result.format as string,
+      };
+    } catch (error) {
+      const cloudinaryError = error as CloudinaryApiError;
+      const status =
+        cloudinaryError.http_code ?? cloudinaryError.error?.http_code;
+      if (status === 404) return null;
+      this.logger.error('Lỗi kiểm tra POD trên Cloudinary');
+      throw new BadRequestException('Không thể kiểm tra POD trên Cloudinary');
+    }
+  }
+
+  createPodDownloadUrl(
+    storageKey: string,
+    format: string,
+    expiresAt: Date,
+  ): string {
+    if (!this.isConfigured) {
+      throw new BadRequestException('Dịch vụ Cloudinary chưa được cấu hình');
+    }
+    return cloudinary.utils.private_download_url(storageKey, format, {
+      resource_type: 'image',
+      type: 'authenticated',
+      expires_at: Math.floor(expiresAt.getTime() / 1000),
+      attachment: false,
     });
   }
 

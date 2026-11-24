@@ -148,6 +148,11 @@ enum UploadStatus {
   FAILED
 }
 
+enum PodEvidenceType {
+  PHOTO
+  SIGNATURE
+}
+
 enum ApprovalStatus {
   DRAFT
   PENDING
@@ -1118,7 +1123,9 @@ model PodFile {
   deliveryAttempt   DeliveryAttempt @relation(fields: [deliveryAttemptId], references: [id], onDelete: Restrict)
   storageKey        String          @unique
   checksum          String
+  evidenceType      PodEvidenceType
   mediaType         String
+  sizeBytes         Int
   uploadStatus      UploadStatus    @default(PENDING)
   capturedAt        DateTime?       @db.Timestamptz(3)
   uploadedAt        DateTime?       @db.Timestamptz(3)

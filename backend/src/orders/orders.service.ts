@@ -1,9 +1,32 @@
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { OrderStatus, Role, StopType } from '@prisma/client';
+import { OrderStatus, Prisma, Role, StopType } from '@prisma/client';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderDto } from './dto/update-order.dto';
 import { MapboxService } from '../mapbox/mapbox.service';
+import { assertBranchAccess, BranchScopedUser } from '../auth/branch-scope';
+import { MAX_ORDER_VERSION } from './dto/confirm-customer-order.dto';
+import { customerDraftOrigin, lockOrder, orderVersionConflict } from './order-write';
+
+const orderDetail = {
+  customer: true,
+  stops: { orderBy: { sequence: 'asc' } },
+  items: true,
+} satisfies Prisma.OrderInclude;
+
+function sameRows<T extends object>(stored: T[], requested: Partial<T>[]): boolean {
+  if (stored.length !== requested.length) return false;
+  const remaining = [...stored];
+  for (const row of requested) {
+    const keys = Object.keys(row) as (keyof T)[];
+    const index = remaining.findIndex((candidate) =>
+      keys.every((key) => candidate[key] === row[key]),
+    );
+    if (index === -1) return false;
+    remaining.splice(index, 1);
+  }
+  return true;
+}
 
 @Injectable()
 export class OrdersService {
@@ -41,6 +64,15 @@ export class OrdersService {
     if (!order) {
       throw new NotFoundException(`Không tìm thấy đơn hàng với ID ${id}`);
     }
+    return order;
+  }
+
+  async findOneAuthorized(
+    id: string,
+    user: { branchId?: string | null; role: Role },
+  ) {
+    const order = await this.findOne(id);
+    assertBranchAccess(user, order.branchId);
     return order;
   }
 
@@ -158,28 +190,26 @@ export class OrdersService {
   async update(
     id: string,
     dto: UpdateOrderDto,
-    user?: { branchId?: string; role: Role } | string,
+    user: BranchScopedUser,
   ) {
     const order = await this.prisma.order.findUnique({
       where: { id },
-      include: { stops: true, items: true },
+      select: { branchId: true, status: true, version: true },
     });
 
     if (!order) {
       throw new NotFoundException(`Không tìm thấy đơn hàng với ID ${id}`);
     }
 
+    assertBranchAccess(user, order.branchId);
+    if (dto.expectedVersion !== undefined && dto.expectedVersion !== order.version) {
+      throw orderVersionConflict();
+    }
+
     if (order.status !== OrderStatus.CONFIRMED && order.status !== OrderStatus.DRAFT) {
       throw new BadRequestException(
         `Không thể chỉnh sửa đơn hàng đang ở trạng thái ${order.status} (đã gán vào chuyến xe hoặc đang vận chuyển).`,
       );
-    }
-
-    const userRole = typeof user === 'object' ? user?.role : undefined;
-    const userBranchId = typeof user === 'object' ? user?.branchId : (typeof user === 'string' ? user : undefined);
-
-    if (userRole !== Role.ADMIN && userBranchId && order.branchId !== userBranchId) {
-      throw new ForbiddenException('Bạn không có quyền chỉnh sửa đơn hàng thuộc chi nhánh khác');
     }
 
     // Geocode các stop mới/thay đổi nếu thiếu tọa độ
@@ -207,82 +237,102 @@ export class OrdersService {
       }
     }
 
-    let totalWeightKg = order.totalWeightKg;
-    let totalVolumeM3 = order.totalVolumeM3;
-    let totalPackages = order.totalPackages;
-
-    if (dto.items) {
-      totalWeightKg = 0;
-      totalVolumeM3 = 0;
-      totalPackages = 0;
-      for (const item of dto.items) {
-        totalWeightKg += item.weightKg;
-        totalVolumeM3 +=
-          item.volumeM3 ||
-          (item.lengthCm * item.widthCm * item.heightCm * item.quantity) / 1000000;
-        totalPackages += item.quantity;
-      }
-    }
+    const stops = dto.stops?.map((stop, index) => ({
+      type: stop.type,
+      sequence: stop.sequence || index + 1,
+      address: stop.address,
+      latitude: stop.latitude,
+      longitude: stop.longitude,
+      contactName: stop.contactName,
+      contactPhone: stop.contactPhone,
+      serviceDurationMinutes: stop.serviceDurationMinutes || 20,
+    }));
+    const items = dto.items?.map((item) => ({
+      sku: item.sku ?? null,
+      description: item.description,
+      packageType: item.packageType || 'CARTON',
+      quantity: item.quantity,
+      weightKg: item.weightKg,
+      lengthCm: item.lengthCm,
+      widthCm: item.widthCm,
+      heightCm: item.heightCm,
+      volumeM3:
+        item.volumeM3 ||
+        (item.lengthCm * item.widthCm * item.heightCm * item.quantity) / 1_000_000,
+    }));
 
     return this.prisma.$transaction(async (tx) => {
-      if (dto.stops) {
-        await tx.orderStop.deleteMany({ where: { orderId: id } });
-        await tx.orderStop.createMany({
-          data: dto.stops.map((s, idx) => ({
-            orderId: id,
-            type: s.type,
-            sequence: s.sequence || idx + 1,
-            address: s.address,
-            latitude: s.latitude,
-            longitude: s.longitude,
-            contactName: s.contactName,
-            contactPhone: s.contactPhone,
-            serviceDurationMinutes: s.serviceDurationMinutes || 20,
-          })),
-        });
+      // Geocoding stays outside the transaction. Confirm and PATCH serialize here.
+      await lockOrder(tx, id);
+      const current = await tx.order.findUniqueOrThrow({
+        where: { id },
+        include: orderDetail,
+      });
+      assertBranchAccess(user, current.branchId);
+      if (current.version !== order.version || current.status !== order.status) {
+        throw orderVersionConflict();
       }
 
-      if (dto.items) {
+      const data: Prisma.OrderUncheckedUpdateInput = {};
+      if (dto.customerId && current.customerId !== dto.customerId) {
+        data.customerId = dto.customerId;
+      }
+      if (dto.notes !== undefined && current.notes !== dto.notes) {
+        data.notes = dto.notes;
+      }
+      if (dto.orderedAt && current.orderedAt.getTime() !== dto.orderedAt.getTime()) {
+        data.orderedAt = dto.orderedAt;
+      }
+      if (dto.totalAmount !== undefined) {
+        const amount = new Prisma.Decimal(dto.totalAmount).toDecimalPlaces(4);
+        if (!current.totalAmount.equals(amount)) {
+          data.totalAmount = amount;
+        }
+      }
+
+      const stopsChanged = stops !== undefined && !sameRows(current.stops, stops);
+      const itemsChanged = items !== undefined && !sameRows(current.items, items);
+      if (!stopsChanged && !itemsChanged && Object.keys(data).length === 0) {
+        return current;
+      }
+      if (current.version === MAX_ORDER_VERSION) {
+        throw orderVersionConflict();
+      }
+
+      if (stopsChanged) {
+        await tx.orderStop.deleteMany({ where: { orderId: id } });
+        await tx.orderStop.createMany({
+          data: stops.map((stop) => ({ ...stop, orderId: id })),
+        });
+      }
+      if (itemsChanged) {
+        const totalWeightKg = items.reduce((total, item) => total + item.weightKg, 0);
+        const totalVolumeM3 = items.reduce((total, item) => total + item.volumeM3, 0);
+        const customerDraft =
+          current.status === OrderStatus.DRAFT &&
+          (await tx.orderEvent.findFirst({
+            where: { orderId: id, ...customerDraftOrigin },
+            select: { id: true },
+          }));
+
         await tx.orderItem.deleteMany({ where: { orderId: id } });
         await tx.orderItem.createMany({
-          data: dto.items.map((i) => ({
-            orderId: id,
-            sku: i.sku,
-            description: i.description,
-            packageType: i.packageType || 'CARTON',
-            quantity: i.quantity,
-            weightKg: i.weightKg,
-            lengthCm: i.lengthCm,
-            widthCm: i.widthCm,
-            heightCm: i.heightCm,
-            volumeM3:
-              i.volumeM3 ||
-              (i.lengthCm * i.widthCm * i.heightCm * i.quantity) / 1000000,
-          })),
+          data: items.map((item) => ({ ...item, orderId: id })),
         });
+        // Customer confirmation validates exact item totals. Keep legacy Web rounding elsewhere.
+        data.totalWeightKg = customerDraft
+          ? totalWeightKg
+          : Math.round(totalWeightKg * 10) / 10;
+        data.totalVolumeM3 = customerDraft
+          ? totalVolumeM3
+          : Math.round(totalVolumeM3 * 100) / 100;
+        data.totalPackages = items.reduce((total, item) => total + item.quantity, 0);
       }
 
       return tx.order.update({
         where: { id },
-        data: {
-          ...(dto.customerId ? { customerId: dto.customerId } : {}),
-          ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-          ...(dto.status ? { status: dto.status } : {}),
-          ...(dto.orderedAt ? { orderedAt: dto.orderedAt } : {}),
-          ...(dto.totalAmount !== undefined ? { totalAmount: dto.totalAmount } : {}),
-          ...(dto.items
-            ? {
-                totalWeightKg: Math.round(totalWeightKg * 10) / 10,
-                totalVolumeM3: Math.round(totalVolumeM3 * 100) / 100,
-                totalPackages,
-              }
-            : {}),
-        },
-        include: {
-          customer: true,
-          stops: { orderBy: { sequence: 'asc' } },
-          items: true,
-        },
+        data: { ...data, version: { increment: 1 } },
+        include: orderDetail,
       });
     });
   }

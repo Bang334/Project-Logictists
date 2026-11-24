@@ -1,0 +1,9 @@
+CREATE TYPE "PodEvidenceType" AS ENUM ('PHOTO', 'SIGNATURE');
+
+ALTER TABLE "pod_files"
+ADD COLUMN "evidenceType" "PodEvidenceType" NOT NULL DEFAULT 'PHOTO',
+ADD COLUMN "sizeBytes" INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE "pod_files"
+ALTER COLUMN "evidenceType" DROP DEFAULT,
+ALTER COLUMN "sizeBytes" DROP DEFAULT;

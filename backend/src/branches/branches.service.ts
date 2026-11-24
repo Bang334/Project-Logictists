@@ -11,9 +11,9 @@ export class BranchesService {
     private mapboxService: MapboxService,
   ) {}
 
-  async findAll() {
+  async findAll(branchId?: string) {
     return this.prisma.branch.findMany({
-      where: { active: true },
+      where: { active: true, ...(branchId ? { id: branchId } : {}) },
       include: {
         _count: {
           select: { vehicles: true, drivers: true },

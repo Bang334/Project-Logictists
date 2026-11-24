@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { LocationType, Role, VehicleStatus } from '@prisma/client';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
+import { assertBranchAccess } from '../auth/branch-scope';
 
 const HOME_DEPOT_SUMMARY_SELECT = {
   id: true,
@@ -51,6 +52,18 @@ export class VehiclesService {
     });
   }
 
+  async findOneAuthorized(
+    id: string,
+    user: { role: Role; branchId?: string | null },
+  ) {
+    const vehicle = await this.findOne(id);
+    if (!vehicle) {
+      throw new NotFoundException(`Không tìm thấy xe tải với ID ${id}`);
+    }
+    assertBranchAccess(user, vehicle.homeBranchId);
+    return vehicle;
+  }
+
   async getAvailable(branchId?: string) {
     return this.prisma.vehicle.findMany({
       where: {
@@ -66,7 +79,7 @@ export class VehiclesService {
   async update(
     id: string,
     dto: UpdateVehicleDto,
-    user?: { role: Role; branchId?: string },
+    user?: { role: Role; branchId?: string | null },
   ) {
     const vehicle = await this.prisma.vehicle.findUnique({
       where: { id },
@@ -76,15 +89,8 @@ export class VehiclesService {
       throw new NotFoundException(`Không tìm thấy xe tải với ID ${id}`);
     }
 
-    if (
-      user &&
-      user.role !== Role.ADMIN &&
-      user.branchId &&
-      vehicle.homeBranchId !== user.branchId
-    ) {
-      throw new ForbiddenException(
-        'Bạn không có quyền chỉnh sửa xe thuộc chi nhánh khác',
-      );
+    if (user) {
+      assertBranchAccess(user, vehicle.homeBranchId);
     }
 
     if (

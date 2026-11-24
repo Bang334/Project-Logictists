@@ -32,6 +32,24 @@ export function resolveBranchScope(
   return user.branchId;
 }
 
+/**
+ * Kiểm tra quyền trên một tài nguyên đã có branch cụ thể. Không được dùng
+ * branchId do client gửi thay cho branch của tài nguyên đọc từ database.
+ */
+export function assertBranchAccess(
+  user: BranchScopedUser,
+  resourceBranchId: string,
+): void {
+  if (user.role === Role.ADMIN) {
+    return;
+  }
+  if (!user.branchId || user.branchId !== resourceBranchId) {
+    throw new ForbiddenException(
+      'Không có quyền truy cập dữ liệu ngoài chi nhánh được gán',
+    );
+  }
+}
+
 export type LocationScopedUser = {
   id?: string;
   locationId?: string | null;

@@ -2,8 +2,10 @@ import {
   ArrayMinSize,
   IsArray,
   IsDate,
-  IsEnum,
   IsNotEmpty,
+  IsInt,
+  Max,
+  ValidateIf,
   IsOptional,
   IsString,
   IsNumber,
@@ -11,10 +13,17 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { OrderStatus } from '@prisma/client';
 import { CreateOrderItemDto, CreateOrderStopDto } from './create-order.dto';
 
+import { MAX_ORDER_VERSION } from './confirm-customer-order.dto';
+
 export class UpdateOrderDto {
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsInt()
+  @Min(1)
+  @Max(MAX_ORDER_VERSION)
+  expectedVersion?: number;
+
   @IsOptional()
   @Type(() => Date)
   @IsDate()
@@ -33,10 +42,6 @@ export class UpdateOrderDto {
   @IsOptional()
   @IsString()
   notes?: string;
-
-  @IsOptional()
-  @IsEnum(OrderStatus)
-  status?: OrderStatus;
 
   @IsOptional()
   @IsArray()
