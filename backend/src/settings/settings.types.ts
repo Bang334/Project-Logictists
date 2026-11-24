@@ -101,10 +101,10 @@ export const COMPANY_SETTING_DEFAULTS: {
     maxTopLoadPercent: 30,
   },
   optimization: {
-    defaultSearchBudgetSeconds: 10,
-    maxTimeSeconds: 120,
+    defaultSearchBudgetSeconds: 60,
+    maxTimeSeconds: 240,
     hybridSeedCount: 0,
-    earlyStopPatience: 30,
+    earlyStopPatience: 0,
     unassignedOrderPenaltyVnd: 1_000_000_000,
     maxRoutesPerDay: null,
     demoAllowOverride: true,

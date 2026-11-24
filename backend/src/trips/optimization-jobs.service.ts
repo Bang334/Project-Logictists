@@ -16,8 +16,16 @@ import { RunAutomaticOptimizationDto } from './dto/run-automatic-optimization.dt
 import { TripsService } from './trips.service';
 import { OutboxService } from '../common/services/outbox.service';
 import { SettingsService } from '../settings/settings.service';
+import { EventsGateway } from '../events/events.gateway';
+import { OptimizationJobControlService } from './optimization-job-control.service';
 import * as ExcelJS from 'exceljs';
 import { OPTIMIZATION_PROGRESS_STAGES } from './optimization-progress';
+import {
+  CandidateCostBreakdown,
+  extractCandidateCostBreakdown,
+  FleetOptimizationResult,
+  parseCandidateCostBreakdown,
+} from './optimizer-contract';
 
 export const OPTIMIZATION_QUEUE = 'optimization';
 export const OPTIMIZATION_JOB_NAME = 'run-automatic-optimization';
@@ -58,6 +66,7 @@ type CandidateSummary = {
   activeRouteCount: number;
   physicalVehicleCount: number;
   deliveryVisitCount: number;
+  costBreakdown?: CandidateCostBreakdown;
 };
 
 type ExportRoute = {
@@ -78,6 +87,8 @@ export class OptimizationJobsService {
     private readonly tripsService: TripsService,
     private readonly outbox: OutboxService,
     @Optional() private readonly settingsService?: SettingsService,
+    @Optional() private readonly jobControl?: OptimizationJobControlService,
+    @Optional() private readonly events?: EventsGateway,
   ) {}
 
   async create(user: JobUser, dto: RunAutomaticOptimizationDto) {
@@ -119,6 +130,8 @@ export class OptimizationJobsService {
     }
 
     let job;
+    let supersededQueuedIds: string[] = [];
+    let supersededRunningIds: string[] = [];
     try {
       job = await this.prisma.$transaction(async (tx) => {
         if (dto.deliveryBatchId) {
@@ -139,6 +152,62 @@ export class OptimizationJobsService {
                 throw new ConflictException('Đợt này đã có lượt tối ưu chốt; hãy sử dụng job đó');
               }
             }
+          }
+        } else {
+          // Cancel older branch-wide queued/running jobs so the latest request never stalls behind abandoned runs.
+          const staleCandidates =
+            typeof tx.optimizationJob.findMany === 'function'
+              ? ((await tx.optimizationJob.findMany({
+                  where: {
+                    branchId,
+                    status: { in: ['PENDING', 'RETRYING', 'RUNNING', 'CANCEL_REQUESTED'] },
+                  },
+                  select: { id: true, status: true, parameters: true },
+                })) ?? [])
+              : [];
+          const branchWideStale = staleCandidates.filter((row) => {
+            const params =
+              row.parameters && typeof row.parameters === 'object' && !Array.isArray(row.parameters)
+                ? (row.parameters as Record<string, unknown>)
+                : {};
+            return typeof params.deliveryBatchId !== 'string';
+          });
+          supersededQueuedIds = branchWideStale
+            .filter((row) => row.status === 'PENDING' || row.status === 'RETRYING')
+            .map((row) => row.id);
+          supersededRunningIds = branchWideStale
+            .filter((row) => row.status === 'RUNNING' || row.status === 'CANCEL_REQUESTED')
+            .map((row) => row.id);
+          const cancelledAt = new Date();
+          if (supersededQueuedIds.length > 0 && typeof tx.optimizationJob.updateMany === 'function') {
+            await tx.optimizationJob.updateMany({
+              where: {
+                id: { in: supersededQueuedIds },
+                status: { in: ['PENDING', 'RETRYING'] },
+              },
+              data: {
+                status: 'CANCELLED',
+                cancelledAt,
+                completedAt: cancelledAt,
+                leaseUntil: null,
+                leaseOwner: null,
+              },
+            });
+          }
+          const activeToRequestCancel = branchWideStale
+            .filter((row) => row.status === 'RUNNING')
+            .map((row) => row.id);
+          if (activeToRequestCancel.length > 0 && typeof tx.optimizationJob.updateMany === 'function') {
+            await tx.optimizationJob.updateMany({
+              where: {
+                id: { in: activeToRequestCancel },
+                status: 'RUNNING',
+              },
+              data: {
+                status: 'CANCEL_REQUESTED',
+                cancelledAt,
+              },
+            });
           }
         }
         const created = await tx.optimizationJob.create({
@@ -193,6 +262,27 @@ export class OptimizationJobsService {
       throw error;
     }
 
+    for (const oldId of supersededQueuedIds) {
+      if (typeof this.queue?.getJob === 'function') {
+        const queuedJob = await this.queue.getJob(oldId).catch(() => undefined);
+        if (queuedJob) {
+          await queuedJob.remove().catch(() => undefined);
+        }
+      }
+      this.events?.emitOptimizationJobUpdate(branchId, {
+        jobId: oldId,
+        status: 'CANCELLED',
+      });
+    }
+    for (const runningId of supersededRunningIds) {
+      this.jobControl?.abort(runningId);
+      void this.jobControl?.notifyPythonCancel(runningId);
+      this.events?.emitOptimizationJobUpdate(branchId, {
+        jobId: runningId,
+        status: 'CANCEL_REQUESTED',
+      });
+    }
+
     return this.toPublicJob(job);
   }
 
@@ -237,7 +327,14 @@ export class OptimizationJobsService {
         ) AS "requestSnapshot",
         COALESCE((SELECT jsonb_agg(jsonb_build_object(
           'candidateNumber', r."candidateNumber", 'feasibilityStatus', r."feasibilityStatus",
-          'objectiveBreakdown', r."objectiveBreakdown") ORDER BY r."candidateNumber")
+          'objectiveBreakdown', r."objectiveBreakdown",
+          'costBreakdown', jsonb_build_object(
+            'fuelCostVnd', r."resultSnapshot"->'proposal'->'result'->'benchmarks'->'or_tools'->'fuel_cost_vnd',
+            'vehicleFixedCostVnd', r."resultSnapshot"->'proposal'->'result'->'benchmarks'->'or_tools'->'vehicle_fixed_cost_vnd',
+            'driverCostVnd', r."resultSnapshot"->'proposal'->'result'->'benchmarks'->'or_tools'->'driver_cost_vnd',
+            'cargoHoldingCostVnd', r."resultSnapshot"->'proposal'->'result'->'benchmarks'->'or_tools'->'cargo_holding_cost_vnd',
+            'lateDeliveryPenaltyVnd', r."resultSnapshot"->'proposal'->'result'->'benchmarks'->'or_tools'->'late_delivery_penalty_vnd'
+          )) ORDER BY r."candidateNumber")
           FROM optimization_results r WHERE r."optimizationJobId" = j.id), '[]'::jsonb) AS summaries
       FROM optimization_jobs j ${filter}`;
     if (!job) return null;
@@ -271,29 +368,51 @@ export class OptimizationJobsService {
     return {
       candidateNumber,
       result: proposal.result,
-      summary: this.toCandidateSummary(candidate),
+      summary: this.toCandidateSummary({
+        ...candidate,
+        costBreakdown: extractCandidateCostBreakdown(
+          proposal.result as FleetOptimizationResult,
+        ),
+      }),
     };
   }
 
   async cancel(user: JobUser, id: string) {
-    const job = await this.getAuthorizedJob(user, id);
-    if (['SUCCEEDED', 'PARTIAL', 'INFEASIBLE', 'FAILED', 'TIMEOUT', 'APPLIED', 'CANCELLED'].includes(job.status)) {
-      throw new ConflictException(`Không thể hủy job ở trạng thái ${job.status}`);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const job = await this.getAuthorizedJob(user, id);
+      if (job.status === 'CANCELLED') return this.toPublicJob(job);
+      if (job.status === 'CANCEL_REQUESTED') {
+        this.jobControl?.abort(id);
+        void this.jobControl?.notifyPythonCancel(id);
+        return this.toPublicJob(job);
+      }
+      if (!['RUNNING', 'PENDING', 'RETRYING'].includes(job.status)) {
+        throw new ConflictException(`Không thể hủy job ở trạng thái ${job.status}`);
+      }
+
+      const now = new Date();
+      const nextStatus = job.status === 'RUNNING' ? 'CANCEL_REQUESTED' : 'CANCELLED';
+      const changed = await this.prisma.optimizationJob.updateMany({
+        where: { id, status: job.status },
+        data: {
+          status: nextStatus,
+          cancelledAt: now,
+          ...(nextStatus === 'CANCELLED' ? { completedAt: now, leaseUntil: null, leaseOwner: null } : {}),
+        },
+      });
+      if (changed.count !== 1) continue;
+      if (nextStatus === 'CANCELLED') {
+        const queuedJob = await this.queue.getJob(id).catch(() => undefined);
+        if (queuedJob) await queuedJob.remove().catch(() => undefined);
+      } else {
+        this.jobControl?.abort(id);
+        void this.jobControl?.notifyPythonCancel(id);
+      }
+      const updated = await this.getAuthorizedJob(user, id);
+      this.events?.emitOptimizationJobUpdate(job.branchId, { jobId: id, status: updated.status });
+      return this.toPublicJob(updated);
     }
-    const nextStatus = job.status === 'RUNNING' ? 'CANCEL_REQUESTED' : 'CANCELLED';
-    const updated = await this.prisma.optimizationJob.update({
-      where: { id },
-      data: {
-        status: nextStatus,
-        cancelledAt: new Date(),
-        ...(nextStatus === 'CANCELLED' ? { completedAt: new Date() } : {}),
-      },
-    });
-    if (nextStatus === 'CANCELLED') {
-      const queuedJob = await this.queue.getJob(id);
-      if (queuedJob) await queuedJob.remove().catch(() => undefined);
-    }
-    return this.toPublicJob(updated);
+    throw new ConflictException('Trạng thái job vừa thay đổi. Vui lòng thử hủy lại.');
   }
 
   async apply(user: JobUser, id: string, candidateNumber = 1) {
@@ -545,6 +664,7 @@ export class OptimizationJobsService {
     candidateNumber: number;
     feasibilityStatus: string;
     objectiveBreakdown: Prisma.JsonValue;
+    costBreakdown?: unknown;
   }): CandidateSummary {
     const objective =
       result.objectiveBreakdown &&
@@ -552,6 +672,9 @@ export class OptimizationJobsService {
       !Array.isArray(result.objectiveBreakdown)
         ? result.objectiveBreakdown as Record<string, unknown>
         : {};
+    const costBreakdown =
+      parseCandidateCostBreakdown(objective) ??
+      parseCandidateCostBreakdown(result.costBreakdown);
     return {
       candidateNumber: result.candidateNumber,
       rank: Number(objective.rank ?? result.candidateNumber),
@@ -584,6 +707,7 @@ export class OptimizationJobsService {
         objective.physicalVehicleCount ?? objective.routeCount ?? 0,
       ),
       deliveryVisitCount: Number(objective.deliveryVisitCount ?? 0),
+      ...(costBreakdown ? { costBreakdown } : {}),
     };
   }
 }

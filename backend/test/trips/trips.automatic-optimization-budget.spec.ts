@@ -420,4 +420,292 @@ describe('TripsService automatic optimization search budget', () => {
       { id: 'order-other', start: 0, end: 604800 },
     ]);
   });
+
+  it('deduplicates identical Mapbox route geometry requests across candidates in the same batch', async () => {
+    const branch = {
+      id: branchId,
+      active: true,
+      timezone: 'Asia/Ho_Chi_Minh',
+      workStartTime: '08:00',
+      workEndTime: '17:00',
+      fuelPricePerLiter: 25_000,
+      monthlyWorkingMinutes: 10_560,
+      cargoHoldingCostVndPerTonHour: 0,
+      deliveryGraceDays: 0,
+      lateDeliveryPenaltyMode: 'NONE',
+      lateDeliveryPenaltyValue: 0,
+    };
+    const depot = {
+      id: 'depot-1',
+      code: 'DEPOT-1',
+      name: 'Kho trung tâm',
+      type: LocationType.CENTRAL_WAREHOUSE,
+      managingBranchId: branchId,
+      latitude: 10.75,
+      longitude: 106.67,
+      active: true,
+    };
+    const vehicle = {
+      id: 'vehicle-1',
+      plateNumber: '51A-00001',
+      model: 'Truck',
+      homeBranchId: branchId,
+      homeDepotLocationId: depot.id,
+      homeDepotLocation: depot,
+      homeBranch: branch,
+      updatedAt: now,
+      lastLocationAt: null,
+      vehicleTypeRecord: {
+        name: 'Xe tải',
+        lengthCm: 600,
+        widthCm: 240,
+        heightCm: 240,
+        payloadCapacityKg: 5_000,
+        fuelConsumptionLitersPer100Km: 12,
+        loadFuelSurchargePercentAtFullPayload: 0,
+        fixedOperatingCostPerTrip: 100_000,
+        updatedAt: now,
+      },
+    };
+    const driver = {
+      id: 'driver-1',
+      fullName: 'Tài xế',
+      licenseClass: 'C',
+      fixedSalaryMonthly: 10_000_000,
+      tripBasePay: 100_000,
+      perKmPay: 2_000,
+      updatedAt: now,
+    };
+    const order = {
+      id: 'order-1',
+      orderNumber: 'ORD-1',
+      orderType: 'B2B_TRANSPORT',
+      status: OrderStatus.CONFIRMED,
+      packageDataStatus: 'COMPLETE',
+      orderedAt: new Date('2026-10-11T00:00:00.000Z'),
+      totalAmount: 1_000_000,
+      version: 1,
+      stops: [
+        {
+          id: 'pickup-1',
+          type: StopType.PICKUP,
+          sequence: 1,
+          address: 'Kho',
+          latitude: 10.75,
+          longitude: 106.67,
+          windowBasis: 'SERVICE_START',
+          windowStart: new Date('2026-10-11T01:00:00.000Z'),
+          windowEnd: new Date('2026-10-11T03:00:00.000Z'),
+          serviceDurationMinutes: 15,
+        },
+        {
+          id: 'delivery-1',
+          type: StopType.DELIVERY,
+          sequence: 2,
+          address: 'Khách hàng',
+          latitude: 10.8,
+          longitude: 106.7,
+          windowBasis: 'SERVICE_START',
+          windowStart: new Date('2026-10-11T02:00:00.000Z'),
+          windowEnd: new Date('2026-10-11T06:00:00.000Z'),
+          serviceDurationMinutes: 15,
+        },
+      ],
+      items: [
+        {
+          id: 'item-1',
+          orderId: 'order-1',
+          description: 'Hàng thử nghiệm',
+          quantity: 1,
+          packages: [
+            {
+              id: 'package-1',
+              orderItemId: 'item-1',
+              status: PackageStatus.READY,
+              lengthMm: 1_000,
+              widthMm: 800,
+              heightMm: 800,
+              weightG: 100_000n,
+            },
+          ],
+        },
+      ],
+    };
+    const prisma = {
+      deliveryAppointment: { findMany: jest.fn().mockResolvedValue([]) },
+      deliveryCapacityHold: { findMany: jest.fn().mockResolvedValue([]) },
+      resourceReservation: { findMany: jest.fn().mockResolvedValue([]) },
+      branch: { findFirst: jest.fn().mockResolvedValue(branch) },
+      vehicle: { findMany: jest.fn().mockResolvedValue([vehicle]) },
+      driver: { findMany: jest.fn().mockResolvedValue([driver]) },
+      order: { findMany: jest.fn().mockResolvedValue([order]) },
+    };
+    const mapbox = {
+      getRoadMatrix: jest.fn().mockResolvedValue({
+        distancesMeters: [
+          [0, 1_000, 2_000],
+          [1_000, 0, 1_000],
+          [2_000, 1_000, 0],
+        ],
+        durationsSeconds: [
+          [0, 60, 120],
+          [60, 0, 60],
+          [120, 60, 0],
+        ],
+      }),
+      getRoute: jest.fn().mockResolvedValue({
+        distanceKm: 2,
+        durationMinutes: 5,
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [106.67, 10.75],
+            [106.7, 10.8],
+            [106.67, 10.75],
+          ],
+          waypoint_indices: [0, 1, 2],
+        },
+        waypoints: [],
+      }),
+    };
+
+    const makeRouteResult = (totalCost: number) => ({
+      package_contract_version: '1',
+      job_id: 'job-dedup-1',
+      status: 'SUCCESS',
+      routes: [
+        {
+          route_id: 'vehicle-1::day:0',
+          vehicle_id: 'vehicle-1',
+          service_day_index: 0,
+          start_time_sec: 0,
+          end_time_sec: 300,
+          plate_number: '51A-00001',
+          vehicle_length_cm: 600,
+          vehicle_width_cm: 240,
+          driver_id: 'driver-1',
+          driver_name: 'Tài xế',
+          total_distance_km: 2,
+          total_duration_minutes: 5,
+          stops: [
+            {
+              sequence: 1,
+              location_id: 'pickup-1',
+              location_name: 'Kho',
+              stop_type: 'PICKUP',
+              order_id: 'order-1',
+              allocation_id: 'order-1',
+              order_stop_id: 'pickup-1',
+              latitude: 10.75,
+              longitude: 106.67,
+              arrival_time_sec: 60,
+              departure_time_sec: 120,
+              items_loaded: ['package-1'],
+              items_unloaded: [],
+              current_weight_kg: 100,
+            },
+            {
+              sequence: 2,
+              location_id: 'delivery-1',
+              location_name: 'Khách hàng',
+              stop_type: 'DELIVERY',
+              order_id: 'order-1',
+              allocation_id: 'order-1',
+              order_stop_id: 'delivery-1',
+              latitude: 10.8,
+              longitude: 106.7,
+              arrival_time_sec: 180,
+              departure_time_sec: 240,
+              items_loaded: [],
+              items_unloaded: ['package-1'],
+              current_weight_kg: 0,
+            },
+          ],
+          spatial_validation: {
+            is_valid: true,
+            max_weight_kg: 100,
+            max_area_cm2: 8_000,
+            step_states: [],
+          },
+          cost: {
+            base_fuel_cost_vnd: 6_000,
+            load_fuel_surcharge_vnd: 0,
+            fuel_cost_vnd: 6_000,
+            cargo_holding_cost_vnd: 0,
+            late_delivery_penalty_vnd: 0,
+            cargo_distance_ton_km: 0.2,
+            cargo_time_ton_hours: 0.01,
+            vehicle_fixed_cost_vnd: 100_000,
+            driver_fixed_salary_allocation_vnd: 50_000,
+            driver_trip_pay_vnd: 104_000,
+            total_cost_vnd: totalCost,
+          },
+        },
+      ],
+      unassigned_orders: [],
+      total_distance_km: 2,
+      total_duration_minutes: 5,
+      total_cost_vnd: totalCost,
+      diagnostics: ['ok'],
+    });
+
+    const axiosPost = axios.post as jest.MockedFunction<typeof axios.post>;
+    axiosPost.mockResolvedValueOnce({
+      data: {
+        job_id: 'job-dedup-1',
+        solver_run_count: 2,
+        fully_served_candidate_count: 2,
+        candidates: [
+          {
+            rank: 1,
+            search_strategy: 'Hybrid ALNS (seed 0)',
+            solver_objective: 260_000,
+            is_best_found: true,
+            result: makeRouteResult(260_000),
+          },
+          {
+            rank: 2,
+            search_strategy: 'Packing ILS (seed 0)',
+            solver_objective: 265_000,
+            is_best_found: false,
+            result: makeRouteResult(265_000),
+          },
+        ],
+      },
+    });
+
+    const service = new TripsService(
+      prisma as never,
+      mapbox as never,
+      {} as never,
+      {} as never,
+    );
+    const batch = await service.executeAutomaticOptimization(user, {
+      idempotencyKey: '7f1fd5fb-1a7c-4d30-9f5c-36eb5c9fd100',
+      branchId,
+      searchBudgetSeconds: 30,
+    });
+
+    if (!batch) {
+      throw new Error('Expected optimization candidate batch');
+    }
+    expect(batch.candidates).toHaveLength(2);
+    expect(mapbox.getRoute).toHaveBeenCalledTimes(1);
+    const geom1 = batch.candidates[0].proposal.result.routes[0].route_geometry as
+      | { coordinates: [number, number][]; waypoint_indices: number[] }
+      | undefined;
+    const geom2 = batch.candidates[1].proposal.result.routes[0].route_geometry as
+      | { coordinates: [number, number][]; waypoint_indices: number[] }
+      | undefined;
+    if (!geom1 || !geom2) {
+      throw new Error('Expected both candidates to receive route geometry');
+    }
+    expect(geom1).toEqual(geom2);
+    expect(geom1).not.toBe(geom2);
+    expect(geom1.waypoint_indices).not.toBe(geom2.waypoint_indices);
+    geom1.coordinates[0][0] = 0;
+    geom1.waypoint_indices[0] = 99;
+    expect(geom2.coordinates[0][0]).toBe(106.67);
+    expect(geom2.waypoint_indices).toEqual([0, 1, 2]);
+  });
 });

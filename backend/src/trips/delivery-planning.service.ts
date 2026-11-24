@@ -22,16 +22,29 @@ const publicAppointment = {
 @Injectable()
 export class DeliveryPlanningService implements OnApplicationBootstrap, OnModuleDestroy {
   private timer?: ReturnType<typeof setInterval>;
+  private expirationRunning = false;
   private readonly logger = new Logger(DeliveryPlanningService.name);
   constructor(private readonly prisma: PrismaService, private readonly trips: TripsService,
     private readonly jobs: OptimizationJobsService, private readonly access: ResourceAccess, private readonly outbox: OutboxService) {}
 
   onApplicationBootstrap() {
-    this.timer = setInterval(() => void this.expire().catch(error => this.logger.error('Không thể thu hồi đề xuất hết hạn', error)), 15000);
+    this.timer = setInterval(() => void this.scheduleExpiration(), 15_000);
     this.timer.unref();
-    void this.expire().catch(error => this.logger.error('Không thể thu hồi đề xuất hết hạn', error));
+    void this.scheduleExpiration();
   }
   onModuleDestroy() { if (this.timer) clearInterval(this.timer); }
+
+  private async scheduleExpiration() {
+    if (this.expirationRunning) return;
+    this.expirationRunning = true;
+    try {
+      await this.expire();
+    } catch (error) {
+      this.logger.error('Không thể thu hồi đề xuất hết hạn', error);
+    } finally {
+      this.expirationRunning = false;
+    }
+  }
 
   async expire() {
     const batches = await this.prisma.deliveryPlanningBatch.findMany({ where: {

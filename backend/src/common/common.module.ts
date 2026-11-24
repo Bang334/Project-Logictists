@@ -52,6 +52,7 @@ function redisConnection(urlValue: string | undefined) {
     OutboxWorkerService,
   ],
   exports: [
+    BullModule,
     IdempotencyService,
     AuditLogService,
     OutboxService,

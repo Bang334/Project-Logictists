@@ -8,6 +8,7 @@ import { SettingsModule } from '../settings/settings.module';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { OptimizationJobsService, OPTIMIZATION_QUEUE } from './optimization-jobs.service';
+import { OptimizationJobControlService } from './optimization-job-control.service';
 import { OptimizationProcessor } from './optimization.processor';
 import { OptimizationRecoveryService } from './optimization-recovery.service';
 import { OptimizationJobMetricsService } from './optimization-job-metrics.service';
@@ -44,6 +45,7 @@ function redisConnection(urlValue: string | undefined) {
   providers: [
     DeliveryPlanningService,
     TripsService,
+    OptimizationJobControlService,
     OptimizationJobsService,
     OptimizationProcessor,
     OptimizationRecoveryService,

@@ -167,4 +167,75 @@ describe('MapboxService road matrix contract', () => {
       service.getRoadMatrix([[105.8, 21], [105.9, 21.1]]),
     ).rejects.toThrow('2x2');
   });
+
+  it('reuses cached matrix pairs across repeated calls without re-querying Mapbox', async () => {
+    mockedAxios.get.mockResolvedValue({
+      data: {
+        code: 'Ok',
+        distances: [[0, 1200], [1300, 0]],
+        durations: [[0, 120], [130, 0]],
+      },
+    });
+    const coords: [number, number][] = [[108.2, 16.05], [108.25, 16.08]];
+    const first = await service.getRoadMatrix(coords);
+    const second = await service.getRoadMatrix(coords);
+
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    expect(second).toEqual(first);
+  });
+
+  it('populates matrix from Redis hash cache and skips Mapbox HTTP completely when all pairs hit', async () => {
+    const hashStore = new Map<string, Record<string, string>>();
+    const makePipeline = () => {
+      const ops: Array<() => [null, unknown]> = [];
+      return {
+        hmget: (key: string, ...fields: string[]) => {
+          ops.push(() => {
+            const bucket = hashStore.get(key) ?? {};
+            return [null, fields.map((f) => bucket[f] ?? null)];
+          });
+        },
+        hset: (key: string, values: Record<string, string>) => {
+          ops.push(() => {
+            const existing = hashStore.get(key) ?? {};
+            hashStore.set(key, { ...existing, ...values });
+            return [null, 'OK'];
+          });
+        },
+        expire: () => {
+          ops.push(() => [null, 1]);
+        },
+        exec: async () => ops.map((op) => op()),
+      };
+    };
+    const fakeQueue = { client: Promise.resolve({ pipeline: makePipeline }) };
+
+    mockedAxios.get.mockResolvedValue({
+      data: {
+        code: 'Ok',
+        distances: [[0, 1500], [1600, 0]],
+        durations: [[0, 140], [150, 0]],
+      },
+    });
+
+    const writerService = new MapboxService(fakeQueue as never);
+    const readerService = new MapboxService(fakeQueue as never);
+    const coords: [number, number][] = [[108.21, 16.06], [108.26, 16.09]];
+
+    const fromHttp = await writerService.getRoadMatrix(coords);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+
+    const fromRedis = await readerService.getRoadMatrix(coords);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    expect(fromRedis).toEqual(fromHttp);
+  });
+
+  it('aborts getRoadMatrix promptly when AbortSignal is triggered', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      service.getRoadMatrix([[105.8, 21], [105.9, 21.1]], { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'CanceledError' });
+    expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
 });

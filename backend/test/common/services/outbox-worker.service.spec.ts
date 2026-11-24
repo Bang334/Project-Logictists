@@ -1,5 +1,6 @@
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { OutboxEvent } from '@prisma/client';
+import { OutboxEvent, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../src/prisma/prisma.service';
 import { OutboxEventPublisher } from '../../../src/common/services/outbox-event.publisher';
 import { OutboxWorkerService } from '../../../src/common/services/outbox-worker.service';
@@ -35,6 +36,31 @@ describe('OutboxWorkerService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     worker = new OutboxWorkerService(prisma, config, publisher);
+  });
+
+  it('ghi mã lỗi Prisma mà không ghi thông báo gốc và thử lại ở chu kỳ sau', async () => {
+    jest.useFakeTimers();
+    const log = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    (prisma.$queryRaw as jest.Mock)
+      .mockRejectedValueOnce(new Prisma.PrismaClientKnownRequestError('raw query details', {
+        code: 'P2024',
+        clientVersion: '5.22.0',
+      }))
+      .mockResolvedValue([]);
+
+    try {
+      worker.onModuleInit();
+      await jest.advanceTimersByTimeAsync(2000);
+      expect(log).toHaveBeenCalledTimes(1);
+      const diagnostic = log.mock.calls.flat().join(' ');
+      expect(diagnostic).toContain('P2024');
+      expect(diagnostic).not.toContain('raw query details');
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+    } finally {
+      worker.onModuleDestroy();
+      log.mockRestore();
+      jest.useRealTimers();
+    }
   });
 
   it('đánh dấu published chỉ sau khi transport thành công', async () => {

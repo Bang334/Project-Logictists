@@ -4,6 +4,7 @@ import {
   BadRequestException,
   GatewayTimeoutException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Prisma } from '@prisma/client';
@@ -21,10 +22,15 @@ import {
   OptimizationProgressDetails,
   OptimizationProgressUpdate,
 } from './optimization-progress';
+import {
+  isOptimizationAbortError,
+  OptimizationJobControlService,
+} from './optimization-job-control.service';
+import { extractCandidateCostBreakdown } from './optimizer-contract';
 
 type QueuePayload = { jobId: string };
 
-@Processor(OPTIMIZATION_QUEUE, { concurrency: 1 })
+@Processor(OPTIMIZATION_QUEUE, { concurrency: 1, lockDuration: 120_000 })
 export class OptimizationProcessor extends WorkerHost {
   private readonly logger = new Logger(OptimizationProcessor.name);
   private readonly workerId = `optimizer-${process.pid}-${randomUUID()}`;
@@ -34,6 +40,7 @@ export class OptimizationProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly tripsService: TripsService,
     private readonly events: EventsGateway,
+    @Optional() private readonly jobControl?: OptimizationJobControlService,
   ) {
     super();
   }
@@ -46,15 +53,7 @@ export class OptimizationProcessor extends WorkerHost {
       where: { id: job.data.jobId },
       include: { createdBy: true },
     });
-    if (!optimizationJob || ['CANCELLED', 'APPLIED'].includes(optimizationJob.status)) return;
-    if (optimizationJob.status === 'CANCEL_REQUESTED') {
-      await this.prisma.optimizationJob.update({
-        where: { id: optimizationJob.id },
-        data: { status: 'CANCELLED', completedAt: new Date(), leaseUntil: null },
-      });
-      this.emitStatus(optimizationJob.branchId, optimizationJob.id, 'CANCELLED');
-      return;
-    }
+    if (!optimizationJob || ['CANCELLED', 'CANCEL_REQUESTED', 'APPLIED'].includes(optimizationJob.status)) return;
 
     const request = (
       optimizationJob.parameters &&
@@ -75,6 +74,7 @@ export class OptimizationProcessor extends WorkerHost {
       },
     });
 
+    const startedAt = optimizationJob.startedAt ?? new Date();
     const leaseUntil = new Date(Date.now() + 5 * 60 * 1000);
     const claimed = await this.prisma.optimizationJob.updateMany({
       where: {
@@ -87,7 +87,7 @@ export class OptimizationProcessor extends WorkerHost {
       data: {
         status: 'RUNNING',
         parameters: progressParameters({ stage: 'LOADING_INPUT' }),
-        startedAt: optimizationJob.startedAt ?? new Date(),
+        startedAt,
         attemptCount: { increment: 1 },
         leaseUntil,
         leaseOwner: this.workerId,
@@ -98,20 +98,30 @@ export class OptimizationProcessor extends WorkerHost {
     if (claimed.count !== 1) return;
     this.emitStatus(optimizationJob.branchId, optimizationJob.id, 'RUNNING');
 
-    const heartbeat = setInterval(() => {
-      void this.prisma.optimizationJob
-        .updateMany({
+    const abortController =
+      this.jobControl?.register(optimizationJob.id) ?? new AbortController();
+    let heartbeatPending = false;
+    const heartbeat = setInterval(async () => {
+      if (heartbeatPending) return;
+      heartbeatPending = true;
+      try {
+        const renewed = await this.prisma.optimizationJob.updateMany({
           where: {
             id: optimizationJob.id,
             status: 'RUNNING',
             leaseOwner: this.workerId,
           },
           data: { leaseUntil: new Date(Date.now() + 5 * 60 * 1000) },
-        })
-        .catch((error: Error) =>
-          this.logger.warn(`Lease heartbeat failed for ${optimizationJob.id}: ${error.message}`),
-        );
-    }, 60_000);
+        });
+        if (renewed.count === 0) {
+          abortController.abort();
+        }
+      } catch (error) {
+        this.logger.warn(`Lease heartbeat failed for ${optimizationJob.id}: ${this.errorMessage(error)}`);
+      } finally {
+        heartbeatPending = false;
+      }
+    }, 10_000);
     heartbeat.unref();
 
     const reportProgress = async (update: OptimizationProgressUpdate) => {
@@ -172,17 +182,7 @@ export class OptimizationProcessor extends WorkerHost {
         select: { status: true },
       });
       if (latest?.status === 'CANCEL_REQUESTED') {
-        await this.prisma.optimizationJob.update({
-          where: { id: optimizationJob.id },
-          data: {
-            status: 'CANCELLED',
-            completedAt: new Date(),
-            leaseUntil: null,
-            leaseOwner: null,
-            result: Prisma.JsonNull,
-          },
-        });
-        this.emitStatus(optimizationJob.branchId, optimizationJob.id, 'CANCELLED');
+        await this.finalizeCancellation(optimizationJob.id, optimizationJob.branchId);
         return;
       }
 
@@ -194,15 +194,14 @@ export class OptimizationProcessor extends WorkerHost {
           : solverStatus === 'ERROR'
             ? 'FAILED'
             : solverStatus;
-      // Rows are built before opening the transaction and written in one
-      // statement: snapshots carry Mapbox geometry, so sequential inserts
-      // exceeded Prisma's 5s default and BullMQ re-ran the whole solve.
+      const persistenceStarted = performance.now();
       const candidateRows = candidateBatch.candidates.map(
-        (candidate, index): Prisma.OptimizationResultCreateManyInput => {
+        (candidate, index): Omit<Prisma.OptimizationResultCreateManyInput, 'optimizationJobId'> => {
           const result = candidate.proposal.result;
           const planningObjective = result.planning_objective;
+          const costBreakdown = extractCandidateCostBreakdown(result);
           return {
-            optimizationJobId: optimizationJob.id,
+            id: randomUUID(),
             candidateNumber: index + 1,
             resultSnapshot: candidate as unknown as Prisma.InputJsonValue,
             feasibilityStatus: this.feasibilityStatus(result.status),
@@ -235,6 +234,7 @@ export class OptimizationProcessor extends WorkerHost {
                 new Set(result.routes.map((route) => route.vehicle_id)).size,
               deliveryVisitCount:
                 planningObjective?.delivery_visit_count ?? 0,
+              ...(costBreakdown ?? {}),
             },
             diagnostics: {
               source: 'HYBRID_FIRST',
@@ -243,47 +243,73 @@ export class OptimizationProcessor extends WorkerHost {
           };
         },
       );
-      const stored = await this.prisma.$transaction(async (tx) => {
-        const finalized = await tx.optimizationJob.updateMany({
-          where: {
-            id: optimizationJob.id,
-            status: 'RUNNING',
-            leaseOwner: this.workerId,
-          },
-          data: {
-            status,
-            parameters: progressParameters({ stage: 'COMPLETED' }),
-            result: storedResult as unknown as Prisma.InputJsonValue,
-            completedAt: new Date(),
-            leaseUntil: null,
-            leaseOwner: null,
-            solverVersion: 'hybrid-first-fastapi-v1',
-          },
-        });
-        if (finalized.count !== 1) return false;
-        await tx.optimizationResult.deleteMany({
-          where: { optimizationJobId: optimizationJob.id },
-        });
-        if (candidateRows.length > 0) {
-          await tx.optimizationResult.createMany({ data: candidateRows });
-        }
-        return true;
-      }, { timeout: 120_000 });
-      if (!stored) return;
+      const bestSnapshot = storedResult === candidateBatch.candidates[0]
+        ? null
+        : JSON.stringify(storedResult);
+      const completedAt = new Date();
+      // A single statement keeps candidate replacement atomic with the lease check.
+      // Ranked rows and the legacy result column share the first snapshot in transit.
+      const stored = await this.prisma.$queryRaw<{ stored: boolean }[]>`
+        WITH incoming AS (
+          SELECT * FROM jsonb_to_recordset(${JSON.stringify(candidateRows)}::jsonb) AS payload(
+            id text, "candidateNumber" integer, "resultSnapshot" jsonb,
+            "feasibilityStatus" "FeasibilityStatus", "objectiveBreakdown" jsonb, diagnostics jsonb
+          )
+        ), finalized AS (
+          UPDATE optimization_jobs
+          SET status = ${status},
+              parameters = ${JSON.stringify(progressParameters({ stage: 'COMPLETED' }))}::jsonb,
+              result = COALESCE(${bestSnapshot}::jsonb,
+                (SELECT "resultSnapshot" FROM incoming WHERE "candidateNumber" = 1)),
+              "completedAt" = ${completedAt},
+              "updatedAt" = ${completedAt},
+              "leaseUntil" = NULL,
+              "leaseOwner" = NULL,
+              "solverVersion" = 'hybrid-first-fastapi-v1'
+          WHERE id = ${optimizationJob.id} AND status = 'RUNNING' AND "leaseOwner" = ${this.workerId}
+          RETURNING id
+        ), written AS (
+          INSERT INTO optimization_results (
+            id, "optimizationJobId", "candidateNumber", "resultSnapshot",
+            "feasibilityStatus", "objectiveBreakdown", diagnostics
+          )
+          SELECT incoming.id, finalized.id, incoming."candidateNumber", incoming."resultSnapshot",
+                 incoming."feasibilityStatus", incoming."objectiveBreakdown", incoming.diagnostics
+          FROM finalized CROSS JOIN incoming
+          ON CONFLICT ("optimizationJobId", "candidateNumber") DO UPDATE
+          SET "resultSnapshot" = EXCLUDED."resultSnapshot",
+              "feasibilityStatus" = EXCLUDED."feasibilityStatus",
+              "objectiveBreakdown" = EXCLUDED."objectiveBreakdown",
+              diagnostics = EXCLUDED.diagnostics
+        ), pruned AS (
+          DELETE FROM optimization_results AS previous USING finalized
+          WHERE previous."optimizationJobId" = finalized.id
+            AND NOT EXISTS (
+              SELECT 1 FROM incoming WHERE incoming."candidateNumber" = previous."candidateNumber"
+            )
+        )
+        SELECT EXISTS (SELECT 1 FROM finalized) AS stored
+      `;
+      if (!stored[0]?.stored) {
+        await this.finalizeCancellation(optimizationJob.id, optimizationJob.branchId);
+        return;
+      }
       this.logger.log(
         JSON.stringify({
           event: 'optimization_job_finished',
           jobId: optimizationJob.id,
           status,
+          persistenceDurationMs: Math.round(performance.now() - persistenceStarted),
           queueLagSeconds: Math.round(
-            ((optimizationJob.startedAt ?? new Date()).getTime() -
-              optimizationJob.createdAt.getTime()) / 1000,
+            (startedAt.getTime() - optimizationJob.createdAt.getTime()) / 1000,
           ),
           attempt: optimizationJob.attemptCount + 1,
         }),
       );
       this.emitStatus(optimizationJob.branchId, optimizationJob.id, status);
     } catch (error) {
+      if (isOptimizationAbortError(error, abortController.signal) &&
+        await this.finalizeCancellation(optimizationJob.id, optimizationJob.branchId)) return;
       const isHttpTimeout = error instanceof GatewayTimeoutException;
       const isNonRetryable = isHttpTimeout || error instanceof BadRequestException
         || error instanceof MapboxMatrixRateLimitException;
@@ -317,7 +343,24 @@ export class OptimizationProcessor extends WorkerHost {
       throw error;
     } finally {
       clearInterval(heartbeat);
+      this.jobControl?.unregister(optimizationJob.id, abortController);
     }
+  }
+
+  private async finalizeCancellation(id: string, branchId: string): Promise<boolean> {
+    const updated = await this.prisma.optimizationJob.updateMany({
+      where: { id, status: 'CANCEL_REQUESTED', leaseOwner: this.workerId },
+      data: {
+        status: 'CANCELLED',
+        completedAt: new Date(),
+        leaseUntil: null,
+        leaseOwner: null,
+        result: Prisma.JsonNull,
+      },
+    });
+    if (updated.count !== 1) return false;
+    this.emitStatus(branchId, id, 'CANCELLED');
+    return true;
   }
 
   private emitStatus(branchId: string, jobId: string, status: string) {
@@ -332,6 +375,7 @@ export class OptimizationProcessor extends WorkerHost {
   }
 
   private errorCode(error: unknown) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) return error.code;
     if (error instanceof GatewayTimeoutException) {
       return 'OPTIMIZER_HTTP_TIMEOUT';
     }

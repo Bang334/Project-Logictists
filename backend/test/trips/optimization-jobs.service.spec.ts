@@ -66,6 +66,40 @@ describe('OptimizationJobsService', () => {
     );
   });
 
+  it('keeps a repeated cancellation pending until the worker confirms it stopped', async () => {
+    const user = {
+      id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1',
+      role: Role.DISPATCHER,
+      grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.plan'] }],
+    } as Parameters<OptimizationJobsService['cancel']>[0];
+    prisma.optimizationJob.findUnique.mockResolvedValue(job({ status: 'CANCEL_REQUESTED' }));
+
+    await expect(service.cancel(user, 'job-1')).resolves.toMatchObject({ status: 'CANCEL_REQUESTED' });
+    expect(prisma.optimizationJob.updateMany).not.toHaveBeenCalled();
+    expect(prisma.optimizationJob.update).not.toHaveBeenCalled();
+    expect(queue.getJob).not.toHaveBeenCalled();
+  });
+
+  it('requests cancellation if a queued job is claimed during cancellation', async () => {
+    const user = {
+      id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1',
+      role: Role.DISPATCHER,
+      grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.plan'] }],
+    } as Parameters<OptimizationJobsService['cancel']>[0];
+    prisma.optimizationJob.findUnique
+      .mockResolvedValueOnce(job())
+      .mockResolvedValueOnce(job({ status: 'RUNNING' }))
+      .mockResolvedValueOnce(job({ status: 'CANCEL_REQUESTED' }));
+    prisma.optimizationJob.updateMany.mockResolvedValueOnce({ count: 0 }).mockResolvedValueOnce({ count: 1 });
+
+    await expect(service.cancel(user, 'job-1')).resolves.toMatchObject({ status: 'CANCEL_REQUESTED' });
+    expect(prisma.optimizationJob.updateMany).toHaveBeenLastCalledWith({
+      where: { id: 'job-1', status: 'RUNNING' },
+      data: { status: 'CANCEL_REQUESTED', cancelledAt: expect.any(Date) },
+    });
+    expect(queue.getJob).not.toHaveBeenCalled();
+  });
+
   it('persists the job and durable enqueue event atomically', async () => {
     prisma.optimizationJob.findUnique.mockResolvedValue(null);
     prisma.$transaction.mockImplementation(async (callback: (tx: typeof prisma) => unknown) => {
@@ -385,5 +419,118 @@ describe('OptimizationJobsService', () => {
         'branch-2',
       ),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('supersedes stale branch-wide jobs when creating a new branch optimization job', async () => {
+    const removeOld = jest.fn().mockResolvedValue(undefined);
+    const jobControl = { abort: jest.fn(), notifyPythonCancel: jest.fn().mockResolvedValue(undefined) };
+    const events = { emitOptimizationJobUpdate: jest.fn() };
+    const svc = new OptimizationJobsService(
+      prisma as never,
+      queue as never,
+      trips as never,
+      outbox as never,
+      undefined,
+      jobControl as never,
+      events as never,
+    );
+    prisma.optimizationJob.findUnique.mockResolvedValue(null);
+    prisma.optimizationJob.findMany.mockResolvedValue([
+      { id: 'old-pending', status: 'PENDING', parameters: { branchId: 'branch-1' } },
+      { id: 'old-running', status: 'RUNNING', parameters: { branchId: 'branch-1' } },
+      { id: 'batch-job', status: 'PENDING', parameters: { branchId: 'branch-1', deliveryBatchId: 'b1' } },
+    ]);
+    prisma.optimizationJob.updateMany.mockResolvedValue({ count: 1 });
+    queue.getJob.mockResolvedValue({ remove: removeOld });
+    prisma.$transaction.mockImplementation(async (callback: (tx: typeof prisma) => unknown) => {
+      prisma.optimizationJob.create.mockResolvedValue(job({ id: 'job-new', idempotencyKey: 'idem-new' }));
+      return callback(prisma);
+    });
+    outbox.enqueue.mockResolvedValue(undefined);
+
+    await svc.create(
+      { id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: 'session', branchId: 'branch-1', role: Role.DISPATCHER, grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-1', permissions: ['trips.read', 'trips.plan'] }] },
+      { idempotencyKey: 'idem-new' },
+    );
+
+    expect(removeOld).toHaveBeenCalledTimes(1);
+    expect(jobControl.abort).toHaveBeenCalledWith('old-running');
+    expect(jobControl.notifyPythonCancel).toHaveBeenCalledWith('old-running');
+    expect(events.emitOptimizationJobUpdate).toHaveBeenCalledWith('branch-1', { jobId: 'old-pending', status: 'CANCELLED' });
+    expect(events.emitOptimizationJobUpdate).toHaveBeenCalledWith('branch-1', { jobId: 'old-running', status: 'CANCEL_REQUESTED' });
+  });
+
+  it('includes per-candidate costBreakdown from both objectiveBreakdown and SQL projection fallback', async () => {
+    const user = {
+      id: 'user-1',
+      username: 'dispatcher',
+      fullName: 'Dispatcher',
+      sessionId: 'session',
+      branchId: 'branch-1',
+      role: Role.DISPATCHER,
+      grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH' as const, branchId: 'branch-1', permissions: ['trips.read', 'trips.plan'] }],
+    };
+    prisma.$queryRaw.mockResolvedValueOnce([
+      job({
+        status: 'SUCCEEDED',
+        result: { proposal: { result: { status: 'SUCCESS', unassigned_orders: [], total_cost_vnd: 47_590_879 } } },
+        summaries: [
+          {
+            candidateNumber: 1,
+            feasibilityStatus: 'FEASIBLE',
+            objectiveBreakdown: {
+              totalCostVnd: 47_590_879,
+              fuelCostVnd: 21_466_310,
+              vehicleFixedCostVnd: 2_550_000,
+              driverCostVnd: 22_529_295,
+              cargoHoldingCostVnd: 1_045_274,
+              lateDeliveryPenaltyVnd: 0,
+              unassignedOrderCount: 0,
+            },
+          },
+          {
+            candidateNumber: 2,
+            feasibilityStatus: 'FEASIBLE',
+            objectiveBreakdown: { totalCostVnd: 48_186_743, unassignedOrderCount: 0 },
+            costBreakdown: {
+              fuelCostVnd: 21_700_000,
+              vehicleFixedCostVnd: 2_650_000,
+              driverCostVnd: 22_750_000,
+              cargoHoldingCostVnd: 1_086_743,
+              lateDeliveryPenaltyVnd: 0,
+            },
+          },
+          {
+            candidateNumber: 3,
+            feasibilityStatus: 'FEASIBLE',
+            objectiveBreakdown: { totalCostVnd: 50_000_000, unassignedOrderCount: 0 },
+            costBreakdown: {
+              fuelCostVnd: null,
+              vehicleFixedCostVnd: null,
+              driverCostVnd: null,
+              cargoHoldingCostVnd: null,
+              lateDeliveryPenaltyVnd: null,
+            },
+          },
+        ],
+      }),
+    ]);
+
+    const loaded = await service.get(user, 'job-1');
+    expect(loaded.candidates[0].costBreakdown).toEqual({
+      fuelCostVnd: 21_466_310,
+      vehicleFixedCostVnd: 2_550_000,
+      driverCostVnd: 22_529_295,
+      cargoHoldingCostVnd: 1_045_274,
+      lateDeliveryPenaltyVnd: 0,
+    });
+    expect(loaded.candidates[1].costBreakdown).toEqual({
+      fuelCostVnd: 21_700_000,
+      vehicleFixedCostVnd: 2_650_000,
+      driverCostVnd: 22_750_000,
+      cargoHoldingCostVnd: 1_086_743,
+      lateDeliveryPenaltyVnd: 0,
+    });
+    expect(loaded.candidates[2].costBreakdown).toBeUndefined();
   });
 });

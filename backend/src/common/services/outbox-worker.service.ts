@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { OutboxEvent } from '@prisma/client';
+import { OutboxEvent, Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { OutboxEventPublisher } from './outbox-event.publisher';
@@ -43,8 +43,11 @@ export class OutboxWorkerService implements OnModuleInit, OnModuleDestroy {
   }
 
   private scheduleBatch() {
-    void this.processBatch().catch(() => {
-      this.logger.error('Outbox worker không thể claim/process batch; sẽ thử lại ở chu kỳ sau');
+    void this.processBatch().catch((error: unknown) => {
+      const code = error instanceof Prisma.PrismaClientKnownRequestError
+        ? ` (${error.code})`
+        : '';
+      this.logger.error(`Outbox worker không thể claim/process batch${code}. Sẽ thử lại ở chu kỳ sau.`);
     });
   }
 

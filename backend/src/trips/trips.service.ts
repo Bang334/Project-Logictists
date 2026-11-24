@@ -17,6 +17,12 @@ import axios from 'axios';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { MapboxService, RoadMatrixResult } from '../mapbox/mapbox.service';
+import {
+  isOptimizationAbortError,
+  OptimizationCancelledError,
+  OptimizationJobControlService,
+  throwIfOptimizationAborted,
+} from './optimization-job-control.service';
 import { CreateTripDto } from './dto/create-trip.dto';
 import { TripsValidator } from './trips.validator';
 import {
@@ -41,6 +47,7 @@ import { SettingsService } from '../settings/settings.service';
 import { toResolvedStackingPolicy } from '../settings/settings.helpers';
 import {
   assertFleetOptimizationBatchResult,
+  extractCandidateCostBreakdown,
   OptimizedRouteResult,
 } from "./optimizer-contract";
 import { resolveBranchScope } from "../auth/branch-scope";
@@ -163,6 +170,7 @@ export class TripsService {
     private outbox: OutboxService,
     private access: ResourceAccess,
     @Optional() private settingsService?: SettingsService,
+    @Optional() private jobControl?: OptimizationJobControlService,
   ) {}
 
   private async resolveBranchStackingPolicy(
@@ -1517,6 +1525,8 @@ export class TripsService {
     persistedJobId?: string,
     reportProgress?: OptimizationProgressReporter,
   ) {
+    const signal = persistedJobId ? this.jobControl?.getSignal(persistedJobId) : undefined;
+    throwIfOptimizationAborted(signal);
     const requestedBranchId = typeof dto === 'string' ? dto : dto?.branchId;
     const scheduleMode =
       typeof dto === 'object' ? dto?.scheduleMode : undefined;
@@ -1838,7 +1848,10 @@ export class TripsService {
       }
       const key = JSON.stringify(coordinates);
       if (cachedMatrix?.key !== key) {
-        const matrix = await this.mapboxService.getRoadMatrix(coordinates);
+        throwIfOptimizationAborted(signal);
+        const matrix = signal
+          ? await this.mapboxService.getRoadMatrix(coordinates, { signal })
+          : await this.mapboxService.getRoadMatrix(coordinates);
         cachedMatrix = { key, matrix, queriedAt: new Date() };
       }
       const { matrix, queriedAt: matrixQueriedAt } = cachedMatrix;
@@ -1937,6 +1950,7 @@ export class TripsService {
         details: progressDetails,
       });
 
+      throwIfOptimizationAborted(signal);
       let rankedResults;
       try {
         const response = await axios.post(
@@ -1949,6 +1963,7 @@ export class TripsService {
                 ? snapshot.max_time_seconds
                 : snapshot.search_time_seconds ?? snapshot.max_time_seconds) + 90) * 1000,
             ),
+            ...(signal ? { signal } : {}),
           },
         );
         assertFleetOptimizationBatchResult(response.data);
@@ -1956,6 +1971,9 @@ export class TripsService {
         rankedResults = response.data.candidates;
         if (rankedResults.some(candidate => candidate.result.package_contract_version !== '1')) throw new Error('Optimizer chưa hỗ trợ hợp đồng Package v1');
       } catch (error: any) {
+        if (isOptimizationAbortError(error, signal)) {
+          throw new OptimizationCancelledError();
+        }
         const detail = error.response?.data?.detail;
         const detailMsg = Array.isArray(detail)
           ? detail.map((d: any) => `${d.loc?.join('.')}: ${d.msg}`).join('; ')
@@ -2006,6 +2024,56 @@ export class TripsService {
     const expiresAt = new Date(
       Date.now() + OPTIMIZATION_PROPOSAL_TTL_MS,
     ).toISOString();
+    const routeDetailsCache = new Map<
+      string,
+      ReturnType<MapboxService['getRoute']>
+    >();
+    const cloneRouteGeometry = <T>(geometry: T): T => {
+      if (!geometry || typeof geometry !== 'object') {
+        return geometry;
+      }
+      const record = geometry as Record<string, unknown>;
+      return {
+        ...record,
+        ...(Array.isArray(record.coordinates)
+          ? {
+              coordinates: record.coordinates.map((pt) =>
+                Array.isArray(pt) ? [...pt] : pt,
+              ),
+            }
+          : {}),
+        ...(Array.isArray(record.waypoint_indices)
+          ? {
+              waypoint_indices: [...record.waypoint_indices],
+            }
+          : {}),
+      } as T;
+    };
+    const getDeduplicatedRoute = async (
+      routeCoordinates: [number, number][],
+    ) => {
+      throwIfOptimizationAborted(signal);
+      const cacheKey = routeCoordinates
+        .map(([lng, lat]) => `${lng.toFixed(6)},${lat.toFixed(6)}`)
+        .join(';');
+      let pending = routeDetailsCache.get(cacheKey);
+      if (!pending) {
+        pending = (
+          signal
+            ? this.mapboxService.getRoute(routeCoordinates, { signal })
+            : this.mapboxService.getRoute(routeCoordinates)
+        ).catch((err) => {
+          routeDetailsCache.delete(cacheKey);
+          throw err;
+        });
+        routeDetailsCache.set(cacheKey, pending);
+      }
+      const details = await pending;
+      return {
+        ...details,
+        geometry: cloneRouteGeometry(details.geometry),
+      };
+    };
     const candidates: StoredOptimizationCandidate[] = [];
     for (const candidate of rankedResults) {
       const { result } = candidate;
@@ -2037,8 +2105,7 @@ export class TripsService {
             ),
             [vehicle.depot.longitude, vehicle.depot.latitude],
           ];
-          const routeDetails =
-            await this.mapboxService.getRoute(routeCoordinates);
+          const routeDetails = await getDeduplicatedRoute(routeCoordinates);
           route.depot = vehicle.depot;
           route.route_geometry = routeDetails.geometry;
         }),
@@ -3595,38 +3662,42 @@ export class TripsService {
         );
       }
 
-      const candidates = (batch.candidates || []).map((c: any, index: number) => ({
-        candidateNumber: index + 1,
-        rank: c.rank ?? index + 1,
-        searchStrategy: c.search_strategy || `Phương án ${index + 1}`,
-        improvementSequence: index + 1,
-        solverObjective:
-          c.result?.planning_objective?.selection_score_vnd ??
-          c.solver_objective ??
-          0,
-        planningSpanDays: c.result?.planning_objective?.planning_span_days ?? 1,
-        driverCalendarSalaryVnd:
-          c.result?.planning_objective?.driver_calendar_salary_vnd ?? 0,
-        driverIdleSalaryAllocationVnd:
-          c.result?.planning_objective?.driver_idle_salary_allocation_vnd ?? 0,
-        operationalLatePenaltyVnd:
-          c.result?.planning_objective?.operational_late_penalty_vnd ?? 0,
-        physicalVehicleCount:
-          c.result?.planning_objective?.physical_vehicle_count ??
-          c.result?.routes?.length ??
-          0,
-        activeRouteCount:
-          c.result?.planning_objective?.active_route_count ??
-          c.result?.routes?.length ??
-          0,
-        isBestFound: c.is_best_found ?? (index === 0),
-        feasibilityStatus: c.result?.status ?? 'SUCCESS',
-        totalCostVnd: c.result?.total_cost_vnd ?? 0,
-        totalDistanceKm: c.result?.total_distance_km ?? 0,
-        totalDurationMinutes: c.result?.total_duration_minutes ?? 0,
-        routeCount: c.result?.routes?.length ?? 0,
-        unassignedOrderCount: c.result?.unassigned_orders?.length ?? 0,
-      }));
+      const candidates = (batch.candidates || []).map((c: any, index: number) => {
+        const costBreakdown = extractCandidateCostBreakdown(c.result);
+        return {
+          candidateNumber: index + 1,
+          rank: c.rank ?? index + 1,
+          searchStrategy: c.search_strategy || `Phương án ${index + 1}`,
+          improvementSequence: index + 1,
+          solverObjective:
+            c.result?.planning_objective?.selection_score_vnd ??
+            c.solver_objective ??
+            0,
+          planningSpanDays: c.result?.planning_objective?.planning_span_days ?? 1,
+          driverCalendarSalaryVnd:
+            c.result?.planning_objective?.driver_calendar_salary_vnd ?? 0,
+          driverIdleSalaryAllocationVnd:
+            c.result?.planning_objective?.driver_idle_salary_allocation_vnd ?? 0,
+          operationalLatePenaltyVnd:
+            c.result?.planning_objective?.operational_late_penalty_vnd ?? 0,
+          physicalVehicleCount:
+            c.result?.planning_objective?.physical_vehicle_count ??
+            c.result?.routes?.length ??
+            0,
+          activeRouteCount:
+            c.result?.planning_objective?.active_route_count ??
+            c.result?.routes?.length ??
+            0,
+          isBestFound: c.is_best_found ?? (index === 0),
+          feasibilityStatus: c.result?.status ?? 'SUCCESS',
+          totalCostVnd: c.result?.total_cost_vnd ?? 0,
+          totalDistanceKm: c.result?.total_distance_km ?? 0,
+          totalDurationMinutes: c.result?.total_duration_minutes ?? 0,
+          routeCount: c.result?.routes?.length ?? 0,
+          unassignedOrderCount: c.result?.unassigned_orders?.length ?? 0,
+          ...(costBreakdown ? { costBreakdown } : {}),
+        };
+      });
 
       const candidateResults: Record<number, any> = {};
       (batch.candidates || []).forEach((c: any, idx: number) => {

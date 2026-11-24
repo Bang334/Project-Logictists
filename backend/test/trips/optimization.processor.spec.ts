@@ -1,4 +1,4 @@
-import { BadRequestException, GatewayTimeoutException } from '@nestjs/common';
+import { BadRequestException, GatewayTimeoutException, Logger } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
 import { Role } from '@prisma/client';
 import { OptimizationProcessor } from '../../src/trips/optimization.processor';
@@ -35,8 +35,7 @@ describe('OptimizationProcessor', () => {
       updateMany: jest.fn(),
       update: jest.fn(),
     },
-    optimizationResult: { createMany: jest.fn(), deleteMany: jest.fn() },
-    $transaction: jest.fn(),
+    $queryRaw: jest.fn(),
   };
   const trips = { executeAutomaticOptimization: jest.fn() };
   const events = { emitOptimizationJobUpdate: jest.fn() };
@@ -44,12 +43,18 @@ describe('OptimizationProcessor', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    prisma.$queryRaw.mockResolvedValue([{ stored: true }]);
     processor = new OptimizationProcessor(
       { principalForWorker: jest.fn().mockResolvedValue({ id: "user-1", username: "dispatcher", fullName: "Dispatcher", sessionId: "", grants: [] }) } as never,
       prisma as never,
       trips as never,
       events as never,
     );
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
   });
 
   it('stops queue retries after bounded Mapbox rate-limit retries are exhausted', async () => {
@@ -127,17 +132,17 @@ describe('OptimizationProcessor', () => {
 
     await processor.process(queueJob() as never);
 
-    expect(prisma.optimizationJob.update).toHaveBeenCalledWith({
-      where: { id: 'job-1' },
+    expect(prisma.optimizationJob.updateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: 'CANCEL_REQUESTED', leaseOwner: expect.any(String) },
       data: expect.objectContaining({
         status: 'CANCELLED',
         result: expect.anything(),
       }),
     });
-    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
-  it('does not let a worker write a result after losing its lease', async () => {
+  it('does not announce completion when persistence rejects the lease', async () => {
     prisma.optimizationJob.findUnique
       .mockResolvedValueOnce(persistedJob())
       .mockResolvedValueOnce({ status: 'RUNNING' });
@@ -163,29 +168,19 @@ describe('OptimizationProcessor', () => {
       best: candidate,
       candidates: [candidate],
     });
-    const tx = {
-      optimizationJob: { updateMany: jest.fn().mockResolvedValue({ count: 0 }) },
-      optimizationResult: { createMany: jest.fn(), deleteMany: jest.fn() },
-    };
-    prisma.$transaction.mockImplementation(async (callback: (client: typeof tx) => unknown) =>
-      callback(tx),
-    );
+    prisma.$queryRaw.mockResolvedValue([{ stored: false }]);
 
     await processor.process(queueJob() as never);
 
-    expect(tx.optimizationJob.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          id: 'job-1',
-          status: 'RUNNING',
-          leaseOwner: expect.any(String),
-        }),
-      }),
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(events.emitOptimizationJobUpdate).not.toHaveBeenCalledWith(
+      'branch-1', { jobId: 'job-1', status: 'SUCCEEDED' },
     );
-    expect(tx.optimizationResult.createMany).not.toHaveBeenCalled();
   });
 
-  it('persists every ranked candidate and keeps the first candidate as the job result', async () => {
+  it('logs queue lag from the first claim even when solving takes longer', async () => {
+    jest.useFakeTimers({ now: new Date('2026-10-04T00:00:01.000Z') });
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
     prisma.optimizationJob.findUnique
       .mockResolvedValueOnce(persistedJob())
       .mockResolvedValueOnce({ status: 'RUNNING' });
@@ -208,29 +203,36 @@ describe('OptimizationProcessor', () => {
       isBestFound: improvementSequence === 2,
     });
     const candidates = [candidate(100, 2), candidate(120, 7)];
-    trips.executeAutomaticOptimization.mockResolvedValue({
-      best: candidates[0],
-      candidates,
+    trips.executeAutomaticOptimization.mockImplementation(async () => {
+      await jest.advanceTimersByTimeAsync(60_000);
+      return { best: candidates[0], candidates };
     });
-    const tx = {
-      optimizationJob: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-      optimizationResult: {
-        createMany: jest.fn().mockResolvedValue({ count: 2 }),
-        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
-      },
-    };
-    prisma.$transaction.mockImplementation(async (callback: (client: typeof tx) => unknown) =>
-      callback(tx),
-    );
-
     await processor.process(queueJob() as never);
 
-    expect(tx.optimizationResult.createMany).toHaveBeenCalledWith({
-      data: [
-        expect.objectContaining({ candidateNumber: 1 }),
-        expect.objectContaining({ candidateNumber: 2 }),
-      ],
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"queueLagSeconds":1,'));
+  });
+
+  it('waits for a pending lease heartbeat before sending another during pool pressure', async () => {
+    jest.useFakeTimers();
+    prisma.optimizationJob.findUnique.mockResolvedValue(persistedJob());
+    prisma.optimizationJob.updateMany
+      .mockResolvedValue({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockImplementationOnce(() => new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Pool timeout')), 30_000);
+      }));
+
+    trips.executeAutomaticOptimization.mockImplementation(async () => {
+      await jest.advanceTimersByTimeAsync(35_000);
+      expect(prisma.optimizationJob.updateMany).toHaveBeenCalledTimes(2);
+      await jest.advanceTimersByTimeAsync(15_000);
+      expect(prisma.optimizationJob.updateMany).toHaveBeenCalledTimes(3);
+      throw new BadRequestException('Invalid snapshot');
     });
+
+    await expect(processor.process(queueJob() as never)).rejects.toThrow('Invalid snapshot');
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(prisma.optimizationJob.updateMany).toHaveBeenCalledTimes(4);
   });
 
   it('persists and broadcasts meaningful progress reported by the optimization pipeline', async () => {
@@ -274,17 +276,6 @@ describe('OptimizationProcessor', () => {
         };
       },
     );
-    const tx = {
-      optimizationJob: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
-      optimizationResult: {
-        createMany: jest.fn().mockResolvedValue({ count: 0 }),
-        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
-      },
-    };
-    prisma.$transaction.mockImplementation(async (callback: (client: typeof tx) => unknown) =>
-      callback(tx),
-    );
-
     await processor.process(queueJob() as never);
 
     expect(prisma.optimizationJob.updateMany).toHaveBeenCalledWith(
@@ -375,6 +366,112 @@ describe('OptimizationProcessor', () => {
         errorCode: 'HTTP_400',
         completedAt: expect.any(Date),
       }),
+    });
+  });
+
+  it('finalizes job as CANCELLED cleanly without BullMQ retry when aborted mid-execution', async () => {
+    const { OptimizationCancelledError, OptimizationJobControlService } = await import('../../src/trips/optimization-job-control.service');
+    const control = new OptimizationJobControlService();
+    const ctrlProcessor = new OptimizationProcessor(
+      { principalForWorker: jest.fn().mockResolvedValue({ id: 'user-1', username: 'dispatcher', fullName: 'Dispatcher', sessionId: '', grants: [] }) } as never,
+      prisma as never,
+      trips as never,
+      events as never,
+      control,
+    );
+    prisma.optimizationJob.findUnique.mockResolvedValue(persistedJob());
+    prisma.optimizationJob.updateMany.mockResolvedValue({ count: 1 });
+    trips.executeAutomaticOptimization.mockImplementation(async () => {
+      control.abort('job-1');
+      throw new OptimizationCancelledError();
+    });
+
+    await expect(ctrlProcessor.process(queueJob() as never)).resolves.toBeUndefined();
+    expect(prisma.optimizationJob.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({ id: 'job-1' }),
+      data: expect.objectContaining({ status: 'CANCELLED' }),
+    });
+    expect(events.emitOptimizationJobUpdate).toHaveBeenCalledWith(
+      'branch-1',
+      expect.objectContaining({ jobId: 'job-1', status: 'CANCELLED' }),
+    );
+  });
+
+  it('persists route cost breakdown fields inside each candidate objectiveBreakdown', async () => {
+    prisma.optimizationJob.findUnique
+      .mockResolvedValueOnce(persistedJob())
+      .mockResolvedValueOnce({ status: 'RUNNING' });
+    prisma.optimizationJob.updateMany.mockResolvedValue({ count: 1 });
+    const candidate = {
+      proposal: {
+        result: {
+          status: 'SUCCESS',
+          total_cost_vnd: 1_500_000,
+          total_distance_km: 120,
+          total_duration_minutes: 90,
+          routes: [],
+          unassigned_orders: [],
+          diagnostics: [],
+          benchmarks: {
+            or_tools: {
+              method_name: 'Hybrid ALNS',
+              description: 'test',
+              total_cost_vnd: 1_500_000,
+              total_distance_km: 120,
+              total_duration_minutes: 90,
+              vehicles_used: 2,
+              fuel_cost_vnd: 500_000,
+              vehicle_fixed_cost_vnd: 300_000,
+              driver_cost_vnd: 600_000,
+              cargo_holding_cost_vnd: 100_000,
+              late_delivery_penalty_vnd: 0,
+              is_feasible: true,
+              violations: [],
+            },
+            direct_dedicated: {
+              method_name: 'Direct',
+              description: 'test',
+              total_cost_vnd: 2_000_000,
+              total_distance_km: 180,
+              total_duration_minutes: 140,
+              vehicles_used: 4,
+              fuel_cost_vnd: 800_000,
+              vehicle_fixed_cost_vnd: 400_000,
+              driver_cost_vnd: 700_000,
+              cargo_holding_cost_vnd: 100_000,
+              late_delivery_penalty_vnd: 0,
+              is_feasible: true,
+              violations: [],
+            },
+            savings_vs_direct_vnd: 500_000,
+            savings_vs_direct_percent: 25,
+          },
+        },
+      },
+      signature: 'signed',
+      rank: 1,
+      searchStrategy: 'Hybrid ALNS',
+      improvementSequence: 1,
+      solverObjective: 1_500_000,
+      isBestFound: true,
+    };
+    trips.executeAutomaticOptimization.mockResolvedValue({
+      best: candidate,
+      candidates: [candidate],
+    });
+
+    await processor.process(queueJob() as never);
+
+    const sqlCall = prisma.$queryRaw.mock.calls[0];
+    const rows = JSON.parse(sqlCall[1] as string) as Array<{
+      objectiveBreakdown: Record<string, unknown>;
+    }>;
+    expect(rows[0].objectiveBreakdown).toMatchObject({
+      fuelCostVnd: 500_000,
+      vehicleFixedCostVnd: 300_000,
+      driverCostVnd: 600_000,
+      cargoHoldingCostVnd: 100_000,
+      lateDeliveryPenaltyVnd: 0,
     });
   });
 });

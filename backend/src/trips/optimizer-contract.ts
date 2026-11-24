@@ -144,6 +144,7 @@ export type BenchmarkMetric = {
   physical_vehicle_count?: number;
   driver_calendar_salary_vnd?: number;
   driver_idle_salary_allocation_vnd?: number;
+  operational_late_penalty_vnd?: number;
   selection_score_vnd?: number;
   is_feasible: boolean;
   violations: string[];
@@ -155,6 +156,14 @@ export type BenchmarkComparison = {
   direct_dedicated: BenchmarkMetric;
   savings_vs_direct_vnd: number | null;
   savings_vs_direct_percent: number | null;
+};
+
+export type CandidateCostBreakdown = {
+  fuelCostVnd: number;
+  vehicleFixedCostVnd: number;
+  driverCostVnd: number;
+  cargoHoldingCostVnd: number;
+  lateDeliveryPenaltyVnd: number;
 };
 
 export type FleetOptimizationResult = {
@@ -214,6 +223,82 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+/**
+ * Normalizes a persisted or SQL-projected cost breakdown object into camelCase fields.
+ * Requires the three core route cost components to distinguish unknown data from zero.
+ */
+export function parseCandidateCostBreakdown(
+  raw: unknown,
+): CandidateCostBreakdown | undefined {
+  if (!isRecord(raw)) return undefined;
+  const fuel = raw.fuelCostVnd ?? raw.fuel_cost_vnd;
+  const fixed = raw.vehicleFixedCostVnd ?? raw.vehicle_fixed_cost_vnd;
+  const driver = raw.driverCostVnd ?? raw.driver_cost_vnd;
+  if (!isFiniteNumber(fuel) || !isFiniteNumber(fixed) || !isFiniteNumber(driver)) {
+    return undefined;
+  }
+  const holding = raw.cargoHoldingCostVnd ?? raw.cargo_holding_cost_vnd;
+  const latePenalty = raw.lateDeliveryPenaltyVnd ?? raw.late_delivery_penalty_vnd;
+  return {
+    fuelCostVnd: fuel,
+    vehicleFixedCostVnd: fixed,
+    driverCostVnd: driver,
+    cargoHoldingCostVnd: isFiniteNumber(holding) ? holding : 0,
+    lateDeliveryPenaltyVnd: isFiniteNumber(latePenalty) ? latePenalty : 0,
+  };
+}
+
+/**
+ * Extracts route operating cost components from an optimization result,
+ * preferring the optimizer benchmark metric and falling back to route-level costs.
+ */
+export function extractCandidateCostBreakdown(
+  result: Pick<Partial<FleetOptimizationResult>, 'benchmarks' | 'routes'> | null | undefined,
+): CandidateCostBreakdown | undefined {
+  if (!result) return undefined;
+  const fromBenchmark = parseCandidateCostBreakdown(result.benchmarks?.or_tools);
+  if (fromBenchmark) {
+    return fromBenchmark;
+  }
+  if (!Array.isArray(result.routes) || result.routes.length === 0) {
+    return undefined;
+  }
+  let fuelCostVnd = 0;
+  let vehicleFixedCostVnd = 0;
+  let driverCostVnd = 0;
+  let cargoHoldingCostVnd = 0;
+  let lateDeliveryPenaltyVnd = 0;
+  let hasAnyRouteCost = false;
+  for (const route of result.routes) {
+    if (!route?.cost || typeof route.cost !== 'object') continue;
+    const {
+      fuel_cost_vnd: fuel,
+      vehicle_fixed_cost_vnd: fixed,
+      driver_fixed_salary_allocation_vnd: fixedSalary,
+      driver_trip_pay_vnd: tripPay,
+      cargo_holding_cost_vnd: holding,
+      late_delivery_penalty_vnd: latePenalty,
+    } = route.cost;
+    if (!isFiniteNumber(fuel) || !isFiniteNumber(fixed)) continue;
+    hasAnyRouteCost = true;
+    fuelCostVnd += fuel;
+    vehicleFixedCostVnd += fixed;
+    driverCostVnd +=
+      (isFiniteNumber(fixedSalary) ? fixedSalary : 0) +
+      (isFiniteNumber(tripPay) ? tripPay : 0);
+    cargoHoldingCostVnd += isFiniteNumber(holding) ? holding : 0;
+    lateDeliveryPenaltyVnd += isFiniteNumber(latePenalty) ? latePenalty : 0;
+  }
+  if (!hasAnyRouteCost) return undefined;
+  return {
+    fuelCostVnd,
+    vehicleFixedCostVnd,
+    driverCostVnd,
+    cargoHoldingCostVnd,
+    lateDeliveryPenaltyVnd,
+  };
 }
 
 const VALID_WEIGHT_BALANCE_STATUSES = new Set([
