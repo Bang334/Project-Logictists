@@ -229,18 +229,9 @@ def compute_grouping_metrics(
     }
 
 
-def plan_lexicographic_key(
+def _plan_key_components(
     plan: FleetOptimizationResponse,
 ) -> Tuple[int, int, int, int, int]:
-    """Return the confirmed lexicographic comparison tuple for two plans.
-
-    Ordering:
-    1. extra_order_trips: sum(max(0, distinct_trip_count(order) - 1))
-    2. active_route_count: total active trips
-    3. selection_score_vnd: financial + calendar + operational lateness score
-    4. total_cost_vnd: direct operating cost tie-breaker
-    5. physical_vehicle_count: distinct physical vehicles tie-breaker
-    """
     breakdown = plan.planning_objective
     if breakdown is not None:
         extra_order_trips = breakdown.extra_order_trips
@@ -281,6 +272,41 @@ def plan_lexicographic_key(
         active_route_count,
         selection_score_vnd,
         plan.total_cost_vnd,
+        physical_vehicle_count,
+    )
+
+
+def plan_lexicographic_key(
+    plan: FleetOptimizationResponse,
+) -> Tuple[int, int, int, int, int]:
+    """Return the confirmed lexicographic comparison tuple for two plans.
+
+    Ordering:
+    1. extra_order_trips: sum(max(0, distinct_trip_count(order) - 1))
+    2. active_route_count: total active trips
+    3. selection_score_vnd: financial + calendar + operational lateness score
+    4. total_cost_vnd: direct operating cost tie-breaker
+    5. physical_vehicle_count: distinct physical vehicles tie-breaker
+    """
+    return _plan_key_components(plan)
+
+
+def plan_objective_first_key(
+    plan: FleetOptimizationResponse,
+) -> Tuple[int, int, int, int, int]:
+    """Rank multi-day candidates by company objective before route count."""
+    (
+        extra_order_trips,
+        active_route_count,
+        selection_score_vnd,
+        operating_cost_vnd,
+        physical_vehicle_count,
+    ) = _plan_key_components(plan)
+    return (
+        extra_order_trips,
+        selection_score_vnd,
+        operating_cost_vnd,
+        active_route_count,
         physical_vehicle_count,
     )
 

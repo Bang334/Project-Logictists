@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from .alns_engine import ALNSFleetOptimizer
 from .baseline_calculator import BaselineCostCalculator
 from .models import FleetOptimizationRequest, FleetOptimizationResponse, ScheduledStop
-from .planning_objective import plan_lexicographic_key
+from .planning_objective import apply_planning_objective, plan_lexicographic_key
 from .spatial_cache import scoped_spatial_cache
 
 
@@ -483,6 +483,9 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
         if not valid_responses:
             response = _safe_build(best_routes, best_unassigned)
         else:
+            if hasattr(self, "request") and getattr(self.request, "vehicles", None):
+                for candidate_resp in valid_responses:
+                    apply_planning_objective(self.request, candidate_resp)
             response = min(
                 valid_responses,
                 key=lambda r: (
@@ -490,6 +493,7 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
                     *plan_lexicographic_key(r),
                 ),
             )
+            setattr(response, "_audited_alternatives", [r for r in valid_responses if r is not response])
 
         if getattr(self, "include_benchmarks", True) and getattr(response, "benchmarks", None) is None and hasattr(self, "request") and getattr(self.request, "vehicles", None):
             try:

@@ -35,8 +35,13 @@ from .search_strategies import (
 )
 from .hybrid_alns_engine import PackingAwareHybridALNSOptimizer
 from .ils_engine import PackingAwareILSOptimizer
+from .cross_seed_partitioning import solve_cross_seed_set_partitioning
 from .ortools_seed import extract_ortools_seed_pool
-from .planning_objective import apply_planning_objective, plan_lexicographic_key
+from .planning_objective import (
+    apply_planning_objective,
+    plan_lexicographic_key,
+    plan_objective_first_key,
+)
 from .baseline_calculator import BaselineCostCalculator
 from .spatial_cache import scoped_spatial_cache
 
@@ -128,6 +133,49 @@ def _extract_safe_ortools_seed_pool(
     return None
 
 
+def _select_worker_best_plan(
+    primary_plan: FleetOptimizationResponse,
+    objective_request: FleetOptimizationRequest,
+    expected_items: Dict[str, Set[str]],
+    max_routes_per_day: Optional[int],
+    compare_horizons: bool,
+) -> Tuple[FleetOptimizationResponse, PlanningObjectiveBreakdown]:
+    """Select the best already-audited candidate produced by a worker."""
+    alternatives = getattr(primary_plan, "_audited_alternatives", ())
+    if not alternatives:
+        obj = apply_planning_objective(objective_request, primary_plan)
+        return primary_plan, obj
+
+    pool: List[FleetOptimizationResponse] = []
+    seen_sigs: Set[Tuple] = set()
+    for candidate in (primary_plan, *alternatives):
+        if not getattr(candidate, "routes", None):
+            continue
+        sig = _plan_signature(candidate)
+        if sig not in seen_sigs:
+            seen_sigs.add(sig)
+            pool.append(candidate)
+    if not pool:
+        obj = apply_planning_objective(objective_request, primary_plan)
+        return primary_plan, obj
+
+    complete_pool = [
+        plan
+        for plan in pool
+        if is_fully_served(
+            plan,
+            set(expected_items),
+            max_routes_per_day=max_routes_per_day,
+            expected_items=expected_items,
+        )
+    ]
+    ranked_pool = complete_pool or pool
+    objs = {id(plan): apply_planning_objective(objective_request, plan) for plan in ranked_pool}
+    key_fn = plan_objective_first_key if compare_horizons else plan_lexicographic_key
+    winner = min(ranked_pool, key=key_fn)
+    return winner, objs[id(winner)]
+
+
 def _run_hybrid_seed_worker(
     request_dict: dict,
     objective_request_dict: dict,
@@ -143,9 +191,10 @@ def _run_hybrid_seed_worker(
         expected_items = {order.id: {item.id for item in order.items} for order in request.orders}
         initial_plan = FleetOptimizationResponse.model_validate(warm_plan) if warm_plan is not None else None
         distinct_days = sorted({v.service_day_index for v in request.vehicles})
+        compare_horizons = len(distinct_days) > 1
         compact_days_hint = (
             _estimate_hybrid_lower_bound_days(request)
-            if len(distinct_days) > 1 and 12 <= len(request.orders) < 80
+            if seed == 0 and compare_horizons and 12 <= len(request.orders) < 80
             else None
         )
 
@@ -188,8 +237,14 @@ def _run_hybrid_seed_worker(
                     request.policy.max_routes_per_day,
                     expected_items,
                 ):
-                    obj = apply_planning_objective(objective_request, probe_plan)
-                    return seed, probe_plan.model_dump(), obj.model_dump(), None
+                    chosen_probe, obj = _select_worker_best_plan(
+                        probe_plan,
+                        objective_request,
+                        expected_items,
+                        request.policy.max_routes_per_day,
+                        compare_horizons,
+                    )
+                    return seed, chosen_probe.model_dump(), obj.model_dump(), None
                 if probe_plan.routes and compact_fallback_plan is None:
                     compact_fallback_plan = probe_plan
                 probe_days += 1
@@ -236,13 +291,27 @@ def _run_hybrid_seed_worker(
             should_split_orders=False,
             include_benchmarks=False,
         )
-        plan = hybrid.solve(hard_deadline=worker_deadline)
+        headroom = max(0.0, float(request.max_time_seconds) - float(time_budget))
+        max_ceiling = time.perf_counter() + max(0.5, float(request.max_time_seconds)) - 1.0
+        audit_grace = (
+            min(10.0 if len(request.orders) >= 50 else 6.0, headroom * 0.5)
+            if warm_plan is None and not request.early_stop_patience and time_budget >= 40.0 and headroom >= 12.0
+            else 0.0
+        )
+        hybrid_hard_deadline = min(max_ceiling, worker_deadline + audit_grace)
+        plan = hybrid.solve(hard_deadline=hybrid_hard_deadline)
         if not plan.routes and compact_fallback_plan is not None:
             plan = compact_fallback_plan
         if not plan.routes:
             return seed, None, None, f"Packing-aware Hybrid ALNS (seed {seed}) không trả về tuyến."
-        obj = apply_planning_objective(objective_request, plan)
-        return seed, plan.model_dump(), obj.model_dump(), None
+        chosen_plan, obj = _select_worker_best_plan(
+            plan,
+            objective_request,
+            expected_items,
+            request.policy.max_routes_per_day,
+            compare_horizons,
+        )
+        return seed, chosen_plan.model_dump(), obj.model_dump(), None
     except Exception as exc:
         return seed, None, None, str(exc)
 
@@ -274,8 +343,16 @@ def _run_ils_seed_worker(
             plan = optimizer.solve(hard_deadline=worker_deadline)
             if not plan.routes:
                 return seed, None, None, f"Packing-aware ILS (seed {seed}) không trả về tuyến."
-            obj = apply_planning_objective(objective_request, plan)
-            return seed, plan.model_dump(), obj.model_dump(), None
+            expected_items = {order.id: {item.id for item in order.items} for order in request.orders}
+            compare_horizons = len({v.service_day_index for v in request.vehicles}) > 1
+            chosen_plan, obj = _select_worker_best_plan(
+                plan,
+                objective_request,
+                expected_items,
+                request.policy.max_routes_per_day,
+                compare_horizons,
+            )
+            return seed, chosen_plan.model_dump(), obj.model_dump(), None
     except Exception as exc:
         return seed, None, None, str(exc)
 
@@ -866,6 +943,7 @@ class MultiStartFleetOptimizer:
             or run_concurrent_ils
         ) and not is_mocked
 
+        expected_items = {order.id: {item.id for item in order.items} for order in self.request.orders}
         if use_process_pool:
             objective_request_dict = self.objective_request.model_dump()
             remaining_parallel = max(1.0, job_deadline - time.perf_counter())
@@ -908,7 +986,6 @@ class MultiStartFleetOptimizer:
                 )
             executor = concurrent.futures.ProcessPoolExecutor(max_workers=parallel_workers)
             best_by_seed = {}
-            expected_items = {order.id: {item.id for item in order.items} for order in self.request.orders}
             try:
                 futures = {}
                 for seed in hybrid_seeds:
@@ -1100,8 +1177,12 @@ class MultiStartFleetOptimizer:
                             f"Packing-aware Hybrid ALNS (seed {seed}) không trả về tuyến."
                         )
                         continue
-                    planning_objective = apply_planning_objective(
-                        self.objective_request, hybrid_plan
+                    chosen_hybrid, planning_objective = _select_worker_best_plan(
+                        hybrid_plan,
+                        self.objective_request,
+                        expected_items,
+                        self.request.policy.max_routes_per_day,
+                        compare_horizons,
                     )
                     hybrid_strategy = SearchStrategy(
                         f"packing-aware-hybrid-alns-seed-{seed}",
@@ -1112,7 +1193,7 @@ class MultiStartFleetOptimizer:
                     evaluated_runs.append(
                         (
                             hybrid_strategy,
-                            hybrid_plan,
+                            chosen_hybrid,
                             planning_objective.selection_score_vnd,
                         )
                     )
@@ -1134,7 +1215,6 @@ class MultiStartFleetOptimizer:
         if self._is_cancelled():
             return self._cancelled_response(len(evaluated_runs))
         ortools_fallback_used = False
-        expected_items = {o.id: {i.id for i in o.items} for o in self.request.orders}
         if not any(is_fully_served(plan, all_order_ids, self.request.policy.max_routes_per_day, expected_items)
                    for _, plan, _ in evaluated_runs):
             remaining_fallback = job_deadline - time.perf_counter()
@@ -1187,6 +1267,52 @@ class MultiStartFleetOptimizer:
             )
             ortools_fallback_used = True
 
+        cross_seed_applied = False
+        if not is_mocked and not self._is_cancelled() and len(self.request.orders) >= 8:
+            complete_runs = [
+                run for run in evaluated_runs
+                if is_fully_served(
+                    run[1],
+                    all_order_ids,
+                    max_routes_per_day=self.request.policy.max_routes_per_day,
+                    expected_items=expected_items,
+                )
+            ]
+            if len(complete_runs) >= 2:
+                combined = solve_cross_seed_set_partitioning(
+                    self.objective_request,
+                    [run[1] for run in complete_runs],
+                    expected_items,
+                    compare_horizons=compare_horizons,
+                    time_limit_sec=1.5,
+                )
+                if combined is not None:
+                    combined_plan, combined_obj = combined
+                    if is_fully_served(
+                        combined_plan,
+                        all_order_ids,
+                        max_routes_per_day=self.request.policy.max_routes_per_day,
+                        expected_items=expected_items,
+                    ):
+                        cross_strategy = SearchStrategy(
+                            "packing-aware-cross-seed-cpsat",
+                            "Packing-aware Cross-Seed CP-SAT",
+                            DEFAULT_SEARCH_STRATEGY.first_solution_strategy,
+                            DEFAULT_SEARCH_STRATEGY.local_search_metaheuristic,
+                        )
+                        cross_candidate = (
+                            cross_strategy,
+                            combined_plan,
+                            combined_obj.selection_score_vnd,
+                        )
+                        best_existing_key = min(
+                            _candidate_selection_key(run, compare_horizons)
+                            for run in complete_runs
+                        )
+                        if _candidate_selection_key(cross_candidate, compare_horizons) < best_existing_key:
+                            evaluated_runs.append(cross_candidate)
+                            cross_seed_applied = True
+
         candidates, fully_served_count, diagnostics = select_ranked_candidates(
             evaluated_runs,
             all_order_ids,
@@ -1209,7 +1335,6 @@ class MultiStartFleetOptimizer:
                     ortools_is_feasible=plan.status == "SUCCESS",
                     direct_metric=direct_metric,
                 )
-
         batch_diagnostics = [
             (
                 "Hybrid-first: "
@@ -1224,6 +1349,10 @@ class MultiStartFleetOptimizer:
             batch_diagnostics.append(
                 "Đa họ thuật toán: đã đánh giá thêm Packing-aware ILS song song "
                 "và xếp hạng chung theo chuẩn tối ưu sản xuất."
+            )
+        if cross_seed_applied:
+            batch_diagnostics.append(
+                "Tổ hợp chéo đa seed: CP-SAT đã ghép các tuyến 3D hợp lệ từ nhiều seed để cải thiện nghiệm."
             )
         if adaptive_search:
             batch_diagnostics.append(

@@ -1582,6 +1582,39 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             selected.append(fallback)
         return selected
 
+    @staticmethod
+    def _inject_objective_audit_candidate(
+        selected: List[SearchState],
+        candidates: Sequence[SearchState],
+        *,
+        limit: int,
+        fallback: Optional[SearchState] = None,
+    ) -> List[SearchState]:
+        """Ensure the best company-objective basin is audited in multi-day runs."""
+        if limit < 3 or not candidates:
+            return selected
+
+        def _objective_first_key(item: SearchState) -> Tuple[Any, ...]:
+            key = item[0]
+            if isinstance(key, tuple) and len(key) >= 6:
+                return (key[0], key[1], key[3], key[4], key[2], *key[5:])
+            return key if isinstance(key, tuple) else (0, key)
+
+        best_objective = min(candidates, key=_objective_first_key)
+        if any(item is best_objective for item in selected):
+            return selected
+        if len(selected) < limit:
+            return [*selected, best_objective]
+        replace_idx = next(
+            (idx for idx in range(len(selected) - 1, -1, -1) if selected[idx] is not fallback),
+            None,
+        )
+        if replace_idx is None:
+            return selected
+        updated = list(selected)
+        updated[replace_idx] = best_objective
+        return updated
+
     def _rank_candidate_for_audit(
         self, routes: List[List[ScheduledStop]], unassigned: List[str],
     ) -> Tuple[int, int, int, int, int, int]:
@@ -3880,8 +3913,8 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             else total_budget * 0.25
         )
         if len(self.orders) >= LARGE_SEED_ORDER_COUNT:
-            max_audit_reserve = 18.0 if len(self.orders) >= 80 else 10.0
-            audit_reserve_sec = min(max_audit_reserve, max(3.0, total_budget * 0.30))
+            max_audit_reserve = 12.0 if len(self.orders) >= 80 else 8.0
+            audit_reserve_sec = min(max_audit_reserve, max(3.0, total_budget * 0.22))
             pipeline_deadline = solve_started_at + self.request.max_time_seconds
             if hard_deadline is not None:
                 pipeline_deadline = min(pipeline_deadline, hard_deadline)
@@ -4081,14 +4114,15 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
         self._hybrid_model_context = (orders, policy, node_id_to_index)
         construction_deadline = search_deadline
         available_search = max(0.0, search_deadline - time.perf_counter())
+        construction_share = 0.50 if available_search >= 45.0 else 0.60
         if self.request.early_stop_patience and self.request.search_time_seconds:
             capped_adaptive = min(search_deadline, solve_started_at + self.request.search_time_seconds)
             if len(self.orders) >= 12 and available_search >= 8.0:
-                capped_adaptive = min(capped_adaptive, time.perf_counter() + available_search * 0.60)
+                capped_adaptive = min(capped_adaptive, time.perf_counter() + available_search * construction_share)
             construction_deadline = capped_adaptive
         elif len(self.orders) >= 12 and available_search >= 8.0:
-            # Keep at least 40% of remaining search time for native ALNS + vehicle downsizing.
-            construction_deadline = time.perf_counter() + available_search * 0.60
+            # Reserve at least 50% of >=45s search budgets (40% for shorter runs) for ALNS & cross-exchange.
+            construction_deadline = time.perf_counter() + available_search * construction_share
         initial_solution = self._build_hybrid_initial_solution(
             vehicles,
             drivers,
@@ -4288,6 +4322,13 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
 
         audit_limit = 3 if max_items_per_order >= 40 else 6
         audit_candidates = self._select_audit_candidates(unique_plans, limit=audit_limit, fallback=construction_fallback)
+        if len({vehicle.service_day_index for vehicle in self.vehicles}) > 1:
+            audit_candidates = self._inject_objective_audit_candidate(
+                audit_candidates,
+                unique_plans,
+                limit=audit_limit,
+                fallback=construction_fallback,
+            )
         valid_responses = [checkpoint] if checkpoint is not None else []
         incumbent = checkpoint
         failed_route_signatures: Set[Tuple[Any, ...]] = set()
@@ -4444,6 +4485,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             if len(full_valid) > 2:
                 best_so_far = self._best_audited_response([best_so_far, *full_valid[2:]])
             result = best_so_far
+            setattr(result, "_audited_alternatives", [resp for resp in full_valid if resp is not result])
         else:
             result = self._best_audited_response(valid_responses)
             if time.perf_counter() + 0.05 < polish_deadline:

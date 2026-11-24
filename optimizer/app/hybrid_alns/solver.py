@@ -3265,6 +3265,10 @@ class HybridALNSSolver:
             if not improved_in_round:
                 break
 
+        # Bảo đảm nghiệm kinh tế tốt nhất ở từng mức số chuyến đều góp mặt trước khi lọc.
+        for _econ_cost, rc_routes, rc_plan_cost in best_by_route_count.values():
+            elite_candidates.append((rc_plan_cost, copy.deepcopy(rc_routes), []))
+
         # Lọc các ứng viên duy nhất trong elite candidates đã giao đủ 100% đơn
         unique_candidates: List[Tuple[int, List[List[ScheduledStop]], List[str]]] = []
         seen_signatures = set()
