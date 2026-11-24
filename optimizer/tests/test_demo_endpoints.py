@@ -20,73 +20,109 @@ def archived_case(case_id):
     return raw
 
 
-EXPECTED_DELIVERIES = {
-    "corridor_03_rotate": [1, 2, 3],
-    "corridor_04_fifo": [1, 2, 3, 4],
-    "corridor_05_fifo": [1, 2, 3, 4, 5],
-    "corridor_05_swap": [1, 4, 3, 2, 5],
-    "corridor_07_reverse": [7, 6, 5, 4, 3, 2, 1],
-    "corridor_10_fifo": list(range(1, 11)),
-}
-
-
 def test_list_demo_cases():
     cases = list_demo_cases()
-    assert {case.id for case in cases} == set(EXPECTED_DELIVERIES)
-    assert all(case.vehicles_count == case.drivers_count == 1 for case in cases)
-    assert all(0 < case.total_weight_kg <= 2000 and 0 < case.total_volume_cbm <= 20.16 for case in cases)
-    with pytest.raises(HTTPException) as error:
-        get_demo_case_payload("scenario_1_multi_item")
-    assert error.value.status_code == 404
+    assert [case.id for case in cases] == ["demo_3d_danang_complex"]
+    case = cases[0]
+    assert case.vehicles_count == 1 and case.drivers_count == 1
+    assert case.orders_count == 8
+    assert case.supports_stacking is True
+    assert case.total_volume_cbm > 28.8 * 0.80
+    for obsolete in ("corridor_03_rotate", "scenario_1_multi_item"):
+        with pytest.raises(HTTPException) as error:
+            get_demo_case_payload(obsolete)
+        assert error.value.status_code == 404
 
 
-@pytest.mark.parametrize("case_id,deliveries", EXPECTED_DELIVERIES.items())
-def test_corridor_demo(case_id, deliveries):
-    batch = run_demo_case(DemoRunRequest(case_id=case_id, demo_stacking_enabled=True))
+def test_complex_3d_demo_scenario():
+    request = FleetOptimizationRequest.model_validate(get_demo_case_payload("demo_3d_danang_complex"))
+    vehicle = request.vehicles[0]
+    vehicle_vol_cm3 = vehicle.length_cm * vehicle.width_cm * vehicle.height_cm
+    floor_area_cm2 = vehicle.length_cm * vehicle.width_cm
+
+    base_slab = next(it for o in request.orders for it in o.items if it.id == "K01-SAN-60")
+    assert base_slab.length_cm * base_slab.width_cm == pytest.approx(floor_area_cm2 * 0.60)
+    assert base_slab.height_cm == pytest.approx(vehicle.height_cm * 0.10)
+
+    batch = run_demo_case(DemoRunRequest(case_id="demo_3d_danang_complex", time_budget_seconds=8.0))
     assert batch.candidates
-    request = FleetOptimizationRequest.model_validate(get_demo_case_payload(case_id))
-    validator = SpatialValidator(request.vehicles[0])
-    count = len(deliveries)
-    expected = [("PICKUP", i) for i in range(1, count + 1)] + [("DELIVERY", i) for i in deliveries]
-    for candidate in batch.candidates:
-        result = candidate.result
-        assert result.status == "SUCCESS" and not result.unassigned_orders
-        route, = result.routes
-        assert route.driver_id == "driver-1" and route.vehicle_id == "truck-1"
-        assert route.total_distance_km == 12 * count
-        assert route.spatial_validation.is_valid
-        states = route.spatial_validation.step_states
-        assert len(route.stops) == len(states) == len(expected)
-        previous = {}
-        previous_items = []
-        for stop, state, (kind, number) in zip(route.stops, states, expected):
-            package = f"K{number:02}"
-            assert stop.stop_type == state.stop_type == kind
-            assert stop.location_id == state.stop_id
-            assert state.is_valid and state.current_weight_kg <= 2000
-            current = {i.item_id: (i.x, i.y, i.z, i.length_cm, i.width_cm) for i in state.placed_items}
-            if kind == "PICKUP":
-                assert stop.items_loaded == [package]
-                assert current.keys() == previous.keys() | {package}
-            else:
-                assert stop.items_unloaded == [package]
-                assert current.keys() == previous.keys() - {package}
-            for item_id in current.keys() & previous.keys():
-                assert current[item_id] == previous[item_id]
-            for x, y, z, length, width in current.values():
-                assert z == 0 and 0 <= x <= 400 - length and 0 <= y <= 240 - width
-            for a, b in combinations(state.placed_items, 2):
-                assert not validator.is_overlap(a.x, a.y, a.length_cm, a.width_cm, b.x, b.y, b.length_cm, b.width_cm)
-            onboard = state.placed_items if kind == "PICKUP" else previous_items
-            moving = next(item for item in onboard if item.item_id == package)
-            assert validator.is_path_to_door_clear(moving, onboard)[0]
-            previous_items = state.placed_items
-            previous = current
-        assert not previous
-        assert len(states[count - 1].placed_items) == count
-        if case_id == "corridor_03_rotate":
-            rotated = next(i for i in states[count - 1].placed_items if i.item_id == "K01")
-            assert (rotated.length_cm, rotated.width_cm) == (270, 160)
+    result = batch.candidates[0].result
+    assert result.status == "SUCCESS" and not result.unassigned_orders
+    route, = result.routes
+    assert route.vehicle_id == "truck-3d-01" and route.driver_id == "driver-3d-01"
+    assert route.spatial_validation.is_valid
+    states = route.spatial_validation.step_states
+    assert len(route.stops) == len(states) == 16
+
+    previous = {}
+    peak_volume_cm3 = 0.0
+    max_z = 0.0
+    supported_by_base = set()
+    tier3_items = set()
+    rotated_k08 = False
+    for stop, state in zip(route.stops, states):
+        assert stop.stop_type == state.stop_type
+        assert state.is_valid and state.current_weight_kg <= vehicle.payload_limit_kg
+        current = {
+            i.item_id: (i.x, i.y, i.z, i.length_cm, i.width_cm, i.height_cm, i.support_item_id)
+            for i in state.placed_items
+        }
+        for item_id in current.keys() & previous.keys():
+            assert current[item_id] == previous[item_id]
+        for item_id, (x, y, z, length, width, height, sup) in current.items():
+            assert 0 <= x <= vehicle.length_cm - length + 0.01
+            assert 0 <= y <= vehicle.width_cm - width + 0.01
+            assert 0 <= z <= vehicle.height_cm - height + 0.01
+            max_z = max(max_z, z)
+            if sup == "K01-SAN-60":
+                supported_by_base.add(item_id)
+            if z > 90:
+                tier3_items.add(item_id)
+            if item_id == "K08-TRUNG-140" and (length, width) == (140.0, 115.0):
+                rotated_k08 = True
+        for a, b in combinations(state.placed_items, 2):
+            x_ov = a.x < b.x + b.length_cm - 0.01 and b.x < a.x + a.length_cm - 0.01
+            y_ov = a.y < b.y + b.width_cm - 0.01 and b.y < a.y + a.width_cm - 0.01
+            z_ov = a.z < b.z + b.height_cm - 0.01 and b.z < a.z + a.height_cm - 0.01
+            assert not (x_ov and y_ov and z_ov)
+        step_vol = sum(i.length_cm * i.width_cm * i.height_cm for i in state.placed_items)
+        peak_volume_cm3 = max(peak_volume_cm3, step_vol)
+        previous = current
+
+    assert not previous
+    assert peak_volume_cm3 > vehicle_vol_cm3 * 0.80
+    assert max_z > 100
+    assert len(supported_by_base) >= 2
+    assert len(tier3_items) >= 3
+    assert rotated_k08
+
+    # Turning off 3D stacking cannot fit all packages onto the single vehicle
+    batch_2d = run_demo_case(
+        DemoRunRequest(case_id="demo_3d_danang_complex", demo_stacking_enabled=False, time_budget_seconds=4.0)
+    )
+    assert not batch_2d.candidates or batch_2d.candidates[0].result.status != "SUCCESS"
+
+
+def test_demo_run_applies_production_settings_overrides():
+    batch = run_demo_case(
+        DemoRunRequest(
+            custom_request=archived_case("scenario_stack_cost_comparison"),
+            demo_stacking_enabled=True,
+            demo_stacking_owner_mode="SAME_CUSTOMER",
+            demo_stacking_max_tiers=4,
+            demo_stacking_lift_clearance_cm=6.0,
+            demo_stacking_max_top_load_percent=35,
+            time_budget_seconds=4.0,
+            max_time_seconds=20,
+            policy_overrides={"fuel_price_per_liter_vnd": 30000},
+        )
+    )
+    assert batch.candidates
+    route = batch.candidates[0].result.routes[0]
+    assert route.spatial_validation.demo_stacking.max_tiers == 4
+    assert route.spatial_validation.demo_stacking.lift_clearance_cm == 6.0
+    assert route.spatial_validation.demo_stacking.max_top_load_percent == 35
+    assert route.spatial_validation.demo_stacking.owner_mode == "SAME_CUSTOMER"
 
 
 def test_run_demo_case_nhatrang():

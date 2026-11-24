@@ -1,6 +1,7 @@
 import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { DemoScenarioControlCard } from '../components/DemoScenarioControlCard';
+import { demoCases, demoScenarios } from '../demoScenarios';
 import type { DemoCaseSummaryUI } from '../types';
 
 beforeAll(() => {
@@ -59,14 +60,10 @@ describe('DemoScenarioControlCard', () => {
 
     render(
       <DemoScenarioControlCard
-        stackingEnabled={true}
-        onChangeStacking={vi.fn()}
         cases={mockCases}
         loadingCases={false}
         selectedCaseId="novel_1_mekong_hub_spoke"
         onSelectCaseId={handleSelect}
-        timeBudgetSeconds={6}
-        onChangeTimeBudget={vi.fn()}
         running={false}
         onRunDemo={handleRun}
         onClearDemo={vi.fn()}
@@ -81,6 +78,9 @@ describe('DemoScenarioControlCard', () => {
     expect(screen.getByText('Mê Kông 2 chiều (Star Topology)')).toBeInTheDocument();
     expect(screen.getByText('Tuyến mạng hình sao ĐBSCL')).toBeInTheDocument();
     expect(screen.getByText('15')).toBeInTheDocument();
+    expect(screen.getByText('12,5 m³')).toBeInTheDocument();
+    expect(screen.queryByText(/NGÂN SÁCH TÌM KIẾM/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Cho phép xếp chồng demo')).not.toBeInTheDocument();
 
     const runBtn = screen.getByRole('button', { name: /Chạy tối ưu Demo/i });
     expect(runBtn).toBeInTheDocument();
@@ -89,17 +89,12 @@ describe('DemoScenarioControlCard', () => {
   }, 15000);
 
   it('hiển thị thông báo khi có kết quả tối ưu demo', () => {
-    const toggleStacking = vi.fn();
     render(
       <DemoScenarioControlCard
-        stackingEnabled={true}
-        onChangeStacking={toggleStacking}
         cases={mockCases.map(c => ({ ...c, supports_stacking: c.id === 'novel_1_mekong_hub_spoke' }))}
         loadingCases={false}
         selectedCaseId="novel_1_mekong_hub_spoke"
         onSelectCaseId={vi.fn()}
-        timeBudgetSeconds={6}
-        onChangeTimeBudget={vi.fn()}
         running={false}
         onRunDemo={vi.fn()}
         onClearDemo={vi.fn()}
@@ -113,24 +108,16 @@ describe('DemoScenarioControlCard', () => {
     expect(
       screen.getByText('Đang hiển thị kết quả từ Chế độ Demo (Benchmark)'),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText('Chế độ xếp chồng theo khách hàng', { selector: 'input' })).toBeInTheDocument();
-    expect(screen.getByText('Chỉ kiện cùng khách hàng')).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText('Cho phép xếp chồng demo'));
-    expect(toggleStacking).toHaveBeenCalledWith(false);
   });
 
-  it('hiển thị nút chạy và tùy chọn xếp chồng khi tải JSON tùy chỉnh', () => {
+  it('hiển thị nút chạy và tên tệp khi tải JSON tùy chỉnh', () => {
     const handleRun = vi.fn();
     render(
       <DemoScenarioControlCard
-        stackingEnabled={true}
-        onChangeStacking={vi.fn()}
         cases={mockCases}
         loadingCases={false}
         selectedCaseId="novel_1_mekong_hub_spoke"
         onSelectCaseId={vi.fn()}
-        timeBudgetSeconds={8}
-        onChangeTimeBudget={vi.fn()}
         running={false}
         onRunDemo={handleRun}
         onClearDemo={vi.fn()}
@@ -142,9 +129,20 @@ describe('DemoScenarioControlCard', () => {
       />,
     );
 
-    expect(screen.getByLabelText('Cho phép xếp chồng demo')).toBeInTheDocument();
     expect(screen.getByText(/custom-demo\.json/)).toBeInTheDocument();
+    expect(screen.queryByText(/NGÂN SÁCH TÌM KIẾM/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Chạy tối ưu Demo/i }));
     expect(handleRun).toHaveBeenCalledTimes(1);
   }, 15000);
+
+  it('nạp đúng 1 kịch bản demo 3D phức tạp duy nhất từ optimizer/benchmarks/demo', () => {
+    expect(demoCases).toHaveLength(1);
+    const [scenario] = demoCases;
+    expect(scenario.id).toBe('demo_3d_danang_complex');
+    expect(scenario.supports_stacking).toBe(true);
+    expect(scenario.vehicles_count).toBe(1);
+    expect(scenario.drivers_count).toBe(1);
+    expect(scenario.total_volume_cbm).toBeGreaterThan(28.8 * 0.8);
+    expect(demoScenarios[0].request.demo_stacking).toBeTruthy();
+  });
 });

@@ -1,4 +1,4 @@
-import { corridorDemos, demoCases } from '../corridorDemos';
+import { demoScenarios, demoCases } from '../demoScenarios';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import axios from 'axios';
@@ -74,7 +74,6 @@ import {
   Driver,
   OptimizedRouteUI,
   OptimizationCandidateSummaryUI,
-  DemoStackingOwnerMode,
   FleetOptimizationResultUI,
   PlanningObjectiveBreakdownUI,
   Order,
@@ -164,13 +163,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   // Chế độ: Chi nhánh thực tế vs Demo Benchmark
   const [pageMode, setPageMode] = useState<'BRANCH' | 'DEMO'>('BRANCH');
   const [selectedDemoCaseId, setSelectedDemoCaseId] = useState<string>(demoCases[0].id);
-  const [demoTimeBudgetSeconds, setDemoTimeBudgetSeconds] = useState<number>(demoCases[0].suggested_time_limit_sec);
-  const [demoStackingEnabled, setDemoStackingEnabled] = useState(true);
-  const [demoStackingOwnerMode, setDemoStackingOwnerMode] = useState<DemoStackingOwnerMode>('ANY_CUSTOMER');
   const [effectiveSettings, setEffectiveSettings] = useState<EffectiveSettings | null>(null);
-  const [demoStackingRuns, setDemoStackingRuns] = useState<Record<string, Partial<Record<'off' | DemoStackingOwnerMode, OptimizationCandidateSummaryUI>>>>({});
-  const demoComparisonKey = `${selectedDemoCaseId}:${demoTimeBudgetSeconds}`;
-  const demoComparison = demoStackingRuns[demoComparisonKey];
   const [demoCandidatesMap, setDemoCandidatesMap] = useState<Record<number, FleetOptimizationResultUI> | null>(null);
   const [runningDemo, setRunningDemo] = useState<boolean>(false);
   const [customDemoJson, setCustomDemoJson] = useState<any | null>(null);
@@ -321,11 +314,6 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       .then((response) => {
         if (!active) return;
         setEffectiveSettings(response.data);
-        setDemoStackingEnabled(response.data.stacking.enabled);
-        setDemoStackingOwnerMode(response.data.stacking.ownerMode);
-        if (!response.data.optimization.demoAllowOverride) {
-          setDemoTimeBudgetSeconds(response.data.optimization.defaultSearchBudgetSeconds);
-        }
       })
       .catch(() => {
         if (active) setEffectiveSettings(null);
@@ -656,7 +644,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   };
 
   const startDemoOptimization = async () => {
-    const selectedDemo = corridorDemos.find(demo => demo.summary.id === selectedDemoCaseId);
+    const selectedDemo = demoScenarios.find(demo => demo.summary.id === selectedDemoCaseId);
     if (!isCustomDemoUpload && !selectedDemo) {
       message.warning('Vui lòng chọn kịch bản demo');
       return;
@@ -676,35 +664,13 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       setActiveStepIndex(0);
       setEnableSim(false);
 
-      const supportsStacking =
-        isCustomDemoUpload ||
-        Boolean(demoCases.find((c) => c.id === selectedDemoCaseId)?.supports_stacking);
-      const allowDemoOverride = effectiveSettings?.optimization.demoAllowOverride ?? true;
-      const effectiveDemoStacking = allowDemoOverride
-        ? demoStackingEnabled
-        : (effectiveSettings?.stacking.enabled ?? demoStackingEnabled);
-      const effectiveDemoOwnerMode = allowDemoOverride
-        ? demoStackingOwnerMode
-        : (effectiveSettings?.stacking.ownerMode ?? demoStackingOwnerMode);
-      const effectiveDemoBudget = allowDemoOverride
-        ? demoTimeBudgetSeconds
-        : (effectiveSettings?.optimization.defaultSearchBudgetSeconds ?? demoTimeBudgetSeconds);
       const payload: RunDemoOptimizationPayloadUI = {
         ...(selectedBranchId ? { branchId: selectedBranchId } : {}),
         caseId: isCustomDemoUpload ? undefined : selectedDemoCaseId,
         customRequest: isCustomDemoUpload ? customDemoJson : selectedDemo?.request,
-        timeBudgetSeconds: effectiveDemoBudget,
-        demoStackingEnabled: supportsStacking ? effectiveDemoStacking : false,
-        demoStackingOwnerMode:
-          effectiveDemoStacking && supportsStacking ? effectiveDemoOwnerMode : undefined,
       };
 
       const res = await tripsApi.runDemoOptimization(payload);
-      if (payload.demoStackingEnabled !== undefined && res.data.candidates[0]) {
-        const best = res.data.candidates[0];
-        const mode = payload.demoStackingEnabled ? payload.demoStackingOwnerMode ?? 'SAME_CUSTOMER' : 'off';
-        setDemoStackingRuns(runs => ({ ...runs, [demoComparisonKey]: { ...runs[demoComparisonKey], [mode]: best } }));
-      }
       setOptimization(res.data);
       if (res.data.candidateResults) {
         setDemoCandidatesMap(res.data.candidateResults);
@@ -2672,18 +2638,10 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
 
       {pageMode === 'DEMO' ? (
         <DemoScenarioControlCard
-          stackingEnabled={demoStackingEnabled}
-          onChangeStacking={setDemoStackingEnabled}
-          stackingOwnerMode={demoStackingOwnerMode}
-          onChangeStackingOwnerMode={setDemoStackingOwnerMode}
-          allowOverride={effectiveSettings?.optimization.demoAllowOverride ?? true}
-          stackingComparison={demoComparison ? { off: demoComparison.off, on: demoComparison[demoStackingOwnerMode] } : undefined}
           cases={demoCases}
           loadingCases={false}
           selectedCaseId={selectedDemoCaseId}
           onSelectCaseId={setSelectedDemoCaseId}
-          timeBudgetSeconds={demoTimeBudgetSeconds}
-          onChangeTimeBudget={setDemoTimeBudgetSeconds}
           running={runningDemo}
           onRunDemo={startDemoOptimization}
           onClearDemo={clearDemoOptimization}
@@ -2911,7 +2869,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       </div>
       )}
 
-      {pageMode === 'BRANCH' && effectiveSettings && (
+      {effectiveSettings && (
         <Card size="small" style={{ marginBottom: 16, background: '#f8fafc', borderRadius: 10 }}>
           <div className="dispatch-effective-policy-row">
             <Space wrap size={[8, 6]} className="dispatch-effective-policy-tags">

@@ -281,7 +281,7 @@ def test_post_audit_improves_short_route_requiring_multiple_stop_changes(
         ]
     fixture_name = "corridor_07_reverse.json" if order_count >= 7 else f"corridor_{order_count:02}_fifo.json"
     fixture = (
-        Path(__file__).resolve().parents[1] / "benchmarks" / "corridor"
+        Path(__file__).resolve().parent / "fixtures"
         / fixture_name
     )
     request = FleetOptimizationRequest.model_validate(json.loads(fixture.read_text(encoding="utf8")))

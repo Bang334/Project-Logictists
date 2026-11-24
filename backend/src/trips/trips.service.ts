@@ -9,6 +9,7 @@ import {
   ForbiddenException,
   GatewayTimeoutException,
   Injectable,
+  Logger,
   NotFoundException,
   Optional,
   ServiceUnavailableException,
@@ -164,6 +165,8 @@ export type StoredOptimizationCandidateBatch = {
 
 @Injectable()
 export class TripsService {
+  private readonly logger = new Logger(TripsService.name);
+
   constructor(
     private prisma: PrismaService,
     private mapboxService: MapboxService,
@@ -3591,17 +3594,34 @@ export class TripsService {
     const demoStackingOwnerMode = allowDemoOverride
       ? (dto.demoStackingOwnerMode ?? effectiveSettings?.stacking.ownerMode)
       : effectiveSettings?.stacking.ownerMode;
+    const maxTimeSeconds = effectiveSettings?.optimization.maxTimeSeconds ?? 240;
     const resolvedBudget =
       dto.timeBudgetSeconds ??
       effectiveSettings?.optimization.defaultSearchBudgetSeconds ??
-      10;
-    const resolvedTimeBudget = allowDemoOverride
-      ? resolvedBudget
-      : Math.min(resolvedBudget, effectiveSettings?.optimization.maxTimeSeconds ?? 120);
+      60;
     const earlyStopPatience = effectiveSettings?.optimization.earlyStopPatience ?? 0;
-    const maxTimeSeconds = effectiveSettings?.optimization.maxTimeSeconds ?? 120;
-    const timeBudgetSeconds = earlyStopPatience > 0 ? Math.min(resolvedTimeBudget, maxTimeSeconds) : resolvedTimeBudget;
-    const timeoutMs = Math.max(60000, ((earlyStopPatience > 0 ? maxTimeSeconds : timeBudgetSeconds) + 90) * 1000);
+    const timeBudgetSeconds = allowDemoOverride && dto.timeBudgetSeconds !== undefined
+      ? resolvedBudget
+      : Math.min(resolvedBudget, maxTimeSeconds);
+    const timeoutMs = Math.max(
+      60000,
+      ((earlyStopPatience > 0 ? maxTimeSeconds : timeBudgetSeconds) + 90) * 1000,
+    );
+    const policyOverrides = effectiveSettings
+      ? {
+          fuel_price_per_liter_vnd: effectiveSettings.costPenalty.fuelPricePerLiter,
+          monthly_working_minutes: effectiveSettings.costPenalty.monthlyWorkingMinutes,
+          cargo_holding_cost_vnd_per_ton_hour:
+            effectiveSettings.costPenalty.cargoHoldingCostVndPerTonHour,
+          unassigned_order_penalty_vnd: effectiveSettings.optimization.unassignedOrderPenaltyVnd,
+          delivery_grace_days: effectiveSettings.costPenalty.deliveryGraceDays,
+          late_delivery_penalty_mode: effectiveSettings.costPenalty.lateDeliveryPenaltyMode,
+          late_delivery_penalty_value: effectiveSettings.costPenalty.lateDeliveryPenaltyValue,
+          ...(effectiveSettings.optimization.maxRoutesPerDay != null
+            ? { max_routes_per_day: effectiveSettings.optimization.maxRoutesPerDay }
+            : {}),
+        }
+      : undefined;
     try {
       const res = await axios.post(
         `${this.optimizerUrl}/demo/run`,
@@ -3609,14 +3629,20 @@ export class TripsService {
           case_id: dto.caseId,
           demo_stacking_enabled: demoStackingEnabled,
           demo_stacking_owner_mode: demoStackingOwnerMode,
+          ...(effectiveSettings?.stacking.maxTiers != null
+            ? { demo_stacking_max_tiers: effectiveSettings.stacking.maxTiers }
+            : {}),
+          ...(effectiveSettings?.stacking.liftClearanceMm != null
+            ? { demo_stacking_lift_clearance_cm: effectiveSettings.stacking.liftClearanceMm / 10 }
+            : {}),
           ...(effectiveSettings?.stacking.maxTopLoadPercent != null
             ? { demo_stacking_max_top_load_percent: effectiveSettings.stacking.maxTopLoadPercent }
             : {}),
           time_budget_seconds: timeBudgetSeconds,
-          ...(earlyStopPatience > 0
-            ? { early_stop_patience: earlyStopPatience, max_time_seconds: maxTimeSeconds }
-            : {}),
+          ...(effectiveSettings ? { max_time_seconds: maxTimeSeconds } : {}),
+          ...(earlyStopPatience > 0 ? { early_stop_patience: earlyStopPatience } : {}),
           hybrid_seed_count: effectiveSettings?.optimization.hybridSeedCount ?? 0,
+          ...(policyOverrides ? { policy_overrides: policyOverrides } : {}),
           custom_request: dto.customRequest,
         },
         { timeout: timeoutMs },
@@ -3625,6 +3651,7 @@ export class TripsService {
       assertFleetOptimizationBatchResult(batch);
 
       // Thẩm định và sinh route_geometry thực tế (Mapbox Directions API) cho từng tuyến xe
+      const routeGeometryCache = new Map<string, any>();
       for (const candidate of batch.candidates || []) {
         if (!candidate.result?.routes) continue;
         await Promise.all(
@@ -3636,20 +3663,34 @@ export class TripsService {
             (route.stops || []).forEach((stop: any) => {
               waypoints.push([stop.longitude, stop.latitude]);
             });
-            if (route.depot) {
-              waypoints.push([route.depot.longitude, route.depot.latitude]);
+            const endPoint = route.end_location ?? route.depot;
+            if (endPoint) {
+              const last = waypoints[waypoints.length - 1];
+              if (!last || last[0] !== endPoint.longitude || last[1] !== endPoint.latitude) {
+                waypoints.push([endPoint.longitude, endPoint.latitude]);
+              }
             }
 
             if (waypoints.length >= 2) {
+              const cacheKey = JSON.stringify(waypoints);
               try {
-                if (!dto.caseId?.startsWith('corridor_') && waypoints.length <= 25 && process.env.MAPBOX_ACCESS_TOKEN) {
-                  const routeDetails = await this.mapboxService.getRoute(waypoints);
-                  if (routeDetails?.geometry) {
-                    route.route_geometry = routeDetails.geometry;
+                if (process.env.MAPBOX_ACCESS_TOKEN) {
+                  let geometry = routeGeometryCache.get(cacheKey);
+                  if (!geometry) {
+                    const routeDetails = await this.mapboxService.getRoute(waypoints);
+                    geometry = routeDetails?.geometry;
+                    if (geometry) {
+                      routeGeometryCache.set(cacheKey, geometry);
+                    }
+                  }
+                  if (geometry) {
+                    route.route_geometry = geometry;
                   }
                 }
-              } catch {
-                // Giữ nguyên baseline nối các waypoints nếu Mapbox trả lỗi
+              } catch (mapErr: any) {
+                this.logger.warn(
+                  `Không lấy được Mapbox Directions cho demo (${dto.caseId || 'custom'}): ${mapErr?.message || mapErr}`,
+                );
               }
               if (!route.route_geometry) {
                 route.route_geometry = {
@@ -3714,7 +3755,7 @@ export class TripsService {
         schemaVersion: '1.0',
         planningEpochIso: new Date().toISOString(),
         scheduleMode: 'CURRENT_TIME',
-        searchBudgetSeconds: dto.timeBudgetSeconds ?? 6,
+        searchBudgetSeconds: timeBudgetSeconds,
         progress: null,
         result: bestCandidate,
         candidates,

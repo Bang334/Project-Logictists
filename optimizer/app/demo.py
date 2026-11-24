@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .models import (
+    CostPolicy,
     DemoStackingPolicy,
     FleetOptimizationBatchResponse,
     FleetOptimizationRequest,
@@ -22,7 +23,7 @@ from .multi_start import MultiStartFleetOptimizer
 
 router = APIRouter(prefix="/demo", tags=["Demo Benchmarks"])
 
-CASES_DIR = Path(__file__).resolve().parent.parent / "benchmarks" / "corridor"
+CASES_DIR = Path(__file__).resolve().parent.parent / "benchmarks" / "demo"
 
 
 class DemoCaseSummary(BaseModel):
@@ -54,11 +55,24 @@ class DemoRunRequest(BaseModel):
     max_time_seconds: Optional[int] = Field(default=None, ge=1, le=1000)
     demo_stacking_enabled: Optional[bool] = None
     demo_stacking_owner_mode: Optional[Literal["SAME_CUSTOMER", "ANY_CUSTOMER"]] = None
+    demo_stacking_max_tiers: Optional[int] = Field(default=None, ge=2, le=20)
+    demo_stacking_lift_clearance_cm: Optional[float] = Field(default=None, gt=0)
     demo_stacking_max_top_load_percent: Optional[int] = Field(default=None, ge=1, le=100)
+    policy_overrides: Optional[Dict[str, Any]] = None
+
+
+def _load_catalog() -> dict:
+    catalog_path = CASES_DIR / "catalog.json"
+    if not catalog_path.is_file():
+        return {}
+    return json.loads(catalog_path.read_text(encoding="utf-8"))
 
 
 def _load_case_dict(case_id: str) -> dict:
-    if not case_id.startswith("corridor_") or not case_id.replace("_", "").isalnum():
+    if not case_id or not case_id.replace("_", "").isalnum():
+        raise HTTPException(status_code=404, detail="Không tìm thấy kịch bản demo")
+    catalog = _load_catalog()
+    if case_id not in catalog:
         raise HTTPException(status_code=404, detail="Không tìm thấy kịch bản demo")
     path = CASES_DIR / f"{case_id}.json"
     if not path.is_file():
@@ -69,19 +83,30 @@ def _load_case_dict(case_id: str) -> dict:
 @router.get("/cases", response_model=List[DemoCaseSummary])
 def list_demo_cases() -> List[DemoCaseSummary]:
     summaries = []
-    catalog = json.loads((CASES_DIR / "catalog.json").read_text(encoding="utf-8"))
+    catalog = _load_catalog()
     for case_id, profile in catalog.items():
         data = _load_case_dict(case_id)
         items = [item for order in data["orders"] for item in order["items"]]
         summaries.append(DemoCaseSummary(
-            id=case_id, filename=f"{case_id}.json", name=profile["name"],
-            description=profile["description"], category="SCENARIO",
-            category_name="Xếp dỡ trên tuyến thẳng", orders_count=len(data["orders"]),
-            vehicles_count=len(data["vehicles"]), drivers_count=len(data["drivers"]),
+            id=case_id,
+            filename=f"{case_id}.json",
+            name=profile["name"],
+            description=profile["description"],
+            category=profile.get("category", "SCENARIO"),
+            category_name=profile.get("category_name", "Xếp chồng 3D & Đường bộ thực tế"),
+            orders_count=len(data["orders"]),
+            vehicles_count=len(data["vehicles"]),
+            drivers_count=len(data["drivers"]),
             total_weight_kg=sum(item["weight_kg"] for item in items),
-            total_volume_cbm=round(sum(item["length_cm"] * item["width_cm"] * item["height_cm"]
-                                       for item in items) / 1_000_000, 3),
+            total_volume_cbm=round(
+                sum(
+                    item["length_cm"] * item["width_cm"] * item["height_cm"]
+                    for item in items
+                ) / 1_000_000,
+                3,
+            ),
             suggested_time_limit_sec=data["max_time_seconds"],
+            supports_stacking=data.get("demo_stacking") is not None,
         ))
     return summaries
 
@@ -109,32 +134,51 @@ def run_demo_case(payload: DemoRunRequest) -> FleetOptimizationBatchResponse:
     if payload.max_time_seconds is not None:
         request.max_time_seconds = payload.max_time_seconds
         if payload.time_budget_seconds is not None:
-            request.search_time_seconds = min(payload.max_time_seconds, int(round(payload.time_budget_seconds)))
-    elif payload.time_budget_seconds:
-        request.max_time_seconds = int(round(payload.time_budget_seconds))
+            request.search_time_seconds = min(
+                payload.max_time_seconds, int(round(payload.time_budget_seconds))
+            )
+    elif payload.time_budget_seconds is not None:
+        budget_sec = int(round(payload.time_budget_seconds))
+        request.max_time_seconds = budget_sec
+        request.search_time_seconds = budget_sec
 
-    # Chạy trực tiếp qua MultiStartFleetOptimizer (Hybrid ALNS first)
-    if (payload.case_id and payload.custom_request is None) or payload.demo_stacking_enabled is False:
+    # Áp dụng cấu hình xếp chồng và policy giống bản gốc
+    if payload.demo_stacking_enabled is False:
         stacking_policy = None
-    elif request.demo_stacking is not None:
-        stacking_policy = request.demo_stacking
-    elif payload.demo_stacking_enabled is True:
-        stacking_policy = DemoStackingPolicy(
+    elif request.demo_stacking is not None or payload.demo_stacking_enabled is True:
+        base_stacking = request.demo_stacking or DemoStackingPolicy(
             max_tiers=3,
             lift_clearance_cm=5.0,
-            owner_mode=payload.demo_stacking_owner_mode or "ANY_CUSTOMER",
-            max_top_load_percent=payload.demo_stacking_max_top_load_percent or 30,
+            owner_mode="ANY_CUSTOMER",
+            max_top_load_percent=30,
+        )
+        stacking_updates: Dict[str, Any] = {}
+        if payload.demo_stacking_owner_mode:
+            stacking_updates["owner_mode"] = payload.demo_stacking_owner_mode
+        if payload.demo_stacking_max_tiers is not None:
+            stacking_updates["max_tiers"] = payload.demo_stacking_max_tiers
+        if payload.demo_stacking_lift_clearance_cm is not None:
+            stacking_updates["lift_clearance_cm"] = payload.demo_stacking_lift_clearance_cm
+        if payload.demo_stacking_max_top_load_percent is not None:
+            stacking_updates["max_top_load_percent"] = payload.demo_stacking_max_top_load_percent
+        stacking_policy = (
+            base_stacking.model_copy(update=stacking_updates)
+            if stacking_updates
+            else base_stacking
         )
     else:
         stacking_policy = None
-    if stacking_policy and payload.demo_stacking_owner_mode:
-        stacking_policy = stacking_policy.model_copy(update={"owner_mode": payload.demo_stacking_owner_mode})
-    if stacking_policy and payload.demo_stacking_max_top_load_percent is not None:
-        stacking_policy = stacking_policy.model_copy(
-            update={"max_top_load_percent": payload.demo_stacking_max_top_load_percent}
-        )
+
+    resolved_policy = request.policy
+    if payload.policy_overrides:
+        resolved_policy = CostPolicy(**{
+            **request.policy.model_dump(),
+            **payload.policy_overrides,
+        })
+
     solver_request = request.model_copy(update={
         "demo_stacking": stacking_policy,
+        "policy": resolved_policy,
         "hybrid_seed_count": request.hybrid_seed_count if payload.hybrid_seed_count is None else payload.hybrid_seed_count,
         "early_stop_patience": request.early_stop_patience if payload.early_stop_patience is None else payload.early_stop_patience,
     })
