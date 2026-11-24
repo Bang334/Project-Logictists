@@ -4466,6 +4466,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 apply_planning_objective(self.objective_request, r)
             full_valid.sort(key=plan_lexicographic_key)
             best_so_far: Optional[FleetOptimizationResponse] = None
+            polished_candidates: List[FleetOptimizationResponse] = []
             for idx, resp in enumerate(full_valid[:2]):
                 rem = polish_deadline - time.perf_counter()
                 if rem <= 0.05:
@@ -4477,6 +4478,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                         else polish_deadline
                     )
                     polished = self._polish_audited_response(resp, slice_deadline)
+                polished_candidates.append(polished)
                 best_so_far = (
                     polished
                     if best_so_far is None
@@ -4485,7 +4487,13 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             if len(full_valid) > 2:
                 best_so_far = self._best_audited_response([best_so_far, *full_valid[2:]])
             result = best_so_far
-            setattr(result, "_audited_alternatives", [resp for resp in full_valid if resp is not result])
+            seen_alt_ids = {id(result)}
+            alternatives: List[FleetOptimizationResponse] = []
+            for resp in (*polished_candidates, *full_valid):
+                if id(resp) not in seen_alt_ids and not resp.unassigned_orders and resp.routes:
+                    seen_alt_ids.add(id(resp))
+                    alternatives.append(resp)
+            setattr(result, "_audited_alternatives", alternatives)
         else:
             result = self._best_audited_response(valid_responses)
             if time.perf_counter() + 0.05 < polish_deadline:

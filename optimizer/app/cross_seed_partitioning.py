@@ -76,7 +76,7 @@ def _validate_and_extract_orders(
     return frozenset(picked_by_order.keys())
 
 
-def _route_pool_signature(route: OptimizedRoute) -> Tuple:
+def route_pool_signature(route: OptimizedRoute) -> Tuple:
     return (
         route.service_day_index,
         route.route_id or route.vehicle_id,
@@ -91,6 +91,9 @@ def _route_pool_signature(route: OptimizedRoute) -> Tuple:
             for stop in route.stops
         ),
     )
+
+
+_route_pool_signature = route_pool_signature
 
 
 def _eligible_driver_overlap_free(
@@ -114,16 +117,64 @@ def _eligible_driver_overlap_free(
     return True
 
 
+def _ingest_pool_route(
+    route: OptimizedRoute,
+    *,
+    expected_items: Dict[str, Set[str]],
+    vehicle_by_id: Dict[str, FleetVehicle],
+    order_by_id: dict,
+    request: FleetOptimizationRequest,
+    has_daily_resource_slots: bool,
+    pool_by_sig: Dict[Tuple, _PoolRouteEntry],
+) -> None:
+    served = _validate_and_extract_orders(route, expected_items)
+    if served is None:
+        return
+
+    slot_id = route.route_id or route.vehicle_id
+    veh = vehicle_by_id.get(slot_id)
+    phys_veh_id = route.vehicle_id or (veh.source_vehicle_id or veh.id if veh else slot_id)
+    plate = route.plate_number or (veh.plate_number if veh else phys_veh_id)
+    op_cost = int(route.cost.total_cost_vnd) if route.cost else 0
+    active_sal = int(route.cost.driver_fixed_salary_allocation_vnd) if route.cost else 0
+    late_pen = route_operational_late_penalty(request, route.stops, order_by_id=order_by_id)
+    linear_score = max(
+        0,
+        op_cost - (active_sal if has_daily_resource_slots else 0) + late_pen,
+    )
+
+    entry = _PoolRouteEntry(
+        route=route,
+        served_orders=served,
+        day_index=int(route.service_day_index),
+        slot_id=slot_id,
+        physical_vehicle_id=phys_veh_id,
+        plate_number=plate,
+        start_sec=int(route.start_time_sec),
+        end_sec=int(route.end_time_sec),
+        linear_score_vnd=linear_score,
+        payload_limit_kg=float(veh.payload_limit_kg) if veh else 0.0,
+        vehicle_type=(veh.vehicle_type or veh.model or "") if veh else "",
+    )
+    sig = _route_pool_signature(route)
+    existing = pool_by_sig.get(sig)
+    if existing is None or entry.linear_score_vnd < existing.linear_score_vnd:
+        pool_by_sig[sig] = entry
+
+
 def solve_cross_seed_set_partitioning(
     request: FleetOptimizationRequest,
     complete_plans: Sequence[FleetOptimizationResponse],
     expected_items: Dict[str, Set[str]],
     *,
     compare_horizons: bool,
+    extra_routes: Sequence[OptimizedRoute] = (),
     time_limit_sec: float = 1.5,
 ) -> Optional[Tuple[FleetOptimizationResponse, PlanningObjectiveBreakdown]]:
     """Combine already-audited 3D routes across seeds using CP-SAT set partitioning."""
-    if len(complete_plans) < 2 or not expected_items or not request.drivers:
+    if not complete_plans or (len(complete_plans) < 2 and not extra_routes):
+        return None
+    if not expected_items or not request.drivers:
         return None
 
     vehicle_by_id: Dict[str, FleetVehicle] = {v.id: v for v in request.vehicles}
@@ -136,39 +187,25 @@ def solve_cross_seed_set_partitioning(
     pool_by_sig: Dict[Tuple, _PoolRouteEntry] = {}
     for plan in complete_plans:
         for route in plan.routes:
-            served = _validate_and_extract_orders(route, expected_items)
-            if served is None:
-                continue
-
-            slot_id = route.route_id or route.vehicle_id
-            veh = vehicle_by_id.get(slot_id)
-            phys_veh_id = route.vehicle_id or (veh.source_vehicle_id or veh.id if veh else slot_id)
-            plate = route.plate_number or (veh.plate_number if veh else phys_veh_id)
-            op_cost = int(route.cost.total_cost_vnd) if route.cost else 0
-            active_sal = int(route.cost.driver_fixed_salary_allocation_vnd) if route.cost else 0
-            late_pen = route_operational_late_penalty(request, route.stops, order_by_id=order_by_id)
-            linear_score = max(
-                0,
-                op_cost - (active_sal if has_daily_resource_slots else 0) + late_pen,
+            _ingest_pool_route(
+                route,
+                expected_items=expected_items,
+                vehicle_by_id=vehicle_by_id,
+                order_by_id=order_by_id,
+                request=request,
+                has_daily_resource_slots=has_daily_resource_slots,
+                pool_by_sig=pool_by_sig,
             )
-
-            entry = _PoolRouteEntry(
-                route=route,
-                served_orders=served,
-                day_index=int(route.service_day_index),
-                slot_id=slot_id,
-                physical_vehicle_id=phys_veh_id,
-                plate_number=plate,
-                start_sec=int(route.start_time_sec),
-                end_sec=int(route.end_time_sec),
-                linear_score_vnd=linear_score,
-                payload_limit_kg=float(veh.payload_limit_kg) if veh else 0.0,
-                vehicle_type=(veh.vehicle_type or veh.model or "") if veh else "",
-            )
-            sig = _route_pool_signature(route)
-            existing = pool_by_sig.get(sig)
-            if existing is None or entry.linear_score_vnd < existing.linear_score_vnd:
-                pool_by_sig[sig] = entry
+    for route in extra_routes:
+        _ingest_pool_route(
+            route,
+            expected_items=expected_items,
+            vehicle_by_id=vehicle_by_id,
+            order_by_id=order_by_id,
+            request=request,
+            has_daily_resource_slots=has_daily_resource_slots,
+            pool_by_sig=pool_by_sig,
+        )
 
     pool_entries: List[_PoolRouteEntry] = list(pool_by_sig.values())
 

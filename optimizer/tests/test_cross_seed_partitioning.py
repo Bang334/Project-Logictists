@@ -35,7 +35,10 @@ def _route_for_orders(
 ) -> OptimizedRoute:
     stops = []
     seq = 1
+    prev_dep = start_sec
     for order in orders:
+        pickup_arr = prev_dep + 240
+        pickup_dep = pickup_arr + 60
         stops.append(
             ScheduledStop(
                 sequence=seq,
@@ -46,13 +49,18 @@ def _route_for_orders(
                 allocation_id=order.id,
                 latitude=order.pickup_location.latitude,
                 longitude=order.pickup_location.longitude,
-                arrival_time_sec=start_sec + seq * 300,
-                departure_time_sec=start_sec + seq * 300 + 60,
+                arrival_time_sec=pickup_arr,
+                departure_time_sec=pickup_dep,
+                travel_time_sec=240,
+                waiting_time_sec=0,
+                service_time_sec=60,
                 items_loaded=[it.id for it in order.items],
                 items_unloaded=[],
             )
         )
         seq += 1
+        deliv_arr = pickup_dep + 240
+        deliv_dep = deliv_arr + 60
         stops.append(
             ScheduledStop(
                 sequence=seq,
@@ -63,13 +71,18 @@ def _route_for_orders(
                 allocation_id=order.id,
                 latitude=order.delivery_location.latitude,
                 longitude=order.delivery_location.longitude,
-                arrival_time_sec=start_sec + seq * 300,
-                departure_time_sec=start_sec + seq * 300 + 60,
+                arrival_time_sec=deliv_arr,
+                departure_time_sec=deliv_dep,
+                travel_time_sec=240,
+                waiting_time_sec=0,
+                service_time_sec=60,
                 items_loaded=[],
                 items_unloaded=[it.id for it in order.items],
             )
         )
         seq += 1
+        prev_dep = deliv_dep
+    route_end_sec = max(end_sec, prev_dep + 60)
     return OptimizedRoute(
         route_id=vehicle.id,
         vehicle_id=vehicle.source_vehicle_id or vehicle.id,
@@ -79,9 +92,11 @@ def _route_for_orders(
         vehicle_width_cm=vehicle.width_cm,
         vehicle_height_cm=vehicle.height_cm,
         start_time_sec=start_sec,
-        end_time_sec=end_sec,
+        end_time_sec=route_end_sec,
         total_distance_km=20.0,
-        total_duration_minutes=60.0,
+        total_duration_minutes=(route_end_sec - start_sec) / 60.0,
+        return_travel_time_sec=route_end_sec - prev_dep,
+        return_waiting_time_sec=0,
         stops=stops,
         spatial_validation=SpatialValidationResult(
             is_valid=spatial_valid,
@@ -210,3 +225,35 @@ def test_cross_seed_rejects_same_vehicle_plate_conflict_or_invalid_3d():
     assert len(combined.routes) == 2
     assert {r.stops[0].order_id for r in combined.routes} == {"o0", "o1"}
     assert {r.plate_number for r in combined.routes} == {"43C-000", "43C-001"}
+
+
+def test_cross_seed_combines_single_plan_with_audited_extra_routes():
+    req, vehicles, orders, expected = _sample_problem()
+    # Single complete baseline plan uses expensive v1; audited extra_routes supplies cheap v1
+    # from another basin plus an invalid 3D v0 shortcut that must be ignored.
+    plan_s0 = FleetOptimizationResponse(
+        job_id="cross-seed-test",
+        status="SUCCESS",
+        total_cost_vnd=1_000_000,
+        routes=[
+            _route_for_orders(vehicle=vehicles[0], orders=[orders[0]], cost_vnd=300_000),
+            _route_for_orders(vehicle=vehicles[1], orders=[orders[1]], cost_vnd=700_000),
+        ],
+    )
+    cheap_alt_v1 = _route_for_orders(vehicle=vehicles[1], orders=[orders[1]], cost_vnd=320_000)
+    invalid_alt_v0 = _route_for_orders(
+        vehicle=vehicles[0], orders=[orders[0]], cost_vnd=120_000, spatial_valid=False,
+    )
+
+    res = solve_cross_seed_set_partitioning(
+        req,
+        [plan_s0],
+        expected,
+        compare_horizons=False,
+        extra_routes=[cheap_alt_v1, invalid_alt_v0],
+    )
+    assert res is not None
+    combined, _ = res
+    assert len(combined.routes) == 2
+    assert combined.total_cost_vnd < 700_000
+    assert combined.routes[0].driver_id != combined.routes[1].driver_id

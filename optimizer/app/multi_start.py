@@ -9,7 +9,7 @@ import concurrent.futures
 import math
 import os
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from .models import (
     BenchmarkMetric,
@@ -17,6 +17,7 @@ from .models import (
     FleetOptimizationCandidate,
     FleetOptimizationRequest,
     FleetOptimizationResponse,
+    OptimizedRoute,
     PlanningObjectiveBreakdown,
     ScheduledStop,
 )
@@ -35,7 +36,10 @@ from .search_strategies import (
 )
 from .hybrid_alns_engine import PackingAwareHybridALNSOptimizer
 from .ils_engine import PackingAwareILSOptimizer
-from .cross_seed_partitioning import solve_cross_seed_set_partitioning
+from .cross_seed_partitioning import (
+    route_pool_signature,
+    solve_cross_seed_set_partitioning,
+)
 from .ortools_seed import extract_ortools_seed_pool
 from .planning_objective import (
     apply_planning_objective,
@@ -133,31 +137,64 @@ def _extract_safe_ortools_seed_pool(
     return None
 
 
-def _select_worker_best_plan(
+def _alt_route_dedup_key(route: OptimizedRoute) -> Tuple:
+    cost_vnd = route.cost.total_cost_vnd if route.cost is not None else None
+    return (
+        route_pool_signature(route),
+        cost_vnd,
+        int(route.start_time_sec),
+        int(route.end_time_sec),
+    )
+
+
+def _extract_distinct_alternative_route_dicts(
+    chosen_plan: FleetOptimizationResponse,
+    extra_complete_plans: Sequence[FleetOptimizationResponse],
+) -> List[dict]:
+    """Return deduplicated valid alternative route dicts not already on chosen_plan."""
+    if not extra_complete_plans:
+        return []
+    seen_keys: Set[Tuple] = {
+        _alt_route_dedup_key(route) for route in getattr(chosen_plan, "routes", ())
+    }
+    alt_route_dicts: List[dict] = []
+    for alt_plan in extra_complete_plans:
+        for route in getattr(alt_plan, "routes", ()):
+            if not getattr(route, "stops", None):
+                continue
+            if route.cost is None or not (route.spatial_validation and route.spatial_validation.is_valid):
+                continue
+            r_key = _alt_route_dedup_key(route)
+            if r_key in seen_keys:
+                continue
+            seen_keys.add(r_key)
+            alt_route_dicts.append(route.model_dump())
+    return alt_route_dicts
+
+
+def _collect_worker_audited_plans(
     primary_plan: FleetOptimizationResponse,
     objective_request: FleetOptimizationRequest,
     expected_items: Dict[str, Set[str]],
     max_routes_per_day: Optional[int],
     compare_horizons: bool,
-) -> Tuple[FleetOptimizationResponse, PlanningObjectiveBreakdown]:
-    """Select the best already-audited candidate produced by a worker."""
+) -> Tuple[FleetOptimizationResponse, PlanningObjectiveBreakdown, List[FleetOptimizationResponse]]:
+    """Select the best already-audited candidate and keep other complete audited plans."""
     alternatives = getattr(primary_plan, "_audited_alternatives", ())
     if not alternatives:
         obj = apply_planning_objective(objective_request, primary_plan)
-        return primary_plan, obj
+        return primary_plan, obj, []
 
     pool: List[FleetOptimizationResponse] = []
-    seen_sigs: Set[Tuple] = set()
+    seen_ids: Set[int] = set()
     for candidate in (primary_plan, *alternatives):
-        if not getattr(candidate, "routes", None):
+        if not getattr(candidate, "routes", None) or id(candidate) in seen_ids:
             continue
-        sig = _plan_signature(candidate)
-        if sig not in seen_sigs:
-            seen_sigs.add(sig)
-            pool.append(candidate)
+        seen_ids.add(id(candidate))
+        pool.append(candidate)
     if not pool:
         obj = apply_planning_objective(objective_request, primary_plan)
-        return primary_plan, obj
+        return primary_plan, obj, []
 
     complete_pool = [
         plan
@@ -173,17 +210,36 @@ def _select_worker_best_plan(
     objs = {id(plan): apply_planning_objective(objective_request, plan) for plan in ranked_pool}
     key_fn = plan_objective_first_key if compare_horizons else plan_lexicographic_key
     winner = min(ranked_pool, key=key_fn)
-    return winner, objs[id(winner)]
+    extra_complete_plans = [plan for plan in complete_pool if plan is not winner]
+    return winner, objs[id(winner)], extra_complete_plans
 
 
-def _run_hybrid_seed_worker(
+def _select_worker_best_plan(
+    primary_plan: FleetOptimizationResponse,
+    objective_request: FleetOptimizationRequest,
+    expected_items: Dict[str, Set[str]],
+    max_routes_per_day: Optional[int],
+    compare_horizons: bool,
+) -> Tuple[FleetOptimizationResponse, PlanningObjectiveBreakdown]:
+    """Select the best already-audited candidate produced by a worker."""
+    winner, obj, _ = _collect_worker_audited_plans(
+        primary_plan,
+        objective_request,
+        expected_items,
+        max_routes_per_day,
+        compare_horizons,
+    )
+    return winner, obj
+
+
+def _solve_hybrid_worker_bundle(
     request_dict: dict,
     objective_request_dict: dict,
     seed: int,
     time_budget: float,
     warm_plan: Optional[dict] = None,
-) -> Tuple[int, Optional[dict], Optional[dict], Optional[str]]:
-    """Worker function for concurrent Hybrid ALNS seeds compatible with Windows spawn."""
+) -> Tuple[int, Optional[dict], Optional[dict], List[dict], Optional[str]]:
+    """Run Hybrid ALNS worker and return winner plus distinct audited alternative routes."""
     try:
         request = FleetOptimizationRequest(**request_dict)
         objective_request = FleetOptimizationRequest(**objective_request_dict)
@@ -237,14 +293,15 @@ def _run_hybrid_seed_worker(
                     request.policy.max_routes_per_day,
                     expected_items,
                 ):
-                    chosen_probe, obj = _select_worker_best_plan(
+                    chosen_probe, obj, extra_probe = _collect_worker_audited_plans(
                         probe_plan,
                         objective_request,
                         expected_items,
                         request.policy.max_routes_per_day,
                         compare_horizons,
                     )
-                    return seed, chosen_probe.model_dump(), obj.model_dump(), None
+                    alt_dicts = _extract_distinct_alternative_route_dicts(chosen_probe, extra_probe)
+                    return seed, chosen_probe.model_dump(), obj.model_dump(), alt_dicts, None
                 if probe_plan.routes and compact_fallback_plan is None:
                     compact_fallback_plan = probe_plan
                 probe_days += 1
@@ -303,29 +360,65 @@ def _run_hybrid_seed_worker(
         if not plan.routes and compact_fallback_plan is not None:
             plan = compact_fallback_plan
         if not plan.routes:
-            return seed, None, None, f"Packing-aware Hybrid ALNS (seed {seed}) không trả về tuyến."
-        chosen_plan, obj = _select_worker_best_plan(
+            return seed, None, None, [], f"Packing-aware Hybrid ALNS (seed {seed}) không trả về tuyến."
+        chosen_plan, obj, extra_plans = _collect_worker_audited_plans(
             plan,
             objective_request,
             expected_items,
             request.policy.max_routes_per_day,
             compare_horizons,
         )
-        return seed, chosen_plan.model_dump(), obj.model_dump(), None
+        alt_dicts = _extract_distinct_alternative_route_dicts(chosen_plan, extra_plans)
+        return seed, chosen_plan.model_dump(), obj.model_dump(), alt_dicts, None
     except Exception as exc:
-        return seed, None, None, str(exc)
+        return seed, None, None, [], str(exc)
+
+
+def _run_hybrid_seed_worker(
+    request_dict: dict,
+    objective_request_dict: dict,
+    seed: int,
+    time_budget: float,
+    warm_plan: Optional[dict] = None,
+) -> Tuple[int, Optional[dict], Optional[dict], Optional[str]]:
+    """Worker function for concurrent Hybrid ALNS seeds compatible with Windows spawn."""
+    seed_id, plan_dict, obj_dict, _alts, error = _solve_hybrid_worker_bundle(
+        request_dict,
+        objective_request_dict,
+        seed,
+        time_budget,
+        warm_plan,
+    )
+    return seed_id, plan_dict, obj_dict, error
+
+
+def _run_hybrid_pool_worker(
+    request_dict: dict,
+    objective_request_dict: dict,
+    seed: int,
+    time_budget: float,
+    warm_plan: Optional[dict] = None,
+) -> Tuple[int, Optional[dict], Optional[dict], List[dict], Optional[str]]:
+    """Pool worker wrapper carrying deduplicated audited alternative routes across IPC."""
+    return _solve_hybrid_worker_bundle(
+        request_dict,
+        objective_request_dict,
+        seed,
+        time_budget,
+        warm_plan,
+    )
 
 
 _REAL_HYBRID_WORKER = _run_hybrid_seed_worker
 
 
-def _run_ils_seed_worker(
+def _solve_ils_worker_bundle(
     request_dict: dict,
     objective_request_dict: dict,
     seed: int,
     time_budget: float,
-) -> Tuple[int, Optional[dict], Optional[dict], Optional[str]]:
-    """Worker function for concurrent Packing-aware ILS compatible with Windows spawn."""
+) -> Tuple[int, Optional[dict], Optional[dict], List[dict], Optional[str]]:
+    """Run ILS worker and return winner plus distinct audited alternative routes."""
     try:
         with scoped_spatial_cache():
             request = FleetOptimizationRequest(**request_dict)
@@ -342,19 +435,54 @@ def _run_ils_seed_worker(
             )
             plan = optimizer.solve(hard_deadline=worker_deadline)
             if not plan.routes:
-                return seed, None, None, f"Packing-aware ILS (seed {seed}) không trả về tuyến."
+                return seed, None, None, [], f"Packing-aware ILS (seed {seed}) không trả về tuyến."
             expected_items = {order.id: {item.id for item in order.items} for order in request.orders}
             compare_horizons = len({v.service_day_index for v in request.vehicles}) > 1
-            chosen_plan, obj = _select_worker_best_plan(
+            chosen_plan, obj, extra_plans = _collect_worker_audited_plans(
                 plan,
                 objective_request,
                 expected_items,
                 request.policy.max_routes_per_day,
                 compare_horizons,
             )
-            return seed, chosen_plan.model_dump(), obj.model_dump(), None
+            alt_dicts = _extract_distinct_alternative_route_dicts(chosen_plan, extra_plans)
+            return seed, chosen_plan.model_dump(), obj.model_dump(), alt_dicts, None
     except Exception as exc:
-        return seed, None, None, str(exc)
+        return seed, None, None, [], str(exc)
+
+
+def _run_ils_seed_worker(
+    request_dict: dict,
+    objective_request_dict: dict,
+    seed: int,
+    time_budget: float,
+) -> Tuple[int, Optional[dict], Optional[dict], Optional[str]]:
+    """Worker function for concurrent Packing-aware ILS compatible with Windows spawn."""
+    seed_id, plan_dict, obj_dict, _alts, error = _solve_ils_worker_bundle(
+        request_dict,
+        objective_request_dict,
+        seed,
+        time_budget,
+    )
+    return seed_id, plan_dict, obj_dict, error
+
+
+def _run_ils_pool_worker(
+    request_dict: dict,
+    objective_request_dict: dict,
+    seed: int,
+    time_budget: float,
+) -> Tuple[int, Optional[dict], Optional[dict], List[dict], Optional[str]]:
+    """Pool ILS worker wrapper carrying deduplicated audited alternative routes across IPC."""
+    return _solve_ils_worker_bundle(
+        request_dict,
+        objective_request_dict,
+        seed,
+        time_budget,
+    )
+
+
+_REAL_ILS_WORKER = _run_ils_seed_worker
 
 
 def _run_direct_span_worker(
@@ -888,6 +1016,7 @@ class MultiStartFleetOptimizer:
         request_dict = self.request.model_dump()
         all_order_ids = {order.id for order in self.request.orders}
         evaluated_runs: List[Tuple[SearchStrategy, FleetOptimizationResponse, int]] = []
+        pooled_alt_route_dicts: List[dict] = []
         search_errors: List[str] = []
         is_mocked = PackingAwareHybridALNSOptimizer is not _REAL_HYBRID_OPTIMIZER
         calculator = None
@@ -986,6 +1115,16 @@ class MultiStartFleetOptimizer:
                 )
             executor = concurrent.futures.ProcessPoolExecutor(max_workers=parallel_workers)
             best_by_seed = {}
+            hybrid_pool_callable = (
+                _run_hybrid_pool_worker
+                if _run_hybrid_seed_worker is _REAL_HYBRID_WORKER
+                else _run_hybrid_seed_worker
+            )
+            ils_pool_callable = (
+                _run_ils_pool_worker
+                if _run_ils_seed_worker is _REAL_ILS_WORKER
+                else _run_ils_seed_worker
+            )
             try:
                 futures = {}
                 for seed in hybrid_seeds:
@@ -1001,14 +1140,14 @@ class MultiStartFleetOptimizer:
                     # exhaust its time. The parent keeps it across worker timeouts.
                     if refine_budget >= 2:
                         future = executor.submit(
-                            _run_hybrid_seed_worker,
+                            hybrid_pool_callable,
                             {**request_dict, "early_stop_patience": 0},
                             objective_request_dict, seed, bootstrap_budget, initial,
                         )
                     else:
                         refine_budget = 0
                         future = executor.submit(
-                            _run_hybrid_seed_worker, request_dict, objective_request_dict, seed, budget, initial,
+                            hybrid_pool_callable, request_dict, objective_request_dict, seed, budget, initial,
                         )
                     futures[future] = ("hybrid", seed, refine_budget)
 
@@ -1022,7 +1161,7 @@ class MultiStartFleetOptimizer:
                     if total_waves > 1:
                         ils_budget = min(ils_budget, equal_seed_budget)
                     ils_future = executor.submit(
-                        _run_ils_seed_worker, request_dict, objective_request_dict, 0, ils_budget,
+                        ils_pool_callable, request_dict, objective_request_dict, 0, ils_budget,
                     )
                     futures[ils_future] = ("ils", 0, 0)
 
@@ -1067,12 +1206,19 @@ class MultiStartFleetOptimizer:
                             label_prefix = f"Packing-aware ILS (seed {seed})"
                             key_prefix = f"packing-aware-ils-seed-{seed}"
                         try:
-                            _, plan_dict, obj_dict, error = future.result()
+                            raw_result = future.result()
+                            if len(raw_result) == 5:
+                                _, plan_dict, obj_dict, alt_route_dicts, error = raw_result
+                            else:
+                                _, plan_dict, obj_dict, error = raw_result
+                                alt_route_dicts = ()
                             if error or plan_dict is None or obj_dict is None:
                                 raise RuntimeError(error or "Không có phương án đã kiểm chứng")
                             solver_plan = FleetOptimizationResponse.model_validate(plan_dict)
                             planning_obj = PlanningObjectiveBreakdown.model_validate(obj_dict)
                             solver_plan.planning_objective = planning_obj
+                            if alt_route_dicts:
+                                pooled_alt_route_dicts.extend(alt_route_dicts)
                             strategy = SearchStrategy(
                                 key_prefix,
                                 label_prefix,
@@ -1106,7 +1252,7 @@ class MultiStartFleetOptimizer:
                             remaining_refine_budget = min(refine_budget, job_deadline - time.perf_counter())
                             if remaining_refine_budget >= 2:
                                 refinement = executor.submit(
-                                    _run_hybrid_seed_worker, request_dict, objective_request_dict,
+                                    hybrid_pool_callable, request_dict, objective_request_dict,
                                     seed, remaining_refine_budget, warm_plan,
                                 )
                                 futures[refinement] = ("hybrid", seed, 0)
@@ -1177,13 +1323,15 @@ class MultiStartFleetOptimizer:
                             f"Packing-aware Hybrid ALNS (seed {seed}) không trả về tuyến."
                         )
                         continue
-                    chosen_hybrid, planning_objective = _select_worker_best_plan(
+                    chosen_hybrid, planning_objective, extra_complete_plans = _collect_worker_audited_plans(
                         hybrid_plan,
                         self.objective_request,
                         expected_items,
                         self.request.policy.max_routes_per_day,
                         compare_horizons,
                     )
+                    if extra_complete_plans:
+                        setattr(chosen_hybrid, "_audited_alternatives", extra_complete_plans)
                     hybrid_strategy = SearchStrategy(
                         f"packing-aware-hybrid-alns-seed-{seed}",
                         f"Packing-aware Hybrid ALNS (seed {seed})",
@@ -1278,12 +1426,29 @@ class MultiStartFleetOptimizer:
                     expected_items=expected_items,
                 )
             ]
-            if len(complete_runs) >= 2:
+            extra_routes: List[OptimizedRoute] = []
+            seen_extra_keys: Set[Tuple] = set()
+            for _, run_plan, _ in complete_runs:
+                for alt_plan in getattr(run_plan, "_audited_alternatives", ()):
+                    for route in getattr(alt_plan, "routes", ()):
+                        r_key = _alt_route_dedup_key(route)
+                        if r_key not in seen_extra_keys:
+                            seen_extra_keys.add(r_key)
+                            extra_routes.append(route)
+            for route_dict in pooled_alt_route_dicts:
+                route = OptimizedRoute.model_validate(route_dict)
+                r_key = _alt_route_dedup_key(route)
+                if r_key not in seen_extra_keys:
+                    seen_extra_keys.add(r_key)
+                    extra_routes.append(route)
+
+            if complete_runs and (len(complete_runs) >= 2 or extra_routes):
                 combined = solve_cross_seed_set_partitioning(
                     self.objective_request,
                     [run[1] for run in complete_runs],
                     expected_items,
                     compare_horizons=compare_horizons,
+                    extra_routes=extra_routes,
                     time_limit_sec=1.5,
                 )
                 if combined is not None:

@@ -6,8 +6,14 @@ from types import SimpleNamespace
 
 from app.hybrid_alns_engine import PackingAwareHybridALNSOptimizer
 from app.models import PlanningObjectiveBreakdown
-from app.multi_start import MultiStartFleetOptimizer, _run_hybrid_seed_worker, _select_worker_best_plan
+from app.multi_start import (
+    MultiStartFleetOptimizer,
+    _run_hybrid_pool_worker,
+    _run_hybrid_seed_worker,
+    _select_worker_best_plan,
+)
 from test_benchmark_contract import comparison_request
+from test_cross_seed_partitioning import _route_for_orders, _sample_problem
 from test_multi_start import _mock_plan
 
 
@@ -169,3 +175,115 @@ def test_worker_audit_grace_keeps_full_search_budget_when_headroom_allows(monkey
     assert 60.0 <= deadlines[0] <= 61.5
     assert 11.0 <= deadlines[1] <= 12.5
     assert 54.0 <= deadlines[2] <= 55.5
+
+
+def test_hybrid_pool_worker_forwards_distinct_audited_alternative_routes(monkeypatch):
+    req, vehicles, orders, _expected = _sample_problem()
+    winner_route_0 = _route_for_orders(vehicle=vehicles[0], orders=[orders[0]], cost_vnd=300_000)
+    winner_route_1 = _route_for_orders(vehicle=vehicles[1], orders=[orders[1]], cost_vnd=600_000)
+    winner = _mock_plan("winner", "SUCCESS", 900_000, [o.id for o in orders])
+    winner.routes = [winner_route_0, winner_route_1]
+
+    alt_valid_route_1 = _route_for_orders(vehicle=vehicles[1], orders=[orders[1]], cost_vnd=750_000)
+    alt_invalid_route_1 = _route_for_orders(
+        vehicle=vehicles[1], orders=[orders[1]], cost_vnd=150_000, spatial_valid=False,
+    )
+    # Alt plan shares winner_route_0 (deduplicated out), has invalid 3D route (filtered out),
+    # and carries one distinct valid route (750k); winner (300k + 600k = 900k) wins single-plan ranking.
+    alt_plan = _mock_plan("alt", "SUCCESS", 1_200_000, [o.id for o in orders])
+    alt_plan.routes = [
+        winner_route_0.model_copy(deep=True),
+        alt_valid_route_1,
+        alt_invalid_route_1,
+    ]
+    setattr(winner, "_audited_alternatives", [alt_plan])
+
+    class DummyHybrid:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def solve(self, hard_deadline=None):
+            return winner
+
+    monkeypatch.setattr("app.multi_start._extract_safe_ortools_seed_pool", lambda *_a, **_k: None)
+    monkeypatch.setattr("app.multi_start.PackingAwareHybridALNSOptimizer", DummyHybrid)
+    monkeypatch.setattr("app.multi_start.is_fully_served", lambda *_a, **_k: True)
+
+    req_dict = req.model_dump()
+    # Legacy 4-tuple contract remains intact.
+    seed4, plan4, obj4, err4 = _run_hybrid_seed_worker(req_dict, req_dict, 0, 10.0, None)
+    assert seed4 == 0 and err4 is None and plan4 is not None and obj4 is not None
+
+    # Pool worker 5-tuple forwards only valid distinct alternative routes across IPC.
+    seed5, plan5, obj5, alt_dicts, err5 = _run_hybrid_pool_worker(req_dict, req_dict, 0, 10.0, None)
+    assert seed5 == 0 and err5 is None and plan5 is not None and obj5 is not None
+    assert len(alt_dicts) == 1
+    assert alt_dicts[0]["cost"]["total_cost_vnd"] == 750_000
+
+
+def test_multistart_pool_forwards_worker_alternatives_to_cross_seed(monkeypatch):
+    from concurrent.futures import Future
+    import app.multi_start as module
+
+    req, vehicles, orders, _expected = _sample_problem()
+    # Expand to 8 orders (>= Cross-Seed guard threshold) across 2 vehicles by reusing _route_for_orders.
+    base_o = orders[0]
+    req.orders = [
+        base_o.model_copy(update={
+            "id": f"o{i}",
+            "order_number": f"ORD-{i}",
+            "source_order_id": f"o{i}",
+            "pickup_location": req.orders[i % 2].pickup_location.model_copy(update={"id": f"p{i}"}),
+            "delivery_location": req.orders[i % 2].delivery_location.model_copy(update={"id": f"d{i}"}),
+            "items": [base_o.items[0].model_copy(update={"id": f"it{i}", "order_id": f"o{i}"})],
+        })
+        for i in range(8)
+    ]
+    nv = len(req.vehicles) + 2 * len(req.orders)
+    req.distance_matrix_meters = [[0 if a == b else 1000 for b in range(nv)] for a in range(nv)]
+    req.duration_matrix_seconds = [[0 if a == b else 60 for b in range(nv)] for a in range(nv)]
+    req = req.model_copy(update={"hybrid_seed_count": 2, "early_stop_patience": 0, "search_time_seconds": 10, "max_time_seconds": 30})
+
+    class ImmediatePool:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def submit(self, fn, *args):
+            fut = Future()
+            fut.set_result(fn(*args))
+            return fut
+
+        def shutdown(self, **kwargs):
+            pass
+
+    r0 = _route_for_orders(vehicle=vehicles[0], orders=req.orders[:4], cost_vnd=300_000)
+    r1 = _route_for_orders(vehicle=vehicles[1], orders=req.orders[4:], cost_vnd=600_000)
+    alt_r0 = _route_for_orders(vehicle=vehicles[0], orders=req.orders[:4], cost_vnd=700_000)
+    alt_r1 = _route_for_orders(vehicle=vehicles[1], orders=req.orders[4:], cost_vnd=280_000)
+
+    class FakeHybrid:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def solve(self, hard_deadline=None):
+            # Primary plan wins single-plan ranking (900k < 980k),
+            # while alternative basin contributes alt_r1 (280k) for Cross-Seed CP-SAT to win.
+            p = _mock_plan("p", "SUCCESS", 900_000, [o.id for o in req.orders])
+            p.routes = [r0.model_copy(deep=True), r1.model_copy(deep=True)]
+            alt = _mock_plan("alt", "SUCCESS", 980_000, [o.id for o in req.orders])
+            alt.routes = [alt_r0.model_copy(deep=True), alt_r1.model_copy(deep=True)]
+            setattr(p, "_audited_alternatives", [alt])
+            return p
+
+    monkeypatch.setattr(module.concurrent.futures, "ProcessPoolExecutor", ImmediatePool)
+    monkeypatch.setattr(module, "PackingAwareHybridALNSOptimizer", FakeHybrid)
+    monkeypatch.setattr(module, "_REAL_HYBRID_OPTIMIZER", FakeHybrid)
+    monkeypatch.setattr(module, "PackingAwareILSOptimizer", object())
+    monkeypatch.setattr(module, "_extract_safe_ortools_seed_pool", lambda *_a, **_k: None)
+    monkeypatch.setattr(MultiStartFleetOptimizer, "_direct_benchmark", lambda self: (None, None))
+
+    batch = MultiStartFleetOptimizer(req).solve()
+    assert batch.candidates
+    assert batch.candidates[0].search_strategy == "Packing-aware Cross-Seed CP-SAT"
+    assert any("Tổ hợp chéo đa seed" in msg for msg in batch.diagnostics)
+    assert sum(r.cost.fuel_cost_vnd for r in batch.candidates[0].result.routes) == 380_000
