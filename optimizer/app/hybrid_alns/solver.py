@@ -113,7 +113,7 @@ class HybridALNSSolver:
         self._vehicle_guidance_vnd = 1_000_000
         self._same_order_guidance_vnd = 2_000_000
         self._has_multi_day = len({vehicle.service_day_index for vehicle in vehicles}) > 1
-        self._day_guidance_vnd = 250_000 if self._has_multi_day else 50_000
+        self._day_guidance_vnd = 15_000 if self._has_multi_day else 50_000
         self._calendar_salary_cache: Dict[int, int] = {}
         self._allow_empty_insertion_competition = False
         self._route_pool: List[Tuple[int, List[ScheduledStop]]] = []
@@ -124,6 +124,7 @@ class HybridALNSSolver:
             "route": self._destroy_route,
             "small": self._destroy_small_routes,
             "late_day": self._destroy_late_days,
+            "expensive_veh": self._destroy_expensive_vehicle,
             "cluster": self._destroy_cluster,
             "worst": self._destroy_worst,
             "related": self._destroy_related,
@@ -136,6 +137,7 @@ class HybridALNSSolver:
             "route": 2.0,
             "small": 2.0,
             "late_day": 2.4 if self._has_multi_day else 0.5,
+            "expensive_veh": 2.6,
             "cluster": 1.8,
             "worst": 1.5,
             "related": 1.2,
@@ -727,6 +729,54 @@ class HybridALNSSolver:
                 if s.order_id and s.order_id not in removed_orders:
                     removed_orders.append(s.order_id)
             new_routes[idx] = []
+        return new_routes, removed_orders
+
+    def _destroy_expensive_vehicle(
+        self, routes: List[List[ScheduledStop]], remove_count: int
+    ) -> Tuple[List[List[ScheduledStop]], List[str]]:
+        """Phá tuyến đang dùng xe tốn nhiên liệu/chi phí cố định cao hoặc xe vật lý đơn lẻ."""
+        nonempty_indices = [idx for idx, r in enumerate(routes) if r]
+        if not nonempty_indices:
+            return routes, []
+        phys_counts: Dict[str, int] = {}
+        for idx in nonempty_indices:
+            v = self.vehicles[idx]
+            pid = v.source_vehicle_id or v.id
+            phys_counts[pid] = phys_counts.get(pid, 0) + 1
+        min_fuel = min((self.vehicles[idx].fuel_consumption_liters_per_100_km for idx in nonempty_indices), default=0.0)
+        scored: List[Tuple[float, int]] = []
+        for idx in nonempty_indices:
+            v = self.vehicles[idx]
+            pid = v.source_vehicle_id or v.id
+            n_orders = max(1, len({s.order_id for s in routes[idx] if s.order_id}))
+            fuel_excess = max(0.0, v.fuel_consumption_liters_per_100_km - min_fuel) * 18_000.0
+            singleton_bonus = 180_000.0 if phys_counts.get(pid, 0) == 1 else 0.0
+            route_penalty = (v.fixed_operating_cost_vnd + fuel_excess + singleton_bonus) / n_orders
+            scored.append((route_penalty + fuel_excess * 2.0, idx))
+        scored.sort(reverse=True)
+        new_routes = [copy.deepcopy(r) for r in routes]
+        removed_orders: List[str] = []
+        target_budget = max(1, remove_count)
+        for _, idx in scored:
+            route_orders = list(
+                dict.fromkeys(
+                    s.order_id
+                    for s in new_routes[idx]
+                    if s.stop_type == "PICKUP" and s.order_id
+                )
+            )
+            if not route_orders:
+                continue
+            if removed_orders and len(removed_orders) + len(route_orders) > target_budget + 6:
+                continue
+            for oid in route_orders:
+                if oid not in removed_orders:
+                    removed_orders.append(oid)
+            new_routes[idx] = []
+            if len(removed_orders) >= target_budget:
+                break
+        if not removed_orders:
+            return self._destroy_route(routes, remove_count)
         return new_routes, removed_orders
 
     def _destroy_late_days(
@@ -1533,100 +1583,151 @@ class HybridALNSSolver:
             reverse=True,
         )
 
+    def _route_centroid(
+        self, vehicle_index: int, route: List[ScheduledStop]
+    ) -> Tuple[float, float]:
+        if not route:
+            depot = self.vehicles[vehicle_index].depot
+            return float(depot.latitude), float(depot.longitude)
+        lats = 0.0
+        lngs = 0.0
+        count = 0
+        for stop in route:
+            order = self.order_by_id.get(stop.order_id or "")
+            if order is None:
+                continue
+            loc = (
+                order.pickup_location
+                if stop.stop_type == "PICKUP"
+                else order.delivery_location
+            )
+            lats += float(loc.latitude)
+            lngs += float(loc.longitude)
+            count += 1
+        if count == 0:
+            depot = self.vehicles[vehicle_index].depot
+            return float(depot.latitude), float(depot.longitude)
+        return lats / count, lngs / count
+
     def _best_order_exchange(
         self,
         routes: List[List[ScheduledStop]],
         unassigned: List[str],
         deadline: float,
     ) -> Optional[Tuple[int, List[List[ScheduledStop]], List[str], Tuple[int, int]]]:
-        """Try reciprocal order exchanges between active routes."""
+        """Try reciprocal 1-for-1, 2-for-1 and 2-for-2 cross-exchanges across nearby routes."""
         best_exchange = None
         attempts = 0
         active_indices = [index for index, route in enumerate(routes) if route]
-        order_limit = 8 if len(active_indices) <= 3 else 4
-        attempt_limit = 40 if len(active_indices) <= 3 else 16
-        for first_pos, first_index in enumerate(active_indices):
-            for second_index in active_indices[first_pos + 1:]:
-                first_orders = self._orders_by_removal_saving(
-                    first_index, routes[first_index]
-                )[:order_limit]
-                second_orders = self._orders_by_removal_saving(
-                    second_index, routes[second_index]
-                )[:order_limit]
-                for first_order in first_orders:
-                    for second_order in second_orders:
-                        if time.perf_counter() >= deadline:
+        if len(active_indices) < 2:
+            return None
+        order_limit = 8 if len(active_indices) <= 3 else 5
+        attempt_limit = (
+            40 if len(active_indices) <= 3 else min(220, max(48, len(active_indices) * 8))
+        )
+        centroids = {
+            idx: self._route_centroid(idx, routes[idx]) for idx in active_indices
+        }
+        route_pairs: List[Tuple[int, float, int, int]] = []
+        for pos, first_index in enumerate(active_indices):
+            c1 = centroids[first_index]
+            d1 = self.vehicles[first_index].service_day_index
+            for second_index in active_indices[pos + 1 :]:
+                c2 = centroids[second_index]
+                d2 = self.vehicles[second_index].service_day_index
+                geo = abs(c1[0] - c2[0]) + abs(c1[1] - c2[1])
+                route_pairs.append((abs(d1 - d2), geo, first_index, second_index))
+        route_pairs.sort(key=lambda item: (item[0], item[1]))
+
+        removed_orders_by_route = {
+            idx: self._orders_by_removal_saving(idx, routes[idx])[:order_limit]
+            for idx in active_indices
+        }
+        max_pairs = len(route_pairs) if len(active_indices) <= 8 else min(len(route_pairs), len(active_indices) * 4)
+        for _, _, first_index, second_index in route_pairs[:max_pairs]:
+            first_orders = removed_orders_by_route[first_index]
+            second_orders = removed_orders_by_route[second_index]
+            for first_order in first_orders:
+                for second_order in second_orders:
+                    if time.perf_counter() >= deadline or attempts >= attempt_limit:
+                        return best_exchange
+                    attempts += 1
+                    reduced = self._remove_orders(routes, {first_order, second_order})
+                    first_options = self._insertions_on_vehicles(
+                        first_order,
+                        reduced,
+                        [second_index],
+                        deadline,
+                        limit=2,
+                    )
+                    if not first_options:
+                        continue
+                    second_options = self._insertions_on_vehicles(
+                        second_order,
+                        reduced,
+                        [first_index],
+                        deadline,
+                        limit=2,
+                    )
+                    if not second_options:
+                        continue
+                    for opt1 in first_options:
+                        for opt2 in second_options:
+                            candidate_routes = copy.deepcopy(reduced)
+                            candidate_routes[second_index] = opt1.stops
+                            candidate_routes[first_index] = opt2.stops
+                            candidate_cost = self._plan_cost(candidate_routes, unassigned)
+                            candidate = (
+                                candidate_cost,
+                                candidate_routes,
+                                list(unassigned),
+                                (first_index, second_index),
+                            )
+                            if best_exchange is None or candidate_cost < best_exchange[0]:
+                                best_exchange = candidate
+
+            # Segment Cross-Exchange: swap 2-order sequence for 1 or 2 orders across nearby routes
+            if len(first_orders) >= 2 and second_orders and attempts < attempt_limit:
+                for f_i in range(min(2, len(first_orders) - 1)):
+                    pair1 = {first_orders[f_i], first_orders[f_i + 1]}
+                    second_groups: List[Set[str]] = [{second_orders[0]}]
+                    if len(second_orders) >= 2:
+                        second_groups.append({second_orders[0], second_orders[1]})
+                    for pair2 in second_groups:
+                        if time.perf_counter() >= deadline or attempts >= attempt_limit:
                             return best_exchange
                         attempts += 1
-                        reduced = self._remove_orders(
-                            routes, {first_order, second_order}
-                        )
-                        first_options = self._insertions_on_vehicles(
-                            first_order,
-                            reduced,
-                            [second_index],
-                            deadline,
-                            limit=3,
-                        )
-                        second_options = self._insertions_on_vehicles(
-                            second_order,
-                            reduced,
-                            [first_index],
-                            deadline,
-                            limit=3,
-                        )
-                        if not first_options or not second_options:
-                            continue
-                        for opt1 in first_options:
-                            for opt2 in second_options:
-                                candidate_routes = copy.deepcopy(reduced)
-                                candidate_routes[second_index] = opt1.stops
-                                candidate_routes[first_index] = opt2.stops
-                                candidate_cost = self._plan_cost(
-                                    candidate_routes, unassigned
-                                )
-                                candidate = (
-                                    candidate_cost,
-                                    candidate_routes,
-                                    list(unassigned),
-                                    (first_index, second_index),
-                                )
-                                if best_exchange is None or candidate_cost < best_exchange[0]:
-                                    best_exchange = candidate
-                        if attempts >= attempt_limit:
-                            return best_exchange
-
-                # 2-order simultaneous swap if single swap didn't find improving move
-                if len(first_orders) >= 2 and len(second_orders) >= 2 and attempts < attempt_limit:
-                    for f_i in range(min(2, len(first_orders) - 1)):
-                        for s_i in range(min(2, len(second_orders) - 1)):
-                            if time.perf_counter() >= deadline or attempts >= attempt_limit:
+                        reduced2 = self._remove_orders(routes, pair1 | pair2)
+                        ins = copy.deepcopy(reduced2)
+                        failed = False
+                        for o in pair1:
+                            opts = self._insertions_on_vehicles(
+                                o, ins, [second_index], deadline, limit=1
+                            )
+                            if not opts:
+                                failed = True
                                 break
-                            pair1 = {first_orders[f_i], first_orders[f_i + 1]}
-                            pair2 = {second_orders[s_i], second_orders[s_i + 1]}
-                            attempts += 1
-                            reduced2 = self._remove_orders(routes, pair1 | pair2)
-                            ins = copy.deepcopy(reduced2)
-                            failed = False
-                            for o in pair1:
-                                opts = self._insertions_on_vehicles(o, ins, [second_index], deadline, limit=1)
-                                if not opts:
-                                    failed = True
-                                    break
-                                ins[second_index] = opts[0].stops
-                            if failed:
-                                continue
-                            for o in pair2:
-                                opts = self._insertions_on_vehicles(o, ins, [first_index], deadline, limit=1)
-                                if not opts:
-                                    failed = True
-                                    break
-                                ins[first_index] = opts[0].stops
-                            if failed:
-                                continue
-                            c_cost = self._plan_cost(ins, unassigned)
-                            if best_exchange is None or c_cost < best_exchange[0]:
-                                best_exchange = (c_cost, ins, list(unassigned), (first_index, second_index))
+                            ins[second_index] = opts[0].stops
+                        if failed:
+                            continue
+                        for o in pair2:
+                            opts = self._insertions_on_vehicles(
+                                o, ins, [first_index], deadline, limit=1
+                            )
+                            if not opts:
+                                failed = True
+                                break
+                            ins[first_index] = opts[0].stops
+                        if failed:
+                            continue
+                        c_cost = self._plan_cost(ins, unassigned)
+                        if best_exchange is None or c_cost < best_exchange[0]:
+                            best_exchange = (
+                                c_cost,
+                                ins,
+                                list(unassigned),
+                                (first_index, second_index),
+                            )
         return best_exchange
 
     def _first_improving_stop_relocation(
@@ -1763,15 +1864,31 @@ class HybridALNSSolver:
         active_indices = [idx for idx, r in enumerate(routes) if r]
         empty_indices = [idx for idx, r in enumerate(routes) if not r]
 
-        # 1. Try shifting an active route to a cheaper empty vehicle
+        # 1. Try shifting an active route to a cheaper empty vehicle or an already-active physical truck
+        active_phys_counts: Dict[str, int] = {}
+        for idx_a in active_indices:
+            pid = self.vehicles[idx_a].source_vehicle_id or self.vehicles[idx_a].id
+            active_phys_counts[pid] = active_phys_counts.get(pid, 0) + 1
+        max_active_day = max(
+            (self.vehicles[idx_a].service_day_index for idx_a in active_indices),
+            default=0,
+        )
         checked_empty_types: Set[Tuple] = set()
         for src_idx in active_indices:
             src_v = self.vehicles[src_idx]
+            src_phys = src_v.source_vehicle_id or src_v.id
             src_stops = routes[src_idx]
             for tgt_idx in empty_indices:
                 if time.perf_counter() >= deadline:
                     return best_candidate
                 tgt_v = self.vehicles[tgt_idx]
+                tgt_phys = tgt_v.source_vehicle_id or tgt_v.id
+                reduces_phys = (
+                    active_phys_counts.get(src_phys, 0) <= 1
+                    and tgt_phys != src_phys
+                    and active_phys_counts.get(tgt_phys, 0) >= 1
+                    and tgt_v.service_day_index <= max_active_day
+                )
                 v_type = (
                     tgt_v.length_cm,
                     tgt_v.width_cm,
@@ -1780,11 +1897,13 @@ class HybridALNSSolver:
                     tgt_v.fixed_operating_cost_vnd,
                     tgt_v.depot.id,
                     tgt_v.service_day_index,
+                    reduces_phys,
                 )
                 if v_type in checked_empty_types:
                     continue
                 if (
-                    tgt_v.fixed_operating_cost_vnd >= src_v.fixed_operating_cost_vnd
+                    not reduces_phys
+                    and tgt_v.fixed_operating_cost_vnd >= src_v.fixed_operating_cost_vnd
                     and tgt_v.fuel_consumption_liters_per_100_km >= src_v.fuel_consumption_liters_per_100_km
                     and tgt_v.depot.id == src_v.depot.id
                 ):
@@ -2553,7 +2672,7 @@ class HybridALNSSolver:
         if current_unassigned:
             struct_deadline = min(
                 deadline,
-                started_at + min(0.6, self.time_limit_sec * 0.15),
+                started_at + min(max(0.6, self.time_limit_sec * 0.10), self.time_limit_sec * 0.18),
             )
             struct_candidates = self._construct_structured_solutions(struct_deadline)
             if struct_candidates:
@@ -2568,7 +2687,7 @@ class HybridALNSSolver:
 
             elim_deadline = min(
                 deadline,
-                started_at + min(1.2, self.time_limit_sec * 0.30),
+                started_at + min(max(1.2, self.time_limit_sec * 0.25), 24.0),
             )
             elim_routes = self._eliminate_routes(current_routes, elim_deadline)
             elim_cost = self._plan_cost(elim_routes, current_unassigned)
@@ -2594,7 +2713,7 @@ class HybridALNSSolver:
                 and len(vehicle_profiles) > 1
                 and self.time_limit_sec >= 20.0
             ):
-                consolidation_cap = 8.0
+                consolidation_cap = min(22.0, max(8.0, self.time_limit_sec * 0.25))
                 consolidation_fraction = 0.45
             elif (
                 len(depot_profiles) == 1
@@ -2604,10 +2723,10 @@ class HybridALNSSolver:
                     or (initial_active_route_count >= 8 and self.time_limit_sec >= 10.0)
                 )
             ):
-                consolidation_cap = 6.0
+                consolidation_cap = min(18.0, max(6.0, self.time_limit_sec * 0.25))
                 consolidation_fraction = 0.85
             elif (len(depot_profiles) > 1 or len(self.orders) >= 25) and self.time_limit_sec >= 2.0:
-                consolidation_cap = 5.0
+                consolidation_cap = min(16.0, max(5.0, self.time_limit_sec * 0.25))
                 consolidation_fraction = 0.85
             else:
                 consolidation_cap = 4.0
@@ -2797,7 +2916,7 @@ class HybridALNSSolver:
         stagnant_iters = 0
         attempted_reloc_sigs: Set[Tuple] = set()
         attempted_elim_sigs: Set[Tuple] = set()
-        refine_reserve_sec = max(0.30, min(1.2, self.time_limit_sec * 0.15))
+        refine_reserve_sec = max(0.30, min(max(1.2, self.time_limit_sec * 0.16), 20.0))
         alns_deadline = max(time.perf_counter(), deadline - refine_reserve_sec)
         alns_started_at = time.perf_counter()
         alns_duration = max(0.05, alns_deadline - alns_started_at)
@@ -2958,9 +3077,11 @@ class HybridALNSSolver:
             if best_nonempty <= 1:
                 max_rem = min(max(3, assigned_count // 3), max(1, int(assigned_count * 0.25)))
             elif stagnant_iters >= 12:
-                max_rem = min(10, max(3, int(assigned_count * 0.45)))
+                upper_rem = max(10, int(assigned_count * 0.22)) if self.time_limit_sec >= 20.0 else 10
+                max_rem = min(upper_rem, max(3, int(assigned_count * 0.45)))
             else:
-                max_rem = min(6, max(2, int(assigned_count * 0.35)))
+                base_upper = max(6, int(assigned_count * 0.12)) if self.time_limit_sec >= 20.0 else 6
+                max_rem = min(base_upper, max(2, int(assigned_count * 0.35)))
             remove_count = self.rng.randint(1, max(1, max_rem))
             if (
                 (self.has_verified_plan or audited_incumbent is not None)
@@ -3042,7 +3163,7 @@ class HybridALNSSolver:
 
         # 1. CP-SAT Set Partitioning over Route Pool to recombine optimal routes
         if len(elite_candidates) >= 2:
-            sp_time_limit = min(0.4, max(0.15, self.time_limit_sec * 0.12))
+            sp_time_limit = min(4.0, max(0.05, self.time_limit_sec * 0.08))
             if self.post_audit_reserve_sec:
                 sp_time_limit = min(sp_time_limit, max(0.0, deadline - time.perf_counter()))
             sp_result = (self._solve_set_partitioning(elite_candidates, time_limit_sec=sp_time_limit)
@@ -3065,13 +3186,30 @@ class HybridALNSSolver:
             )
             refine_deadline = min(deadline, refine_cap)
         else:
-            refine_deadline = min(hard_finish_deadline, max(deadline, time.perf_counter() + 0.15))
+            audit_reserve_floor = min(0.22, max(0.06, self.time_limit_sec * 0.50))
+            refine_deadline = max(
+                time.perf_counter(),
+                min(hard_finish_deadline - audit_reserve_floor, deadline - audit_reserve_floor),
+            )
         while time.perf_counter() < refine_deadline:
             improved_in_round = False
             active_vehicles_now = [idx for idx, r in enumerate(best_routes) if r]
 
+            # 2.0 Reassign routes to cheaper/already-active physical vehicles first so later moves price on lean trucks.
+            if time.perf_counter() < refine_deadline:
+                veh_deadline = min(
+                    refine_deadline,
+                    time.perf_counter() + max(0.05, (refine_deadline - time.perf_counter()) * 0.20),
+                )
+                reassigned = self._best_vehicle_reassignment(best_routes, best_unassigned, veh_deadline)
+                if reassigned is not None and self._candidate_key(reassigned[1], reassigned[2]) < self._candidate_key(best_routes, best_unassigned):
+                    best_cost, best_routes, best_unassigned = reassigned
+                    elite_candidates.append((best_cost, copy.deepcopy(best_routes), list(best_unassigned)))
+                    improved_in_round = True
+                    active_vehicles_now = [idx for idx, r in enumerate(best_routes) if r]
+
             # Give cheap stop moves a bounded share before pair reinsertion.
-            stop_deadline = min(refine_deadline, time.perf_counter() + max(0.01, (refine_deadline - time.perf_counter()) * 0.5))
+            stop_deadline = min(refine_deadline, time.perf_counter() + max(0.01, (refine_deadline - time.perf_counter()) * 0.28))
             while time.perf_counter() < stop_deadline:
                 moved = self._first_improving_stop_relocation(best_routes, best_unassigned, stop_deadline)
                 if moved is None:
@@ -3080,32 +3218,16 @@ class HybridALNSSolver:
                 elite_candidates.append((best_cost, copy.deepcopy(best_routes), list(best_unassigned)))
                 improved_in_round = True
 
-            # 2.1 Intra-route relocation for active routes (includes Adjacent Stop Swap & Pair Reinsertion)
-            if active_vehicles_now and time.perf_counter() < refine_deadline:
-                refined_intra = self._best_intra_route_relocation(
-                    best_routes, best_unassigned, active_vehicles_now, refine_deadline
-                )
-                if refined_intra is not None and self._candidate_key(refined_intra[1], refined_intra[2]) < self._candidate_key(best_routes, best_unassigned):
-                    best_cost, best_routes, best_unassigned = refined_intra
-                    elite_candidates.append((best_cost, copy.deepcopy(best_routes), list(best_unassigned)))
-                    improved_in_round = True
-
-            # 2.2 Best relocation
-            if time.perf_counter() < refine_deadline:
-                relocated = self._best_relocation(
-                    best_routes, best_unassigned, refine_deadline, sample_limit=min(20, len(self.orders))
-                )
-                if relocated is not None and self._candidate_key(relocated[1], relocated[2]) < self._candidate_key(best_routes, best_unassigned):
-                    best_cost, best_routes, best_unassigned = relocated
-                    elite_candidates.append((best_cost, copy.deepcopy(best_routes), list(best_unassigned)))
-                    improved_in_round = True
-
-            # 2.3 Best order exchange + intra-route
+            # 2.1 Best order exchange (Corridor Cross-Exchange) + intra-route on changed pair
             if len(active_vehicles_now) > 1 and time.perf_counter() < refine_deadline:
-                exchanged = self._best_order_exchange(best_routes, best_unassigned, refine_deadline)
+                ex_deadline = min(
+                    refine_deadline,
+                    time.perf_counter() + max(0.05, (refine_deadline - time.perf_counter()) * 0.35),
+                )
+                exchanged = self._best_order_exchange(best_routes, best_unassigned, ex_deadline)
                 if exchanged is not None:
                     ex_cost, ex_routes, ex_unassigned, aff = exchanged
-                    ref = self._best_intra_route_relocation(ex_routes, ex_unassigned, aff, refine_deadline)
+                    ref = self._best_intra_route_relocation(ex_routes, ex_unassigned, aff, ex_deadline)
                     if ref is not None and self._candidate_key(ref[1], ref[2]) < self._candidate_key(ex_routes, ex_unassigned):
                         ex_cost, ex_routes, ex_unassigned = ref
                     if self._candidate_key(ex_routes, ex_unassigned) < self._candidate_key(best_routes, best_unassigned):
@@ -3113,11 +3235,30 @@ class HybridALNSSolver:
                         elite_candidates.append((best_cost, copy.deepcopy(best_routes), list(best_unassigned)))
                         improved_in_round = True
 
-            # 2.4 Best vehicle reassignment
+            # 2.2 Intra-route relocation for active routes (includes Adjacent Stop Swap & Pair Reinsertion)
+            if active_vehicles_now and time.perf_counter() < refine_deadline:
+                intra_deadline = min(
+                    refine_deadline,
+                    time.perf_counter() + max(0.05, (refine_deadline - time.perf_counter()) * 0.50),
+                )
+                refined_intra = self._best_intra_route_relocation(
+                    best_routes, best_unassigned, active_vehicles_now, intra_deadline
+                )
+                if refined_intra is not None and self._candidate_key(refined_intra[1], refined_intra[2]) < self._candidate_key(best_routes, best_unassigned):
+                    best_cost, best_routes, best_unassigned = refined_intra
+                    elite_candidates.append((best_cost, copy.deepcopy(best_routes), list(best_unassigned)))
+                    improved_in_round = True
+
+            # 2.3 Best relocation
             if time.perf_counter() < refine_deadline:
-                reassigned = self._best_vehicle_reassignment(best_routes, best_unassigned, refine_deadline)
-                if reassigned is not None and self._candidate_key(reassigned[1], reassigned[2]) < self._candidate_key(best_routes, best_unassigned):
-                    best_cost, best_routes, best_unassigned = reassigned
+                relocated = self._best_relocation(
+                    best_routes,
+                    best_unassigned,
+                    refine_deadline,
+                    sample_limit=min(len(self.orders), max(20, int(len(self.orders) * 0.35))),
+                )
+                if relocated is not None and self._candidate_key(relocated[1], relocated[2]) < self._candidate_key(best_routes, best_unassigned):
+                    best_cost, best_routes, best_unassigned = relocated
                     elite_candidates.append((best_cost, copy.deepcopy(best_routes), list(best_unassigned)))
                     improved_in_round = True
 
@@ -3520,7 +3661,7 @@ def solve_hybrid_alns(
 
         if dense_cargo_seed:
             seed_runs = [
-                (random_seed, min(12.0, time_limit_sec * 0.40)),
+                (random_seed, min(max(12.0, time_limit_sec * 0.35), time_limit_sec * 0.40)),
             ]
         else:
             seed_runs = [
@@ -3528,7 +3669,7 @@ def solve_hybrid_alns(
             ]
         if early_stop_patience:
             seed_runs = [
-                (seed, min(budget, 12.0, time_limit_sec * 0.25))
+                (seed, min(budget, max(12.0, time_limit_sec * 0.30)))
                 for seed, budget in seed_runs
             ]
 

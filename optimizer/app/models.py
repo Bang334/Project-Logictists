@@ -440,6 +440,7 @@ class BenchmarkMetric(StrictContractModel):
     physical_vehicle_count: int = 0
     driver_calendar_salary_vnd: int = 0
     driver_idle_salary_allocation_vnd: int = 0
+    operational_late_penalty_vnd: int = 0
     selection_score_vnd: int = 0
     is_feasible: bool = True
     violations: List[str] = Field(default_factory=list)

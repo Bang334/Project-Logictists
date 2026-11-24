@@ -103,3 +103,165 @@ def test_across_route_consolidation_merges_corridor_routes_and_refine_direct_spa
     missing = engine._append_delivery_cycles(overlap_routes, [0, 1], time.perf_counter() + 2.0, allow_overlap=True)
     assert not missing
     assert sum(bool(r) for r in overlap_routes) == 1
+
+
+def test_append_cycles_prefers_sequential_and_reuses_active_physical_vehicle():
+    """When overlap fails on floor limits, append sequentially before opening unused trucks."""
+    request = comparison_request()
+    day0_v0 = request.vehicles[0].model_copy(update={
+        "id": "v0-day0", "source_vehicle_id": "v0", "service_day_index": 0,
+        "length_cm": 100, "width_cm": 100, "height_cm": 100, "payload_limit_kg": 1000,
+        "available_start_sec": 0, "available_end_sec": 30_000,
+    })
+    day0_v1 = request.vehicles[0].model_copy(update={
+        "id": "v1-day0", "source_vehicle_id": "v1", "plate_number": "TRK-02", "service_day_index": 0,
+        "length_cm": 100, "width_cm": 100, "height_cm": 100, "payload_limit_kg": 1000,
+        "available_start_sec": 0, "available_end_sec": 30_000,
+    })
+    day1_v0 = day0_v0.model_copy(update={
+        "id": "v0-day1", "service_day_index": 1,
+        "available_start_sec": 86_400, "available_end_sec": 86_400 + 30_000,
+    })
+    day1_v1 = day0_v1.model_copy(update={
+        "id": "v1-day1", "service_day_index": 1,
+        "available_start_sec": 86_400, "available_end_sec": 86_400 + 30_000,
+    })
+    request.vehicles = [day0_v0, day0_v1, day1_v0, day1_v1]
+    request.drivers = [
+        request.drivers[0].model_copy(update={"id": "drv0-d0", "source_driver_id": "drv0", "service_day_index": 0}),
+        request.drivers[0].model_copy(update={"id": "drv1-d0", "source_driver_id": "drv1", "service_day_index": 0}),
+        request.drivers[0].model_copy(update={"id": "drv0-d1", "source_driver_id": "drv0", "service_day_index": 1}),
+        request.drivers[0].model_copy(update={"id": "drv1-d1", "source_driver_id": "drv1", "service_day_index": 1}),
+    ]
+    template = request.orders[0]
+    # Each order fills the full 100x100 floor (overlap impossible).
+    # First 2 orders fit sequentially on day 0 v0; 3rd order belongs to day 1 and must reuse v0.
+    request.orders = [
+        template.model_copy(update={
+            "id": "ord-0", "order_number": "ORD-0", "source_order_id": None, "split_group_id": None,
+            "pickup_location": template.pickup_location.model_copy(update={"id": "p0"}),
+            "delivery_location": template.delivery_location.model_copy(update={"id": "d0"}),
+            "pickup_window_start_sec": 0, "pickup_window_end_sec": 20_000,
+            "delivery_window_start_sec": 0, "delivery_window_end_sec": 25_000,
+            "items": [template.items[0].model_copy(update={
+                "id": "pkg-0", "order_id": "ord-0", "length_cm": 90, "width_cm": 90, "height_cm": 90, "no_top_load_requested": True,
+            })],
+        }),
+        template.model_copy(update={
+            "id": "ord-1", "order_number": "ORD-1", "source_order_id": None, "split_group_id": None,
+            "pickup_location": template.pickup_location.model_copy(update={"id": "p1"}),
+            "delivery_location": template.delivery_location.model_copy(update={"id": "d1"}),
+            "pickup_window_start_sec": 0, "pickup_window_end_sec": 20_000,
+            "delivery_window_start_sec": 0, "delivery_window_end_sec": 25_000,
+            "items": [template.items[0].model_copy(update={
+                "id": "pkg-1", "order_id": "ord-1", "length_cm": 90, "width_cm": 90, "height_cm": 90, "no_top_load_requested": True,
+            })],
+        }),
+        template.model_copy(update={
+            "id": "ord-2", "order_number": "ORD-2", "source_order_id": None, "split_group_id": None,
+            "pickup_location": template.pickup_location.model_copy(update={"id": "p2"}),
+            "delivery_location": template.delivery_location.model_copy(update={"id": "d2"}),
+            "pickup_window_start_sec": 86_400, "pickup_window_end_sec": 86_400 + 20_000,
+            "delivery_window_start_sec": 86_400, "delivery_window_end_sec": 86_400 + 25_000,
+            "items": [template.items[0].model_copy(update={
+                "id": "pkg-2", "order_id": "ord-2", "length_cm": 90, "width_cm": 90, "height_cm": 90, "no_top_load_requested": True,
+            })],
+        }),
+    ]
+    n_nodes = len(request.vehicles) + 2 * len(request.orders)
+    request.distance_matrix_meters = [[0 if i == j else 1000 for j in range(n_nodes)] for i in range(n_nodes)]
+    request.duration_matrix_seconds = [[0 if i == j else 60 for j in range(n_nodes)] for i in range(n_nodes)]
+
+    engine = PackingAwareHybridALNSOptimizer(request, should_split_orders=False, include_benchmarks=False)
+    routes = [[], [], [], []]
+    missing = engine._append_delivery_cycles(routes, [0, 1, 2, 3], time.perf_counter() + 3.0, allow_overlap=True)
+    assert not missing
+    used_physical = {
+        request.vehicles[idx].source_vehicle_id
+        for idx, route in enumerate(routes)
+        if route
+    }
+    assert used_physical == {"v0"}
+    assert sum(bool(r) for r in routes) == 2
+
+
+def test_ordered_seed_orders_prioritizes_earlier_grace_deadline():
+    request = comparison_request()
+    template = request.orders[0]
+    request.policy.delivery_grace_days = 1
+    request.orders = [
+        template.model_copy(update={
+            "id": "ord-fresh",
+            "order_number": "ORD-FRESH",
+            "source_order_id": None,
+            "split_group_id": None,
+            "pickup_window_start_sec": 0,
+            "pickup_window_end_sec": 25_000,
+            "delivery_window_start_sec": 0,
+            "delivery_window_end_sec": 40_000,
+            "ordered_at_sec": 0,
+        }),
+        template.model_copy(update={
+            "id": "ord-urgent",
+            "order_number": "ORD-URGENT",
+            "source_order_id": None,
+            "split_group_id": None,
+            "pickup_window_start_sec": 0,
+            "pickup_window_end_sec": 25_000,
+            "delivery_window_start_sec": 0,
+            "delivery_window_end_sec": 40_000,
+            "ordered_at_sec": -86_400 * 3,
+        }),
+    ]
+    n_nodes = len(request.vehicles) + 2 * len(request.orders)
+    request.distance_matrix_meters = [[0 if i == j else 1000 for j in range(n_nodes)] for i in range(n_nodes)]
+    request.duration_matrix_seconds = [[0 if i == j else 60 for j in range(n_nodes)] for i in range(n_nodes)]
+
+    for seed in range(5):
+        engine = PackingAwareHybridALNSOptimizer(
+            request,
+            random_seed=seed,
+            should_split_orders=False,
+            include_benchmarks=False,
+        )
+        ordered = engine._ordered_seed_orders()
+        assert [order.id for order in ordered] == ["ord-urgent", "ord-fresh"]
+
+
+def test_ordered_seed_orders_seed1_prefers_far_delivery_within_same_urgency_bucket():
+    request = comparison_request()
+    template = request.orders[0]
+    depot_lat = request.vehicles[0].depot.latitude
+    depot_lng = request.vehicles[0].depot.longitude
+    request.orders = [
+        template.model_copy(update={
+            "id": "ord-near",
+            "order_number": "ORD-NEAR",
+            "source_order_id": None,
+            "split_group_id": None,
+            "delivery_location": template.delivery_location.model_copy(
+                update={"id": "d-near", "latitude": depot_lat + 0.01, "longitude": depot_lng}
+            ),
+        }),
+        template.model_copy(update={
+            "id": "ord-far",
+            "order_number": "ORD-FAR",
+            "source_order_id": None,
+            "split_group_id": None,
+            "delivery_location": template.delivery_location.model_copy(
+                update={"id": "d-far", "latitude": depot_lat + 0.50, "longitude": depot_lng}
+            ),
+        }),
+    ]
+    n_nodes = len(request.vehicles) + 2 * len(request.orders)
+    request.distance_matrix_meters = [[0 if i == j else 1000 for j in range(n_nodes)] for i in range(n_nodes)]
+    request.duration_matrix_seconds = [[0 if i == j else 60 for j in range(n_nodes)] for i in range(n_nodes)]
+
+    engine = PackingAwareHybridALNSOptimizer(
+        request,
+        random_seed=1,
+        should_split_orders=False,
+        include_benchmarks=False,
+    )
+    assert [order.id for order in engine._ordered_seed_orders()] == ["ord-far", "ord-near"]
+

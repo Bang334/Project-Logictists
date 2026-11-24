@@ -156,6 +156,7 @@ def test_multi_day_solve_self_discovers_span_without_direct_seeding_label() -> N
     best = batch.candidates[0]
     assert best.result.status == "SUCCESS"
     assert best.result.unassigned_orders == []
+    assert all("(Direct warm-start)" not in c.search_strategy for c in batch.candidates)
     assert all(not c.search_strategy.startswith("Hybrid ALNS trong ") for c in batch.candidates)
     used_days = {r.service_day_index for r in best.result.routes}
     assert max(used_days) <= 1

@@ -8,6 +8,7 @@ from .models import (
     DemoStackingPolicy,
     FleetOptimizationBatchResponse,
     FleetOptimizationResponse,
+    FloorState,
     OptimizedRoute,
     OrderPair,
     ScheduledStop,
@@ -21,7 +22,11 @@ from .packing_rules import (
     is_floor_rotation_locked,
     resolve_can_rotate,
 )
-from .spatial_cache import get_active_spatial_cache
+from .spatial_cache import (
+    SpatialValidationCache,
+    get_active_spatial_cache,
+    split_independent_stop_cycles,
+)
 from .spatial_validator import SpatialValidator
 from .stacking_unequal import (
     fast_validate_unequal_stacked_route,
@@ -564,6 +569,48 @@ class DemoStacks:
         }) for candidate in batch.candidates]})
 
 
+def _validate_single_stop_cycle(
+    policy: Optional[DemoStackingPolicy],
+    floor: VehicleFloor,
+    cycle: list[StopAction],
+    *,
+    max_search_nodes: Optional[int],
+    max_time_seconds: Optional[float],
+    cache: Optional[SpatialValidationCache],
+) -> SpatialValidationResult:
+    """Validate one independent stop cycle, using cache when enabled."""
+    cache_key = None
+    if cache is not None:
+        cache_key = cache.build_key(policy, floor, cycle)
+        cached = cache.get(
+            cache_key,
+            cycle,
+            max_search_nodes=max_search_nodes,
+            max_time_seconds=max_time_seconds,
+        )
+        if cached is not None:
+            return cached
+    kwargs: dict[str, Any] = {}
+    if max_search_nodes is not None:
+        kwargs["max_search_nodes"] = max_search_nodes
+    if max_time_seconds is not None:
+        kwargs["max_time_seconds"] = max_time_seconds
+    validator = SpatialValidator(floor, **kwargs)
+    if policy is None:
+        result = validator.validate_plan(cycle)
+    else:
+        result = DemoStacks(policy, [floor]).validate_stops(validator, cycle)
+    if cache is not None and cache_key is not None:
+        cache.put(
+            cache_key,
+            result,
+            max_search_nodes=max_search_nodes,
+            max_time_seconds=max_time_seconds,
+            actions=cycle,
+        )
+    return result
+
+
 def validate_stop_actions(
     policy: Optional[DemoStackingPolicy],
     vehicle: Any,
@@ -584,35 +631,101 @@ def validate_stop_actions(
         door_width_cm=getattr(vehicle, "door_width_cm", None),
     )
     cache = get_active_spatial_cache()
-    cache_key = None
-    if cache is not None:
-        cache_key = cache.build_key(policy, floor, actions)
-        cached = cache.get(
-            cache_key,
+    if cache is None:
+        return _validate_single_stop_cycle(
+            policy,
+            floor,
             actions,
             max_search_nodes=max_search_nodes,
             max_time_seconds=max_time_seconds,
+            cache=None,
         )
-        if cached is not None:
-            return cached
-    kwargs: dict[str, Any] = {}
-    if max_search_nodes is not None:
-        kwargs["max_search_nodes"] = max_search_nodes
-    if max_time_seconds is not None:
-        kwargs["max_time_seconds"] = max_time_seconds
-    validator = SpatialValidator(floor, **kwargs)
-    if policy is None:
-        result = validator.validate_plan(actions)
-    else:
-        result = DemoStacks(policy, [floor]).validate_stops(validator, actions)
-    if cache is not None and cache_key is not None:
-        cache.put(
-            cache_key,
-            result,
+
+    cycles = split_independent_stop_cycles(actions)
+    if len(cycles) <= 1:
+        return _validate_single_stop_cycle(
+            policy,
+            floor,
+            actions,
             max_search_nodes=max_search_nodes,
             max_time_seconds=max_time_seconds,
+            cache=cache,
         )
-    return result
+
+    deadline = (
+        None
+        if max_time_seconds is None
+        else time.monotonic() + max(0.0, float(max_time_seconds))
+    )
+    step_states: list[FloorState] = []
+    max_weight = 0.0
+    max_area = 0.0
+    max_lat_imb: Optional[float] = None
+    step_offset = 0
+    resolved_policy: Optional[DemoStackingPolicy] = None
+    for cycle in cycles:
+        cycle_time: Optional[float] = None
+        if deadline is not None:
+            cycle_time = deadline - time.monotonic()
+            if cycle_time <= 0.0:
+                return SpatialValidationResult(
+                    is_valid=False,
+                    violation_code="PLACEMENT_SEARCH_LIMIT_REACHED",
+                    error_message="Hết thời gian kiểm định xếp hàng theo chu kỳ.",
+                    max_weight_kg=round(max_weight, 3),
+                    max_area_cm2=max_area,
+                    max_lateral_imbalance_percent=(
+                        round(max_lat_imb, 1) if max_lat_imb is not None else None
+                    ),
+                    step_states=step_states,
+                    demo_stacking=resolved_policy,
+                )
+        cycle_result = _validate_single_stop_cycle(
+            policy,
+            floor,
+            cycle,
+            max_search_nodes=max_search_nodes,
+            max_time_seconds=cycle_time,
+            cache=cache,
+        )
+        adjusted_states = [
+            state.model_copy(update={"step_index": state.step_index + step_offset})
+            for state in cycle_result.step_states
+        ]
+        max_weight = max(max_weight, cycle_result.max_weight_kg or 0.0)
+        max_area = max(max_area, cycle_result.max_area_cm2 or 0.0)
+        if cycle_result.max_lateral_imbalance_percent is not None:
+            max_lat_imb = (
+                cycle_result.max_lateral_imbalance_percent
+                if max_lat_imb is None
+                else max(max_lat_imb, cycle_result.max_lateral_imbalance_percent)
+            )
+        if cycle_result.demo_stacking is not None:
+            resolved_policy = cycle_result.demo_stacking
+        if not cycle_result.is_valid:
+            return cycle_result.model_copy(
+                update={
+                    "max_weight_kg": round(max_weight, 3),
+                    "max_area_cm2": max_area,
+                    "max_lateral_imbalance_percent": (
+                        round(max_lat_imb, 1) if max_lat_imb is not None else None
+                    ),
+                    "step_states": step_states + adjusted_states,
+                }
+            )
+        step_states.extend(adjusted_states)
+        step_offset += len(cycle)
+
+    return SpatialValidationResult(
+        is_valid=True,
+        max_weight_kg=round(max_weight, 3),
+        max_area_cm2=max_area,
+        max_lateral_imbalance_percent=(
+            round(max_lat_imb, 1) if max_lat_imb is not None else None
+        ),
+        step_states=step_states,
+        demo_stacking=resolved_policy,
+    )
 
 
 def sync_route_stacking_unloads(

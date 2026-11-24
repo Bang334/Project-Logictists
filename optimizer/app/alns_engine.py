@@ -37,7 +37,7 @@ from .models import (
     UnassignedOrder,
     can_driver_drive_vehicle,
 )
-from .planning_objective import calendar_salary_for_span
+from .planning_objective import calendar_salary_for_span, operational_late_penalty_for_stops
 from .packing_rules import resolve_can_rotate
 from .route_costing import (
     calculate_driver_cost,
@@ -230,6 +230,35 @@ class ALNSFleetOptimizer:
             return None
         return indices[0] if stop.stop_type == "PICKUP" else indices[1]
 
+    @staticmethod
+    def _adjust_first_stop_waiting_for_jit_start(
+        vehicle: FleetVehicle,
+        stops: List[ScheduledStop],
+    ) -> Tuple[int, List[ScheduledStop]]:
+        """Move pre-opening wait to the depot start time without double-counting it.
+
+        Keeping the original stop waiting while shifting ``start_time_sec`` forward
+        violates ``arrival - previous_departure = travel + waiting`` in ``is_fully_served``.
+        """
+        first_stop = stops[0]
+        route_start_sec = max(
+            vehicle.available_start_sec,
+            first_stop.arrival_time_sec - first_stop.travel_time_sec,
+        )
+        first_stop_waiting_sec = max(
+            0,
+            first_stop.arrival_time_sec
+            - route_start_sec
+            - first_stop.travel_time_sec,
+        )
+        if first_stop_waiting_sec == first_stop.waiting_time_sec:
+            return route_start_sec, stops
+        adjusted_stops = list(stops)
+        adjusted_stops[0] = first_stop.model_copy(
+            update={"waiting_time_sec": first_stop_waiting_sec}
+        )
+        return route_start_sec, adjusted_stops
+
     def _schedule_stops(
         self, v_idx: int, stops: List[ScheduledStop]
     ) -> Optional[Tuple[List[ScheduledStop], int, int]]:
@@ -408,6 +437,12 @@ class ALNSFleetOptimizer:
                 0,
                 calendar_salary_for_span(obj_req, span)
                 - calendar_salary_for_span(obj_req, 1),
+            )
+        if obj_req is not None and self.policy.late_delivery_penalty_mode == "NONE":
+            total_economic += operational_late_penalty_for_stops(
+                obj_req,
+                routes_stops,
+                order_by_id=self.order_by_id,
             )
 
         penalized = (
@@ -1066,26 +1101,9 @@ class ALNSFleetOptimizer:
                 )
 
             route_dist_km = self._calc_route_distance_km(v_idx, formatted_stops)
-            first_stop = formatted_stops[0]
-            route_start_sec = max(
-                v.available_start_sec,
-                first_stop.arrival_time_sec - first_stop.travel_time_sec,
+            route_start_sec, formatted_stops = self._adjust_first_stop_waiting_for_jit_start(
+                v, formatted_stops
             )
-            # A route starts just in time when the first time window would
-            # otherwise make the vehicle wait at the customer.  Move that wait
-            # to the depot consistently: keeping the original stop waiting
-            # would double-count it and violate the response timeline contract
-            # (arrival - previous departure = travel + waiting).
-            first_stop_waiting_sec = max(
-                0,
-                first_stop.arrival_time_sec
-                - route_start_sec
-                - first_stop.travel_time_sec,
-            )
-            if first_stop_waiting_sec != first_stop.waiting_time_sec:
-                formatted_stops[0] = first_stop.model_copy(
-                    update={"waiting_time_sec": first_stop_waiting_sec}
-                )
             route_dur_min = round(
                 (route_end_sec - route_start_sec) / 60.0, 1
             )
@@ -1381,8 +1399,9 @@ class ALNSFleetOptimizer:
                         )
                         f_stops.append(f_st)
                     r_dist = self._calc_route_distance_km(empty_v_idx, f_stops)
-                    f_st0 = f_stops[0]
-                    r_start = max(v.available_start_sec, f_st0.arrival_time_sec - f_st0.travel_time_sec)
+                    r_start, f_stops = self._adjust_first_stop_waiting_for_jit_start(
+                        v, f_stops
+                    )
                     r_dur = round((r_end - r_start) / 60.0, 1)
                     if self.request.demo_stacking is not None:
                         f_stops = sync_route_stacking_unloads(f_stops, sp_final)

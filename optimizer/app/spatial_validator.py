@@ -19,6 +19,7 @@ from .packing_rules import (
     resolve_can_rotate,
     score_candidate_balance_and_fragility,
 )
+from .spatial_cache import split_independent_stop_cycles
 
 
 _GEOMETRY_TOLERANCE_CM = 0.01
@@ -444,35 +445,7 @@ class SpatialValidator:
         the plan intact so the normal validator reports the original contract
         violation instead of accidentally hiding it behind segmentation.
         """
-        if not stops:
-            return [stops]
-
-        onboard_ids: Set[str] = set()
-        cycle_start = 0
-        cycles: List[List[StopAction]] = []
-        for stop_index, stop in enumerate(stops):
-            unload_ids = list(stop.items_to_unload)
-            if (
-                len(unload_ids) != len(set(unload_ids))
-                or any(item_id not in onboard_ids for item_id in unload_ids)
-            ):
-                return [stops]
-            onboard_ids.difference_update(unload_ids)
-
-            load_ids = [item.id for item in stop.items_to_load]
-            if (
-                len(load_ids) != len(set(load_ids))
-                or any(item_id in onboard_ids for item_id in load_ids)
-            ):
-                return [stops]
-            onboard_ids.update(load_ids)
-
-            if not onboard_ids and stop_index + 1 < len(stops):
-                cycles.append(stops[cycle_start : stop_index + 1])
-                cycle_start = stop_index + 1
-
-        cycles.append(stops[cycle_start:])
-        return cycles
+        return split_independent_stop_cycles(stops)
 
     def _validate_load_cycle(
         self,

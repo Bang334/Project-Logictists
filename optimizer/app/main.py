@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import sys
+import threading
 
 if sys.version_info < (3, 11):
     raise RuntimeError("Optimizer requires Python 3.11+. On Windows run start_optimizer.ps1 from the project root.")
 
-from fastapi import FastAPI, HTTPException
+import anyio
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import Field
-from typing import List
+from typing import Dict, List
 
 from .models import (
     DemoStackingPolicy,
@@ -82,10 +85,64 @@ def optimize(request: OptimizationRequest):
     return OrToolsRoutingSolver(request).solve()
 
 
+_ACTIVE_JOB_EVENTS: Dict[str, threading.Event] = {}
+_ACTIVE_JOB_LOCK = threading.Lock()
+
+
+async def _run_cancellable_fleet_solve(
+    raw_request: Request,
+    request: FleetOptimizationRequest,
+    max_candidates: int,
+) -> FleetOptimizationBatchResponse:
+    cancel_event = threading.Event()
+    job_key = request.job_id.strip() if request.job_id else ""
+    if job_key:
+        with _ACTIVE_JOB_LOCK:
+            previous = _ACTIVE_JOB_EVENTS.get(job_key)
+            if previous is not None:
+                previous.set()
+            _ACTIVE_JOB_EVENTS[job_key] = cancel_event
+
+    def _run_sync() -> FleetOptimizationBatchResponse:
+        return MultiStartFleetOptimizer(
+            request,
+            cancel_event=cancel_event,
+        ).solve(max_candidates=max_candidates)
+
+    solve_task = asyncio.create_task(anyio.to_thread.run_sync(_run_sync))
+    try:
+        while not solve_task.done():
+            await asyncio.wait({solve_task}, timeout=0.4)
+            if solve_task.done():
+                break
+            try:
+                if await raw_request.is_disconnected():
+                    cancel_event.set()
+                    break
+            except Exception:
+                pass
+        return await solve_task
+    finally:
+        if job_key:
+            with _ACTIVE_JOB_LOCK:
+                if _ACTIVE_JOB_EVENTS.get(job_key) is cancel_event:
+                    _ACTIVE_JOB_EVENTS.pop(job_key, None)
+
+
+@app.post("/optimize-fleet/jobs/{job_id}/cancel")
+def cancel_fleet_job(job_id: str):
+    """Dừng chủ động job tối ưu đang chạy bằng signal cho worker pool."""
+    with _ACTIVE_JOB_LOCK:
+        event = _ACTIVE_JOB_EVENTS.get(job_id)
+        if event is not None:
+            event.set()
+    return {"job_id": job_id, "cancelled": event is not None}
+
+
 @app.post("/optimize-fleet", response_model=FleetOptimizationResponse)
-def optimize_fleet(request: FleetOptimizationRequest):
+async def optimize_fleet(request: FleetOptimizationRequest, raw_request: Request):
     """Tự chọn xe, tài xế và tuyến cho toàn bộ đơn trong snapshot của một chi nhánh."""
-    batch = MultiStartFleetOptimizer(request).solve(max_candidates=1)
+    batch = await _run_cancellable_fleet_solve(raw_request, request, max_candidates=1)
     if not batch.candidates:
         raise HTTPException(status_code=504 if batch.no_plan_status == "TIMEOUT" else 409,
                             detail="Chưa tìm được lịch giao đủ toàn bộ đơn và kiện.")
@@ -93,9 +150,9 @@ def optimize_fleet(request: FleetOptimizationRequest):
 
 
 @app.post("/optimize-fleet/candidates", response_model=FleetOptimizationBatchResponse)
-def optimize_fleet_candidates(request: FleetOptimizationRequest):
+async def optimize_fleet_candidates(request: FleetOptimizationRequest, raw_request: Request):
     """Chạy Hybrid-first, OR-Tools fallback và trả tối đa 3 phương án đã kiểm chứng."""
-    return MultiStartFleetOptimizer(request).solve(max_candidates=3)
+    return await _run_cancellable_fleet_solve(raw_request, request, max_candidates=3)
 
 if __name__ == "__main__":
     import uvicorn

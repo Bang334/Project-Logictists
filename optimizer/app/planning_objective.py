@@ -9,13 +9,15 @@ follows the confirmed lexicographic hierarchy:
 """
 
 from collections import defaultdict
-from typing import Dict, Set, Tuple
+from typing import Dict, Mapping, Optional, Sequence, Set, Tuple
 from .route_costing import allocate_order_late_penalties
 
 from .models import (
     FleetOptimizationRequest,
     FleetOptimizationResponse,
+    OrderPair,
     PlanningObjectiveBreakdown,
+    ScheduledStop,
 )
 
 
@@ -91,22 +93,25 @@ def calendar_salary_for_span(request: FleetOptimizationRequest, planning_span_da
     return _calendar_salary_vnd(request, planning_span_days, 0)
 
 
-def _operational_late_penalty_vnd(
+def operational_late_penalty_for_stops(
     request: FleetOptimizationRequest,
-    plan: FleetOptimizationResponse,
+    route_stops: Sequence[Sequence[ScheduledStop]],
+    *,
+    order_by_id: Optional[Mapping[str, OrderPair]] = None,
 ) -> int:
+    """Compute operational grace-day lateness weight across route stop sequences."""
     if request.policy.late_delivery_penalty_mode != "NONE":
         return 0
 
-    order_by_id = {order.id: order for order in request.orders}
+    orders_map = order_by_id if order_by_id is not None else {o.id: o for o in request.orders}
     latest_delivery_by_source_order: Dict[str, int] = {}
     optimizer_order_by_source: Dict[str, str] = {}
-    for route in plan.routes:
-        for stop in route.stops:
+    for stops in route_stops:
+        for stop in stops:
             if stop.stop_type != "DELIVERY":
                 continue
             optimizer_order_id = stop.allocation_id or stop.order_id
-            order = order_by_id.get(optimizer_order_id or "")
+            order = orders_map.get(optimizer_order_id or "")
             if order is None:
                 continue
             source_order_id = order.source_order_id or order.id
@@ -116,13 +121,10 @@ def _operational_late_penalty_vnd(
                 stop.arrival_time_sec,
             )
 
-    # This is a solver-only weight, not a customer-facing financial charge. It
-    # reuses the existing OR-Tools scale instead of introducing a new business
-    # amount while the branch penalty policy is disabled.
     daily_weight_vnd = operational_late_daily_weight_vnd(request)
     total = 0
     for source_order_id, delivered_at_sec in latest_delivery_by_source_order.items():
-        order = order_by_id[optimizer_order_by_source[source_order_id]]
+        order = orders_map[optimizer_order_by_source[source_order_id]]
         grace_end_sec = (
             order.ordered_at_sec
             + request.policy.delivery_grace_days * SECONDS_PER_DAY
@@ -130,6 +132,26 @@ def _operational_late_penalty_vnd(
         late_seconds = max(0, delivered_at_sec - grace_end_sec)
         total += round(daily_weight_vnd * late_seconds / SECONDS_PER_DAY)
     return total
+
+
+def route_operational_late_penalty(
+    request: FleetOptimizationRequest,
+    stops: Sequence[ScheduledStop],
+    order_by_id: Optional[Mapping[str, OrderPair]] = None,
+) -> int:
+    """Compute single-route operational grace-day lateness weight."""
+    return operational_late_penalty_for_stops(request, (stops,), order_by_id=order_by_id)
+
+
+def _operational_late_penalty_vnd(
+    request: FleetOptimizationRequest,
+    plan: FleetOptimizationResponse,
+) -> int:
+    # Solver-only guidance weight when no financial late-fee policy is enabled.
+    return operational_late_penalty_for_stops(
+        request,
+        [route.stops for route in plan.routes],
+    )
 
 
 def compute_grouping_metrics(

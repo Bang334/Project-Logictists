@@ -187,3 +187,134 @@ def test_later_day_cheap_vehicle_is_compacted_onto_earlier_day_idle_vehicle_to_s
         "Route on Day 1 B2 truck must move to idle Day 0 C truck to eliminate Day 1 calendar payroll"
     )
 
+
+def test_solve_runs_vehicle_reassignment_even_after_search_deadline_expires(monkeypatch):
+    import app.hybrid_alns_engine as hybrid_module
+    from app.hybrid_alns_engine import (
+        HybridOptimizationSolution,
+        HybridOptimizedRoute,
+        HybridRouteCostBreakdown,
+        HybridScheduledStop,
+    )
+
+    request = comparison_request()
+    vehicle = request.vehicles[0]
+    request.vehicles = [
+        vehicle.model_copy(update={
+            "id": f"v-{i}",
+            "source_vehicle_id": f"physical-{i}",
+            "depot": vehicle.depot.model_copy(update={"id": f"depot-{i}"}),
+            "fixed_operating_cost_vnd": 500_000 if i == 0 else 50_000,
+        })
+        for i in range(2)
+    ]
+    request.drivers = [
+        request.drivers[0].model_copy(update={
+            "id": f"driver-{i}",
+            "source_driver_id": f"driver-{i}",
+        })
+        for i in range(2)
+    ]
+    size = len(request.vehicles) + len(request.orders) * 2
+    request.distance_matrix_meters = [[0 if i == j else 100 for j in range(size)] for i in range(size)]
+    request.duration_matrix_seconds = [[0 if i == j else 10 for j in range(size)] for i in range(size)]
+    for order in request.orders:
+        order.source_order_id = order.id
+        order.split_group_id = None
+
+    engine = PackingAwareHybridALNSOptimizer(
+        request,
+        time_budget_seconds=3.0,
+        include_benchmarks=False,
+        should_split_orders=False,
+    )
+
+    clock = [1000.0]
+    monkeypatch.setattr(hybrid_module.time, "perf_counter", lambda: clock[0])
+
+    def build_on_expensive_v0(vehicles, drivers, orig_indices, pickup_keys, delivery_keys, search_deadline=None):
+        orders, _, _ = engine._hybrid_model_context
+        stops = []
+        seq = 1
+        cur_t = vehicles[0].available_start_sec
+        for order in orders:
+            stops.append(
+                HybridScheduledStop(
+                    sequence=seq,
+                    stop_type="PICKUP",
+                    location_id=pickup_keys[order.id],
+                    location_name=order.pickup_location.name,
+                    order_id=order.id,
+                    order_number=order.order_number,
+                    arrival_time_sec=cur_t,
+                    departure_time_sec=cur_t,
+                    current_weight_kg=sum(it.weight_kg for it in order.items),
+                    items_loaded=[it.id for it in order.items],
+                    items_unloaded=[],
+                )
+            )
+            seq += 1
+            cur_t += 10
+            stops.append(
+                HybridScheduledStop(
+                    sequence=seq,
+                    stop_type="DELIVERY",
+                    location_id=delivery_keys[order.id],
+                    location_name=order.delivery_location.name,
+                    order_id=order.id,
+                    order_number=order.order_number,
+                    arrival_time_sec=cur_t,
+                    departure_time_sec=cur_t,
+                    current_weight_kg=0.0,
+                    items_loaded=[],
+                    items_unloaded=[it.id for it in order.items],
+                )
+            )
+            seq += 1
+            cur_t += 10
+        # Advance virtual clock past search_deadline (1002.0) while leaving 0.9s before solve_deadline (1003.0)
+        clock[0] = 1002.1
+        return HybridOptimizationSolution(
+            solver_name="hybrid",
+            execution_time_sec=0.0,
+            routes=[
+                HybridOptimizedRoute(
+                    vehicle=vehicles[0],
+                    driver=drivers[0],
+                    stops=stops,
+                    total_distance_km=0.1,
+                    total_duration_minutes=1.0,
+                    cost_breakdown=HybridRouteCostBreakdown(),
+                )
+            ],
+            unassigned_orders=[],
+            real_economic_cost_vnd=0,
+            penalized_objective_vnd=0,
+            total_distance_km=0.1,
+            fulfillment_rate=100.0,
+            is_spatial_valid=True,
+            is_temporally_valid=True,
+            is_contract_valid=True,
+            solution_audited=False,
+            random_seed=0,
+        )
+
+    observed_deadlines = []
+    real_optimize = engine._optimize_production_vehicles
+
+    def spy_optimize(routes, unassigned, deadline=None):
+        observed_deadlines.append((clock[0], deadline))
+        return real_optimize(routes, unassigned, deadline)
+
+    monkeypatch.setattr(engine, "_build_hybrid_initial_solution", build_on_expensive_v0)
+    monkeypatch.setattr(engine, "_optimize_production_vehicles", spy_optimize)
+    monkeypatch.setattr(engine, "_audited_cycle_checkpoint", lambda *args, **kwargs: None)
+
+    response = engine.solve()
+
+    assert observed_deadlines, "_optimize_production_vehicles should run after search_deadline expires"
+    assert observed_deadlines[0][1] is not None and observed_deadlines[0][1] > observed_deadlines[0][0]
+    assert response.status == "SUCCESS"
+    assert not response.unassigned_orders
+    assert [route.vehicle_id for route in response.routes] == ["physical-1"]
+

@@ -604,3 +604,501 @@ def test_multi_item_fixture_returns_all_ten_orders_and_every_package():
     assert batch.candidates
     assert all(is_fully_served(candidate.result, set(expected), expected_items=expected)
                for candidate in batch.candidates)
+
+
+def test_multi_start_excludes_direct_warm_start_and_keeps_post_solve_benchmark(monkeypatch):
+    from concurrent.futures import Future
+    import app.multi_start as module
+    from app.models import BenchmarkComparisonResponse
+    from test_benchmark_contract import comparison_request
+
+    request = comparison_request()
+    template = request.orders[0]
+    request.orders = [
+        template.model_copy(update={
+            "id": f"ord-{i}",
+            "order_number": f"ORD-{i}",
+            "source_order_id": f"ord-{i}",
+            "split_group_id": None,
+            "pickup_location": template.pickup_location.model_copy(update={"id": f"p-{i}"}),
+            "delivery_location": template.delivery_location.model_copy(update={"id": f"d-{i}"}),
+            "items": [template.items[0].model_copy(update={"id": f"pkg-{i}", "order_id": f"ord-{i}"})],
+        })
+        for i in range(50)
+    ]
+    n_nodes = len(request.vehicles) + 2 * len(request.orders)
+    request.distance_matrix_meters = [[0 if i == j else 1000 for j in range(n_nodes)] for i in range(n_nodes)]
+    request.duration_matrix_seconds = [[0 if i == j else 60 for j in range(n_nodes)] for i in range(n_nodes)]
+    request = request.model_copy(update={"early_stop_patience": 0, "search_time_seconds": 12, "max_time_seconds": 14})
+
+    order_ids = [o.id for o in request.orders]
+    hybrid_plan = _mock_plan("contract", "SUCCESS", 180_000, list(reversed(order_ids)))
+    hybrid_plan.routes[0].route_id = "hybrid-route"
+
+    direct_stub = module.BenchmarkMetric(
+        method_name="Direct",
+        description="Direct",
+        total_cost_vnd=200_000,
+        total_distance_km=50.0,
+        total_duration_minutes=60.0,
+        vehicles_used=50,
+        fuel_cost_vnd=50_000,
+        vehicle_fixed_cost_vnd=50_000,
+        driver_cost_vnd=100_000,
+        cargo_holding_cost_vnd=0,
+        late_delivery_penalty_vnd=0,
+        planning_span_days=2,
+        physical_vehicle_count=1,
+        is_feasible=True,
+    )
+
+    class StubCalculator:
+        def build_comparison(
+            self,
+            _routes,
+            _total_cost,
+            _total_km,
+            _total_min,
+            *,
+            ortools_is_feasible,
+            direct_metric,
+        ):
+            return BenchmarkComparisonResponse(
+                or_tools=direct_metric,
+                direct_dedicated=direct_metric,
+                savings_vs_direct_vnd=20_000,
+                savings_vs_direct_percent=10.0,
+            )
+
+    direct_calls = []
+
+    def spy_direct_benchmark(_self):
+        direct_calls.append("called")
+        return StubCalculator(), direct_stub
+
+    class ImmediatePool:
+        def __init__(self, max_workers):
+            pass
+
+        def submit(self, worker, *args):
+            future = Future()
+            future.set_result(worker(*args))
+            return future
+
+        def shutdown(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(MultiStartFleetOptimizer, "_direct_benchmark", spy_direct_benchmark)
+    monkeypatch.setattr(
+        MultiStartFleetOptimizer,
+        "_search_direct_span",
+        lambda *_args: pytest.fail("Direct warm-start candidate search must stay disabled"),
+    )
+    monkeypatch.setattr(module.concurrent.futures, "ProcessPoolExecutor", ImmediatePool)
+    monkeypatch.setattr(
+        module,
+        "_run_hybrid_seed_worker",
+        lambda _req, _obj, seed, _budget, warm_plan=None: (
+            seed,
+            hybrid_plan.model_dump(),
+            {"selection_score_vnd": 180_000, "active_route_count": 1},
+            None,
+        ),
+    )
+    monkeypatch.setattr(module, "is_fully_served", lambda plan, *_args, **_kwargs: plan.status == "SUCCESS")
+
+    batch = MultiStartFleetOptimizer(request).solve(max_candidates=3)
+    assert batch.candidates
+    assert all("Direct warm-start" not in c.search_strategy for c in batch.candidates)
+    assert batch.candidates[0].search_strategy == "Packing-aware Hybrid ALNS (seed 0)"
+    assert direct_calls == ["called"]
+    assert batch.candidates[0].result.benchmarks is not None
+    assert batch.candidates[0].result.benchmarks.direct_dedicated.total_cost_vnd == 200_000
+
+    # Verify _run_direct_span_worker error message helper contract remains intact if called directly.
+    real_direct_worker = module._run_direct_span_worker
+    monkeypatch.setattr(
+        MultiStartFleetOptimizer,
+        "_search_direct_span",
+        lambda self, slots, direct, dl: None,
+    )
+    days, plan_out, _, err_msg = real_direct_worker(
+        request.model_dump(),
+        request.model_dump(),
+        direct_stub.model_dump(),
+        2,
+        1.0,
+    )
+    assert days == 2
+    assert plan_out is None
+    assert err_msg == "Packing-aware Hybrid ALNS (Direct warm-start) không trả về tuyến."
+
+
+def test_auto_multi_seed_runs_three_seeds_on_large_fleet_with_budget_and_multicore(monkeypatch):
+    from concurrent.futures import Future
+    import app.multi_start as module
+    from test_benchmark_contract import comparison_request
+
+    observed_seeds = []
+
+    class ImmediatePool:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def submit(self, worker, *args):
+            future = Future()
+            future.set_result(worker(*args))
+            return future
+
+        def shutdown(self, **kwargs):
+            pass
+
+    request = comparison_request()
+    template = request.orders[0]
+    request.orders = [
+        template.model_copy(update={
+            "id": f"ord-{i}",
+            "order_number": f"ORD-{i}",
+            "source_order_id": f"ord-{i}",
+            "split_group_id": None,
+            "pickup_location": template.pickup_location.model_copy(update={"id": f"p-{i}"}),
+            "delivery_location": template.delivery_location.model_copy(update={"id": f"d-{i}"}),
+            "items": [template.items[0].model_copy(update={"id": f"pkg-{i}", "order_id": f"ord-{i}"})],
+        })
+        for i in range(90)
+    ]
+    n_nodes = len(request.vehicles) + 2 * len(request.orders)
+    request.distance_matrix_meters = [[0 if i == j else 1000 for j in range(n_nodes)] for i in range(n_nodes)]
+    request.duration_matrix_seconds = [[0 if i == j else 60 for j in range(n_nodes)] for i in range(n_nodes)]
+    request = request.model_copy(update={
+        "hybrid_seed_count": 0,
+        "early_stop_patience": 0,
+        "search_time_seconds": 60,
+        "max_time_seconds": 240,
+    })
+
+    plan = _mock_plan("large-auto", "SUCCESS", 100_000, [o.id for o in request.orders])
+    monkeypatch.setattr(module.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(module.concurrent.futures, "ProcessPoolExecutor", ImmediatePool)
+    monkeypatch.setattr(MultiStartFleetOptimizer, "_direct_benchmark", lambda self: (None, None))
+    monkeypatch.setattr(
+        module,
+        "_run_hybrid_seed_worker",
+        lambda _req, _obj, seed, _budget, warm_plan=None: (
+            observed_seeds.append(seed) or seed,
+            plan.model_dump(),
+            {"selection_score_vnd": 100_000 + seed, "active_route_count": 1},
+            None,
+        ),
+    )
+    monkeypatch.setattr(module, "is_fully_served", lambda p, *_a, **_k: p.status == "SUCCESS")
+
+    batch = MultiStartFleetOptimizer(request).solve(max_candidates=3)
+    assert batch.candidates
+    assert set(observed_seeds) == {0, 1, 2}
+
+
+def test_extract_safe_ortools_seed_pool_combines_only_when_compatible():
+    from app.multi_start import _extract_safe_ortools_seed_pool
+    from test_benchmark_contract import comparison_request
+
+    req = comparison_request()
+    template = req.orders[0]
+    req.orders = [
+        template.model_copy(update={
+            "id": f"ord-{i}",
+            "order_number": f"ORD-{i}",
+            "source_order_id": f"ord-{i}",
+            "split_group_id": None,
+            "pickup_location": template.pickup_location.model_copy(update={"id": f"p-{i}"}),
+            "delivery_location": template.delivery_location.model_copy(update={"id": f"d-{i}"}),
+            "items": [template.items[0].model_copy(update={"id": f"pkg-{i}", "order_id": f"ord-{i}"})],
+        })
+        for i in range(4)
+    ]
+    n_nodes = len(req.vehicles) + 2 * len(req.orders)
+    req.distance_matrix_meters = [[0 if i == j else 1000 for j in range(n_nodes)] for i in range(n_nodes)]
+    req.duration_matrix_seconds = [[0 if i == j else 60 for j in range(n_nodes)] for i in range(n_nodes)]
+
+    pool_even = _extract_safe_ortools_seed_pool(req, seed=0, available_budget=6.0)
+    assert pool_even is not None and any(pool_even[0])
+    assert _extract_safe_ortools_seed_pool(req, seed=1, available_budget=6.0) is None
+    assert _extract_safe_ortools_seed_pool(req, seed=0, available_budget=2.0) is None
+
+
+def test_multi_seed_gives_all_seeds_equal_budget_across_waves(monkeypatch):
+    from concurrent.futures import Future
+    import app.multi_start as module
+    from test_benchmark_contract import comparison_request
+
+    observed_budgets = {}
+
+    class ImmediatePool:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def submit(self, worker, *args):
+            future = Future()
+            future.set_result(worker(*args))
+            return future
+
+        def shutdown(self, **kwargs):
+            pass
+
+    plan = _mock_plan("equal-budget", "SUCCESS", 100_000, ["part-0", "part-1"])
+
+    def worker(_req, _obj, seed, budget, warm_plan=None):
+        observed_budgets[seed] = budget
+        return seed, plan.model_dump(), {"selection_score_vnd": 100_000, "active_route_count": 1}, None
+
+    monkeypatch.setattr(module.os, "cpu_count", lambda: 2)
+    monkeypatch.setattr(module.concurrent.futures, "ProcessPoolExecutor", ImmediatePool)
+    monkeypatch.setattr(module, "_run_hybrid_seed_worker", worker)
+    monkeypatch.setattr(module, "is_fully_served", lambda p, *_a, **_k: p.status == "SUCCESS")
+
+    request = comparison_request().model_copy(
+        update={
+            "early_stop_patience": 0,
+            "hybrid_seed_count": 4,
+            "search_time_seconds": 20,
+            "max_time_seconds": 30,
+        }
+    )
+    batch = MultiStartFleetOptimizer(request).solve(max_candidates=4)
+    assert batch.candidates
+    assert set(observed_budgets) == {0, 1, 2, 3}
+    assert all(
+        observed_budgets[s] == pytest.approx(observed_budgets[0], rel=1e-6)
+        for s in (1, 2, 3)
+    )
+
+
+def test_secondary_seed_narrows_to_warm_days_like_seed_zero(monkeypatch):
+    import app.multi_start as module
+    from test_benchmark_contract import comparison_request
+
+    request = comparison_request()
+    vehicle = request.vehicles[0]
+    request.vehicles = [
+        vehicle.model_copy(
+            update={
+                "id": f"veh-day-{day}",
+                "source_vehicle_id": "phys-0",
+                "service_day_index": day,
+                "available_start_sec": day * 86_400 + 28_800,
+                "available_end_sec": day * 86_400 + 64_800,
+            }
+        )
+        for day in range(3)
+    ]
+    request.drivers = [
+        request.drivers[0].model_copy(
+            update={"id": f"drv-day-{day}", "source_driver_id": "drv-0", "service_day_index": day}
+        )
+        for day in range(3)
+    ]
+    size = len(request.vehicles) + len(request.orders) * 2
+    request.distance_matrix_meters = [[0 if i == j else 100 for j in range(size)] for i in range(size)]
+    request.duration_matrix_seconds = [[0 if i == j else 10 for j in range(size)] for i in range(size)]
+
+    warm_plan = _mock_plan("warm-day-0", "SUCCESS", 100_000, [o.id for o in request.orders])
+    warm_plan.routes[0].service_day_index = 0
+    seen_vehicle_counts = []
+
+    class SpyHybrid:
+        def __init__(self, solver_req, **_kwargs):
+            seen_vehicle_counts.append(len(solver_req.vehicles))
+
+        def solve(self, hard_deadline=None):
+            return warm_plan
+
+    monkeypatch.setattr(module, "PackingAwareHybridALNSOptimizer", SpyHybrid)
+    monkeypatch.setattr(module, "is_fully_served", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        module,
+        "apply_planning_objective",
+        lambda _req, _plan: module.PlanningObjectiveBreakdown(selection_score_vnd=100_000),
+    )
+
+    seed, plan_out, _, err = module._run_hybrid_seed_worker(
+        request.model_dump(),
+        request.model_dump(),
+        1,
+        10.0,
+        warm_plan.model_dump(),
+    )
+    assert seed == 1
+    assert err is None and plan_out is not None
+    assert seen_vehicle_counts == [1]
+
+
+def test_multi_start_returns_cancelled_immediately_when_cancel_event_set():
+    import threading
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from test_benchmark_contract import comparison_request
+
+    req = comparison_request()
+    cancel_event = threading.Event()
+    cancel_event.set()
+    batch = MultiStartFleetOptimizer(req, cancel_event=cancel_event).solve(max_candidates=3)
+    assert batch.candidates == []
+    assert batch.no_plan_status == "NO_COMPLETE_PLAN"
+    assert any("hủy" in msg.lower() for msg in batch.diagnostics)
+
+    res = TestClient(app).post("/optimize-fleet/jobs/non-existent-job/cancel")
+    assert res.status_code == 200
+    assert res.json() == {"job_id": "non-existent-job", "cancelled": False}
+
+
+def test_salvage_route_jit_start_adjusts_first_stop_waiting_to_pass_is_fully_served(monkeypatch):
+    from app.hybrid_alns_engine import PackingAwareHybridALNSOptimizer
+    from test_benchmark_contract import comparison_request
+
+    base = comparison_request()
+    order = base.orders[0].model_copy(
+        update={
+            "split_group_id": None,
+            "source_order_id": base.orders[0].id,
+            "pickup_window_start_sec": 3600,
+        }
+    )
+    veh0 = base.vehicles[0]
+    veh1 = veh0.model_copy(update={"id": "v-salvage", "plate_number": "TEST-2"})
+    drv0 = base.drivers[0]
+    drv1 = drv0.model_copy(update={"id": "driver-2"})
+    req = base.model_copy(
+        update={
+            "demo_stacking": None,
+            "orders": [order],
+            "vehicles": [veh0, veh1],
+            "drivers": [drv0, drv1],
+            "distance_matrix_meters": [[0 if i == j else 1000 for j in range(4)] for i in range(4)],
+            "duration_matrix_seconds": [[0 if i == j else 1569 for j in range(4)] for i in range(4)],
+        }
+    )
+    optimizer = PackingAwareHybridALNSOptimizer(req, time_budget_seconds=10.0, should_split_orders=False)
+    scheduled_v0, _, _ = optimizer._schedule_stops(
+        0,
+        [
+            ScheduledStop(
+                sequence=1,
+                stop_type="PICKUP",
+                order_id=order.id,
+                location_id=order.pickup_location.id,
+                location_name=order.pickup_location.name,
+                latitude=order.pickup_location.latitude,
+                longitude=order.pickup_location.longitude,
+                arrival_time_sec=0,
+                departure_time_sec=0,
+                items_loaded=[order.items[0].id],
+                items_unloaded=[],
+            ),
+            ScheduledStop(
+                sequence=2,
+                stop_type="DELIVERY",
+                order_id=order.id,
+                location_id=order.delivery_location.id,
+                location_name=order.delivery_location.name,
+                latitude=order.delivery_location.latitude,
+                longitude=order.delivery_location.longitude,
+                arrival_time_sec=0,
+                departure_time_sec=0,
+                items_loaded=[],
+                items_unloaded=[order.items[0].id],
+            ),
+        ],
+    )
+    # Force primary route (v0) spatial check to fail so salvage constructs route on v-salvage (v1)
+    monkeypatch.setattr(
+        optimizer,
+        "_validate_spatial_actions",
+        lambda vehicle_index, _actions, max_time_seconds=None: SpatialValidationResult(
+            is_valid=(vehicle_index == 1),
+            violation_code=None if vehicle_index == 1 else "PLACEMENT_SEARCH_LIMIT_REACHED",
+        ),
+    )
+    res = optimizer._build_final_response(
+        [scheduled_v0, []],
+        [],
+        include_benchmarks=False,
+        spatial_time_budget_seconds=5.0,
+    )
+    assert res.status == "SUCCESS"
+    assert len(res.routes) == 1
+    assert res.routes[0].vehicle_id == "v-salvage"
+    assert res.routes[0].start_time_sec == 2031
+    assert res.routes[0].stops[0].waiting_time_sec == 0
+    assert is_fully_served(res, {order.id}, expected_items={order.id: {order.items[0].id}})
+
+
+def test_audited_cycle_checkpoint_reserves_audit_budget_and_skips_duplicate_routes(monkeypatch):
+    from app.hybrid_alns_engine import PackingAwareHybridALNSOptimizer
+    from test_benchmark_contract import comparison_request
+
+    base = comparison_request()
+    orders = [
+        order.model_copy(update={"split_group_id": None, "source_order_id": order.id})
+        for order in base.orders
+    ]
+    veh0 = base.vehicles[0]
+    veh1 = veh0.model_copy(update={"id": "v2", "plate_number": "TEST-2"})
+    req = base.model_copy(
+        update={
+            "orders": orders,
+            "vehicles": [veh0, veh1],
+            "drivers": [base.drivers[0], base.drivers[0].model_copy(update={"id": "driver2"})],
+            "distance_matrix_meters": [[0 if i == j else 100 for j in range(6)] for i in range(6)],
+            "duration_matrix_seconds": [[0 if i == j else 10 for j in range(6)] for i in range(6)],
+        }
+    )
+    optimizer = PackingAwareHybridALNSOptimizer(req, time_budget_seconds=5.0, should_split_orders=False)
+    sample_stop = ScheduledStop(
+        sequence=1,
+        stop_type="PICKUP",
+        order_id=orders[0].id,
+        location_id=orders[0].pickup_location.id,
+        location_name=orders[0].pickup_location.name,
+        latitude=orders[0].pickup_location.latitude,
+        longitude=orders[0].pickup_location.longitude,
+        arrival_time_sec=0,
+        departure_time_sec=0,
+        items_loaded=[orders[0].items[0].id],
+        items_unloaded=[],
+    )
+    construction_windows = []
+    audit_calls = 0
+
+    def spy_construct(_sequence, construction_deadline, _vehicle_indices, fit_cache=None):
+        construction_windows.append(construction_deadline - time.perf_counter())
+        return [[sample_stop], []], []
+
+    def spy_bfr(*_args, **_kwargs):
+        nonlocal audit_calls
+        audit_calls += 1
+        return FleetOptimizationResponse(
+            job_id="contract",
+            status="PARTIAL",
+            routes=[],
+            unassigned_orders=[
+                UnassignedOrder(
+                    order_id=orders[0].id,
+                    order_number=orders[0].order_number,
+                    reason_code="TEST",
+                    reason_message="failed",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(optimizer, "_conservative_cycle_construction", spy_construct)
+    monkeypatch.setattr(optimizer, "_build_final_response", spy_bfr)
+
+    started = time.perf_counter()
+    res = optimizer._audited_cycle_checkpoint([0, 1], started + 4.0, max_attempts=3)
+    assert res is None
+    assert len(construction_windows) == 3
+    assert construction_windows[0] <= 2.0  # Reserved >= 55% of 4.0s for _build_final_response
+    assert audit_calls == 1  # Identical constructed routes skipped duplicate expensive audit
+
+
+

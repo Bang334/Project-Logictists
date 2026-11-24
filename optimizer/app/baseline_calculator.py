@@ -1,7 +1,7 @@
 from collections import defaultdict
 from dataclasses import dataclass, field
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
@@ -20,7 +20,7 @@ from .models import (
     can_driver_drive_vehicle,
 )
 from .packing_rules import resolve_can_rotate
-from .planning_objective import calendar_salary_for_span
+from .planning_objective import calendar_salary_for_span, operational_late_penalty_for_stops
 from .route_costing import build_route_cost_breakdown
 from .spatial_validator import SpatialValidator
 from .stacking import effective_floor_capacity_cm2, sync_route_stacking_unloads, validate_stop_actions
@@ -46,8 +46,16 @@ class _DirectRoutingTimeout(TimeoutError):
 class BaselineCostCalculator:
     """Build comparable baselines using the production feasibility rules."""
 
-    def __init__(self, request: FleetOptimizationRequest, nodes: List[dict], *, deadline: Optional[float] = None):
+    def __init__(
+        self,
+        request: FleetOptimizationRequest,
+        nodes: List[dict],
+        *,
+        deadline: Optional[float] = None,
+        cancel_event: Optional[Any] = None,
+    ):
         self.deadline = deadline
+        self.cancel_event = cancel_event
         self.request = request
         self.nodes = nodes
         self.vehicles = request.vehicles
@@ -58,6 +66,8 @@ class BaselineCostCalculator:
         self._spatial_cache: Dict[Tuple, SpatialValidationResult] = {}
 
     def _remaining_seconds(self) -> Optional[float]:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise TimeoutError("Job tối ưu đã bị hủy")
         if self.deadline is None:
             return None
         remaining = self.deadline - time.perf_counter()
@@ -490,6 +500,14 @@ class BaselineCostCalculator:
                 return arc_cost + (fixed * 1000 if origin >= slot_count and (origin - slot_count) % 2 == 0 else 0)
 
             routing.SetArcCostEvaluatorOfVehicle(routing.RegisterTransitCallback(cost), slot)
+            day_penalty_vnd = max(
+                5_000_000,
+                min(50_000_000, self.request.policy.unassigned_order_penalty_vnd),
+            )
+            excess_day = max(0, vehicle.service_day_index - getattr(self, "_min_required_day", 0))
+            day_delay_scaled = day_penalty_vnd * excess_day * 1000
+            if day_delay_scaled > 0:
+                routing.SetFixedCostOfVehicle(day_delay_scaled, slot)
             start, end = routing.Start(slot), routing.End(slot)
             schedule.CumulVar(start).SetValue(vehicle.available_start_sec)
             schedule.CumulVar(end).SetRange(vehicle.available_start_sec, vehicle.available_end_sec)
@@ -534,6 +552,7 @@ class BaselineCostCalculator:
         params = pywrapcp.DefaultRoutingSearchParameters()
         params.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PARALLEL_CHEAPEST_INSERTION
         params.local_search_metaheuristic = routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+        params.solution_limit = 20 if len(self.orders) >= 20 else 30
         remaining = self._remaining_seconds()
         params.time_limit.FromMilliseconds(routing_budget_ms if remaining is None else max(1, min(routing_budget_ms, int(remaining * 1000))))
         solution = routing.SolveWithParameters(params)
@@ -606,31 +625,66 @@ class BaselineCostCalculator:
         days = sorted({vehicle.service_day_index for _, vehicle, _ in slots})
         routes = None
         rejected_loads: Set[Tuple[str, Tuple]] = set()
-        # Try the first shift day before widening the search to all supplied days.
-        horizons = days[:2] + (days[-1:] if len(days) > 2 else [])
+        # Try up to 2 days first, add a midpoint horizon for 4+ day spans so
+        # multi-week fleets do not jump straight to the full planning tail.
+        if len(days) > 3:
+            horizons = list(dict.fromkeys([*days[:2], days[len(days) // 2], days[-1]]))
+        else:
+            horizons = days[:2] + (days[-1:] if len(days) > 2 else [])
         search_timed_out = False
-        for index, day_limit in enumerate(horizons):
-            try:
-                self._remaining_seconds()
-                day_slots = [slot for slot in slots if slot[1].service_day_index <= day_limit]
-                while True:
-                    prior_rejections = len(rejected_loads)
-                    remaining = self._remaining_seconds()
-                    budget_ms = 4500 if len(self.orders) >= 80 else 1500
-                    if remaining is not None and len(self.orders) >= 80 and index > 0:
-                        # Share the remaining time with later horizons and the cargo audit.
-                        budget_ms = max(1, int(remaining * 800 / (len(horizons) - index)))
-                    routes = self._solve_direct_schedule(day_slots, rejected_loads, budget_ms)
-                    if routes or len(rejected_loads) == prior_rejections:
-                        break
-                self._remaining_seconds()
-            except _DirectRoutingTimeout:
-                search_timed_out = True
-                continue
-            except TimeoutError:
-                return self._unavailable_direct("TIMEOUT:Hết thời gian tính phương án đối chuẩn.")
-            if routes:
-                break
+        self._min_required_day = 0
+        try:
+            for index, day_limit in enumerate(horizons):
+                try:
+                    self._remaining_seconds()
+                    day_slots = [slot for slot in slots if slot[1].service_day_index <= day_limit]
+                    is_last_horizon = index == len(horizons) - 1
+                    while True:
+                        prior_rejections = len(rejected_loads)
+                        remaining = self._remaining_seconds()
+                        budget_ms = 4500 if len(self.orders) >= 80 else 1500
+                        full_budget_ms = budget_ms
+                        if remaining is not None and len(self.orders) >= 80 and index > 0:
+                            # Share the remaining time with later horizons and the cargo audit,
+                            # capping only the final horizon's fast GLS polish (~6-11s) with retry fallback.
+                            full_budget_ms = max(
+                                1, int(remaining * 800 / (len(horizons) - index))
+                            )
+                            if is_last_horizon:
+                                fast_cap_ms = max(
+                                    6000, min(11_000, len(self.orders) * 60)
+                                )
+                                budget_ms = min(full_budget_ms, fast_cap_ms)
+                            else:
+                                budget_ms = full_budget_ms
+                        try:
+                            routes = self._solve_direct_schedule(day_slots, rejected_loads, budget_ms)
+                        except _DirectRoutingTimeout:
+                            if not (
+                                len(self.orders) >= 80
+                                and is_last_horizon
+                                and budget_ms < full_budget_ms
+                            ):
+                                raise
+                            retry_remaining = self._remaining_seconds()
+                            if retry_remaining < 2.0:
+                                raise
+                            retry_budget_ms = max(1, int(retry_remaining * 800))
+                            routes = self._solve_direct_schedule(day_slots, rejected_loads, retry_budget_ms)
+                        if routes or len(rejected_loads) == prior_rejections:
+                            break
+                    self._remaining_seconds()
+                except _DirectRoutingTimeout:
+                    search_timed_out = True
+                    self._min_required_day = day_limit + 1
+                    continue
+                except TimeoutError:
+                    return self._unavailable_direct("TIMEOUT:Hết thời gian tính phương án đối chuẩn.")
+                if routes:
+                    break
+                self._min_required_day = day_limit + 1
+        finally:
+            self._min_required_day = 0
         if not routes:
             if search_timed_out:
                 return self._unavailable_direct("TIMEOUT:Chưa tìm được lịch đơn lẻ trong thời gian tìm kiếm.")
@@ -659,7 +713,14 @@ class BaselineCostCalculator:
             active_driver_salary,
         )
         idle_salary_vnd = max(0, calendar_salary_vnd - active_driver_salary)
-        selection_score_vnd = total_route_cost_vnd + idle_salary_vnd
+        operational_late_penalty_vnd = operational_late_penalty_for_stops(
+            self.request,
+            [route.stops for route in routes],
+            order_by_id=self.order_by_id,
+        )
+        selection_score_vnd = (
+            total_route_cost_vnd + idle_salary_vnd + operational_late_penalty_vnd
+        )
 
         return BenchmarkMetric(
             method_name="Direct Dedicated (Đơn lẻ)",
@@ -681,6 +742,7 @@ class BaselineCostCalculator:
             physical_vehicle_count=physical_vehicle_count,
             driver_calendar_salary_vnd=calendar_salary_vnd,
             driver_idle_salary_allocation_vnd=idle_salary_vnd,
+            operational_late_penalty_vnd=operational_late_penalty_vnd,
             selection_score_vnd=selection_score_vnd,
             is_feasible=True,
             violations=[],

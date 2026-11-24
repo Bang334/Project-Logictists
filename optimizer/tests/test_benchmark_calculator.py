@@ -430,3 +430,289 @@ def test_direct_dedicated_filters_non_rotatable_item_and_retries_after_spatial_r
     assert tight_route.vehicle_id == "vehicle-2"
     # Spatial validation only runs on selected routes (not all 2*3 = 6 slot-order pairs up front).
     assert len(spatial_calls) <= 4
+
+
+def test_direct_dedicated_caps_large_batch_budget_and_retries_if_first_pass_times_out(monkeypatch):
+    import time
+    from app.baseline_calculator import _DirectRoutingTimeout
+
+    vehicles = [
+        _vehicle(1, length_cm=200, width_cm=200).model_copy(
+            update={
+                "id": f"veh-day-{day}",
+                "source_vehicle_id": "veh-1",
+                "service_day_index": day,
+                "available_start_sec": day * 86_400,
+                "available_end_sec": day * 86_400 + 3_600,
+            }
+        )
+        for day in range(2)
+    ]
+    orders = [_order(index, length_cm=20, width_cm=20) for index in range(1, 85)]
+    size = len(vehicles) + 2 * len(orders)
+    matrix = [[0 if i == j else 30 for j in range(size)] for i in range(size)]
+    request = _request(vehicles=vehicles, orders=orders, distances=matrix, durations=matrix)
+    request.drivers = [
+        d.model_copy(update={"source_driver_id": "drv-1", "service_day_index": day})
+        for day, d in enumerate(request.drivers)
+    ]
+
+    calculator = BaselineCostCalculator(
+        request,
+        FleetRoutingSolver(request).nodes,
+        deadline=time.perf_counter() + 45.0,
+    )
+    observed_budgets = []
+
+    def simulated_solve(slots, rejected_loads, routing_budget_ms):
+        day_count = len({v.service_day_index for _, v, _ in slots})
+        if day_count < 2:
+            return None
+        observed_budgets.append(routing_budget_ms)
+        if len(observed_budgets) == 1:
+            raise _DirectRoutingTimeout
+        return []
+
+    monkeypatch.setattr(calculator, "_solve_direct_schedule", simulated_solve)
+    metric = calculator.compute_direct_dedicated()
+
+    assert len(observed_budgets) == 2
+    assert observed_budgets[0] <= 11_000
+    assert observed_budgets[1] > observed_budgets[0]
+    assert metric.is_feasible is False
+
+
+def test_direct_dedicated_preserves_intermediate_horizon_budget(monkeypatch):
+    import time
+
+    vehicles = [
+        _vehicle(1, length_cm=200, width_cm=200).model_copy(
+            update={
+                "id": f"veh-day-{day}",
+                "source_vehicle_id": "veh-1",
+                "service_day_index": day,
+                "available_start_sec": day * 86_400,
+                "available_end_sec": day * 86_400 + 3_600,
+            }
+        )
+        for day in range(3)
+    ]
+    orders = [_order(index, length_cm=20, width_cm=20) for index in range(1, 85)]
+    size = len(vehicles) + 2 * len(orders)
+    matrix = [[0 if i == j else 30 for j in range(size)] for i in range(size)]
+    request = _request(vehicles=vehicles, orders=orders, distances=matrix, durations=matrix)
+    request.drivers = [
+        d.model_copy(update={"source_driver_id": "drv-1", "service_day_index": day})
+        for day, d in enumerate(request.drivers)
+    ]
+
+    calculator = BaselineCostCalculator(
+        request,
+        FleetRoutingSolver(request).nodes,
+        deadline=time.perf_counter() + 45.0,
+    )
+    observed = []
+
+    def simulated_solve(slots, rejected_loads, routing_budget_ms):
+        observed.append((len({v.service_day_index for _, v, _ in slots}), routing_budget_ms))
+        return None
+
+    monkeypatch.setattr(calculator, "_solve_direct_schedule", simulated_solve)
+    calculator.compute_direct_dedicated()
+
+    # horizons = [0, 1, 2]; intermediate 2-day horizon (index=1) retains ~remaining*800/2 (> 10s),
+    # while only the final 3-day horizon is capped at fast_cap_ms (<= 11s).
+    assert len(observed) == 3
+    assert observed[1][0] == 2 and observed[1][1] > 10_000
+    assert observed[2][0] == 3 and observed[2][1] <= 11_000
+
+
+def test_direct_dedicated_includes_operational_late_penalty_when_fee_mode_is_none():
+    vehicle = _vehicle(1).model_copy(update={"available_end_sec": 86_400})
+    order = _order(1).model_copy(
+        update={
+            "ordered_at_sec": -200_000,
+            "pickup_window_start_sec": 0,
+            "pickup_window_end_sec": 36_000,
+            "delivery_window_start_sec": 0,
+            "delivery_window_end_sec": 36_000,
+        }
+    )
+    matrix = [[0 if i == j else 60 for j in range(3)] for i in range(3)]
+    request = _request(vehicles=[vehicle], orders=[order], distances=matrix, durations=matrix)
+    request.policy.delivery_grace_days = 1
+    request.policy.late_delivery_penalty_mode = "NONE"
+
+    metric = BaselineCostCalculator(request, FleetRoutingSolver(request).nodes).compute_direct_dedicated()
+    assert metric.is_feasible is True
+    assert metric.late_delivery_penalty_vnd == 0
+    assert metric.operational_late_penalty_vnd > 0
+    assert metric.selection_score_vnd == (
+        metric.total_cost_vnd
+        + metric.driver_idle_salary_allocation_vnd
+        + metric.operational_late_penalty_vnd
+    )
+
+
+def test_direct_schedule_prefers_earlier_day_over_cheaper_later_day_truck():
+    vehicles = [
+        _vehicle(1).model_copy(
+            update={
+                "id": "veh-day-0-expensive",
+                "source_vehicle_id": "phys-day-0",
+                "service_day_index": 0,
+                "available_start_sec": 28_800,
+                "available_end_sec": 64_800,
+                "fixed_operating_cost_vnd": 400_000,
+            }
+        ),
+        _vehicle(2).model_copy(
+            update={
+                "id": "veh-day-1-cheap",
+                "source_vehicle_id": "phys-day-1",
+                "service_day_index": 1,
+                "available_start_sec": 86_400 + 28_800,
+                "available_end_sec": 86_400 + 64_800,
+                "fixed_operating_cost_vnd": 10_000,
+            }
+        ),
+    ]
+    order = _order(1).model_copy(
+        update={
+            "pickup_window_start_sec": 28_800,
+            "pickup_window_end_sec": 86_400 + 50_000,
+            "delivery_window_start_sec": 28_800,
+            "delivery_window_end_sec": 86_400 + 60_000,
+        }
+    )
+    matrix = [[0 if i == j else 60 for j in range(4)] for i in range(4)]
+    request = _request(vehicles=vehicles, orders=[order], distances=matrix, durations=matrix)
+    request.drivers = [
+        d.model_copy(update={"source_driver_id": f"phys-drv-{day}", "service_day_index": day})
+        for day, d in enumerate(request.drivers)
+    ]
+
+    metric = BaselineCostCalculator(request, FleetRoutingSolver(request).nodes).compute_direct_dedicated()
+
+    assert metric.is_feasible is True
+    assert [route.service_day_index for route in metric.routes] == [0]
+    assert metric.planning_span_days == 1
+
+
+def test_direct_dedicated_includes_midpoint_horizon_on_four_plus_days(monkeypatch):
+    import time
+
+    vehicles = [
+        _vehicle(1, length_cm=200, width_cm=200).model_copy(
+            update={
+                "id": f"veh-day-{day}",
+                "source_vehicle_id": "veh-1",
+                "service_day_index": day,
+                "available_start_sec": day * 86_400,
+                "available_end_sec": day * 86_400 + 3_600,
+            }
+        )
+        for day in range(6)
+    ]
+    orders = [_order(index, length_cm=20, width_cm=20) for index in range(1, 5)]
+    size = len(vehicles) + 2 * len(orders)
+    matrix = [[0 if i == j else 30 for j in range(size)] for i in range(size)]
+    request = _request(vehicles=vehicles, orders=orders, distances=matrix, durations=matrix)
+    request.drivers = [
+        d.model_copy(update={"source_driver_id": "drv-1", "service_day_index": day})
+        for day, d in enumerate(request.drivers)
+    ]
+
+    calculator = BaselineCostCalculator(
+        request,
+        FleetRoutingSolver(request).nodes,
+        deadline=time.perf_counter() + 45.0,
+    )
+    observed = []
+
+    def simulated_solve(slots, rejected_loads, routing_budget_ms):
+        observed.append(len({v.service_day_index for _, v, _ in slots}))
+        return None
+
+    monkeypatch.setattr(calculator, "_solve_direct_schedule", simulated_solve)
+    calculator.compute_direct_dedicated()
+
+    assert observed == [1, 2, 4, 6]
+
+
+def test_direct_dedicated_does_not_penalize_day_one_when_two_days_are_required():
+    # Each order needs 20 + 60 + 20 + 60 + 20 = 180s, so a 200s shift fits 1 order.
+    # Day 0 has 2 vehicles (10k cheap + 400k expensive) => max 2 orders on Day 0, so
+    # 3 orders force a 2-day horizon. Day 1 has two 10k vehicles; once 1-day fails,
+    # Day 1 must not incur an extra-day slot tax that forces using the 400k Day 0 truck.
+    vehicles = [
+        _vehicle(1).model_copy(
+            update={
+                "id": "veh-day0-cheap",
+                "source_vehicle_id": "phys-a",
+                "service_day_index": 0,
+                "available_start_sec": 0,
+                "available_end_sec": 200,
+                "fixed_operating_cost_vnd": 10_000,
+            }
+        ),
+        _vehicle(2).model_copy(
+            update={
+                "id": "veh-day0-expensive",
+                "source_vehicle_id": "phys-b",
+                "service_day_index": 0,
+                "available_start_sec": 0,
+                "available_end_sec": 200,
+                "fixed_operating_cost_vnd": 400_000,
+            }
+        ),
+        _vehicle(3).model_copy(
+            update={
+                "id": "veh-day1-cheap-a",
+                "source_vehicle_id": "phys-a",
+                "service_day_index": 1,
+                "available_start_sec": 86_400,
+                "available_end_sec": 86_400 + 200,
+                "fixed_operating_cost_vnd": 10_000,
+            }
+        ),
+        _vehicle(4).model_copy(
+            update={
+                "id": "veh-day1-cheap-b",
+                "source_vehicle_id": "phys-c",
+                "service_day_index": 1,
+                "available_start_sec": 86_400,
+                "available_end_sec": 86_400 + 200,
+                "fixed_operating_cost_vnd": 10_000,
+            }
+        ),
+    ]
+    orders = [
+        _order(index).model_copy(
+            update={
+                "pickup_window_start_sec": 0,
+                "pickup_window_end_sec": 86_400 + 180,
+                "delivery_window_start_sec": 0,
+                "delivery_window_end_sec": 86_400 + 180,
+                "pickup_service_time_sec": 60,
+                "delivery_service_time_sec": 60,
+            }
+        )
+        for index in (1, 2, 3)
+    ]
+    size = len(vehicles) + 2 * len(orders)
+    matrix = [[0 if i == j else 20 for j in range(size)] for i in range(size)]
+    request = _request(vehicles=vehicles, orders=orders, distances=matrix, durations=matrix)
+    request.drivers = [
+        d.model_copy(
+            update={
+                "source_driver_id": f"phys-drv-{index}",
+                "service_day_index": vehicles[index].service_day_index,
+            }
+        )
+        for index, d in enumerate(request.drivers)
+    ]
+    metric = BaselineCostCalculator(request, FleetRoutingSolver(request).nodes).compute_direct_dedicated()
+    assert metric.is_feasible is True
+    assert metric.planning_span_days == 2
+    assert "phys-b" not in {route.vehicle_id for route in metric.routes}

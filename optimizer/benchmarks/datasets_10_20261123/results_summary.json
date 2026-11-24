@@ -8,7 +8,7 @@
     "days_available": 1,
     "owner_mode": "ANY_CUSTOMER",
     "http_status": 200,
-    "elapsed_seconds": 13.244,
+    "elapsed_seconds": 13.22,
     "status": "SUCCESS",
     "strategy": "Packing-aware Hybrid ALNS (seed 0)",
     "candidates": 1,
@@ -20,7 +20,7 @@
     "total_distance_km": 49.24,
     "total_cost_vnd": 566036,
     "selection_score_vnd": 2652767,
-    "savings_vs_direct_percent": 67.29,
+    "savings_vs_direct_percent": 67.61,
     "audit": {
       "audit_pass": true,
       "violations": [],
@@ -45,7 +45,7 @@
     "days_available": 1,
     "owner_mode": "ANY_CUSTOMER",
     "http_status": 200,
-    "elapsed_seconds": 16.316,
+    "elapsed_seconds": 16.246,
     "status": "SUCCESS",
     "strategy": "Packing-aware ILS (seed 0)",
     "candidates": 2,
@@ -54,21 +54,21 @@
     "routes": 1,
     "physical_vehicles_used": 1,
     "planning_span_days": 1,
-    "total_distance_km": 155.46,
-    "total_cost_vnd": 1188315,
-    "selection_score_vnd": 3640142,
-    "savings_vs_direct_percent": 69.14,
+    "total_distance_km": 151.19,
+    "total_cost_vnd": 1162446,
+    "selection_score_vnd": 3625331,
+    "savings_vs_direct_percent": 69.82,
     "audit": {
       "audit_pass": true,
       "violations": [],
       "missing_package_count": 0,
       "peak_tiers": 2,
-      "peak_stacked_items": 5,
-      "max_weight_util_pct": 54.5,
+      "peak_stacked_items": 6,
+      "max_weight_util_pct": 61.9,
       "max_area_util_pct": 65.5
     },
     "diagnostics": [
-      "Packing-aware ILS hoàn tất 39 vòng với seed 0: 1 tuyến hợp lệ, 0 đơn chưa phân công.",
+      "Packing-aware ILS hoàn tất 38 vòng với seed 0: 1 tuyến hợp lệ, 0 đơn chưa phân công.",
       "Kết quả là best-found trong ngân sách thời gian, không chứng minh tối ưu toàn cục."
     ]
   },
@@ -81,7 +81,7 @@
     "days_available": 2,
     "owner_mode": "ANY_CUSTOMER",
     "http_status": 200,
-    "elapsed_seconds": 19.01,
+    "elapsed_seconds": 18.534,
     "status": "SUCCESS",
     "strategy": "Packing-aware ILS (seed 0)",
     "candidates": 2,
@@ -90,21 +90,21 @@
     "routes": 2,
     "physical_vehicles_used": 2,
     "planning_span_days": 1,
-    "total_distance_km": 249.31,
-    "total_cost_vnd": 2136067,
-    "selection_score_vnd": 5099241,
-    "savings_vs_direct_percent": 70.32,
+    "total_distance_km": 237.4,
+    "total_cost_vnd": 2106207,
+    "selection_score_vnd": 5065823,
+    "savings_vs_direct_percent": 70.74,
     "audit": {
       "audit_pass": true,
       "violations": [],
       "missing_package_count": 0,
       "peak_tiers": 3,
-      "peak_stacked_items": 5,
-      "max_weight_util_pct": 65.1,
-      "max_area_util_pct": 81.6
+      "peak_stacked_items": 6,
+      "max_weight_util_pct": 48.4,
+      "max_area_util_pct": 77.8
     },
     "diagnostics": [
-      "Packing-aware ILS hoàn tất 19 vòng với seed 0: 2 tuyến hợp lệ, 0 đơn chưa phân công.",
+      "Packing-aware ILS hoàn tất 22 vòng với seed 0: 2 tuyến hợp lệ, 0 đơn chưa phân công.",
       "Kết quả là best-found trong ngân sách thời gian, không chứng minh tối ưu toàn cục."
     ]
   },
@@ -117,7 +117,7 @@
     "days_available": 3,
     "owner_mode": "ANY_CUSTOMER",
     "http_status": 200,
-    "elapsed_seconds": 23.321,
+    "elapsed_seconds": 24.311,
     "status": "SUCCESS",
     "strategy": "Packing-aware ILS (seed 0)",
     "candidates": 2,
@@ -140,7 +140,7 @@
       "max_area_util_pct": 77.1
     },
     "diagnostics": [
-      "Packing-aware ILS hoàn tất 21 vòng với seed 0: 3 tuyến hợp lệ, 0 đơn chưa phân công.",
+      "Packing-aware ILS hoàn tất 20 vòng với seed 0: 3 tuyến hợp lệ, 0 đơn chưa phân công.",
       "Kết quả là best-found trong ngân sách thời gian, không chứng minh tối ưu toàn cục."
     ]
   },
@@ -153,7 +153,7 @@
     "days_available": 3,
     "owner_mode": "SAME_CUSTOMER",
     "http_status": 200,
-    "elapsed_seconds": 29.414,
+    "elapsed_seconds": 29.04,
     "status": "SUCCESS",
     "strategy": "Packing-aware ILS (seed 0)",
     "candidates": 2,
@@ -165,7 +165,7 @@
     "total_distance_km": 712.41,
     "total_cost_vnd": 5578696,
     "selection_score_vnd": 15598506,
-    "savings_vs_direct_percent": 67.26,
+    "savings_vs_direct_percent": 67.36,
     "audit": {
       "audit_pass": true,
       "violations": [],
@@ -189,7 +189,7 @@
     "days_available": 4,
     "owner_mode": "ANY_CUSTOMER",
     "http_status": 200,
-    "elapsed_seconds": 35.391,
+    "elapsed_seconds": 35.021,
     "status": "SUCCESS",
     "strategy": "Packing-aware ILS (seed 0)",
     "candidates": 2,
@@ -198,10 +198,10 @@
     "routes": 6,
     "physical_vehicles_used": 3,
     "planning_span_days": 2,
-    "total_distance_km": 1258.68,
-    "total_cost_vnd": 10308675,
-    "selection_score_vnd": 20642332,
-    "savings_vs_direct_percent": 63.17,
+    "total_distance_km": 1257.21,
+    "total_cost_vnd": 10290752,
+    "selection_score_vnd": 20631332,
+    "savings_vs_direct_percent": 63.23,
     "audit": {
       "audit_pass": true,
       "violations": [],
@@ -225,7 +225,7 @@
     "days_available": 5,
     "owner_mode": "ANY_CUSTOMER",
     "http_status": 200,
-    "elapsed_seconds": 71.843,
+    "elapsed_seconds": 42.848,
     "status": "SUCCESS",
     "strategy": "Packing-aware ILS (seed 0)",
     "candidates": 2,
@@ -237,7 +237,7 @@
     "total_distance_km": 1839.18,
     "total_cost_vnd": 16275654,
     "selection_score_vnd": 33949795,
-    "savings_vs_direct_percent": 56.5,
+    "savings_vs_direct_percent": 56.57,
     "audit": {
       "audit_pass": true,
       "violations": [],
@@ -248,7 +248,7 @@
       "max_area_util_pct": 81.6
     },
     "diagnostics": [
-      "Packing-aware ILS hoàn tất 28 vòng với seed 0: 10 tuyến hợp lệ, 0 đơn chưa phân công.",
+      "Packing-aware ILS hoàn tất 30 vòng với seed 0: 10 tuyến hợp lệ, 0 đơn chưa phân công.",
       "Kết quả là best-found trong ngân sách thời gian, không chứng minh tối ưu toàn cục."
     ]
   },
@@ -261,33 +261,33 @@
     "days_available": 5,
     "owner_mode": "ANY_CUSTOMER",
     "http_status": 200,
-    "elapsed_seconds": 96.34,
+    "elapsed_seconds": 59.392,
     "status": "SUCCESS",
     "strategy": "Packing-aware ILS (seed 0)",
     "candidates": 2,
     "served_orders": 130,
     "unassigned_orders": 0,
-    "routes": 13,
+    "routes": 12,
     "physical_vehicles_used": 8,
     "planning_span_days": 3,
-    "total_distance_km": 2561.77,
-    "total_cost_vnd": 24507612,
-    "selection_score_vnd": 45166362,
-    "savings_vs_direct_percent": 53.62,
+    "total_distance_km": 2525.71,
+    "total_cost_vnd": 24166242,
+    "selection_score_vnd": 44895721,
+    "savings_vs_direct_percent": 54.71,
     "audit": {
       "audit_pass": true,
       "violations": [],
       "missing_package_count": 0,
       "peak_tiers": 3,
-      "peak_stacked_items": 8,
+      "peak_stacked_items": 7,
       "max_weight_util_pct": 74.0,
       "max_area_util_pct": 81.4
     },
     "diagnostics": [
       "Bộ tìm kiếm loại tuyến 51C-103.31: Không tìm được bố trí xếp chồng 3D hợp lệ cho chuỗi điểm dừng..",
       "Đã mở thêm xe trống 51C-110.80 cứu thành công 8 đơn hàng.",
-      "Đã mở thêm xe trống 51C-111.87 cứu thành công 2 đơn hàng.",
-      "Packing-aware ILS hoàn tất 22 vòng với seed 0: 13 tuyến hợp lệ, 0 đơn chưa phân công."
+      "Đã mở thêm xe trống 51C-111.87 cứu thành công 1 đơn hàng.",
+      "Packing-aware ILS hoàn tất 28 vòng với seed 0: 12 tuyến hợp lệ, 0 đơn chưa phân công."
     ]
   },
   {
@@ -299,7 +299,7 @@
     "days_available": 7,
     "owner_mode": "ANY_CUSTOMER",
     "http_status": 200,
-    "elapsed_seconds": 109.433,
+    "elapsed_seconds": 61.954,
     "status": "SUCCESS",
     "strategy": "Packing-aware ILS (seed 0)",
     "candidates": 2,
@@ -308,21 +308,21 @@
     "routes": 18,
     "physical_vehicles_used": 6,
     "planning_span_days": 4,
-    "total_distance_km": 3885.91,
-    "total_cost_vnd": 34881828,
-    "selection_score_vnd": 68812285,
-    "savings_vs_direct_percent": 55.37,
+    "total_distance_km": 3575.78,
+    "total_cost_vnd": 33562399,
+    "selection_score_vnd": 67850930,
+    "savings_vs_direct_percent": 57.28,
     "audit": {
       "audit_pass": true,
       "violations": [],
       "missing_package_count": 0,
       "peak_tiers": 3,
-      "peak_stacked_items": 11,
+      "peak_stacked_items": 12,
       "max_weight_util_pct": 79.9,
-      "max_area_util_pct": 84.0
+      "max_area_util_pct": 84.1
     },
     "diagnostics": [
-      "Packing-aware ILS hoàn tất 14 vòng với seed 0: 18 tuyến hợp lệ, 0 đơn chưa phân công.",
+      "Packing-aware ILS hoàn tất 30 vòng với seed 0: 18 tuyến hợp lệ, 0 đơn chưa phân công.",
       "Kết quả là best-found trong ngân sách thời gian, không chứng minh tối ưu toàn cục."
     ]
   },
@@ -335,19 +335,19 @@
     "days_available": 7,
     "owner_mode": "ANY_CUSTOMER",
     "http_status": 200,
-    "elapsed_seconds": 117.372,
+    "elapsed_seconds": 78.233,
     "status": "SUCCESS",
     "strategy": "Packing-aware ILS (seed 0)",
     "candidates": 2,
     "served_orders": 200,
     "unassigned_orders": 0,
     "routes": 18,
-    "physical_vehicles_used": 6,
+    "physical_vehicles_used": 7,
     "planning_span_days": 4,
-    "total_distance_km": 4290.97,
-    "total_cost_vnd": 39092931,
-    "selection_score_vnd": 74491403,
-    "savings_vs_direct_percent": 56.4,
+    "total_distance_km": 4326.13,
+    "total_cost_vnd": 40639069,
+    "selection_score_vnd": 75803819,
+    "savings_vs_direct_percent": 54.84,
     "audit": {
       "audit_pass": true,
       "violations": [],
@@ -358,7 +358,9 @@
       "max_area_util_pct": 83.2
     },
     "diagnostics": [
-      "Packing-aware ILS hoàn tất 22 vòng với seed 0: 18 tuyến hợp lệ, 0 đơn chưa phân công.",
+      "Bộ tìm kiếm loại tuyến 51C-103.31: Không tìm được bố trí xếp chồng 3D hợp lệ cho chuỗi điểm dừng..",
+      "Đã mở thêm xe trống 51C-112.94 cứu thành công 10 đơn hàng.",
+      "Packing-aware ILS hoàn tất 32 vòng với seed 0: 18 tuyến hợp lệ, 0 đơn chưa phân công.",
       "Kết quả là best-found trong ngân sách thời gian, không chứng minh tối ưu toàn cục."
     ]
   }
