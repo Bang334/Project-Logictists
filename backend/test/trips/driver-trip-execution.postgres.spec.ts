@@ -17,11 +17,20 @@ import { randomUUID } from "crypto";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import request = require("supertest");
 import { AuthModule } from "../../src/auth/auth.module";
+import { CloudinaryService } from "../../src/common/services/cloudinary.service";
+import { OutboxService } from "../../src/common/services/outbox.service";
 import { DriversModule } from "../../src/drivers/drivers.module";
+import { MapboxService } from "../../src/mapbox/mapbox.service";
+import { OrdersModule } from "../../src/orders/orders.module";
 import { PrismaModule } from "../../src/prisma/prisma.module";
 import { PrismaService } from "../../src/prisma/prisma.service";
 import { DriverTripExecutionController } from "../../src/trips/driver-trip-execution.controller";
 import { DriverTripExecutionService } from "../../src/trips/driver-trip-execution.service";
+import { DriverPodController } from "../../src/trips/driver-pod.controller";
+import { DriverPodService } from "../../src/trips/driver-pod.service";
+import { expandOrderItemsToCargoUnits } from "../../src/trips/optimizer-payload";
+import { signOptimizationProposal } from "../../src/trips/optimization-proposal";
+import { TripsService } from "../../src/trips/trips.service";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
 const describePostgres = testDatabaseUrl ? describe : describe.skip;
@@ -62,7 +71,12 @@ describePostgres("M3.3 Driver Stop Execution Core (PostgreSQL)", () => {
   });
 
   beforeAll(async () => {
+    const target = new URL(testDatabaseUrl!);
+    if (target.hostname !== "127.0.0.1" || !/^\/tms_driver_blockers_[a-z0-9_]+_test$/.test(target.pathname)) {
+      throw new Error("Execution history tests require a disposable tms_driver_blockers_*_test database");
+    }
     process.env.DATABASE_URL = testDatabaseUrl;
+    process.env.OPTIMIZATION_PROPOSAL_SECRET = randomUUID();
     process.env.JWT_SECRET = "m33-driver-execution-test-secret-32chars";
 
     const moduleRef = await Test.createTestingModule({
@@ -71,9 +85,21 @@ describePostgres("M3.3 Driver Stop Execution Core (PostgreSQL)", () => {
         PrismaModule,
         AuthModule,
         DriversModule,
+        OrdersModule,
       ],
-      controllers: [DriverTripExecutionController],
-      providers: [DriverTripExecutionService],
+      controllers: [DriverTripExecutionController, DriverPodController],
+      providers: [
+        DriverTripExecutionService,
+        DriverPodService,
+        {
+          provide: CloudinaryService,
+          useValue: {
+            findPodImage: async () => null,
+            uploadPodImage: async (file: Buffer, publicId: string) =>
+              ({ publicId, bytes: file.length, format: "jpg" }),
+          },
+        },
+      ],
     }).compile();
     app = moduleRef.createNestApplication();
     app.useGlobalPipes(
@@ -104,6 +130,7 @@ describePostgres("M3.3 Driver Stop Execution Core (PostgreSQL)", () => {
       { label: "other", role: Role.DRIVER },
       { label: "missing-profile", role: Role.DRIVER },
       { label: "admin", role: Role.ADMIN },
+      { label: "customer", role: Role.CUSTOMER },
     ]) {
       const user = await prisma.user.create({
         data: {
@@ -154,6 +181,7 @@ describePostgres("M3.3 Driver Stop Execution Core (PostgreSQL)", () => {
     vehicleId = vehicle.id;
     const customer = await prisma.customer.create({
       data: {
+        userId: users.customer,
         code: `${prefix}-CUS`,
         name: "M3.3 Customer",
         phone: `${prefix}-CUS-PHONE`,
@@ -165,59 +193,17 @@ describePostgres("M3.3 Driver Stop Execution Core (PostgreSQL)", () => {
   beforeEach(async () => {
     // The suite reuses drivers. Each case owns its own active Trip fixtures.
     await prisma.trip.updateMany({
-      where: { tripNumber: { startsWith: prefix }, status: TripStatus.IN_PROGRESS },
+      where: {
+        status: TripStatus.IN_PROGRESS,
+        assignments: { some: { driverId: { in: Object.values(drivers) } } },
+      },
       data: { status: TripStatus.CANCELLED },
     });
   });
 
   afterAll(async () => {
-    if (!prisma) return;
-    const tripIds = (
-      await prisma.trip.findMany({
-        where: { tripNumber: { startsWith: prefix } },
-        select: { id: true },
-      })
-    ).map((trip) => trip.id);
-    const stopIds = (
-      await prisma.tripStop.findMany({
-        where: { tripId: { in: tripIds } },
-        select: { id: true },
-      })
-    ).map((stop) => stop.id);
-    const orderIds = (
-      await prisma.order.findMany({
-        where: { orderNumber: { startsWith: prefix } },
-        select: { id: true },
-      })
-    ).map((order) => order.id);
-    await prisma.executionEvent.deleteMany({
-      where: { tripId: { in: tripIds } },
-    });
-    await prisma.podFile.deleteMany({
-      where: { deliveryAttempt: { tripStopId: { in: stopIds } } },
-    });
-    await prisma.deliveryAttempt.deleteMany({
-      where: { tripStopId: { in: stopIds } },
-    });
-    await prisma.trip.deleteMany({ where: { id: { in: tripIds } } });
-    await prisma.orderEvent.deleteMany({
-      where: { orderId: { in: orderIds } },
-    });
-    await prisma.package.deleteMany({ where: { orderId: { in: orderIds } } });
-    await prisma.order.deleteMany({ where: { id: { in: orderIds } } });
-    await prisma.processedCommand.deleteMany({
-      where: { actorUserId: { in: Object.values(users) } },
-    });
-    await prisma.driver.deleteMany({
-      where: { id: { in: Object.values(drivers) } },
-    });
-    await prisma.vehicle.deleteMany({ where: { id: vehicleId } });
-    await prisma.customer.deleteMany({ where: { id: customerId } });
-    await prisma.user.deleteMany({
-      where: { id: { in: Object.values(users) } },
-    });
-    await prisma.branch.deleteMany({ where: { id: branchId } });
-    await app.close();
+    // Completed history is immutable. The test runner disposes of the database.
+    await app?.close();
   });
 
   async function createFlow(options?: {
@@ -367,6 +353,218 @@ describePostgres("M3.3 Driver Stop Execution Core (PostgreSQL)", () => {
     }
     return result;
   }
+
+  it("runs Customer → dispatch → Driver POD → Customer and Activity on PostgreSQL", async () => {
+    const server = app.getHttpServer();
+    const site = { address: "QA stop", latitude: 10.8, longitude: 106.7 };
+    const dropoff = { ...site, latitude: 10.81 };
+    const contact = { contactName: "QA recipient", contactPhone: "0901234567" };
+    const auth = (label: string) => bearer(tokens[label]);
+    const order = await request(server).post("/customer/orders").set("Authorization", auth("customer"))
+      .send({ branchId, idempotencyKey: randomUUID(),
+        pickup: { ...site, ...contact }, delivery: { ...dropoff, ...contact },
+        items: [{ description: "QA box", quantity: 1, lengthCm: 20, widthCm: 20, heightCm: 20, unitWeightKg: 2 }],
+      }).expect(201).then(res => res.body);
+    expect(order.status).toBe("DRAFT");
+    await request(server).post("/orders/" + order.id + "/confirm").set("Authorization", auth("admin"))
+      .send({ expectedVersion: order.version, idempotencyKey: randomUUID() }).expect(200);
+
+    const depot = await prisma.location.create({ data: { ...site, code: prefix + "-DEPOT",
+      name: "QA", type: "CENTRAL_WAREHOUSE", managingBranchId: branchId } });
+    await prisma.vehicle.update({ where: { id: vehicleId }, data: { homeDepotLocationId: depot.id } });
+    const dispatch = { id: users.admin, branchId, role: Role.ADMIN };
+    const mapbox = { getRoute: async () => ({ distanceKm: 1, durationMinutes: 1, geometry: null }) };
+    const planner = new TripsService(prisma, mapbox as unknown as MapboxService, new OutboxService(prisma));
+    const [confirmed, vehicle, driver] = await Promise.all([
+      prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: { items: true, stops: true } }),
+      prisma.vehicle.findUniqueOrThrow({ where: { id: vehicleId } }),
+      prisma.driver.findUniqueOrThrow({ where: { id: drivers.primary } }),
+    ]);
+    const [cargoUnit] = expandOrderItemsToCargoUnits(confirmed.items);
+    const stops = [...confirmed.stops].sort((a, b) => a.sequence - b.sequence).map((stop, index) => {
+      const pickup = stop.type === StopType.PICKUP;
+      return {
+        sequence: index + 1, location_id: stop.id, location_name: stop.address,
+        stop_type: pickup ? "PICKUP" as const : "DELIVERY" as const,
+        order_id: order.id, allocation_id: order.id, order_stop_id: stop.id,
+        latitude: stop.latitude, longitude: stop.longitude, arrival_time_sec: 60 + 600 * index,
+        departure_time_sec: 120 + 600 * index, travel_time_sec: index === 0 ? 60 : 540,
+        waiting_time_sec: 0, service_time_sec: 60,
+        items_loaded: pickup ? [cargoUnit.id] : [], items_unloaded: pickup ? [] : [cargoUnit.id],
+        current_weight_kg: pickup ? 2 : 0,
+      };
+    });
+    const cost = {
+      base_fuel_cost_vnd: 0, load_fuel_surcharge_vnd: 0, fuel_cost_vnd: 0,
+      cargo_holding_cost_vnd: 0, late_delivery_penalty_vnd: 0, cargo_distance_ton_km: 0,
+      cargo_time_ton_hours: 0, vehicle_fixed_cost_vnd: 0, driver_fixed_salary_allocation_vnd: 0,
+      driver_trip_pay_vnd: 0, total_cost_vnd: 0,
+    };
+    const proposal = {
+      branchId, planningEpochIso: new Date(Date.now() + 60_000).toISOString(),
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      resources: {
+        orders: [{ id: confirmed.id, version: confirmed.version }],
+        vehicles: [{ id: vehicle.id, updatedAt: vehicle.updatedAt.toISOString() }],
+        drivers: [{ id: driver.id, updatedAt: driver.updatedAt.toISOString() }],
+      },
+      result: {
+        job_id: randomUUID(), status: "SUCCESS" as const, unassigned_orders: [], diagnostics: [],
+        total_distance_km: 1, total_duration_minutes: 30, total_cost_vnd: 0,
+        routes: [{
+          route_id: "qa-route", vehicle_id: vehicle.id, plate_number: vehicle.plateNumber,
+          vehicle_length_cm: vehicle.lengthCm, vehicle_width_cm: vehicle.widthCm,
+          driver_id: driver.id, driver_name: driver.fullName, driver_license_class: driver.licenseClass,
+          service_day_index: 0, start_time_sec: 0, end_time_sec: 1800, stops, cost,
+          total_distance_km: 1, total_duration_minutes: 30,
+          spatial_validation: {
+            is_valid: true, max_weight_kg: 2, max_area_cm2: 400,
+            step_states: stops.map((stop, index) => ({
+              step_index: index + 1, stop_id: stop.location_id, stop_type: stop.stop_type,
+              action_description: "QA cargo", current_weight_kg: stop.current_weight_kg,
+              current_occupied_area_cm2: index === 0 ? 400 : 0, floor_area_cm2: 60_000,
+              weight_utilization_percent: 0, area_utilization_percent: 0, is_valid: true,
+              package_access_paths: [],
+              placed_items: index === 0 ? [{ item_id: cargoUnit.id, order_id: order.id, x: 0, y: 0,
+                length_cm: 20, width_cm: 20, height_cm: 20, weight_kg: 2 }] : [],
+            })),
+          },
+        }],
+      },
+    };
+    const applied = await planner.applyAutomaticOptimization({
+      proposal, signature: signOptimizationProposal(proposal, process.env.OPTIMIZATION_PROPOSAL_SECRET!),
+    }, dispatch);
+    const planned = await prisma.trip.findUniqueOrThrow({ where: { id: applied.trips[0].id } });
+    const trip = await planner.publish(planned.id, { expectedVersion: planned.version }, dispatch);
+    expect(trip.status).toBe("DISPATCHED");
+    const assignment = await prisma.driverAssignment.findFirstOrThrow({ where: { tripId: trip.id } });
+    expect(assignment).toMatchObject({ status: "ASSIGNED", role: "PRIMARY" });
+    const send = (suffix: string, payload: object) => request(server).post("/driver/trips/" + trip.id + suffix)
+      .set("Authorization", auth("primary")).send(payload);
+    const started = await send("/start", command(trip.version)).expect(201);
+    let version: number = started.body.version;
+    for (const stop of trip.stops) {
+      const path = "/stops/" + stop.id;
+      const arrived = await send(path + "/arrive", command(version)).expect(201);
+      const payload = { ...command(arrived.body.tripVersion),
+        tasks: stop.tasks.map(task => ({ taskId: task.id, actualQuantity: task.plannedQuantity })),
+        ...(stop.stopType === StopType.DELIVERY ? { deliveryResult: "SUCCESS", recipientName: "QA" } : {}),
+      };
+      const { body: receipt } = await send(path + "/complete", payload).expect(201);
+      version = receipt.tripVersion;
+      if (stop.stopType !== StopType.DELIVERY) continue;
+      expect((await send(path + "/complete", payload).expect(201)).body).toEqual(receipt);
+      const attempt = await prisma.deliveryAttempt.findUniqueOrThrow({ where: { id: receipt.deliveryAttempt.id } });
+      expect(await prisma.processedCommand.findUnique({ where: { id: attempt.commandId } }))
+        .toMatchObject({ status: "COMPLETED", idempotencyKey: payload.idempotencyKey });
+      expect(await prisma.executionEvent.findFirst({ where: { commandId: attempt.commandId } }))
+        .toMatchObject({ eventType: "DELIVERY_COMPLETED" });
+
+      for (const [type, mime, bytes] of [
+        ["PHOTO", "image/jpeg", Buffer.from([255, 216, 255, 1])],
+        ["SIGNATURE", "image/png", Buffer.from("89504e470d0a1a0a01", "hex")],
+      ] as const) {
+        await request(server).post("/driver/trips/" + trip.id + path + "/delivery-attempts/" + attempt.id + "/pod")
+          .set("Authorization", auth("primary")).field("evidenceType", type)
+          .field("capturedAt", new Date().toISOString()).field("idempotencyKey", randomUUID())
+          .attach("file", bytes, { filename: "qa", contentType: mime }).expect(201)
+          .expect(({ body }) => expect(body).toMatchObject({ evidenceType: type, sizeBytes: bytes.length, uploadStatus: "UPLOADED" }));
+      }
+    }
+
+    const nextTrip = await prisma.trip.create({ data: {
+      tripNumber: prefix + "-next", managingBranchId: branchId, vehicleId,
+      plannedStartTime: assignment.startTime, plannedEndTime: assignment.endTime,
+    } });
+    const nextAssignment = { tripId: nextTrip.id, driverId: assignment.driverId, role: "PRIMARY",
+      status: "ASSIGNED", startTime: assignment.startTime, endTime: assignment.endTime };
+    await expect(prisma.driverAssignment.create({ data: nextAssignment }))
+      .rejects.toThrow(/driver_assignments_no_overlap/);
+
+    const finish = command(version);
+    const { body: done } = await send("/complete", finish).expect(201);
+    expect((await send("/complete", finish).expect(201)).body).toEqual(done);
+    const at = new Date(done.actualEndTime);
+    expect(await prisma.driverAssignment.findUniqueOrThrow({
+      where: { id: assignment.id }, include: { completionEvent: true, trip: true },
+    })).toMatchObject({
+      status: "ASSIGNED", actualEndTime: at, trip: { status: "COMPLETED", actualEndTime: at },
+      completionEvent: { eventType: "TRIP_COMPLETED", actorUserId: users.primary,
+        occurredAt: at, payload: { assignmentId: assignment.id } },
+    });
+    expect(await prisma.executionEvent.count({ where: { tripId: trip.id, eventType: "TRIP_COMPLETED" } })).toBe(1);
+    expect(await prisma.resourceReservation.count({ where: { tripId: trip.id, status: "RELEASED" } })).toBe(2);
+    await expect(prisma.driverAssignment.create({ data: nextAssignment }))
+      .resolves.toMatchObject({ status: "ASSIGNED", tripId: nextTrip.id });
+    await request(server).get("/customer/orders/" + order.id).set("Authorization", auth("customer")).expect(200)
+      .expect(({ body }) => expect(body.status).toBe("COMPLETED"));
+    const legacy = await prisma.processedCommand.create({ data: { actorUserId: users.relief,
+      commandType: "COMPLETE_TRIP", idempotencyKey: randomUUID(), requestHash: "fixture", status: "COMPLETED" } });
+    await prisma.executionEvent.create({ data: { tripId: trip.id, actorUserId: users.relief,
+      eventType: "COMPLETE_TRIP", commandId: legacy.id, occurredAt: at } });
+    for (const [label, count] of [["primary", 1], ["relief", null]] as const) {
+      await request(server).get("/driver/me/activity-summary").set("Authorization", auth(label))
+        .query({ from: at.toISOString(), to: new Date(at.getTime() + 1).toISOString() }).expect(200)
+        .expect(({ body }) => expect(body.completedTripCount).toBe(count));
+    }
+  });
+
+  it("rolls back reserved command and retries after a deferred database error", async () => {
+    const flow = await createFlow({ tripStatus: TripStatus.IN_PROGRESS, pickup: false, delivery: false });
+    const payload = command(1);
+    const service = app.get(DriverTripExecutionService);
+    await prisma.trip.update({ where: { id: flow.tripId }, data: { notes: "deferred-fixture-fault" } });
+    await prisma.$executeRawUnsafe(`
+      CREATE FUNCTION public.rehearsal_deferred_fault() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.status = 'COMPLETED' AND NEW.notes = 'deferred-fixture-fault' THEN
+          RAISE EXCEPTION 'rehearsal deferred completion failure';
+        END IF;
+        RETURN NEW;
+      END $$
+    `);
+    try {
+      await prisma.$executeRawUnsafe(`
+        CREATE CONSTRAINT TRIGGER rehearsal_deferred_fault AFTER UPDATE ON public.trips
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.rehearsal_deferred_fault()
+      `);
+      try {
+        await expect(service.completeTrip(users.primary, flow.tripId, payload))
+          .rejects.toThrow("rehearsal deferred completion failure");
+        expect(await prisma.trip.findUnique({ where: { id: flow.tripId } }))
+          .toMatchObject({ status: "IN_PROGRESS", actualEndTime: null, version: 1 });
+        expect(await prisma.driverAssignment.findFirst({ where: { tripId: flow.tripId } }))
+          .toMatchObject({ status: "ASSIGNED", completionEventId: null, actualEndTime: null });
+        expect(await prisma.executionEvent.count({ where: { tripId: flow.tripId } })).toBe(0);
+        expect(await prisma.processedCommand.count({ where: { idempotencyKey: payload.idempotencyKey } })).toBe(0);
+      } finally {
+        await prisma.$executeRawUnsafe("DROP TRIGGER rehearsal_deferred_fault ON public.trips");
+      }
+    } finally {
+      await prisma.$executeRawUnsafe("DROP FUNCTION public.rehearsal_deferred_fault()");
+    }
+    await expect(service.completeTrip(users.primary, flow.tripId, payload))
+      .resolves.toMatchObject({ status: "COMPLETED", version: 2 });
+  });
+
+  it("rejects missing completion evidence and an assignment timestamp that differs from its event", async () => {
+    const { tripId } = await createFlow({ tripStatus: TripStatus.IN_PROGRESS, pickup: false, delivery: false });
+    const at = new Date();
+    await expect(prisma.trip.update({ where: { id: tripId }, data: { status: "COMPLETED", actualEndTime: at } }))
+      .rejects.toThrow("Trip completion requires linked execution evidence");
+    const primary = await prisma.driverAssignment.findFirstOrThrow({ where: { tripId } });
+    await expect(prisma.$transaction(async tx => {
+      const cmd = await tx.processedCommand.create({ data: { actorUserId: users.primary, commandType: "COMPLETE_TRIP",
+        idempotencyKey: randomUUID(), requestHash: "fixture", status: "PROCESSING" } });
+      await tx.trip.update({ where: { id: tripId }, data: { status: "COMPLETED", actualEndTime: at } });
+      const ev = await tx.executionEvent.create({ data: { tripId, eventType: "TRIP_COMPLETED",
+        occurredAt: at, actorUserId: users.primary, commandId: cmd.id, payload: { assignmentId: primary.id } } });
+      await tx.driverAssignment.update({ where: { id: primary.id },
+        data: { completionEventId: ev.id, actualEndTime: new Date(at.getTime() + 1) } });
+    })).rejects.toThrow("Invalid assignment completion evidence");
+    expect(await prisma.executionEvent.count({ where: { tripId } })).toBe(0);
+  });
 
   it("thực thi đầy đủ START → pickup → delivery → COMPLETE_TRIP", async () => {
     const flow = await createFlow();
@@ -522,6 +720,10 @@ describePostgres("M3.3 Driver Stop Execution Core (PostgreSQL)", () => {
       packageStatus: PackageStatus.LOADED,
       orderStatus: OrderStatus.IN_TRANSIT,
     });
+    const fixtureCommand = await prisma.processedCommand.create({ data: {
+      actorUserId: users.primary, commandType: "FIXTURE", idempotencyKey: randomUUID(),
+      requestHash: "fixture", status: "COMPLETED",
+    } });
     await prisma.deliveryAttempt.create({
       data: {
         tripStopId: flow.deliveryStopId!,
@@ -529,7 +731,7 @@ describePostgres("M3.3 Driver Stop Execution Core (PostgreSQL)", () => {
         occurredAt: new Date(),
         result: "FAILED",
         failureReason: "RECIPIENT_UNAVAILABLE",
-        commandId: randomUUID(),
+        commandId: fixtureCommand.id,
       },
     });
     await request(app.getHttpServer())

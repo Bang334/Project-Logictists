@@ -9,6 +9,7 @@ import {
   PackageStatus,
   PodEvidenceType,
   Prisma,
+  ReservationStatus,
   StopType,
   TaskAction,
   TripStatus,
@@ -33,7 +34,9 @@ import { isDriverPodPhotoRequired } from "./driver-pod-policy";
 
 const TRIP_EXECUTION_LOCK_NAMESPACE = 4201;
 const COMMAND_LOCK_NAMESPACE = 4202;
-const DRIVER_START_LOCK_NAMESPACE = 4205;
+// Shared with planning resource locks. Follow its vehicle-before-driver order.
+const VEHICLE_SCHEDULE_LOCK_NAMESPACE = 4101;
+const DRIVER_SCHEDULE_LOCK_NAMESPACE = 4102;
 const MAX_FUTURE_COMMAND_OFFSET_MS = 5 * 60 * 1000;
 const MAX_PAST_COMMAND_OFFSET_MS = 24 * 60 * 60 * 1000;
 
@@ -41,7 +44,7 @@ type TransactionClient = Prisma.TransactionClient;
 
 type AuthorizedTrip = Prisma.TripGetPayload<{
   include: { assignments: true };
-}>;
+}> & { actorDriverId: string };
 
 @Injectable()
 export class DriverTripExecutionService {
@@ -54,10 +57,7 @@ export class DriverTripExecutionService {
       dto.idempotencyKey,
       { tripId, expectedTripVersion: dto.expectedTripVersion },
       tripId,
-      async (tx, commandId) => {
-        // A Trip lock alone cannot serialize Starts on different Trips of the same driver.
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${DRIVER_START_LOCK_NAMESPACE}::int4, hashtext(${userId})::int4)`;
-        const trip = await this.getAuthorizedTrip(tx, userId, tripId);
+      async (tx, commandId, trip) => {
         this.assertTripState(trip.status, TripStatus.DISPATCHED);
         this.assertTripVersion(trip.version, dto.expectedTripVersion);
 
@@ -133,8 +133,7 @@ export class DriverTripExecutionService {
         occurredAt: requestedOccurredAt,
       },
       tripId,
-      async (tx, commandId) => {
-        const trip = await this.getAuthorizedTrip(tx, userId, tripId);
+      async (tx, commandId, trip) => {
         this.assertTripState(trip.status, TripStatus.IN_PROGRESS);
         this.assertTripVersion(trip.version, dto.expectedTripVersion);
         const stop = await this.getTripStop(tx, tripId, stopId);
@@ -227,8 +226,7 @@ export class DriverTripExecutionService {
         recipientName: dto.recipientName ?? null,
       },
       tripId,
-      async (tx, commandId) => {
-        const trip = await this.getAuthorizedTrip(tx, userId, tripId);
+      async (tx, commandId, trip) => {
         this.assertTripState(trip.status, TripStatus.IN_PROGRESS);
         this.assertTripVersion(trip.version, dto.expectedTripVersion);
         const stop = await this.getTripStopWithTasks(tx, tripId, stopId);
@@ -389,10 +387,26 @@ export class DriverTripExecutionService {
       dto.idempotencyKey,
       { tripId, expectedTripVersion: dto.expectedTripVersion },
       tripId,
-      async (tx, commandId) => {
-        const trip = await this.getAuthorizedTrip(tx, userId, tripId);
+      async (tx, commandId, trip) => {
         this.assertTripState(trip.status, TripStatus.IN_PROGRESS);
         this.assertTripVersion(trip.version, dto.expectedTripVersion);
+
+        const primaryAssignments = trip.assignments.filter(
+          (assignment) => assignment.role === DRIVER_ASSIGNMENT_ROLE_PRIMARY,
+        );
+        const [primary] = primaryAssignments;
+        if (
+          primaryAssignments.length !== 1 ||
+          !primary ||
+          primary.driverId !== trip.actorDriverId ||
+          primary.actualEndTime !== null ||
+          primary.completionEventId !== null
+        ) {
+          this.conflict(
+            "DRIVER_ASSIGNMENT_COMPLETION_CONFLICT",
+            "Không xác định được phân công chính chưa hoàn thành của chuyến",
+          );
+        }
 
         const [
           unresolvedStops,
@@ -478,15 +492,41 @@ export class DriverTripExecutionService {
             version: { increment: 1 },
           },
         );
-        await tx.executionEvent.create({
+        const completion = await tx.executionEvent.create({
           data: {
             tripId,
-            eventType: DRIVER_EXECUTION_EVENT.COMPLETE_TRIP,
+            eventType: DRIVER_EXECUTION_EVENT.TRIP_COMPLETED,
             occurredAt: now,
             actorUserId: userId,
             commandId,
-            payload: {},
+            payload: { assignmentId: primary.id },
           },
+          select: { id: true },
+        });
+        const updated = await tx.driverAssignment.updateMany({
+          where: {
+            id: primary.id,
+            tripId,
+            driverId: trip.actorDriverId,
+            role: DRIVER_ASSIGNMENT_ROLE_PRIMARY,
+            status: DRIVER_ASSIGNMENT_STATUS_ASSIGNED,
+            actualEndTime: null,
+            completionEventId: null,
+          },
+          data: { actualEndTime: now, completionEventId: completion.id },
+        });
+        if (updated.count !== 1) {
+          this.conflict(
+            "DRIVER_ASSIGNMENT_COMPLETION_CONFLICT",
+            "Phân công tài xế đã thay đổi; hãy tải lại chuyến",
+          );
+        }
+        await tx.resourceReservation.updateMany({
+          where: {
+            tripId,
+            status: { in: [ReservationStatus.HELD, ReservationStatus.ACTIVE] },
+          },
+          data: { status: ReservationStatus.RELEASED },
         });
         return {
           id: tripId,
@@ -504,13 +544,15 @@ export class DriverTripExecutionService {
     idempotencyKey: string,
     hashPayload: Prisma.JsonObject,
     tripId: string,
-    mutation: (tx: TransactionClient, commandId: string) => Promise<T>,
+    mutation: (tx: TransactionClient, commandId: string, trip: AuthorizedTrip) => Promise<T>,
   ): Promise<T | Prisma.JsonValue> {
     const requestHash = createHash("sha256")
       .update(JSON.stringify(hashPayload))
       .digest("hex");
     return this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${COMMAND_LOCK_NAMESPACE}::int4, hashtext(${`${userId}:${commandType}:${idempotencyKey}`})::int4)`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${TRIP_EXECUTION_LOCK_NAMESPACE}::int4, hashtext(${tripId})::int4)`;
+      let trip = await this.getAuthorizedTrip(tx, userId, tripId);
       const existing = await tx.processedCommand.findUnique({
         where: {
           actorUserId_commandType_idempotencyKey: {
@@ -536,9 +578,19 @@ export class DriverTripExecutionService {
         );
       }
 
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${TRIP_EXECUTION_LOCK_NAMESPACE}::int4, hashtext(${tripId})::int4)`;
+      if (
+        commandType === DRIVER_TRIP_COMMAND.START_TRIP ||
+        commandType === DRIVER_TRIP_COMMAND.COMPLETE_TRIP
+      ) {
+        const { vehicleId, actorDriverId } = trip;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${VEHICLE_SCHEDULE_LOCK_NAMESPACE}::int4, hashtext(${vehicleId})::int4)`;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${DRIVER_SCHEDULE_LOCK_NAMESPACE}::int4, hashtext(${actorDriverId})::int4)`;
+        trip = await this.getAuthorizedTrip(tx, userId, tripId);
+        if (trip.vehicleId !== vehicleId || trip.actorDriverId !== actorDriverId) {
+          this.conflict("TRIP_VERSION_CONFLICT", "Tài nguyên của chuyến đã thay đổi");
+        }
+      }
       const commandId = randomUUID();
-      const result = await mutation(tx, commandId);
       await tx.processedCommand.create({
         data: {
           id: commandId,
@@ -546,10 +598,16 @@ export class DriverTripExecutionService {
           commandType,
           idempotencyKey,
           requestHash,
-          status: "COMPLETED",
-          result,
+          status: "PROCESSING",
         },
       });
+      const result = await mutation(tx, commandId, trip);
+      await tx.processedCommand.update({
+        where: { id: commandId },
+        data: { status: "COMPLETED", result },
+      });
+      // Evaluate deferred evidence checks before handing a receipt back to the caller.
+      await tx.$executeRaw`SET CONSTRAINTS ALL IMMEDIATE`;
       return result;
     });
   }
@@ -582,7 +640,6 @@ export class DriverTripExecutionService {
       include: {
         assignments: {
           where: {
-            driverId: driver.id,
             status: DRIVER_ASSIGNMENT_STATUS_ASSIGNED,
           },
         },
@@ -593,7 +650,8 @@ export class DriverTripExecutionService {
     }
     if (
       !trip.assignments.some(
-        (assignment) => assignment.role === DRIVER_ASSIGNMENT_ROLE_PRIMARY,
+        (assignment) =>
+          assignment.driverId === driver.id && assignment.role === DRIVER_ASSIGNMENT_ROLE_PRIMARY,
       )
     ) {
       this.conflict(
@@ -601,7 +659,7 @@ export class DriverTripExecutionService {
         "Chỉ tài xế PRIMARY được thực thi chuyến",
       );
     }
-    return trip;
+    return { ...trip, actorDriverId: driver.id };
   }
 
   private async getTripStop(

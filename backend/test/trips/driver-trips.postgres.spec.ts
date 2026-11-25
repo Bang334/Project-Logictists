@@ -630,6 +630,31 @@ describePostgres("M3.1/M5.2 Driver Read APIs (PostgreSQL)", () => {
     }
   });
 
+  // Import a terminal snapshot for read-side tests without simulating an invalid completion.
+  async function historicalTrip(tripId: string, status: TripStatus, actualEndTime?: Date) {
+    const source = await prisma.trip.findUniqueOrThrow({
+      where: { id: tripId }, include: { assignments: true, stops: { include: { tasks: true } } },
+    });
+    return prisma.trip.create({ data: {
+      tripNumber: prefix + "-history-" + randomUUID(),
+      vehicleId: source.vehicleId, managingBranchId: source.managingBranchId, status, actualEndTime,
+      plannedStartTime: source.plannedStartTime, plannedEndTime: source.plannedEndTime,
+      assignments: { create: source.assignments.map((assignment) => ({
+        driverId: assignment.driverId, status: assignment.status, role: assignment.role,
+        startTime: new Date(assignment.startTime.getTime() - 30 * 365 * 86_400_000),
+        endTime: new Date(assignment.endTime.getTime() - 30 * 365 * 86_400_000),
+      })) },
+      stops: { create: source.stops.map((stop) => ({
+        sequence: stop.sequence, address: stop.address, stopType: stop.stopType,
+        latitude: stop.latitude, longitude: stop.longitude, contactName: stop.contactName,
+        contactPhone: stop.contactPhone, tasks: { create: stop.tasks.map((task) => ({
+          orderId: task.orderId, packageId: task.packageId, action: task.action,
+          plannedQuantity: task.plannedQuantity, actualQuantity: task.action === TaskAction.LOAD ? 1 : null,
+        })) },
+      })) },
+    } });
+  }
+
   it("M5.8.1 giữ contact active cho PRIMARY/RELIEF và che ở response terminal mà không sửa số gốc", async () => {
     const tripId = ids.multiAssignment;
     const phone = "+12025550151";
@@ -642,11 +667,13 @@ describePostgres("M3.1/M5.2 Driver Read APIs (PostgreSQL)", () => {
     });
     try {
       for (const status of [TripStatus.DISPATCHED, TripStatus.IN_PROGRESS, TripStatus.COMPLETED, TripStatus.CANCELLED]) {
-        await prisma.trip.update({ where: { id: tripId }, data: { status } });
         const active = status === TripStatus.DISPATCHED || status === TripStatus.IN_PROGRESS;
+        const checkedId = active
+          ? (await prisma.trip.update({ where: { id: tripId }, data: { status } })).id
+          : (await historicalTrip(tripId, status)).id;
         for (const [label, role] of [["driver-a", "PRIMARY"], ["driver-b", "RELIEF"]]) {
           const result = await request(app.getHttpServer())
-            .get(`/driver/trips/${tripId}`)
+            .get(`/driver/trips/${checkedId}`)
             .set("Authorization", bearer(tokens[label]))
             .expect(200);
           expect(result.body).toMatchObject({
@@ -655,6 +682,7 @@ describePostgres("M3.1/M5.2 Driver Read APIs (PostgreSQL)", () => {
           });
           if (!active) expect(result.text).not.toContain(phone);
         }
+        if (!active) await prisma.trip.delete({ where: { id: checkedId } });
       }
       await expect(prisma.tripStop.findUnique({ where: { id: stop.id } }))
         .resolves.toMatchObject({ contactPhone: phone });
@@ -801,13 +829,15 @@ describePostgres("M3.1/M5.2 Driver Read APIs (PostgreSQL)", () => {
       { tripId: ids.completed, dateBasis: "PLANNED_START" },
     ]);
     const cancelled = await prisma.trip.findUniqueOrThrow({ where: { id: ids.cancelled } });
-    await prisma.trip.update({ where: { id: ids.completed }, data: { actualEndTime: cancelled.plannedStartTime } });
+    const clone = await historicalTrip(ids.completed, TripStatus.COMPLETED, cancelled.plannedStartTime);
+    const original = { tripId: ids.completed, driverId: ids.driverA };
+    await prisma.driverAssignment.updateMany({ where: original, data: { status: "CANCELLED" } });
     try {
       const { body: page1 } = await history("driver-a", { limit: 1 }).expect(200);
       const { body: page2 } = await history("driver-a", { limit: 1, cursor: page1.nextCursor }).expect(200);
       const items = [...page1.items, ...page2.items];
-      expect(items.map((item) => item.tripId)).toEqual([ids.cancelled, ids.completed].sort().reverse());
-      expect(items.find((item) => item.tripId === ids.completed)).toMatchObject({
+      expect(items.map((item) => item.tripId)).toEqual([ids.cancelled, clone.id].sort().reverse());
+      expect(items.find((item) => item.tripId === clone.id)).toMatchObject({
         dateBasis: "ACTUAL_END", loadedQuantity: null, unloadedQuantity: null,
         distinctPackageCount: 0, loadTaskCount: 0, unloadTaskCount: 0,
       });
@@ -816,27 +846,25 @@ describePostgres("M3.1/M5.2 Driver Read APIs (PostgreSQL)", () => {
       await history("driver-a", { from: "2026-12-04T08:00:00Z", to: "2026-12-04T09:00:00Z" })
         .expect(200).expect(({ body }) => expect(body.items).toHaveLength(2));
     } finally {
-      await prisma.trip.update({ where: { id: ids.completed }, data: { actualEndTime: null } });
+      await prisma.trip.delete({ where: { id: clone.id } });
+      await prisma.driverAssignment.updateMany({ where: original, data: { status: "ASSIGNED" } });
     }
   });
 
   it("M5.3 reads RELIEF history and separates reported quantities, tasks and unique packages", async () => {
     await prisma.trip.update({ where: { id: ids.multiAssignment }, data: { status: "CANCELLED" } });
-    await prisma.trip.update({ where: { id: ids.dispatched }, data: { status: "COMPLETED" } });
-    const loadTask = { tripStop: { tripId: ids.dispatched }, action: TaskAction.LOAD };
-    await prisma.stopTask.updateMany({ where: loadTask, data: { actualQuantity: 1 } });
+    const clone = await historicalTrip(ids.dispatched, TripStatus.COMPLETED);
     try {
       await history("driver-b", { status: "CANCELLED" }).expect(200).expect(({ body }) =>
         expect(body.items.map((item: { tripId: string }) => item.tripId)).toEqual([ids.multiAssignment]));
       await history("driver-a", { status: "COMPLETED" }).expect(200).expect(({ body }) => {
-        expect(body.items.find((item: { tripId: string }) => item.tripId === ids.dispatched)).toMatchObject({
+        expect(body.items.find((item: { tripId: string }) => item.tripId === clone.id)).toMatchObject({
           loadTaskCount: 1, unloadTaskCount: 1, distinctPackageCount: 1, loadedQuantity: 1, unloadedQuantity: null,
         });
       });
     } finally {
-      await prisma.stopTask.updateMany({ where: loadTask, data: { actualQuantity: null } });
-      await prisma.trip.updateMany({ where: { id: { in: [ids.dispatched, ids.multiAssignment] } },
-        data: { status: "DISPATCHED" } });
+      await prisma.trip.delete({ where: { id: clone.id } });
+      await prisma.trip.update({ where: { id: ids.multiAssignment }, data: { status: "DISPATCHED" } });
     }
   });
 

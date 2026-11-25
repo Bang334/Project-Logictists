@@ -15,7 +15,7 @@ describe("M3.7.1 DriverIncidentsService", () => {
   const now = new Date();
   const tx = {
     $executeRaw: jest.fn(),
-    processedCommand: { findUnique: jest.fn(), create: jest.fn() },
+    processedCommand: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() },
     driver: { findUnique: jest.fn() },
     trip: { findFirst: jest.fn() },
     stopTask: { findMany: jest.fn() },
@@ -99,8 +99,14 @@ describe("M3.7.1 DriverIncidentsService", () => {
     expect(tx.processedCommand.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         commandType: "CREATE_DRIVER_INCIDENT",
-        status: "COMPLETED",
+        status: "PROCESSING",
       }),
+    });
+    const reserved = tx.processedCommand.create.mock.calls[0][0].data;
+    expect(tx.executionEvent.create.mock.calls[0][0].data.commandId).toBe(reserved.id);
+    expect(tx.processedCommand.update).toHaveBeenCalledWith({
+      where: { id: reserved.id },
+      data: { status: "COMPLETED", result },
     });
   });
 
@@ -174,7 +180,8 @@ describe("M3.7.1 DriverIncidentsService", () => {
     await expect(
       service.create("user-1", "trip-1", validDto()),
     ).rejects.toThrow("simulated audit failure");
-    expect(tx.processedCommand.create).not.toHaveBeenCalled();
+    expect(tx.processedCommand.create).toHaveBeenCalledTimes(1);
+    expect(tx.processedCommand.update).not.toHaveBeenCalled();
   });
 });
 

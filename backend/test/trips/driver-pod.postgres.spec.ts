@@ -178,6 +178,11 @@ describePostgres("M3.5 Driver e-POD (PostgreSQL)", () => {
       },
     });
 
+    const fixtureCommand = async () => (await prisma.processedCommand.create({ data: {
+      actorUserId: users.primary, commandType: "FIXTURE", idempotencyKey: randomUUID(),
+      requestHash: "fixture", status: "COMPLETED",
+    } })).id;
+
     const createTrip = async (
       label: string,
       status: TripStatus,
@@ -229,7 +234,7 @@ describePostgres("M3.5 Driver e-POD (PostgreSQL)", () => {
           occurredAt: new Date("2026-11-16T08:00:00.000Z"),
           recipientName: "Người nhận QA",
           result: "SUCCESS",
-          commandId: randomUUID(),
+          commandId: await fixtureCommand(),
         },
       });
       attempts[label] = attempt.id;
@@ -266,7 +271,7 @@ describePostgres("M3.5 Driver e-POD (PostgreSQL)", () => {
         attemptNumber: 1,
         occurredAt: new Date(),
         result: "FAILED",
-        commandId: randomUUID(),
+        commandId: await fixtureCommand(),
       },
     });
     attempts.pickup = pickupAttempt.id;
@@ -288,6 +293,12 @@ describePostgres("M3.5 Driver e-POD (PostgreSQL)", () => {
 
   afterAll(async () => {
     if (!prisma) return;
+    const target = new URL(testDatabaseUrl!);
+    if (target.hostname === "127.0.0.1" && /^\/tms_driver_blockers_[a-z0-9_]+_test$/.test(target.pathname)) {
+      // The disposable target may protect attached POD from DELETE.
+      await app.close();
+      return;
+    }
     await prisma.podFile.deleteMany({
       where: { deliveryAttempt: { tripStop: { tripId: { in: Object.values(trips) } } } },
     });

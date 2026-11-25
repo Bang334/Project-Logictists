@@ -125,6 +125,16 @@ export class DriverIncidentsService {
         affectedOrderIds,
       );
       const commandId = this.createCommandId();
+      await tx.processedCommand.create({
+        data: {
+          id: commandId,
+          actorUserId: userId,
+          commandType: DRIVER_INCIDENT_COMMAND,
+          idempotencyKey: dto.idempotencyKey,
+          requestHash,
+          status: "PROCESSING",
+        },
+      });
       const incident = await tx.incident.create({
         data: {
           tripId,
@@ -164,16 +174,9 @@ export class DriverIncidentsService {
         },
       });
       const result = this.toResponse(incident);
-      await tx.processedCommand.create({
-        data: {
-          id: commandId,
-          actorUserId: userId,
-          commandType: DRIVER_INCIDENT_COMMAND,
-          idempotencyKey: dto.idempotencyKey,
-          requestHash,
-          status: "COMPLETED",
-          result,
-        },
+      await tx.processedCommand.update({
+        where: { id: commandId },
+        data: { status: "COMPLETED", result },
       });
       return result;
     });

@@ -15,7 +15,7 @@ import { PrismaService } from "../../src/prisma/prisma.service";
 describe("M3.3 DriverTripExecutionService", () => {
   const tx = {
     $executeRaw: jest.fn(),
-    processedCommand: { findUnique: jest.fn(), create: jest.fn() },
+    processedCommand: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() },
     driver: { findUnique: jest.fn() },
     trip: { findFirst: jest.fn(), count: jest.fn(), updateMany: jest.fn() },
     executionEvent: { create: jest.fn() },
@@ -36,9 +36,10 @@ describe("M3.3 DriverTripExecutionService", () => {
     tx.driver.findUnique.mockResolvedValue({ id: "driver-1" });
     tx.trip.findFirst.mockResolvedValue({
       id: "trip-1",
+      vehicleId: "vehicle-1",
       status: TripStatus.DISPATCHED,
       version: 2,
-      assignments: [{ role: "PRIMARY", status: "ASSIGNED" }],
+      assignments: [{ driverId: "driver-1", role: "PRIMARY", status: "ASSIGNED" }],
     });
     tx.trip.count.mockResolvedValue(0);
     tx.trip.updateMany.mockResolvedValue({ count: 1 });
@@ -82,9 +83,17 @@ describe("M3.3 DriverTripExecutionService", () => {
     expect(tx.processedCommand.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         commandType: "START_TRIP",
-        status: "COMPLETED",
+        status: "PROCESSING",
       }),
     });
+    const reserved = tx.processedCommand.create.mock.calls[0][0].data;
+    expect(tx.executionEvent.create.mock.calls[0][0].data.commandId).toBe(reserved.id);
+    expect(tx.processedCommand.update).toHaveBeenCalledWith({
+      where: { id: reserved.id },
+      data: { status: "COMPLETED", result },
+    });
+    expect(tx.processedCommand.create.mock.invocationCallOrder[0])
+      .toBeLessThan(tx.executionEvent.create.mock.invocationCallOrder[0]);
   });
 
   it("RELIEF ASSIGNED bị từ chối bằng DRIVER_NOT_PRIMARY", async () => {
@@ -92,7 +101,7 @@ describe("M3.3 DriverTripExecutionService", () => {
       id: "trip-1",
       status: TripStatus.DISPATCHED,
       version: 2,
-      assignments: [{ role: "RELIEF", status: "ASSIGNED" }],
+      assignments: [{ driverId: "driver-1", role: "RELIEF", status: "ASSIGNED" }],
     });
 
     await expect(
@@ -137,9 +146,15 @@ describe("M3.3 DriverTripExecutionService", () => {
         expectedTripVersion: 2,
       }),
     ).resolves.toEqual(storedResult);
-    expect(tx.driver.findUnique).not.toHaveBeenCalled();
+    expect(tx.driver.findUnique).toHaveBeenCalledWith({ where: { userId: "user-1" }, select: { id: true } });
     expect(tx.trip.updateMany).not.toHaveBeenCalled();
     expect(tx.executionEvent.create).not.toHaveBeenCalled();
+
+    tx.trip.findFirst.mockResolvedValueOnce(null);
+    await expect(service.startTrip("user-1", "trip-1", {
+      idempotencyKey: key,
+      expectedTripVersion: 2,
+    })).rejects.toMatchObject({ status: 404 });
   });
 
   it("cùng key nhưng payload khác trả IDEMPOTENCY_PAYLOAD_MISMATCH", async () => {
@@ -191,7 +206,8 @@ describe("M3.3 DriverTripExecutionService", () => {
         expectedTripVersion: 2,
       }),
     ).rejects.toThrow("simulated execution event failure");
-    expect(tx.processedCommand.create).not.toHaveBeenCalled();
+    expect(tx.processedCommand.create).toHaveBeenCalledTimes(1);
+    expect(tx.processedCommand.update).not.toHaveBeenCalled();
   });
 });
 

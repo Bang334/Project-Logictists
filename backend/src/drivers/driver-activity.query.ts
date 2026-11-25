@@ -24,9 +24,18 @@ export function driverActivityQuery(actorUserId: string, start: Date, end: Date)
       WHERE e."actorUserId" = ${actorUserId}
         AND e."occurredAt" >= ${start} AND e."occurredAt" < ${end}
         AND e."eventType" IN (${Prisma.join([
-          event.COMPLETE_TRIP, event.PICKUP_COMPLETED, event.DELIVERY_COMPLETED,
+          event.COMPLETE_TRIP, event.TRIP_COMPLETED, event.PICKUP_COMPLETED, event.DELIVERY_COMPLETED,
           event.DELIVERY_FAILED, event.DEPOT_STOP_COMPLETED,
         ])})
+        AND (e."eventType" <> ${event.TRIP_COMPLETED} OR EXISTS (
+          SELECT 1 FROM driver_assignments a
+          WHERE a."completionEventId" = e.id AND a."tripId" = e."tripId"
+        ))
+        AND (e."eventType" <> ${event.COMPLETE_TRIP} OR NOT EXISTS (
+          SELECT 1 FROM driver_assignments a
+          JOIN execution_events completion ON completion.id = a."completionEventId"
+          WHERE a."tripId" = e."tripId" AND completion."eventType" = ${event.TRIP_COMPLETED}
+        ))
     ), delivery_evidence AS (
       SELECT CASE WHEN a."tripStopId" = e."tripStopId" AND a."occurredAt" = e."occurredAt"
         AND (c."actorUserId" IS NULL OR c."actorUserId" = ${actorUserId})
@@ -61,7 +70,7 @@ export function driverActivityQuery(actorUserId: string, start: Date, end: Date)
         AND NOT EXISTS (SELECT 1 FROM execution_events e WHERE e."commandId" = a."commandId")
     ), totals AS (
       SELECT
-        (COUNT(DISTINCT "tripId") FILTER (WHERE "eventType" = ${event.COMPLETE_TRIP}
+        (COUNT(DISTINCT "tripId") FILTER (WHERE "eventType" IN (${event.COMPLETE_TRIP}, ${event.TRIP_COMPLETED})
           AND "tripStatus" <> 'CANCELLED' AND "tripStopId" IS NULL))::int AS "completedTripCount",
         (COUNT(DISTINCT "tripStopId") FILTER (WHERE
           ("stopType" = 'PICKUP' AND "eventType" = ${event.PICKUP_COMPLETED}) OR
@@ -69,7 +78,7 @@ export function driverActivityQuery(actorUserId: string, start: Date, end: Date)
         (COUNT(DISTINCT "tripStopId") FILTER (WHERE "stopType" IN ('DEPOT_START','DEPOT_END')
           AND "eventType" = ${event.DEPOT_STOP_COMPLETED}))::int AS "depotStopCount",
         COALESCE(BOOL_OR(CASE
-          WHEN "eventType" = ${event.COMPLETE_TRIP} THEN "tripStopId" IS NOT NULL
+          WHEN "eventType" IN (${event.COMPLETE_TRIP}, ${event.TRIP_COMPLETED}) THEN "tripStopId" IS NOT NULL
           WHEN "eventType" = ${event.PICKUP_COMPLETED} THEN "stopType" IS DISTINCT FROM 'PICKUP'
           WHEN "eventType" = ${event.DEPOT_STOP_COMPLETED}
             THEN "stopType" IS NULL OR "stopType" NOT IN ('DEPOT_START', 'DEPOT_END')
