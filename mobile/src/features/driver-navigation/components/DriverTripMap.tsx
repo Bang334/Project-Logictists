@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type ComponentProps, type ComponentRef } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import Mapbox from '@rnmapbox/maps';
+import type { PlannedRoute } from '@/features/driver-trips/selectors/planned-route.selector';
 import type { DriverMapLocation, DriverMapMarker, DriverMapStopState } from '../types/driver-map.types';
 import { driverTheme } from '@/shared/theme/driver-theme';
 
@@ -29,9 +30,10 @@ function groupStopsAtSameCoordinate(markers: DriverMapMarker[]) {
 }
 
 export const DriverTripMap = memo(function DriverTripMap({
-  markers, driverLocation, targetStopId, selectedStopId, onSelectStops, onDeselectStops,
+  markers, route, driverLocation, targetStopId, selectedStopId, onSelectStops, onDeselectStops,
 }: {
   markers: DriverMapMarker[];
+  route?: PlannedRoute | null;
   driverLocation: DriverMapLocation | null;
   targetStopId?: string;
   selectedStopId?: string;
@@ -43,13 +45,21 @@ export const DriverTripMap = memo(function DriverTripMap({
   const stopGroups = useMemo(() => groupStopsAtSameCoordinate(markers), [markers]);
   const [mapLoadIssue, setMapLoadIssue] = useState<'partial' | 'full' | null>(null);
   const [initialCamera] = useState<ComponentProps<typeof Mapbox.Camera>['defaultSettings']>(() => {
-    const points = driverLocation ? [...markers, driverLocation] : markers;
+    const points = [
+      ...markers,
+      ...(route?.coordinates.map(([longitude, latitude]) => ({ longitude, latitude })) ?? []),
+    ];
+    if (points.length === 0 && driverLocation) points.push(driverLocation);
     const first = points[0];
     if (!first) return undefined;
-    const longitudes = points.map((point) => point.longitude);
-    const latitudes = points.map((point) => point.latitude);
-    const ne = [Math.max(...longitudes), Math.max(...latitudes)];
-    const sw = [Math.min(...longitudes), Math.min(...latitudes)];
+    const ne: [number, number] = [first.longitude, first.latitude];
+    const sw: [number, number] = [first.longitude, first.latitude];
+    for (const point of points) {
+      ne[0] = Math.max(ne[0], point.longitude);
+      ne[1] = Math.max(ne[1], point.latitude);
+      sw[0] = Math.min(sw[0], point.longitude);
+      sw[1] = Math.min(sw[1], point.latitude);
+    }
     if (ne[0] === sw[0] && ne[1] === sw[1]) {
       return { centerCoordinate: [first.longitude, first.latitude], zoomLevel: 14 };
     }
@@ -80,6 +90,16 @@ export const DriverTripMap = memo(function DriverTripMap({
         onDidFinishLoadingMap={() => setMapLoadIssue(null)}
       >
         <Mapbox.Camera ref={camera} defaultSettings={initialCamera} />
+        {route ? (
+          <Mapbox.ShapeSource id="planned-trip-route" shape={route}>
+            <Mapbox.LineLayer id="planned-trip-route-outline" belowLayerID="road-label" style={{
+              lineColor: '#FFFFFF', lineWidth: 7, lineJoin: 'round', lineCap: 'round',
+            }} />
+            <Mapbox.LineLayer id="planned-trip-route-line" belowLayerID="road-label" style={{
+              lineColor: colors.primary, lineWidth: 4, lineJoin: 'round', lineCap: 'round',
+            }} />
+          </Mapbox.ShapeSource>
+        ) : null}
         {stopGroups.map(({ anchor, stops }) => (
           <Mapbox.PointAnnotation key={anchor.id} id={`stop-${anchor.id}`} coordinate={[anchor.longitude, anchor.latitude]}
             selected={stops.some((stop) => stop.id === selectedStopId)}

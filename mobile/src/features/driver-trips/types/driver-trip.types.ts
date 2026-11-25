@@ -1,3 +1,5 @@
+import type { PlannedRoute } from '../selectors/planned-route.selector';
+
 export const DRIVER_TRIP_STATUSES = [
   "DISPATCHED",
   "IN_PROGRESS",
@@ -154,6 +156,7 @@ export interface DriverTripStop {
 }
 
 export interface DriverTripDetail extends DriverTripSummary {
+  plannedRoute?: PlannedRoute;
   stops: DriverTripStop[];
 }
 

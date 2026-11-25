@@ -116,6 +116,16 @@ describe("driverTripsService", () => {
     });
   });
 
+  it("passes validated Planner geometry to the driver map", async () => {
+    const route = { type: "LineString", coordinates: [[106, 21], [105, 20]] };
+    jest.mocked(apiClient.request).mockResolvedValue({
+      ...summary,
+      routeGeometry: JSON.stringify(route),
+      stops: [],
+    });
+    expect((await driverTripsService.getTrip("trip-1")).plannedRoute).toEqual(route);
+  });
+
   it("map detail, sort stops và giữ LOAD/UNLOAD cùng package metrics", async () => {
     jest.mocked(apiClient.request).mockResolvedValue({
       ...summary,

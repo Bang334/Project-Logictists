@@ -86,7 +86,8 @@ export function DriverTripMapScreen() {
     ?? navigationTarget?.stop
     ?? null;
   const stopAction = trip && selectedStop ? selectStopAction(trip, selectedStop, offline.commands, offline.summary) : null;
-  const hasCoordinates = mapData.markers.length > 0 || driverLocation !== null;
+  const route = trip?.plannedRoute ?? null;
+  const hasCoordinates = mapData.markers.length > 0 || driverLocation !== null || route !== null;
   const hasMapboxNative = Platform.OS === 'web' || Boolean(NativeModules.RNMBXModule);
   const hasMapboxToken = mapboxToken.startsWith('pk.');
   const canShowMap = hasCoordinates && hasMapboxNative && hasMapboxToken;
@@ -133,6 +134,7 @@ export function DriverTripMapScreen() {
                   <DriverMapNative
                     accessToken={mapboxToken}
                     markers={mapData.markers}
+                    route={route}
                     driverLocation={driverLocation}
                     targetStopId={navigationTarget?.stop.id}
                     selectedStopId={selectedGroup.length ? selectedStop?.id : undefined}

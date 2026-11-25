@@ -45,7 +45,9 @@ export function useDriverTripDetail(tripId: string) {
             current === next ? withoutDriverStopPhones(next) : current), remaining);
         }
         if (token) void offlineDriverIdentity.read(token).then((identity) => {
-          if (identity && request === latestRequest.current) return offlineTripSnapshots.save(identity, next, checkedAt);
+          if (identity && request === latestRequest.current) {
+            return offlineTripSnapshots.save(identity, { ...next, plannedRoute: undefined }, checkedAt);
+          }
         }).catch(() => undefined);
       }
     } catch (caughtError) {

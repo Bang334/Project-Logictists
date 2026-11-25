@@ -1,3 +1,4 @@
+import { parsePlannedRoute } from "../selectors/planned-route.selector";
 import { apiClient } from "@/shared/api/api-client";
 import { ApiError } from "@/shared/api/api-error";
 import { tokenStorage } from "@/shared/storage/token-storage";
@@ -402,7 +403,11 @@ export const driverTripsService = {
       `/driver/trips/${encodeURIComponent(id)}`,
       { token: token ?? await getToken() },
     );
-    return parseDriverTripDetail(response);
+    const trip = parseDriverTripDetail(response);
+    const route = isRecord(response) && typeof response.routeGeometry === "string"
+      ? parsePlannedRoute(response.routeGeometry)
+      : null;
+    return route ? { ...trip, plannedRoute: route } : trip;
   },
 
   async startTrip(

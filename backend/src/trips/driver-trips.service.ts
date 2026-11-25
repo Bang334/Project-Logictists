@@ -56,6 +56,7 @@ const DRIVER_TRIP_SUMMARY_SELECT = Prisma.validator<Prisma.TripSelect>()({
 
 const DRIVER_TRIP_DETAIL_SELECT = Prisma.validator<Prisma.TripSelect>()({
   ...DRIVER_TRIP_SUMMARY_SELECT,
+  routeGeometry: true,
   vehicle: {
     select: {
       ...DRIVER_VEHICLE_SELECT,
