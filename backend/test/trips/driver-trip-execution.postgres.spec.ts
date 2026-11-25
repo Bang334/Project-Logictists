@@ -120,6 +120,7 @@ describePostgres("M3.3 Driver Stop Execution Core (PostgreSQL)", () => {
         address: "Integration test",
         latitude: 10,
         longitude: 106,
+        timezone: "UTC",
       },
     });
     branchId = branch.id;
@@ -253,7 +254,10 @@ describePostgres("M3.3 Driver Stop Execution Core (PostgreSQL)", () => {
         }),
       );
     }
-    const start = new Date(Date.UTC(2027, 0, 1, 8 + sequence));
+    // Distinct planned windows within the current service day keep START cases
+    // eligible while preserving the database's assignment overlap constraint.
+    const start = new Date();
+    start.setUTCHours(0, 0, 0, 2 * sequence);
     const trip = await prisma.trip.create({
       data: {
         tripNumber: `${prefix}-TRIP-${sequence}`,
@@ -267,12 +271,12 @@ describePostgres("M3.3 Driver Stop Execution Core (PostgreSQL)", () => {
             ? new Date(Date.now() - 60 * 60 * 1000)
             : null),
         plannedStartTime: start,
-        plannedEndTime: new Date(start.getTime() + 3_600_000),
+        plannedEndTime: new Date(start.getTime() + 1),
         assignments: {
           create: {
             driverId: options?.assignmentDriver ?? drivers.primary,
             startTime: start,
-            endTime: new Date(start.getTime() + 3_600_000),
+            endTime: new Date(start.getTime() + 1),
             role: options?.assignmentRole ?? "PRIMARY",
             status: options?.assignmentStatus ?? "ASSIGNED",
           },

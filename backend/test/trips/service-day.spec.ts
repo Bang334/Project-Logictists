@@ -1,3 +1,4 @@
+import { tripStartWindow } from '../../src/trips/service-day';
 import {
   buildServiceDayWindows,
   getFullServiceDayPlanningEpoch,
@@ -134,5 +135,24 @@ describe('service day planning', () => {
         },
       ),
     ).toThrow('không đủ tối thiểu 15 phút');
+  });
+});
+
+describe('Driver Start service day', () => {
+  const start = new Date('2026-11-26T02:00:00.000Z');
+  it.each([
+    ['2026-11-25T16:59:59.000Z', 'TRIP_START_BEFORE_SERVICE_DAY'],
+    ['2026-11-26T01:29:59.999Z', 'TRIP_START_TOO_EARLY'],
+    ['2026-11-26T01:30:00.000Z', null],
+    ['2026-11-26T02:00:00.000Z', null],
+    ['2026-11-26T16:59:59.999Z', null],
+    ['2026-11-26T17:00:00.000Z', 'TRIP_START_SERVICE_DAY_EXPIRED'],
+  ])('returns the policy result at %s', (now, expected) => {
+    expect(tripStartWindow(new Date(now), start, 'Asia/Ho_Chi_Minh')).toBe(expected);
+  });
+
+  it('does not open a next-day trip early across local midnight', () => {
+    expect(tripStartWindow(new Date('2026-11-25T16:55:00Z'),
+      new Date('2026-11-25T17:05:00Z'), 'Asia/Ho_Chi_Minh')).toBe('TRIP_START_BEFORE_SERVICE_DAY');
   });
 });

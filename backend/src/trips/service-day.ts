@@ -37,6 +37,18 @@ function getLocalParts(value: Date, timeZone: string): LocalDateParts {
   };
 }
 
+/** Compare service-day dates in the managing branch's IANA time zone. */
+export function tripStartWindow(now: Date, plannedStart: Date, timeZone: string) {
+  const current = getLocalParts(now, timeZone);
+  const planned = getLocalParts(plannedStart, timeZone);
+  const currentDate = current.year * 10_000 + current.month * 100 + current.day;
+  const plannedDate = planned.year * 10_000 + planned.month * 100 + planned.day;
+  if (currentDate < plannedDate) return 'TRIP_START_BEFORE_SERVICE_DAY';
+  if (currentDate > plannedDate) return 'TRIP_START_SERVICE_DAY_EXPIRED';
+  if (plannedStart.getTime() - now.getTime() > 30 * 60_000) return 'TRIP_START_TOO_EARLY';
+  return null;
+}
+
 function zonedDateTimeToUtc(parts: LocalDateParts, timeZone: string): Date {
   const targetUtc = Date.UTC(
     parts.year,

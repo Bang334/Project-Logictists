@@ -47,6 +47,12 @@ async function isOnline() {
 function friendlyExecutionError(error: ApiError): string | null {
   const messages: Record<string, string> = {
     DRIVER_NOT_PRIMARY: "Bạn không phải tài xế chính của chuyến này.",
+    TRIP_START_BEFORE_SERVICE_DAY: "Chưa đến ngày thực hiện chuyến theo lịch chi nhánh.",
+    TRIP_START_TOO_EARLY: "Chỉ có thể bắt đầu trong vòng 30 phút trước giờ dự kiến.",
+    TRIP_START_SERVICE_DAY_EXPIRED: "Chuyến đã qua ngày thực hiện. Hãy liên hệ điều phối để kiểm tra lịch.",
+    TRIP_START_SCHEDULE_INVALID: "Lịch chuyến cần điều phối kiểm tra.",
+    VEHICLE_ALREADY_ON_TRIP: "Xe đang thực hiện chuyến khác. Hãy liên hệ điều phối.",
+    TRIP_START_RESOURCE_RESERVED: "Tài xế hoặc xe đang giữ lịch cho chuyến khác. Hãy liên hệ điều phối.",
     TRIP_VERSION_CONFLICT:
       "Dữ liệu chuyến vừa thay đổi. Ứng dụng đã tải lại, vui lòng kiểm tra trước khi thao tác.",
     INVALID_TRIP_STATE:

@@ -31,6 +31,7 @@ import {
   DriverTripCommandDto,
 } from "./dto/driver-trip-command.dto";
 import { isDriverPodPhotoRequired } from "./driver-pod-policy";
+import { tripStartWindow } from "./service-day";
 
 const TRIP_EXECUTION_LOCK_NAMESPACE = 4201;
 const COMMAND_LOCK_NAMESPACE = 4202;
@@ -81,7 +82,55 @@ export class DriverTripExecutionService {
           );
         }
 
+        const branch = await tx.branch.findFirst({
+          where: trip.managingBranchId
+            ? { id: trip.managingBranchId }
+            : { vehicles: { some: { id: trip.vehicleId } } },
+          select: { timezone: true },
+        });
         const now = new Date();
+        if (!branch?.timezone || trip.plannedEndTime <= trip.plannedStartTime) {
+          this.conflict("TRIP_START_SCHEDULE_INVALID", "Chuyến thiếu lịch hoặc múi giờ hợp lệ. Hãy liên hệ điều phối.");
+        }
+
+        let windowError: ReturnType<typeof tripStartWindow>;
+        try {
+          windowError = tripStartWindow(now, trip.plannedStartTime, branch.timezone);
+        } catch (error) {
+          if (!(error instanceof RangeError)) throw error;
+          this.conflict("TRIP_START_SCHEDULE_INVALID", "Múi giờ của chuyến không hợp lệ. Hãy liên hệ điều phối.");
+        }
+        if (windowError) {
+          const messages = {
+            TRIP_START_BEFORE_SERVICE_DAY: "Chưa đến ngày thực hiện chuyến theo lịch chi nhánh.",
+            TRIP_START_TOO_EARLY: "Chỉ có thể bắt đầu trong vòng 30 phút trước giờ dự kiến.",
+            TRIP_START_SERVICE_DAY_EXPIRED: "Chuyến đã qua ngày thực hiện. Hãy liên hệ điều phối để kiểm tra lịch.",
+          };
+          this.conflict(windowError, messages[windowError]);
+        }
+
+        const vehicleBusy = await tx.trip.count({
+          where: { id: { not: tripId }, vehicleId: trip.vehicleId, status: TripStatus.IN_PROGRESS },
+        });
+        if (vehicleBusy > 0) {
+          this.conflict("VEHICLE_ALREADY_ON_TRIP", "Xe đang thực hiện chuyến khác. Hãy liên hệ điều phối.");
+        }
+
+        const reserved = await tx.resourceReservation.findFirst({
+          where: {
+            tripId: { not: tripId },
+            status: { in: [ReservationStatus.HELD, ReservationStatus.ACTIVE] },
+            startsAt: { lte: now },
+            endsAt: { gt: now },
+            trip: { status: { notIn: [TripStatus.COMPLETED, TripStatus.CANCELLED] } },
+            OR: [{ vehicleId: trip.vehicleId }, { driverId: trip.actorDriverId }],
+          },
+          select: { id: true },
+        });
+        if (reserved) {
+          this.conflict("TRIP_START_RESOURCE_RESERVED", "Tài xế hoặc xe đang giữ lịch cho chuyến khác. Hãy liên hệ điều phối.");
+        }
+
         await this.updateTripState(
           tx,
           tripId,

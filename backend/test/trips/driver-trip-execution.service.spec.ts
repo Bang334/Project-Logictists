@@ -17,6 +17,8 @@ describe("M3.3 DriverTripExecutionService", () => {
     $executeRaw: jest.fn(),
     processedCommand: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() },
     driver: { findUnique: jest.fn() },
+    branch: { findFirst: jest.fn() },
+    resourceReservation: { findFirst: jest.fn() },
     trip: { findFirst: jest.fn(), count: jest.fn(), updateMany: jest.fn() },
     executionEvent: { create: jest.fn() },
   };
@@ -37,11 +39,16 @@ describe("M3.3 DriverTripExecutionService", () => {
     tx.trip.findFirst.mockResolvedValue({
       id: "trip-1",
       vehicleId: "vehicle-1",
+      managingBranchId: "branch-1",
+      plannedStartTime: new Date(),
+      plannedEndTime: new Date(Date.now() + 3_600_000),
       status: TripStatus.DISPATCHED,
       version: 2,
       assignments: [{ driverId: "driver-1", role: "PRIMARY", status: "ASSIGNED" }],
     });
     tx.trip.count.mockResolvedValue(0);
+    tx.branch.findFirst.mockResolvedValue({ timezone: "UTC" });
+    tx.resourceReservation.findFirst.mockResolvedValue(null);
     tx.trip.updateMany.mockResolvedValue({ count: 1 });
     tx.executionEvent.create.mockResolvedValue({});
   });
@@ -140,6 +147,13 @@ describe("M3.3 DriverTripExecutionService", () => {
       result: storedResult,
     });
 
+    tx.trip.findFirst.mockResolvedValueOnce({
+      id: "trip-1",
+      status: TripStatus.IN_PROGRESS,
+      version: 3,
+      plannedStartTime: new Date("2020-01-01T09:00:00Z"),
+      assignments: [{ driverId: "driver-1", role: "PRIMARY", status: "ASSIGNED" }],
+    });
     await expect(
       service.startTrip("user-1", "trip-1", {
         idempotencyKey: key,
@@ -147,6 +161,7 @@ describe("M3.3 DriverTripExecutionService", () => {
       }),
     ).resolves.toEqual(storedResult);
     expect(tx.driver.findUnique).toHaveBeenCalledWith({ where: { userId: "user-1" }, select: { id: true } });
+    expect(tx.branch.findFirst).not.toHaveBeenCalled();
     expect(tx.trip.updateMany).not.toHaveBeenCalled();
     expect(tx.executionEvent.create).not.toHaveBeenCalled();
 
