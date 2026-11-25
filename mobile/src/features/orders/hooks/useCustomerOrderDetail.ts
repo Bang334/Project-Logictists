@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ordersService } from '@/features/orders/services/orders.service';
 import type { CustomerOrderDetail } from '@/features/orders/types/order.types';
 import { useOrderApiError } from './useOrderApiError';
@@ -8,8 +8,12 @@ export function useCustomerOrderDetail(orderId: string) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const handleError = useOrderApiError();
+  const requestId = useRef(0);
+
+  useEffect(() => () => { requestId.current += 1; }, [orderId]);
 
   const reload = useCallback(async () => {
+    const currentRequest = ++requestId.current;
     if (!orderId) {
       setError('Mã đơn không hợp lệ.');
       setIsLoading(false);
@@ -18,11 +22,15 @@ export function useCustomerOrderDetail(orderId: string) {
     setIsLoading(true);
     setError(null);
     try {
-      setOrder(await ordersService.getOrder(orderId));
+      const result = await ordersService.getOrder(orderId);
+      if (currentRequest !== requestId.current) return;
+      setOrder((current) => current?.id === result.id && current.version > result.version ? current : result);
     } catch (caughtError) {
-      setError(await handleError(caughtError));
+      if (currentRequest !== requestId.current) return;
+      const message = await handleError(caughtError);
+      if (currentRequest === requestId.current) setError(message);
     } finally {
-      setIsLoading(false);
+      if (currentRequest === requestId.current) setIsLoading(false);
     }
   }, [handleError, orderId]);
 

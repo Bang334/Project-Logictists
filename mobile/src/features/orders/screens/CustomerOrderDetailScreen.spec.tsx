@@ -5,7 +5,9 @@ import { CustomerOrderDetailScreen } from './CustomerOrderDetailScreen';
 
 jest.mock('expo-router', () => ({
   useLocalSearchParams: () => ({ id: 'order-1' }),
-  useFocusEffect: (callback: () => void) => callback(),
+  useFocusEffect: (callback: () => void) => {
+    jest.requireActual<typeof import('react')>('react').useEffect(callback, [callback]);
+  },
 }));
 
 jest.mock('@/features/orders/hooks/useCustomerOrderDetail', () => ({
@@ -70,4 +72,29 @@ describe('M3.6D.2 CustomerOrderDetailScreen integration', () => {
       'Không thể cập nhật tracking.',
     );
   });
+  it('refetches the authoritative order once per mismatched tracking snapshot', async () => {
+    const detail = jest.mocked(useCustomerOrderDetail)('order-1');
+    const tracking = jest.mocked(useCustomerOrderTracking);
+    tracking.mockReturnValue({
+      ...tracking('order-1'),
+      tracking: { orderId: 'order-1', orderStatus: 'ASSIGNED', trackingStatus: 'AVAILABLE', trips: [] },
+    });
+
+    const view = await render(<CustomerOrderDetailScreen />);
+    expect(detail.reload).toHaveBeenCalledTimes(2); // Focus and Order status mismatch.
+
+    await view.rerender(<CustomerOrderDetailScreen />);
+    expect(detail.reload).toHaveBeenCalledTimes(2);
+    expect(view.getByText('Đang vận chuyển')).toBeTruthy();
+    expect(view.queryByText('Đã phân chuyến')).toBeNull();
+
+    jest.mocked(useCustomerOrderDetail).mockReturnValue({
+      ...detail,
+      order: { ...detail.order!, status: 'ASSIGNED', version: 4 },
+    });
+    await view.rerender(<CustomerOrderDetailScreen />);
+    expect(detail.reload).toHaveBeenCalledTimes(2);
+    expect(view.getByText('Đã phân chuyến')).toBeTruthy();
+  });
+
 });

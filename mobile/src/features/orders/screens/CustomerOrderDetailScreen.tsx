@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -34,9 +34,24 @@ function formatDate(value: string): string {
 export function CustomerOrderDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const orderId = Array.isArray(id) ? id[0] ?? '' : id ?? '';
+  return <CustomerOrderDetail key={orderId} orderId={orderId} />;
+}
+
+function CustomerOrderDetail({ orderId }: { orderId: string }) {
   const { order, isLoading, error, reload } =
     useCustomerOrderDetail(orderId);
   const tracking = useCustomerOrderTracking(orderId);
+  const latestTracking = tracking.tracking;
+  const handledTracking = useRef<typeof latestTracking>(null);
+
+  useEffect(() => {
+    if (!order || !latestTracking || latestTracking.orderId !== orderId ||
+        handledTracking.current === latestTracking) return;
+
+    // At most one refresh per successful tracking poll, even if the detail request fails.
+    handledTracking.current = latestTracking;
+    if (latestTracking.orderStatus !== order.status) void reload();
+  }, [latestTracking, order, orderId, reload]);
 
   useFocusEffect(
     useCallback(() => {
