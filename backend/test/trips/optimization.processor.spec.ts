@@ -1,5 +1,8 @@
+import { BadRequestException, GatewayTimeoutException } from '@nestjs/common';
+import { UnrecoverableError } from 'bullmq';
 import { Role } from '@prisma/client';
 import { OptimizationProcessor } from '../../src/trips/optimization.processor';
+import { MapboxMatrixRateLimitException } from '../../src/mapbox/mapbox.service';
 
 function persistedJob(status = 'PENDING') {
   return {
@@ -49,6 +52,16 @@ describe('OptimizationProcessor', () => {
     );
   });
 
+  it('stops queue retries after bounded Mapbox rate-limit retries are exhausted', async () => {
+    prisma.optimizationJob.findUnique.mockResolvedValue(persistedJob());
+    prisma.optimizationJob.updateMany.mockResolvedValue({ count: 1 });
+    trips.executeAutomaticOptimization.mockRejectedValue(new MapboxMatrixRateLimitException());
+    await expect(processor.process(queueJob() as never)).rejects.toBeInstanceOf(UnrecoverableError);
+    expect(prisma.optimizationJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'FAILED', errorCode: 'HTTP_503' }),
+    }));
+  });
+
   it('allows only one worker to claim the PostgreSQL job', async () => {
     prisma.optimizationJob.findUnique.mockResolvedValue(persistedJob());
     prisma.optimizationJob.updateMany.mockResolvedValue({ count: 0 });
@@ -74,7 +87,7 @@ describe('OptimizationProcessor', () => {
     prisma.optimizationJob.findUnique
       .mockResolvedValueOnce({
         ...persistedJob(),
-        parameters: { branchId: 'branch-1', searchBudgetSeconds: 45 },
+        parameters: { branchId: 'branch-1', searchBudgetSeconds: 45, deliveryBatchId: 'delivery-batch-1' },
       })
       .mockResolvedValueOnce({ status: 'CANCEL_REQUESTED' });
     prisma.optimizationJob.updateMany.mockResolvedValue({ count: 1 });
@@ -88,7 +101,7 @@ describe('OptimizationProcessor', () => {
 
     expect(trips.executeAutomaticOptimization).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ searchBudgetSeconds: 45 }),
+      expect.objectContaining({ searchBudgetSeconds: 45, deliveryBatchId: 'delivery-batch-1' }),
       'job-1',
       expect.any(Function),
     );
@@ -310,6 +323,57 @@ describe('OptimizationProcessor', () => {
       data: expect.objectContaining({
         status: 'RETRYING',
         errorCode: 'OPTIMIZATION_FAILED',
+      }),
+    });
+  });
+
+  it('marks HTTP timeout as TIMEOUT and stops BullMQ retries with UnrecoverableError', async () => {
+    prisma.optimizationJob.findUnique.mockResolvedValue(persistedJob());
+    prisma.optimizationJob.updateMany.mockResolvedValue({ count: 1 });
+    trips.executeAutomaticOptimization.mockRejectedValue(
+      new GatewayTimeoutException('timeout of 120000ms exceeded'),
+    );
+
+    await expect(processor.process(queueJob() as never)).rejects.toThrow(
+      UnrecoverableError,
+    );
+    expect(prisma.optimizationJob.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 'job-1',
+        status: 'RUNNING',
+        leaseOwner: expect.any(String),
+      }),
+      data: expect.objectContaining({
+        status: 'TIMEOUT',
+        errorCode: 'OPTIMIZER_HTTP_TIMEOUT',
+        completedAt: expect.any(Date),
+      }),
+    });
+    expect(events.emitOptimizationJobUpdate).toHaveBeenCalledWith(
+      'branch-1',
+      expect.objectContaining({ jobId: 'job-1', status: 'TIMEOUT' }),
+    );
+  });
+
+  it('marks BadRequestException as FAILED immediately without retry', async () => {
+    prisma.optimizationJob.findUnique.mockResolvedValue(persistedJob());
+    prisma.optimizationJob.updateMany.mockResolvedValue({ count: 1 });
+    trips.executeAutomaticOptimization.mockRejectedValue(
+      new BadRequestException('Invalid snapshot'),
+    );
+
+    await expect(processor.process(queueJob() as never)).rejects.toThrow(
+      UnrecoverableError,
+    );
+    expect(prisma.optimizationJob.updateMany).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 'job-1',
+        status: 'RUNNING',
+      }),
+      data: expect.objectContaining({
+        status: 'FAILED',
+        errorCode: 'HTTP_400',
+        completedAt: expect.any(Date),
       }),
     });
   });

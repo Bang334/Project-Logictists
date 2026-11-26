@@ -1,17 +1,16 @@
 # Use case vận hành chi nhánh TMS
 
-Ngày cập nhật 19/11/2026. Tài liệu mô tả bốn vai trò vận hành theo nghiệp vụ đã trao đổi. Các bước ghi **đề xuất** hoặc **cần chốt** là nội dung để duyệt. Nguồn quy tắc là [kế hoạch TMS](../KE_HOACH_TMS.md), đặc biệt hai mục về đặt, sửa, hủy đơn và lịch ca tuần.
+Ngày cập nhật 22/11/2026. Theo quyết định mới của người dùng, Điều phối viên vận tải tiếp nhận nghiệp vụ Xử lý đơn. Tài liệu mô tả ba vai trò vận hành theo nghiệp vụ đã trao đổi. Các bước ghi **đề xuất** hoặc **cần chốt** là nội dung để duyệt. Nguồn quy tắc là [kế hoạch TMS](../KE_HOACH_TMS.md), đặc biệt hai mục về đặt, sửa, hủy đơn và lịch ca tuần.
 
 ## 1. Vai trò và các mốc vận hành
 
-Mỗi chi nhánh tương ứng với một thành phố trên bản đồ Việt Nam. Trưởng chi nhánh và Trưởng điều phối là cùng một vai trò. Bốn vai trò làm việc trong phạm vi chi nhánh của mình. Khách hàng, tài xế và hệ thống xuất hiện ở các bước liên quan đến nhân viên.
+Mỗi chi nhánh tương ứng với một thành phố trên bản đồ Việt Nam. Trưởng chi nhánh và Trưởng điều phối là cùng một vai trò. Ba vai trò làm việc trong phạm vi chi nhánh của mình. Khách hàng, tài xế và hệ thống xuất hiện ở các bước liên quan đến nhân viên.
 
 | Vai trò | Công việc chính | Đầu ra bàn giao |
 |---|---|---|
 | Trưởng chi nhánh | Lập, chốt và duyệt lịch chuyến thường ngày mai. Xử lý thay đổi kế hoạch khi chuyến đang chạy. | Phiên bản kế hoạch đã duyệt để Điều phối vận tải phát hành. |
 | Quản lý tài nguyên | Xếp ca tuần, nhóm chạy thường/trực hỏa tốc. Theo dõi tình trạng xe và tài xế. | Lịch khả dụng theo ngày và tình trạng các cặp tài xế–xe. |
-| Điều phối vận tải | Phát hành kế hoạch đã duyệt, theo dõi thực hiện và kiểm tra khả năng phục vụ hỏa tốc. | Lịch đã phát hành, thông tin chuyến và sự cố cho bên liên quan. |
-| Xử lý đơn | Tiếp nhận, rà soát đơn và khung giờ. Điểm tiếp nhận của tổng đài, quyền hủy và trách nhiệm liên hệ được mô tả dưới dạng đề xuất ở các use case tương ứng. | Đơn đủ dữ liệu để xếp chuyến hoặc yêu cầu cần phối hợp xử lý. |
+| Điều phối vận tải | Rà soát đơn, xử lý lịch hẹn và tiếp nhận sửa/hủy; phát hành kế hoạch đã duyệt, theo dõi thực hiện và kiểm tra khả năng phục vụ hỏa tốc. | Lịch đã phát hành, thông tin chuyến và sự cố cho bên liên quan. |
 
 | Mốc theo giờ Việt Nam | Sự kiện |
 |---|---|
@@ -23,11 +22,13 @@ Mỗi chi nhánh tương ứng với một thành phố trên bản đồ Việt
 
 ## 2. Trưởng chi nhánh
 
+Phần lập kế hoạch, điều phối thủ công/tự động và tối ưu do Người 1 phát triển trên web admin là một nhóm chức năng của Trưởng chi nhánh. Tên thành viên phát triển không tạo thêm vai trò nghiệp vụ. Điều phối viên vận tải nhận bản đã duyệt để phát hành.
+
 ### CN-01 — Lập lịch chuyến thường ngày mai
 
 - **Kích hoạt và điều kiện.** Sau 17:00, Trưởng chi nhánh mở danh sách xếp chuyến ngày mai. Đầu vào gồm các đơn đủ điều kiện, lịch ca do Quản lý tài nguyên lập, tình trạng xe và phần việc ngày mai của các chuyến nhiều ngày đang tiếp diễn.
 - **Luồng chính.** Kiểm tra địa chỉ, khung lấy/giao, số kiện, loại hàng, kích thước và khối lượng. Chọn cặp tài xế–xe khả dụng thuộc nhóm chạy thường. Lập phương án thủ công hoặc dùng bộ tối ưu để đề xuất tuyến. Kiểm tra thứ tự lấy trước giao, tải từng chặng, xếp/dỡ không chồng và không cản cửa, lịch ca và thời gian di chuyển. Ghi nhận hàng qua đêm đang ở kho hay trên xe. Với hàng đông lạnh, dùng xe phù hợp và áp dụng quy tắc phân loại kiện đã chốt.
-- **Ngoại lệ.** Đơn đến trước 17:00 vẫn có thể thiếu dữ liệu hoặc chưa có phương án khả thi. Giữ đơn trong danh sách cần xử lý, ghi lý do có căn cứ và chuyển Xử lý đơn phối hợp khi liên quan cam kết với khách. Nếu phương án phải chia kiện qua nhiều xe, kiểm tra đủ toàn bộ kiện trước khi phát hành.
+- **Ngoại lệ.** Đơn đến trước 17:00 vẫn có thể thiếu dữ liệu hoặc chưa có phương án khả thi. Giữ đơn trong danh sách cần xử lý, ghi lý do có căn cứ và chuyển Điều phối viên vận tải phối hợp khi liên quan cam kết với khách. Nếu phương án phải chia kiện qua nhiều xe, kiểm tra đủ toàn bộ kiện trước khi phát hành.
 - **Kết quả.** Có bản kế hoạch ngày mai để duyệt và danh sách đơn chưa xếp được.
 
 ### CN-02 — Chốt và duyệt phiên bản kế hoạch
@@ -79,15 +80,15 @@ Mỗi chi nhánh tương ứng với một thành phố trên bản đồ Việt
 ### DP-03 — Theo dõi chuyến, giao thất bại và hàng quay về kho
 
 - **Điều kiện.** Chuyến đã phát hành hoặc có yêu cầu hủy, giao lại hay trả hàng ảnh hưởng đến vận chuyển.
-- **Luồng chính.** Theo dõi lấy/giao, vị trí, giao thiếu và sự cố. Xác định phần hàng đang ở xe hay kho. Nếu cần thay tuyến hoặc đổi lịch, chuyển Trưởng chi nhánh duyệt phương án rồi phát hành bản cập nhật. Với yêu cầu hủy sau lấy đã được xử lý hợp lệ, điều phối tài xế đưa hàng về kho, ghi nhận bàn giao và chuyển thông tin cho Xử lý đơn.
+- **Luồng chính.** Theo dõi lấy/giao, vị trí, giao thiếu và sự cố. Xác định phần hàng đang ở xe hay kho. Nếu cần thay tuyến hoặc đổi lịch, chuyển Trưởng chi nhánh duyệt phương án rồi phát hành bản cập nhật. Với yêu cầu hủy sau lấy đã được xử lý hợp lệ, điều phối tài xế đưa hàng về kho, ghi nhận bàn giao và chuyển thông tin xử lý yêu cầu khách cho Điều phối viên vận tải.
 - **Ngoại lệ.** Hỏa tốc đã lấy nhưng lần giao đầu thất bại có thể được thử lại trong ngày theo quy tắc đã chốt. Nếu người nhận không nhận đến hết giờ và đơn bị hủy, ghi nguyên nhân để áp dụng phí phát sinh cho người gửi theo chính sách. Nếu tài xế không giao kịp, đưa hàng về kho để Trưởng chi nhánh xếp giao lại.
 - **Kết quả.** Có trạng thái từng phần hàng, lý do và bằng chứng. Hoàn tất chuyến vẫn phải đối chiếu kết quả của từng đơn.
 
-## 5. Nhân viên Xử lý đơn
+## 5. Nghiệp vụ tiếp nhận đơn của Điều phối viên vận tải
 
 ### XD-01 — Tiếp nhận đơn và kiểm tra lịch hẹn
 
-- **Kích hoạt.** Có đơn khách gửi hoặc yêu cầu cần rà soát. Việc phân công cho nhân viên phụ trách đơn là mô tả nghiệp vụ, quyền thao tác cụ thể cần được xác nhận khi triển khai.
+- **Kích hoạt.** Có đơn khách gửi hoặc yêu cầu cần rà soát. Điều phối viên vận tải được thao tác trên API đơn hiện có trong chi nhánh; phần thiếu API tiếp tục cần triển khai riêng.
 - **Luồng chính.** Kiểm tra thông tin người gửi/nhận, điểm lấy/giao, dữ liệu từng kiện, yêu cầu bảo quản và khung giờ. Với đơn thường đặt trước 17:00 và hẹn lấy ngày mai, đưa hồ sơ đủ dữ liệu vào danh sách Trưởng chi nhánh dùng sau 17:00. Với đơn hỏa tốc, hệ thống áp dụng mốc ngừng nhận đơn 16:00. Điều phối vận tải kiểm tra khả năng bố trí xe và tài xế theo DP-02.
 - **Ngoại lệ.** Báo thiếu dữ liệu, khung giờ chưa bố trí được hoặc đơn chưa xếp được để khách biết và xử lý lịch hẹn. Mốc đặt trước 17:00 xác định danh sách xếp chuyến. Việc xác nhận được phục vụ phụ thuộc phương án khả thi. Cách hẹn đơn thường đặt từ 17:00 trở đi còn cần chốt nếu khách muốn lấy ngày mai.
 - **Kết quả.** Hồ sơ đủ dữ liệu để lập kế hoạch hoặc có lý do đang chờ xử lý.
@@ -102,25 +103,25 @@ Mỗi chi nhánh tương ứng với một thành phố trên bản đồ Việt
 ### XD-03 — Tiếp nhận hủy sau lấy và theo dõi trả hàng
 
 - **Kích hoạt.** Khách yêu cầu hủy khi hàng đã được lấy. Với đơn thường lấy ngay trong ngày đặt, khách gọi tổng đài.
-- **Luồng đề xuất.** Xử lý đơn ghi yêu cầu tổng đài, kiểm tra hàng đang ở đâu và chuyển Điều phối vận tải tổ chức đưa về kho sau khi yêu cầu hủy được chấp thuận theo thẩm quyền. Khi kho nhận hàng, thông báo cho khách lựa chọn đến kho nhận hoặc giao trả tận nhà có phí dịch vụ. Theo dõi tới khi có kết quả bàn giao.
+- **Luồng đề xuất.** Điều phối viên vận tải ghi yêu cầu tổng đài, kiểm tra hàng đang ở đâu và chuyển Điều phối vận tải tổ chức đưa về kho sau khi yêu cầu hủy được chấp thuận theo thẩm quyền. Khi kho nhận hàng, thông báo cho khách lựa chọn đến kho nhận hoặc giao trả tận nhà có phí dịch vụ. Theo dõi tới khi có kết quả bàn giao.
 - **Ngoại lệ.** Nếu mới ghi nhận yêu cầu hoặc hàng còn trên xe, phản ánh đúng tình trạng. Cần chốt thẩm quyền chấp thuận, kênh hủy nếu lấy khác ngày đặt, biểu phí giao trả và chính sách hoàn tiền.
 - **Kết quả.** Truy vết được yêu cầu hủy, vị trí hàng và phương thức giao trả khách chọn.
 
-## 6. Có nên gộp Điều phối vận tải và Xử lý đơn?
+## 6. Quyết định gộp vai trò ngày 22/11/2026
 
-**Đề xuất gộp cho MVP thành vai trò Nhân viên vận hành.** Cùng một nhân viên có thể kiểm tra thông tin đơn, phối hợp giờ lấy, theo dõi chuyến và xử lý yêu cầu khách. Ví dụ, khách gọi hủy sau khi đã lấy hàng, nhân viên tra được ngay xe đang chở và theo dõi việc đưa hàng về kho. Hai khu vực công việc **Đơn hàng** và **Chuyến vận tải** vẫn cần hiển thị rõ việc nào đang chờ xử lý.
+**Đã chốt:** gộp Xử lý đơn vào Điều phối viên vận tải, giữ mã `TRANSPORT_DISPATCHER`. Cùng một nhân viên có thể kiểm tra thông tin đơn, phối hợp giờ lấy, theo dõi chuyến và xử lý yêu cầu khách. Ví dụ, khách gọi hủy sau khi đã lấy hàng, nhân viên tra được ngay xe đang chở và theo dõi việc đưa hàng về kho. Hai khu vực công việc **Đơn hàng** và **Chuyến vận tải** vẫn cần hiển thị rõ việc nào đang chờ xử lý.
 
-| Nhóm nghiệp vụ | Nếu gộp vai trò |
+| Nhóm nghiệp vụ | Phân công sau khi gộp |
 |---|---|
-| Tiếp nhận đơn và lịch hẹn | Nhân viên vận hành xử lý hồ sơ, theo dõi tình trạng và tiếp nhận yêu cầu theo quyền được giao. |
-| Phát hành và theo dõi chuyến | Nhân viên vận hành phát hành đúng bản đã được Trưởng chi nhánh duyệt, theo dõi chuyến và phối hợp ngoại lệ. |
+| Tiếp nhận đơn và lịch hẹn | Điều phối viên vận tải xử lý hồ sơ, theo dõi tình trạng và tiếp nhận yêu cầu theo quyền được giao. |
+| Phát hành và theo dõi chuyến | Điều phối viên vận tải phát hành đúng bản đã được Trưởng chi nhánh duyệt, theo dõi chuyến và phối hợp ngoại lệ. |
 | Lập và duyệt kế hoạch ngày mai | Trưởng chi nhánh lập, chốt và duyệt. Sửa nội dung kế hoạch làm phát sinh phiên bản cần duyệt lại. |
 | Xếp ca tuần và quản lý khả dụng | Quản lý tài nguyên phụ trách. |
 | Hủy sau lấy, hoàn tiền, phí dịch vụ | Vai trò gộp tiếp nhận và phối hợp xử lý. Quyền phê duyệt và chính sách tiền cần được xác nhận riêng. |
 
 - **Lợi ích.** Giảm số lần bàn giao khi tình trạng đơn và chuyến thay đổi cùng lúc. Phù hợp khi một nhóm nhỏ phục vụ chung một chi nhánh.
 - **Hạn chế.** Công việc chăm sóc đơn có thể gián đoạn theo dõi chuyến, nhất là lúc nhiều sự cố hoặc nhiều yêu cầu hỏa tốc đồng thời. Có thể phân người trực theo hai hàng công việc trong cùng vai trò. Khi cần tách người theo nhiệm vụ thường xuyên, tách quyền nghiệp vụ theo nhóm.
-- **Điều kiện phân quyền.** Khi gộp, dùng tài khoản cá nhân và quyền theo chi nhánh. Quyền xử lý đơn, phát hành chuyến và quyền duyệt kế hoạch được kiểm tra theo thao tác. Ghi người thực hiện các quyết định có ảnh hưởng đến đơn, chuyến hoặc tài nguyên. Ma trận quyền hiện hành có bốn vai trò; phương án ba vai trò ở đây đang chờ quyết định.
+- **Điều kiện phân quyền.** Khi gộp, dùng tài khoản cá nhân và quyền theo chi nhánh. Quyền xử lý đơn, phát hành chuyến và quyền duyệt kế hoạch được kiểm tra theo thao tác. Ghi người thực hiện các quyết định có ảnh hưởng đến đơn, chuyến hoặc tài nguyên. Ma trận mới có ba vai trò. Quyền hủy sau lấy, hoàn tiền và quyết định phí vẫn cần chốt riêng. Hiện trạng API, giới hạn và phần cần Người 1 phối hợp được ghi trong [bàn giao phân quyền](PHAN_QUYEN_BA_VAI_TRO.md).
 
 ## 7. Kịch bản đối chiếu nghiệp vụ
 

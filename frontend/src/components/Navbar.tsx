@@ -2,6 +2,7 @@ import React from 'react';
 import { Layout, Button, Space, Typography, Tag, Select, Grid } from 'antd';
 import { CarOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
+import { roleLabel } from '../types/accounts';
 import ChangePasswordButton from './ChangePasswordButton';
 
 const { Header } = Layout;
@@ -60,7 +61,7 @@ const Navbar: React.FC = () => {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Tag color="geekblue" icon={<UserOutlined />}>
-            {[...new Set(user?.grants.map((g) => g.role))].join(', ') || user?.role}
+            {[...new Set(user?.grants.map((g) => roleLabel(g.role)))].join(', ') || user?.role}
           </Tag>
           <Text style={{ color: '#1e293b', fontWeight: 600 }}>
             {user?.fullName || user?.username}

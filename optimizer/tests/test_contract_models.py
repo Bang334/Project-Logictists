@@ -107,3 +107,17 @@ def test_request_accepts_only_bounded_explicit_search_time():
         payload["search_time_seconds"] = invalid_value
         with pytest.raises(ValidationError):
             FleetOptimizationRequest.model_validate(payload)
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan"), -1])
+def test_matrix_requires_finite_nonnegative_values(value):
+    payload = minimal_fleet_request()
+    payload["duration_matrix_seconds"][0][1] = value
+    with pytest.raises(ValidationError):
+        FleetOptimizationRequest.model_validate(payload)
+
+
+def test_duplicate_cargo_ids_are_rejected():
+    payload = minimal_fleet_request()
+    payload["orders"][0]["items"].append(payload["orders"][0]["items"][0].copy())
+    with pytest.raises(ValidationError):
+        FleetOptimizationRequest.model_validate(payload)

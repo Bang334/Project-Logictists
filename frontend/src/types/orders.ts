@@ -1,6 +1,14 @@
 import type { Order } from './index';
 export type CargoKind = 'STANDARD' | 'FRAGILE' | 'FROZEN';
-export interface PackageInput { cargoKind?: CargoKind; id?: string; lengthMm: number; widthMm: number; heightMm: number; weightG: string }
+export const cargoKindLabels = { UNCLASSIFIED: 'Chưa phân loại', STANDARD: 'Thông thường', FRAGILE: 'Dễ vỡ' } as const;
+export interface PackageHandling {
+  cargoKind?: keyof typeof cargoKindLabels;
+  allowUpperTier?: boolean;
+  noTopLoadRequested?: boolean;
+  maxTopLoadG?: number | null;
+  allowedOrientations?: string[] | null;
+}
+export interface PackageInput extends PackageHandling { id?: string; lengthMm: number; widthMm: number; heightMm: number; weightG: string }
 export interface OrderLineInput { id?: string; description: string; packageType: string; sku?: string; packages: PackageInput[] }
 export interface StopInput {
   id?: string; type: 'PICKUP' | 'DELIVERY'; address: string; latitude: number; longitude: number;
@@ -20,6 +28,7 @@ function assertOrder(x: unknown): asserts x is Order {
   }
   if (!object(x) || typeof x.id !== 'string' || typeof x.orderNumber !== 'string' || typeof x.customerId !== 'string' || typeof x.branchId !== 'string'
     || !numeric(x.version) || !numeric(x.totalPackages) || !numeric(x.totalWeightKg) || !numeric(x.totalVolumeM3)
+    || (x.protectionFeeVnd !== undefined && (!numeric(x.protectionFeeVnd) || !Number.isSafeInteger(x.protectionFeeVnd) || x.protectionFeeVnd < 0))
     || !['DRAFT','CONFIRMED','ASSIGNED','IN_TRANSIT','COMPLETED','CANCELLED'].includes(String(x.status))
     || !['COMPLETE','LEGACY_REVIEW'].includes(String(x.packageDataStatus))
     || typeof x.operationalTimezone !== 'string' || !nullableString(x.totalWeightG) || !nullableString(x.totalVolumeMm3)
@@ -28,6 +37,11 @@ function assertOrder(x: unknown): asserts x is Order {
     || !Array.isArray(x.items) || !x.items.every(i => object(i) && typeof i.id === 'string' && typeof i.description === 'string' && typeof i.packageType === 'string' && numeric(i.quantity) && numeric(i.weightKg) && numeric(i.volumeM3) && [i.lengthCm, i.widthCm, i.heightCm].every(v => v === null || numeric(v)) && Array.isArray(i.packages) && i.packages.every(p => object(p)
       && typeof p.id === 'string' && p.orderItemId === i.id && p.orderId === x.id && typeof p.packageCode === 'string'
       && numeric(p.lengthMm) && numeric(p.widthMm) && numeric(p.heightMm) && typeof p.weightG === 'string' && /^-?[0-9]+$/.test(p.weightG) && typeof p.status === 'string' && numeric(p.version)
+      && (p.cargoKind === undefined || (typeof p.cargoKind === 'string' && Object.prototype.hasOwnProperty.call(cargoKindLabels, p.cargoKind)))
+      && (p.allowUpperTier === undefined || typeof p.allowUpperTier === 'boolean')
+      && (p.noTopLoadRequested === undefined || typeof p.noTopLoadRequested === 'boolean')
+      && (p.maxTopLoadG == null || (numeric(p.maxTopLoadG) && Number.isSafeInteger(p.maxTopLoadG) && p.maxTopLoadG > 0))
+      && (p.allowedOrientations === undefined || p.allowedOrientations === null || (Array.isArray(p.allowedOrientations) && p.allowedOrientations.every(v => typeof v === 'string')))
       && (x.packageDataStatus === 'LEGACY_REVIEW' || ([p.lengthMm, p.widthMm, p.heightMm].every(v => Number.isSafeInteger(v) && v > 0) && /^[1-9][0-9]*$/.test(p.weightG)))
       && nullableString(p.pickupStopId) && nullableString(p.deliveryStopId)))) throw new Error('Phản hồi đơn hàng không đúng hợp đồng dữ liệu');
 

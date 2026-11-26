@@ -13,6 +13,12 @@ from .models import (
     StopAction,
     VehicleFloor,
 )
+from .packing_rules import (
+    build_weight_balance_metrics,
+    is_floor_rotation_locked,
+    resolve_can_rotate,
+    score_candidate_balance_and_fragility,
+)
 
 
 _GEOMETRY_TOLERANCE_CM = 0.01
@@ -56,13 +62,15 @@ class _SearchContext:
     # Packages with the same class are physically interchangeable for the rest
     # of the plan (same order, footprint, height, weight and unload step).
     item_class_by_id: Dict[str, Tuple[object, ...]] = field(default_factory=dict)
+    cargo_kind_by_id: Dict[str, str] = field(default_factory=dict)
     future_max_unload_by_stop: Tuple[Optional[int], ...] = field(default_factory=tuple)
+    future_pickup_count_by_stop: Tuple[int, ...] = field(default_factory=tuple)
 
     def consume_node(self) -> bool:
         if self.visited_nodes >= self.max_nodes:
             self.limit_reached = True
             return False
-        if (self.visited_nodes & 63 == 0) and (time.monotonic() - self.start_time) >= self.max_time_seconds:
+        if (self.visited_nodes & 7 == 0) and (time.monotonic() - self.start_time) >= self.max_time_seconds:
             self.limit_reached = True
             return False
         self.visited_nodes += 1
@@ -475,6 +483,7 @@ class SpatialValidator:
         """Validate one continuous interval during which cargo is on board."""
         unload_step_by_item = self._build_unload_steps(stops)
         future_max_unload: List[Optional[int]] = []
+        future_pickups: List[int] = []
         for idx in range(len(stops)):
             future_steps = [
                 unload_step_by_item[it.id]
@@ -483,6 +492,14 @@ class SpatialValidator:
                 if it.id in unload_step_by_item
             ]
             future_max_unload.append(max(future_steps, default=None))
+            future_pickups.append(
+                sum(len(s.items_to_load) for s in stops[idx + 1 :])
+            )
+        cargo_kind_by_id = {
+            it.id: it.cargo_kind
+            for s in stops
+            for it in s.items_to_load
+        }
         context = _SearchContext(
             max_nodes=self.max_search_nodes,
             max_time_seconds=(
@@ -491,7 +508,9 @@ class SpatialValidator:
                 else max(0.0, max_time_seconds)
             ),
             item_class_by_id=self._build_item_classes(stops, unload_step_by_item),
+            cargo_kind_by_id=cargo_kind_by_id,
             future_max_unload_by_stop=tuple(future_max_unload),
+            future_pickup_count_by_stop=tuple(future_pickups),
         )
         failed_states: Set[Tuple[int, Tuple[Tuple[object, ...], ...]]] = set()
 
@@ -508,11 +527,21 @@ class SpatialValidator:
         )
         if solution is not None:
             snapshots, max_weight, max_area = solution
+            floor_states = self._build_floor_states(stops, snapshots)
+            max_lat_imb = max(
+                (
+                    s.weight_balance.lateral_imbalance_percent
+                    for s in floor_states
+                    if s.weight_balance and s.weight_balance.total_weight_kg > 0
+                ),
+                default=0.0,
+            )
             return SpatialValidationResult(
                 is_valid=True,
                 max_weight_kg=round(max_weight, 3),
                 max_area_cm2=max_area,
-                step_states=self._build_floor_states(stops, snapshots),
+                max_lateral_imbalance_percent=max_lat_imb,
+                step_states=floor_states,
             )
 
         if context.limit_reached or context.branch_cap_reached:
@@ -588,6 +617,11 @@ class SpatialValidator:
                     package_access_paths=self._build_package_access_paths(
                         placed_by_id
                     ),
+                    weight_balance=build_weight_balance_metrics(
+                        snapshot.placed_items,
+                        self.floor_length,
+                        self.floor_width,
+                    ),
                 )
             )
         return floor_states
@@ -606,7 +640,9 @@ class SpatialValidator:
                     round(item.width_cm, 6),
                     round(item.height_cm, 6),
                     round(item.weight_kg, 6),
-                    item.can_rotate,
+                    resolve_can_rotate(item),
+                    item.cargo_kind,
+                    bool(item.no_top_load_requested),
                     unload_step_by_item.get(item.id, -1),
                 )
         return item_classes
@@ -750,6 +786,8 @@ class SpatialValidator:
             stop.items_to_load,
             key=lambda item: (
                 -unload_step_by_item.get(item.id, len(stops) + 1),
+                1 if item.cargo_kind == "FRAGILE" else 0,
+                -item.weight_kg,
                 -(item.length_cm * item.width_cm),
                 -max(item.length_cm, item.width_cm),
                 item.id,
@@ -989,12 +1027,18 @@ class SpatialValidator:
             and len(early_items) <= 4
             and early_area <= self.total_floor_area * 0.35
         )
+        has_remaining_cargo = (item_index + 1 < len(items)) or (
+            stop_index < len(context.future_pickup_count_by_stop)
+            and context.future_pickup_count_by_stop[stop_index] > 0
+        )
         candidates = self._candidate_placements(
             item,
             list(current_items.values()),
             unload_step=unload_step,
             max_unload_step=max_future_unload_step,
             allow_door_placement=allow_door,
+            cargo_kind_by_id=context.cargo_kind_by_id,
+            has_remaining_cargo=has_remaining_cargo,
         )
         if not candidates:
             self._record_no_candidate_failure(
@@ -1011,6 +1055,20 @@ class SpatialValidator:
 
         ingress_candidate_found = False
         unload_safe_candidate_found = False
+        def _symmetric_order_key(
+            cand_x: float, cand_y: float, cand_l: float, cand_w: float
+        ) -> Tuple[float, float, float, float, float]:
+            dist_to_nearest_side = min(
+                cand_y, max(0.0, self.floor_width - cand_w - cand_y)
+            )
+            return (
+                round(cand_x, 4),
+                round(dist_to_nearest_side, 4),
+                round(cand_y, 4),
+                round(cand_l, 4),
+                round(cand_w, 4),
+            )
+
         identical_predecessor_positions = []
         for predecessor in items[:item_index]:
             if (
@@ -1023,14 +1081,16 @@ class SpatialValidator:
                 <= _GEOMETRY_TOLERANCE_CM
                 and abs(predecessor.weight_kg - item.weight_kg)
                 <= _GEOMETRY_TOLERANCE_CM
-                and predecessor.can_rotate == item.can_rotate
+                and resolve_can_rotate(predecessor) == resolve_can_rotate(item)
+                and predecessor.cargo_kind == item.cargo_kind
+                and predecessor.no_top_load_requested == item.no_top_load_requested
                 and unload_step_by_item.get(predecessor.id)
                 == unload_step_by_item.get(item.id)
                 and predecessor.id in current_items
             ):
                 placed_predecessor = current_items[predecessor.id]
                 identical_predecessor_positions.append(
-                    (
+                    _symmetric_order_key(
                         placed_predecessor.x,
                         placed_predecessor.y,
                         placed_predecessor.length_cm,
@@ -1045,7 +1105,7 @@ class SpatialValidator:
                 return
             if (
                 minimum_symmetric_position is not None
-                and candidate < minimum_symmetric_position
+                and _symmetric_order_key(*candidate) < minimum_symmetric_position
             ):
                 continue
             placed_item = self._to_placed_item(item, candidate)
@@ -1117,9 +1177,12 @@ class SpatialValidator:
         unload_step: Optional[int] = None,
         max_unload_step: Optional[int] = None,
         allow_door_placement: bool = False,
+        cargo_kind_by_id: Optional[Dict[str, str]] = None,
+        has_remaining_cargo: bool = True,
     ) -> List[Tuple[float, float, float, float]]:
+        can_rotate = resolve_can_rotate(item)
         orientations = [(item.length_cm, item.width_cm)]
-        if item.can_rotate and abs(item.length_cm - item.width_cm) > _GEOMETRY_TOLERANCE_CM:
+        if can_rotate and abs(item.length_cm - item.width_cm) > _GEOMETRY_TOLERANCE_CM:
             orientations.append((item.width_cm, item.length_cm))
 
         candidates: List[Tuple[Tuple[float, ...], Tuple[float, float, float, float]]] = []
@@ -1142,11 +1205,13 @@ class SpatialValidator:
         ):
             min_width = (
                 min(item.length_cm, item.width_cm)
-                if item.can_rotate
+                if can_rotate
                 else item.width_cm
             )
             if min_width <= self.floor_width * 0.65:
                 prefer_door = True
+
+        kind_map = cargo_kind_by_id or {}
 
         for orientation_index, (length, width) in enumerate(orientations):
             if (
@@ -1156,7 +1221,11 @@ class SpatialValidator:
                 continue
 
             x_values = {0.0, self.floor_length - length}
-            y_values = {0.0, self.floor_width - width}
+            y_values = {
+                0.0,
+                self.floor_width - width,
+                (self.floor_width - width) / 2.0,
+            }
             for placed in current_placed:
                 x_values.update(
                     {
@@ -1199,23 +1268,75 @@ class SpatialValidator:
                     if key in seen:
                         continue
                     seen.add(key)
+                    lateral_imb, fragile_pen = score_candidate_balance_and_fragility(
+                        cand_x=x,
+                        cand_y=y,
+                        cand_l=length,
+                        cand_w=width,
+                        cand_weight_kg=item.weight_kg,
+                        cand_cargo_kind=item.cargo_kind,
+                        current_placed=current_placed,
+                        cargo_kind_by_id=kind_map,
+                        floor_length_cm=self.floor_length,
+                        floor_width_cm=self.floor_width,
+                    )
+                    touches_lateral = (
+                        y <= tol
+                        or y + width >= self.floor_width - tol
+                        or any(
+                            min(x + length, other.x + other.length_cm)
+                            > max(x, other.x) + tol
+                            and (
+                                abs(y - (other.y + other.width_cm)) <= tol
+                                or abs((y + width) - other.y) <= tol
+                            )
+                            for other in current_placed
+                        )
+                    )
+                    corridor_fragment = (
+                        1.5
+                        if (has_remaining_cargo and not touches_lateral)
+                        else 0.0
+                    )
+                    effective_imb = (
+                        max(0.0, lateral_imb - 0.25)
+                        if has_remaining_cargo
+                        else lateral_imb
+                    )
+                    balance_fragile_cost = round(
+                        corridor_fragment + effective_imb + fragile_pen * 0.75, 4
+                    )
+                    wall_dist = round(
+                        min(y, max(0.0, self.floor_width - width - y)), 4
+                    )
                     if prefer_door:
                         dist_to_door = self.floor_length - (x + length)
-                        score = (dist_to_door, y, float(orientation_index))
+                        score = (
+                            dist_to_door,
+                            balance_fragile_cost,
+                            wall_dist,
+                            y,
+                            float(orientation_index),
+                        )
                     else:
                         bounding_x = max(current_max_x, x + length)
-                        score = (bounding_x, x, y, float(orientation_index))
+                        score = (
+                            bounding_x,
+                            x,
+                            balance_fragile_cost,
+                            wall_dist,
+                            y,
+                            float(orientation_index),
+                        )
                     candidates.append((score, candidate))
 
         candidates.sort(key=lambda entry: entry[0])
         ordered = [candidate for _, candidate in candidates]
         if ordered:
-            # Try one deep wall placement before compact/door preferences.
-            # Filling the narrow dimension first can strand a later pickup
-            # behind an early-delivery batch and exhaust the branch budget.
-            # All ingress, unload, overlap and payload checks still run below.
-            deep = min(ordered, key=lambda candidate: (candidate[0], candidate[1]))
-            ordered.remove(deep)
+            # Try one deep wall placement before compact/door preferences,
+            # keeping the best balance/fragile candidate among equal minimum-x options.
+            deep_idx = min(range(len(ordered)), key=lambda idx: (ordered[idx][0], idx))
+            deep = ordered.pop(deep_idx)
             ordered.insert(0, deep)
         return ordered
 
@@ -1424,6 +1545,9 @@ class SpatialValidator:
             width_cm=width,
             height_cm=item.height_cm,
             weight_kg=item.weight_kg,
+            cargo_kind=item.cargo_kind,
+            no_top_load_requested=bool(item.no_top_load_requested),
+            floor_rotation_locked=is_floor_rotation_locked(item),
         )
 
     def _layout_key(
@@ -1455,7 +1579,7 @@ class SpatialValidator:
             and item.width_cm <= self.floor_width + _GEOMETRY_TOLERANCE_CM
         )
         fits_rotated_orientation = (
-            item.can_rotate
+            resolve_can_rotate(item)
             and item.width_cm <= self.floor_length + _GEOMETRY_TOLERANCE_CM
             and item.length_cm <= self.floor_width + _GEOMETRY_TOLERANCE_CM
         )

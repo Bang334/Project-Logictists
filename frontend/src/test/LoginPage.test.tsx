@@ -27,6 +27,7 @@ beforeAll(() => {
     })),
   });
 });
+
 afterEach(() => {
   cleanup();
   authMocks.login.mockReset();
@@ -82,4 +83,18 @@ describe('LoginPage', () => {
       expect(authMocks.login).toHaveBeenCalledWith('admin', 'admin123');
     });
   }, 10_000);
+
+  it('renders logistics control tower overview and hub badges', () => {
+    render(
+      <AntdApp>
+        <LoginPage />
+      </AntdApp>,
+    );
+
+    expect(screen.getByLabelText('Giới thiệu hệ thống điều hành vận tải TMS')).toBeInTheDocument();
+    expect(screen.getByText('Trục điều vận liên chi nhánh')).toBeInTheDocument();
+    expect(screen.getByText('HQ-ALL')).toBeInTheDocument();
+    expect(screen.getAllByText('HUB-HAN').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('HUB-SGN').length).toBeGreaterThan(0);
+  });
 });

@@ -1,0 +1,30 @@
+{
+  "jobId": "e18f0a0d-ddbd-44bf-9c25-1dafca0d178f",
+  "status": "SUCCEEDED",
+  "attemptCount": 6,
+  "completedAt": "2026-11-18T14:34:10.200Z",
+  "input": {
+    "orderCount": 150,
+    "driverCount": 26,
+    "packageCount": 1290,
+    "candidateCount": 1,
+    "serviceSlotCount": 182,
+    "physicalVehicleCount": 26
+  },
+  "solverStatus": "SUCCESS",
+  "unassigned": 0,
+  "deliveredPackages": 1290,
+  "duplicateDeliveries": 0,
+  "routes": 69,
+  "routesWithGeometry": 69,
+  "spatialValid": true,
+  "upperTierPackages": 788,
+  "physicalVehicles": 26,
+  "serviceDays": [
+    0,
+    1,
+    2
+  ],
+  "distanceKm": 28384.17,
+  "costVnd": 173131288
+}

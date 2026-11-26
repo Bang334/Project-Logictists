@@ -11,19 +11,24 @@ interface AuthContextType {
   can: (permission: string) => boolean; scopeVersion: number;
 }
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const BRANCH_STORAGE_KEY = 'tms_branch_id';
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(sessionStorage.getItem('tms_token'));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [branchId, setBranch] = useState<string>();
+  const [branchId, setBranch] = useState<string | undefined>(
+    () => sessionStorage.getItem(BRANCH_STORAGE_KEY) || undefined,
+  );
   const [scopeVersion, setScopeVersion] = useState(0);
   const operation = useRef(0);
   const userRef = useRef<User | null>(null);
-  const branchRef = useRef<string>();
+  const branchRef = useRef<string | undefined>(branchId);
   const invalidate = () => { resetRequests(); setScopeVersion(v => v + 1); };
   const clear = () => {
     operation.current++; invalidate(); disconnectRealtimeSocket(); sessionStorage.removeItem('tms_token');
+    sessionStorage.removeItem(BRANCH_STORAGE_KEY);
     localStorage.removeItem('tms_token'); setApiSession(null);
     setToken(null); setUser(null); userRef.current = null; setBranch(undefined); branchRef.current = undefined; setLoading(false);
   };
@@ -32,7 +37,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (JSON.stringify(userRef.current) !== JSON.stringify(profile)) invalidate();
     userRef.current = profile; setUser(profile);
     const savedBranch = firstProfile ? sessionStorage.getItem(`tms_branch:${profile.id}`) : null;
-    let next = firstProfile && savedBranch && savedBranch !== 'ALL' ? savedBranch : branchRef.current;
+    let next = firstProfile && savedBranch ? (savedBranch === 'ALL' ? undefined : savedBranch) : branchRef.current;
     if (next && !profile.branches.some(b => b.id === next)) {
       sessionStorage.removeItem(`tms_branch:${profile.id}`);
       clear(); setError('Chi nhánh đang chọn không còn được cấp. Vui lòng đăng nhập lại và chọn phạm vi hợp lệ.'); return;
@@ -40,6 +45,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!next && !profile.companyScope && profile.branches.length === 1) next = profile.branches[0].id;
     branchRef.current = next; setBranch(next);
     sessionStorage.setItem(`tms_branch:${profile.id}`, next || 'ALL');
+    if (next) sessionStorage.setItem(BRANCH_STORAGE_KEY, next);
+    else sessionStorage.removeItem(BRANCH_STORAGE_KEY);
     setApiSession(sessionStorage.getItem('tms_token'), next);
   };
   const retry = async () => {
@@ -99,8 +106,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
   const setBranchId = (id?: string) => {
     if (id && !userRef.current?.branches.some(b => b.id === id)) return;
-    invalidate(); branchRef.current = id; setBranch(id); setApiSession(sessionStorage.getItem('tms_token'), id);
+    invalidate(); branchRef.current = id; setBranch(id);
+    if (id) sessionStorage.setItem(BRANCH_STORAGE_KEY, id);
+    else sessionStorage.removeItem(BRANCH_STORAGE_KEY);
     if (userRef.current) sessionStorage.setItem(`tms_branch:${userRef.current.id}`, id || 'ALL');
+    setApiSession(sessionStorage.getItem('tms_token'), id);
   };
   const can = (permission: string) => !!user?.grants.some(g => g.permissions.includes(permission) && (g.scopeType === 'COMPANY' || !branchId || g.branchId === branchId));
   return <AuthContext.Provider value={{ user, token, login, logout, loading, error, retry, branchId, setBranchId, can, scopeVersion }}>{children}</AuthContext.Provider>;

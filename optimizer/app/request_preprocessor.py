@@ -1,5 +1,7 @@
 """Lossless reductions and geometric order splitting before routing search."""
 
+import time
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
 from .models import (
@@ -12,9 +14,13 @@ from .models import (
     VehicleFloor,
 )
 from .spatial_validator import SpatialValidator
+from .packing_rules import resolve_can_rotate
+from .stacking import effective_floor_capacity_cm2, validate_stop_actions
 
 
 _GEOMETRY_TOLERANCE = 0.01
+_MAX_LAYOUT_CHECK_SECONDS = 0.5
+_MIN_LAYOUT_CHECK_SECONDS = 0.05
 
 
 def _can_serve_order_with_zero_travel_lower_bound(
@@ -70,6 +76,16 @@ def prune_unserviceable_virtual_resources(
     if removed_count == 0 or not retained_vehicle_indices:
         return request, 0
 
+    reduced = request_with_vehicle_slots(request, retained_vehicle_indices)
+    return (reduced, removed_count) if reduced is not None else (request, 0)
+
+
+def request_with_vehicle_slots(
+    request: FleetOptimizationRequest, retained_vehicle_indices: List[int],
+) -> Optional[FleetOptimizationRequest]:
+    """Keep the matching shift days and the corresponding provider matrix nodes."""
+    if not retained_vehicle_indices:
+        return None
     retained_days = {
         request.vehicles[index].service_day_index
         for index in retained_vehicle_indices
@@ -82,7 +98,7 @@ def prune_unserviceable_virtual_resources(
     if len(retained_drivers) < len(retained_vehicle_indices):
         # Driver matching is checked precisely by FleetRoutingSolver. Avoid a
         # preprocessed request that would violate the public request contract.
-        return request, 0
+        return None
 
     old_vehicle_count = len(request.vehicles)
     retained_node_indices: List[int] = retained_vehicle_indices + list(
@@ -105,16 +121,20 @@ def prune_unserviceable_virtual_resources(
         distance_matrix_meters=slice_matrix(request.distance_matrix_meters),
         duration_matrix_seconds=slice_matrix(request.duration_matrix_seconds),
     )
-    return FleetOptimizationRequest(**payload), removed_count
+    return FleetOptimizationRequest(**payload)
 
 
-def _cargo_fits_vehicle(cargo: CargoItem, vehicle: FleetVehicle) -> bool:
+def _cargo_fits_vehicle(
+    cargo: CargoItem,
+    vehicle: FleetVehicle,
+    demo_stacking: Optional[object] = None,
+) -> bool:
     if cargo.weight_kg > vehicle.payload_limit_kg + _GEOMETRY_TOLERANCE:
         return False
     if cargo.height_cm > vehicle.height_cm + _GEOMETRY_TOLERANCE:
         return False
     orientations = [(cargo.length_cm, cargo.width_cm)]
-    if cargo.can_rotate:
+    if resolve_can_rotate(cargo, d11_default=True if demo_stacking is None else None):
         orientations.append((cargo.width_cm, cargo.length_cm))
     return any(
         length <= vehicle.length_cm + _GEOMETRY_TOLERANCE
@@ -137,11 +157,12 @@ def _allocate_cargo_to_vehicles(
     physical_vehicles: List[FleetVehicle],
     fits_set_fn,
     min_bins_override: int = 1,
+    demo_stacking: Optional[object] = None,
 ) -> Optional[List[Tuple[FleetVehicle, List[CargoItem]]]]:
     bins: List[Tuple[FleetVehicle, List[CargoItem]]] = sorted(
         [(v, []) for v in physical_vehicles],
         key=lambda pair: (
-            -(pair[0].length_cm * pair[0].width_cm),
+            -effective_floor_capacity_cm2(pair[0], demo_stacking),
             -pair[0].payload_limit_kg,
         ),
     )
@@ -151,7 +172,7 @@ def _allocate_cargo_to_vehicles(
     sorted_cargo = sorted(
         items,
         key=lambda c: (
-            sum(1 for v in physical_vehicles if _cargo_fits_vehicle(c, v)),
+            sum(1 for v in physical_vehicles if _cargo_fits_vehicle(c, v, demo_stacking)),
             -(c.length_cm * c.width_cm),
             -c.weight_kg,
             c.id,
@@ -162,7 +183,7 @@ def _allocate_cargo_to_vehicles(
     if (
         total_weight > sum(v.payload_limit_kg for v, _ in bins) + _GEOMETRY_TOLERANCE
         or total_area
-        > sum(v.length_cm * v.width_cm for v, _ in bins) + _GEOMETRY_TOLERANCE
+        > sum(effective_floor_capacity_cm2(v, demo_stacking) for v, _ in bins) + _GEOMETRY_TOLERANCE
     ):
         return None
 
@@ -172,7 +193,7 @@ def _allocate_cargo_to_vehicles(
             total_weight, [v.payload_limit_kg for v, _ in bins]
         ),
         _minimum_bin_count_for_total(
-            total_area, [v.length_cm * v.width_cm for v, _ in bins]
+            total_area, [effective_floor_capacity_cm2(v, demo_stacking) for v, _ in bins]
         ),
     )
     if min_vehicles > len(bins):
@@ -260,6 +281,13 @@ def _allocate_cargo_to_vehicles(
     return None
 
 
+@dataclass(frozen=True)
+class OrderSplitOutcome:
+    request: FleetOptimizationRequest
+    split_order_count: int
+    unchecked_order_count: int
+
+
 def split_infeasible_orders_across_fleet(
     request: FleetOptimizationRequest,
     force_split_order_ids: Optional[Set[str]] = None,
@@ -271,21 +299,50 @@ def split_infeasible_orders_across_fleet(
     prove a split is required. Negative checks such as two 60x60 packages on
     a 100x100 floor (GK05) still permit geometrically checked split bins.
     """
+    outcome = split_orders_within_deadline(request, force_split_order_ids)
+    return outcome.request, outcome.split_order_count
+
+
+def split_orders_within_deadline(
+    request: FleetOptimizationRequest,
+    force_split_order_ids: Optional[Set[str]] = None,
+    deadline: Optional[float] = None,
+) -> OrderSplitOutcome:
+    """Same reduction as ``split_infeasible_orders_across_fleet`` with a time cap.
+
+    ``deadline`` is a ``time.perf_counter()`` instant. Once it passes, the
+    remaining orders are kept unsplit (feasibility unknown) instead of being
+    validated, because each layout check can cost hundreds of milliseconds and
+    must not consume the whole optimization budget.
+    """
     physical_by_source: Dict[str, FleetVehicle] = {}
     for vehicle in request.vehicles:
         key = vehicle.source_vehicle_id or vehicle.id
         if key not in physical_by_source:
             physical_by_source[key] = vehicle
-    all_physical_vehicles = list(physical_by_source.values())
+    # Largest floors first: the first fitting vehicle ends the any() check, so
+    # orders that fit somewhere need a single layout validation in most cases.
+    all_physical_vehicles = sorted(
+        physical_by_source.values(),
+        key=lambda v: (
+            -effective_floor_capacity_cm2(v, request.demo_stacking),
+            -v.payload_limit_kg,
+        ),
+    )
     if len(all_physical_vehicles) <= 1:
-        return request, 0
+        return OrderSplitOutcome(request, 0, 0)
 
     fit_cache: Dict[Tuple[object, ...], Optional[bool]] = {}
+    is_deadline_hit_for_order = False
+
+    def remaining_seconds() -> Optional[float]:
+        return None if deadline is None else deadline - time.perf_counter()
 
     def cargo_set_fits_vehicle(items: List[CargoItem], vehicle: FleetVehicle) -> Optional[bool]:
+        nonlocal is_deadline_hit_for_order
         if not items:
             return True
-        if not all(_cargo_fits_vehicle(item, vehicle) for item in items):
+        if not all(_cargo_fits_vehicle(item, vehicle, request.demo_stacking) for item in items):
             return False
         total_weight = sum(item.weight_kg for item in items)
         if total_weight > vehicle.payload_limit_kg + _GEOMETRY_TOLERANCE:
@@ -293,7 +350,7 @@ def split_infeasible_orders_across_fleet(
         total_area = sum(item.length_cm * item.width_cm for item in items)
         if (
             total_area
-            > vehicle.length_cm * vehicle.width_cm + _GEOMETRY_TOLERANCE
+            > effective_floor_capacity_cm2(vehicle, request.demo_stacking) + _GEOMETRY_TOLERANCE
         ):
             return False
         if len(items) == 1:
@@ -313,27 +370,27 @@ def split_infeasible_orders_across_fleet(
                         round(it.height_cm, 2),
                         round(it.weight_kg, 2),
                         it.can_rotate,
+                        tuple(it.allowed_orientations) if it.allowed_orientations is not None else None,
+                        it.cargo_kind,
+                        it.allow_upper_tier,
+                        it.no_top_load_requested,
+                        it.max_top_load_g,
+                        it.customer_id or it.order_id,
                     )
                     for it in items
                 )
             ),
+            request.demo_stacking.model_dump_json() if request.demo_stacking else None,
         )
         if cache_key in fit_cache:
             return fit_cache[cache_key]
+        remaining = remaining_seconds()
+        if remaining is not None and remaining <= _MIN_LAYOUT_CHECK_SECONDS:
+            # Unknown because of the time cap; never cached so it cannot be
+            # mistaken for a geometric result.
+            is_deadline_hit_for_order = True
+            return None
 
-        validator = SpatialValidator(
-            VehicleFloor(
-                id=vehicle.id,
-                plate_number=vehicle.plate_number,
-                length_cm=vehicle.length_cm,
-                width_cm=vehicle.width_cm,
-                height_cm=vehicle.height_cm,
-                payload_limit_kg=vehicle.payload_limit_kg,
-                door_position=vehicle.door_position,
-            ),
-            max_search_nodes=2_500,
-            max_time_seconds=0.5,
-        )
         stops = [
             StopAction(
                 stop_id="pickup",
@@ -356,7 +413,17 @@ def split_infeasible_orders_across_fleet(
                 items_to_unload=[item.id for item in items],
             ),
         ]
-        result = validator.validate_plan(stops)
+        result = validate_stop_actions(
+            request.demo_stacking,
+            vehicle,
+            stops,
+            max_search_nodes=2_500,
+            max_time_seconds=(
+                _MAX_LAYOUT_CHECK_SECONDS
+                if remaining is None
+                else min(_MAX_LAYOUT_CHECK_SECONDS, remaining)
+            ),
+        )
         # A search limit leaves feasibility unknown. It must neither force an
         # extra order trip nor count as a verified packing for a split bin.
         fit = None if result.violation_code == "PLACEMENT_SEARCH_LIMIT_REACHED" else result.is_valid
@@ -366,8 +433,12 @@ def split_infeasible_orders_across_fleet(
     new_orders: List[OrderPair] = []
     order_origin_indices: List[int] = []
     split_count = 0
+    unchecked_order_count = 0
 
     for order_idx, order in enumerate(request.orders):
+        if is_deadline_hit_for_order:
+            unchecked_order_count += 1
+            is_deadline_hit_for_order = False
         allowed_ids = set(order.allowed_source_vehicle_ids or [])
         candidate_vehicles = [
             v
@@ -398,7 +469,7 @@ def split_infeasible_orders_across_fleet(
             continue
 
         if any(
-            not any(_cargo_fits_vehicle(item, vehicle) for vehicle in candidate_vehicles)
+            not any(_cargo_fits_vehicle(item, vehicle, request.demo_stacking) for vehicle in candidate_vehicles)
             for item in order.items
         ):
             new_orders.append(order)
@@ -410,6 +481,7 @@ def split_infeasible_orders_across_fleet(
             candidate_vehicles,
             lambda items, vehicle: cargo_set_fits_vehicle(items, vehicle) is True,
             min_bins_override=2 if force_split else 1,
+            demo_stacking=request.demo_stacking,
         )
         if not used_bins or len(used_bins) <= 1:
             new_orders.append(order)
@@ -466,8 +538,11 @@ def split_infeasible_orders_across_fleet(
             new_orders.append(OrderPair(**part_payload))
             order_origin_indices.append(order_idx)
 
+    if is_deadline_hit_for_order:
+        unchecked_order_count += 1
+
     if split_count == 0:
-        return request, 0
+        return OrderSplitOutcome(request, 0, unchecked_order_count)
 
     vehicle_count = len(request.vehicles)
     expanded_node_indices: List[int] = list(range(vehicle_count))
@@ -487,4 +562,6 @@ def split_infeasible_orders_across_fleet(
         distance_matrix_meters=expand_matrix(request.distance_matrix_meters),
         duration_matrix_seconds=expand_matrix(request.duration_matrix_seconds),
     )
-    return FleetOptimizationRequest(**payload), split_count
+    return OrderSplitOutcome(
+        FleetOptimizationRequest(**payload), split_count, unchecked_order_count
+    )

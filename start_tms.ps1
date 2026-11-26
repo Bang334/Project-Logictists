@@ -1,194 +1,49 @@
-﻿# ========================================================================
-#          HỆ THỐNG QUẢN TRỊ & ĐIỀU PHỐI VẬN TẢI (TMS LOGISTICS)
-# ========================================================================
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+param(
+    [switch]$Stop,
+    [switch]$NoBrowser
+)
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+$taskRoot = $PSScriptRoot
+$taskEnv = Join-Path $taskRoot 'backend/.env'
+$taskCompose = Join-Path $taskRoot 'compose.yaml'
+$taskComposeArgs = @('compose', '--env-file', $taskEnv, '-f', $taskCompose)
+
 try {
-    $host.UI.RawUI.WindowTitle = "[TMS Logistics] Trình Quản Lý Dịch Vụ"
-} catch {}
+    if (-not (Test-Path -LiteralPath $taskEnv)) { throw 'Missing backend/.env: this is the main configuration file.' }
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Install and open Docker Desktop first.' }
+    docker info --format '{{.ServerVersion}}' 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Docker Engine is not ready. Open Docker Desktop and try again.' }
 
-Write-Host "========================================================================" -ForegroundColor Cyan
-Write-Host "       HỆ THỐNG QUẢN TRỊ & ĐIỀU PHỐI VẬN TẢI - TMS LOGISTICS            " -ForegroundColor Yellow
-Write-Host "========================================================================" -ForegroundColor Cyan
-Write-Host ""
-
-$ROOT_DIR = if ($PSScriptRoot) { $PSScriptRoot } else { "e:\Projects\Coursework\Project-Logictists" }
-$PORTS = @(4000, 5173, 8000)
-
-function Start-TMSRedis {
-    docker compose -f "$ROOT_DIR\compose.yaml" up -d redis
-    if ($LASTEXITCODE -ne 0) {
-        throw "Redis queue could not be started with Docker Compose."
-    }
-}
-
-function Stop-TMSPorts {
-    Write-Host "  -> Đang quét và giải phóng các dịch vụ TMS..." -ForegroundColor Yellow
-
-    # 1. Tắt theo cổng 4000, 5173, 8000
-    foreach ($port in $PORTS) {
-        try {
-            $connections = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
-            if ($connections) {
-                $pids = $connections | Select-Object -ExpandProperty OwningProcess -Unique
-                foreach ($procId in $pids) {
-                    if ($procId -and $procId -ne 0 -and $procId -ne $PID) {
-                        $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
-                        $procName = if ($proc) { $proc.ProcessName } else { "Unknown" }
-                        Write-Host "     * Ngắt tiến trình [$procName] (PID: $procId) trên cổng $port..." -ForegroundColor Yellow
-                        Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-                    }
-                }
-            }
-        } catch {}
-        try {
-            $netstatOutput = netstat -ano | Select-String ":$port\s+"
-            foreach ($line in $netstatOutput) {
-                $parts = $line.ToString().Trim() -split '\s+'
-                $pidToKill = $parts[-1]
-                if ($pidToKill -and $pidToKill -match '^\d+$' -and [int]$pidToKill -ne 0 -and [int]$pidToKill -ne $PID) {
-                    taskkill /F /PID $pidToKill 2>$null
-                }
-            }
-        } catch {}
+    if ($Stop) {
+        & docker @taskComposeArgs stop frontend backend optimizer redis
+        if ($LASTEXITCODE -ne 0) { throw 'Could not stop all services.' }
+        Write-Host 'Main services stopped. Containers and data are preserved.' -ForegroundColor Green
+        exit 0
     }
 
-    # 2. Tắt triệt để các tiến trình Node/Python ngầm thuộc dự án TMS
+    $taskPublicToken = Get-Content -LiteralPath $taskEnv | Where-Object { $_ -match '^VITE_MAPBOX_TOKEN\s*=' } | Select-Object -First 1
+    if ($taskPublicToken -match '=\s*["'']?sk\.') { throw 'VITE_MAPBOX_TOKEN must be a public pk. token. Never expose an sk. token in the frontend.' }
+    & docker @taskComposeArgs config --quiet
+    if ($LASTEXITCODE -ne 0) { throw 'Invalid compose.yaml or backend/.env configuration.' }
+
+    Write-Host 'Starting main application: project-logictists in Docker Desktop.' -ForegroundColor Cyan
+    $taskPreviousParallel = $env:COMPOSE_PARALLEL_LIMIT
     try {
-        $tmsProcs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-            $_.ProcessId -ne $PID -and (
-                ($_.Name -in @('node.exe', 'python.exe') -and $_.CommandLine -like "*Project-Logictists*") -or
-                ($_.Name -eq 'powershell.exe' -and $_.CommandLine -like "*[TMS]*" -and $_.ProcessId -ne $PID)
-            )
-        }
-        foreach ($p in $tmsProcs) {
-            Write-Host "     * Dọn tiến trình ngầm [$($p.Name)] (PID: $($p.ProcessId))..." -ForegroundColor Yellow
-            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
-        }
-    } catch {}
-}
-
-try {
-    # ------------------------------------------------------------------------
-    # BƯỚC 1: GIẢI PHÓNG CÁC CỔNG MẠNG VÀ TIẾN TRÌNH CŨ
-    # ------------------------------------------------------------------------
-    Write-Host "[1/4] Đang kiểm tra và giải phóng các cổng mạng (4000, 5173, 8000)..." -ForegroundColor Cyan
-    Stop-TMSPorts
-    Start-Sleep -Seconds 1
-    Start-TMSRedis
-    Write-Host "  [OK] Các cổng mạng đã sẵn sàng!" -ForegroundColor Green
-    Write-Host ""
-
-    # ------------------------------------------------------------------------
-    # BƯỚC 2: KHỞI ĐỘNG PYTHON OPTIMIZATION ENGINE (PORT 8000)
-    # ------------------------------------------------------------------------
-    Write-Host "[2/4] Khởi động Python Optimization Engine (Port 8000)..." -ForegroundColor Cyan
-    $optimizerCmd = "cd '$ROOT_DIR\optimizer'; `$host.UI.RawUI.WindowTitle='[TMS] Optimization Engine - Port 8000'; python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
-    Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-Command", $optimizerCmd -WindowStyle Normal
-
-    # ------------------------------------------------------------------------
-    # BƯỚC 3: KHỞI ĐỘNG BACKEND NESTJS (PORT 4000)
-    # ------------------------------------------------------------------------
-    Write-Host "[3/4] Khởi động TMS Backend NestJS (Port 4000)..." -ForegroundColor Cyan
-    $backendCmd = "cd '$ROOT_DIR\backend'; `$host.UI.RawUI.WindowTitle='[TMS] Backend API - Port 4000'; npm run start:dev"
-    Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-Command", $backendCmd -WindowStyle Normal
-
-    # ------------------------------------------------------------------------
-    # BƯỚC 4: KHỞI ĐỘNG FRONTEND VITE + REACT (PORT 5173)
-    # ------------------------------------------------------------------------
-    Write-Host "[4/4] Khởi động TMS Frontend Vite + React (Port 5173)..." -ForegroundColor Cyan
-    $frontendCmd = "cd '$ROOT_DIR\frontend'; `$host.UI.RawUI.WindowTitle='[TMS] Frontend Web - Port 5173'; npm run dev"
-    Start-Process powershell.exe -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-Command", $frontendCmd -WindowStyle Normal
-
-    # ------------------------------------------------------------------------
-    # CHỜ CÁC DỊCH VỤ KHỞI ĐỘNG
-    # ------------------------------------------------------------------------
-    Write-Host ""
-    Write-Host "Đang kiểm tra kết nối các dịch vụ..." -ForegroundColor Yellow
-
-    $services = @(
-        @{ Name = "Redis Queue";      Port = 6379; Ready = $false },
-        @{ Name = "Python Optimizer"; Port = 8000; Ready = $false },
-        @{ Name = "Backend API";     Port = 4000; Ready = $false },
-        @{ Name = "Frontend Web";    Port = 5173; Ready = $false }
-    )
-
-    $maxWaitSec = 45
-    $startTime = Get-Date
-
-    while (((Get-Date) - $startTime).TotalSeconds -lt $maxWaitSec) {
-        $allReady = $true
-        foreach ($s in $services) {
-            if (-not $s.Ready) {
-                try {
-                    $tcp = Test-NetConnection -ComputerName 127.0.0.1 -Port $s.Port -InformationLevel Quiet -WarningAction SilentlyContinue
-                    if ($tcp) {
-                        $s.Ready = $true
-                        Write-Host ("`n  [OK] " + $s.Name + " (Port " + $s.Port + ") đã sẵn sàng!") -ForegroundColor Green
-                    } else {
-                        $allReady = $false
-                    }
-                } catch {
-                    $allReady = $false
-                }
-            }
-        }
-
-        if ($allReady) {
-            break
-        }
-        Write-Host -NoNewline "."
-        Start-Sleep -Seconds 1
+        $env:COMPOSE_PARALLEL_LIMIT = '1'
+        & docker @taskComposeArgs build backend frontend optimizer
+        if ($LASTEXITCODE -ne 0) { throw 'Build failed. See the error above. No migration or seed was run.' }
+        & docker @taskComposeArgs up -d --wait --wait-timeout 180 frontend backend optimizer redis
+        if ($LASTEXITCODE -ne 0) { throw 'A service is not ready. Check docker compose logs as described in README.' }
+    } finally {
+        $env:COMPOSE_PARALLEL_LIMIT = $taskPreviousParallel
     }
-
-    Write-Host ""
-    Write-Host ""
-    Write-Host "========================================================================" -ForegroundColor Green
-    Write-Host "       TẤT CẢ CÁC DỊCH VỤ ĐÃ KHỞI ĐỘNG XONG!                           " -ForegroundColor Green
-    Write-Host "========================================================================" -ForegroundColor Green
-    Write-Host "  - Frontend:   http://localhost:5173" -ForegroundColor White
-    Write-Host "  - Backend:    http://localhost:4000" -ForegroundColor White
-    Write-Host "  - Optimizer:  http://localhost:8000" -ForegroundColor White
-    Write-Host "========================================================================" -ForegroundColor Green
-    Write-Host "Đang tự động mở trình duyệt..." -ForegroundColor Cyan
-
-    Start-Process "http://localhost:5173"
-
-    Write-Host ""
-    Write-Host "Hệ thống đang hoạt động trong các cửa sổ riêng biệt." -ForegroundColor Green
-    Write-Host "Nhấn phím [Q] tại đây để tắt toàn bộ hệ thống khi làm việc xong." -ForegroundColor Yellow
-    Write-Host "========================================================================" -ForegroundColor Cyan
-
-    while ($true) {
-        try {
-            if (-not [Console]::IsInputRedirected -and [Console]::KeyAvailable) {
-                $key = [Console]::ReadKey($true)
-                if ($key.Key -eq [ConsoleKey]::Q) {
-                    Write-Host ""
-                    Write-Host "Đang dừng các cổng mạng và dịch vụ TMS..." -ForegroundColor Yellow
-                    Stop-TMSPorts
-                    Write-Host "Đã dừng toàn bộ dịch vụ! Tạm biệt." -ForegroundColor Green
-                    Start-Sleep -Seconds 2
-                    break
-                }
-            }
-        } catch {}
-        Start-Sleep -Milliseconds 500
-    }
-
+    & docker @taskComposeArgs ps
+    Write-Host 'Main web: http://localhost:5173' -ForegroundColor Green
+    Write-Host 'Configuration: backend/.env. No automatic migration or test-account seed.'
+    Write-Host 'Stop: powershell -ExecutionPolicy Bypass -File .\start_tms.ps1 -Stop'
+    if (-not $NoBrowser) { Start-Process 'http://localhost:5173' }
 } catch {
-    Write-Host ""
-    Write-Host "[LỖI KHỞI ĐỘNG] $_" -ForegroundColor Red
-    Write-Host "Chi tiết lỗi:" -ForegroundColor Red
-    Write-Host $_.ScriptStackTrace -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Nhấn phím bất kỳ để đóng cửa sổ..." -ForegroundColor Yellow
-    try {
-        if (-not [Console]::IsInputRedirected) {
-            $null = [Console]::ReadKey($true)
-        } else {
-            Start-Sleep -Seconds 15
-        }
-    } catch {
-        Start-Sleep -Seconds 15
-    }
+    Write-Host ('Error: ' + $_.Exception.Message) -ForegroundColor Red
+    exit 1
 }

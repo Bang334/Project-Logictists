@@ -1,10 +1,11 @@
 import { Principal, branchFilter, assertPermission, hasPermission } from '../auth/access';
-import { Injectable, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ConflictException, Optional } from '@nestjs/common';
 import { LateDeliveryPenaltyMode, Prisma } from '@prisma/client';
 import { createHash } from 'crypto';
 import { BranchListDto, BranchStatusDto, CreateBranchDto } from './dto/admin-branch.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { MapboxService } from '../mapbox/mapbox.service';
+import { SettingsService } from '../settings/settings.service';
 import { UpdateBranchDto } from './dto/update-branch.dto';
 
 @Injectable()
@@ -12,6 +13,7 @@ export class BranchesService {
   constructor(
     private prisma: PrismaService,
     private mapboxService: MapboxService,
+    @Optional() private settingsService?: SettingsService,
   ) {}
 
   async listAdmin(query: BranchListDto, user: Principal) {
@@ -177,6 +179,9 @@ export class BranchesService {
       },
       });
       await tx.auditLog.create({ data: { entityType: 'Branch', entityId: id, action: 'BRANCH_UPDATED', performedBy: user.id, actorUserId: user.id, changeSummary: { fields: Object.keys(dto).filter(key => key !== 'expectedUpdatedAt') } } });
+      if (this.settingsService && (dto.deliveryGraceDays !== undefined || dto.lateDeliveryPenaltyMode !== undefined || dto.lateDeliveryPenaltyValue !== undefined)) {
+        await this.settingsService.syncBranchCostOverrideFromBranchUpdate(tx, id, result, user);
+      }
       return result;
     });
   }

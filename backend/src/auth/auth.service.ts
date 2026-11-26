@@ -5,7 +5,7 @@ import * as bcrypt from 'bcryptjs';
 import { createHmac } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { authConfig } from './auth.config';
-import { AccessGrant, Principal, isBranchWebRole } from './access';
+import { AccessGrant, Principal, isBranchWebRole, grantAllows } from './access';
 import { LoginDto } from './login.dto';
 import { Prisma } from '@prisma/client';
 import { ChangePasswordDto } from './change-password.dto';
@@ -62,7 +62,10 @@ export class AuthService {
     });
     const driver = scopes.some(s => s.role.code === 'DRIVER') ? await db.driver.findUnique({ where: { userId }, select: { homeBranchId: true } }) : null;
     return scopes.filter(s => (s.role.code === 'ADMIN' && s.scopeType === 'COMPANY' && s.branchId === null) || (isBranchWebRole(s.role.code) && s.scopeType === 'BRANCH' && !!s.branchId) || (s.role.code === 'DRIVER' && s.scopeType === 'BRANCH' && !!driver && s.branchId === driver.homeBranchId))
-      .map(s => ({ role: s.role.code, scopeType: s.scopeType, branchId: s.branchId, permissions: s.role.permissions.map(p => p.permission.code) }));
+      .map(s => {
+        const grant: AccessGrant = { role: s.role.code, scopeType: s.scopeType, branchId: s.branchId, permissions: s.role.permissions.map(p => p.permission.code) };
+        return { ...grant, permissions: grant.permissions.filter(permission => grantAllows(grant, permission)) };
+      });
   }
   async authenticatePayload(payload: unknown, db: Prisma.TransactionClient = this.prisma): Promise<Principal> {
     if (!payload || typeof payload !== 'object' || !('sub' in payload) || typeof payload.sub !== 'string' || !('sid' in payload) || typeof payload.sid !== 'string') throw new UnauthorizedException({ code: 'SESSION_INVALID', message: 'Phiên không hợp lệ' });

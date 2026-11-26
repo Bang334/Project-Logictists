@@ -1,0 +1,10 @@
+*
+!requirements.txt
+!docker-constraints.txt
+!app/
+!app/**
+!benchmarks/
+!benchmarks/cases/
+!benchmarks/cases/*.json
+**/__pycache__/
+**/*.pyc

@@ -567,6 +567,12 @@ def test_hybrid_contains_the_full_adaptive_operator_portfolio() -> None:
     assert tuple(optimizer.repair_weights) == ("regret2", "regret3", "greedy")
 
 
+def _incomplete_plan(cost: int, route_id: str) -> FleetOptimizationResponse:
+    plan = _complete_plan(cost, route_id)
+    plan.routes[0].stops = [plan.routes[0].stops[0]]  # Only PICKUP stop
+    return plan
+
+
 def test_hybrid_warm_start_accepts_only_complete_production_routes(
     monkeypatch,
 ) -> None:
@@ -590,7 +596,7 @@ def test_hybrid_warm_start_accepts_only_complete_production_routes(
     incomplete_optimizer = PackingAwareHybridALNSOptimizer(
         request,
         time_budget_seconds=0.2,
-        initial_plan=_complete_plan(300_000, "vehicle-1"),
+        initial_plan=_incomplete_plan(300_000, "vehicle-1"),
     )
     assert incomplete_optimizer._warm_start_state() is None
 
@@ -652,12 +658,28 @@ def _complete_plan(cost: int, route_id: str) -> FleetOptimizationResponse:
                         latitude=21.01,
                         longitude=105.81,
                         arrival_time_sec=300,
-                        departure_time_sec=360,
+                        departure_time_sec=330,
                         travel_time_sec=100,
                         waiting_time_sec=0,
-                        service_time_sec=60,
+                        service_time_sec=30,
                         items_loaded=["item-1"],
-                    )
+                    ),
+                    ScheduledStop(
+                        sequence=2,
+                        location_id="delivery",
+                        location_name="Điểm giao",
+                        stop_type="DELIVERY",
+                        order_id="order-1",
+                        allocation_id="order-1",
+                        latitude=21.02,
+                        longitude=105.82,
+                        arrival_time_sec=340,
+                        departure_time_sec=360,
+                        travel_time_sec=10,
+                        waiting_time_sec=0,
+                        service_time_sec=20,
+                        items_unloaded=["item-1"],
+                    ),
                 ],
                 return_travel_time_sec=0,
                 return_waiting_time_sec=0,

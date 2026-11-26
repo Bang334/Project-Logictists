@@ -15,6 +15,7 @@ import {
   Typography,
   Table,
   Select,
+  Segmented,
 } from 'antd';
 import {
   InboxOutlined,
@@ -24,6 +25,7 @@ import {
   StepForwardOutlined,
   CaretRightOutlined,
   PauseOutlined,
+  PlayCircleOutlined,
   AimOutlined,
   DashboardOutlined,
   SafetyCertificateOutlined,
@@ -44,13 +46,18 @@ import {
   WarningOutlined,
 } from '@ant-design/icons';
 import { FloorStepStateUI, PlacedItemUI, Vehicle, OptimizedRouteUI } from '../types';
+import { computeWeightBalance, getWeightBalanceMeta } from '../utils/weightBalance';
+import { MAP_ROUTE_COLORS } from './MapboxMap';
+import Cargo3DVisualizer from './Cargo3DVisualizer';
 
 const { Text } = Typography;
 const currency = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' });
 
+const floorFootprintCm2 = (item: PlacedItemUI) => (item.z ?? 0) === 0 ? item.length_cm * item.width_cm : 0;
+
 interface Props {
   vehicle?: Vehicle | null;
-  vehicleDimensions?: { lengthCm: number; widthCm: number };
+  vehicleDimensions?: { lengthCm: number; widthCm: number; heightCm?: number };
   stepStates: FloorStepStateUI[];
   isValid: boolean;
   violations?: string[];
@@ -96,12 +103,15 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [selectedOrderFilter, setSelectedOrderFilter] = useState<string | null>(null);
   const [expandedOrderKeys, setExpandedOrderKeys] = useState<React.Key[]>([]);
-  const playTimerRef = useRef<number | null>(null);
 
   // ============================================================
   // STATE MÔ PHỎNG DI CHUYỂN HÀNG THỦ CÔNG (CLIENT-SIDE SIMULATION)
   // ============================================================
-  const [isManualMode, setIsManualMode] = useState(false);
+  const [manualMode, setIsManualMode] = useState(false);
+  const [selectedHeight, setSelectedHeight] = useState<number>();
+  const [unloadPreview, setUnloadPreview] = useState<{ stopId: string; completed: number }>();
+  const [isUnloadPlaying, setIsUnloadPlaying] = useState(false);
+  const [viewPreference, setViewPreference] = useState<'3d' | '2d' | null>(null);
   const [manualPlacedItemsByStep, setManualPlacedItemsByStep] = useState<Record<number, PlacedItemUI[]>>({});
   const [draggingState, setDraggingState] = useState<{
     itemId: string;
@@ -111,8 +121,12 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
 
   const svgRef = useRef<SVGSVGElement | null>(null);
 
-  const bedLength = vehicleDimensions?.lengthCm || vehicle?.lengthCm || 620;
-  const bedWidth = vehicleDimensions?.widthCm || vehicle?.widthCm || 215;
+  const lengthCm = vehicleDimensions?.lengthCm || vehicle?.lengthCm || 0;
+  const widthCm = vehicleDimensions?.widthCm || vehicle?.widthCm || 0;
+  const heightCm = vehicleDimensions?.heightCm || vehicle?.heightCm || 0;
+  const hasBedDimensions = lengthCm > 0 && widthCm > 0;
+  const bedLength = hasBedDimensions ? lengthCm : 1;
+  const bedWidth = hasBedDimensions ? widthCm : 1;
 
   // Bổ sung bước 0: Xuất bến tại Chi nhánh / Kho (Thùng xe rỗng sẵn sàng nhận hàng)
   // Đảm bảo khi xe chưa tới điểm 1 để lấy hàng, thùng xe hiển thị rỗng đúng thực tế nghiệp vụ
@@ -143,45 +157,107 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
   const handleStepChange = (newStep: number) => {
     const clamped = Math.max(0, Math.min(effectiveStepStates.length - 1, newStep));
     setInternalStep(clamped);
+    setIsPlaying(false);
+    setIsUnloadPlaying(false);
     setSelectedItemId(null); // Reset chọn kiện khi đổi bước
+    setUnloadPreview(undefined);
     if (onStepChange) {
       onStepChange(clamped);
     }
   };
 
-  // Tự động phát trình chiếu xếp dỡ qua các stops (Autoplay)
+  const lastStep = effectiveStepStates.length - 1;
+
   useEffect(() => {
-    if (isPlaying) {
-      playTimerRef.current = window.setInterval(() => {
-        setInternalStep((prev) => {
-          const next = prev + 1 >= effectiveStepStates.length ? 0 : prev + 1;
-          if (onStepChange) onStepChange(next);
-          return next;
-        });
-      }, 1800);
-    } else if (playTimerRef.current) {
-      window.clearInterval(playTimerRef.current);
-      playTimerRef.current = null;
-    }
-    return () => {
-      if (playTimerRef.current) window.clearInterval(playTimerRef.current);
-    };
-  }, [isPlaying, effectiveStepStates.length, onStepChange]);
+    if (!isPlaying || isSimulating || clampedStep >= lastStep) return;
+    const timer = window.setTimeout(() => {
+      const next = clampedStep + 1;
+      setInternalStep(next);
+      setSelectedItemId(null);
+      setUnloadPreview(undefined);
+      onStepChange?.(next);
+      if (next === lastStep) setIsPlaying(false);
+    }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [isPlaying, isSimulating, clampedStep, lastStep, onStepChange]);
+
+  useEffect(() => {
+    setUnloadPreview(undefined);
+    setIsUnloadPlaying(false);
+  }, [clampedStep]);
+
+  useEffect(() => {
+    if (!isSimulating) return;
+    setIsPlaying(false);
+    setIsUnloadPlaying(false);
+    setIsManualMode(false);
+    setDraggingState(null);
+    setUnloadPreview(undefined);
+  }, [isSimulating]);
 
   const activeState = effectiveStepStates[clampedStep];
+  const hasStackedPlan = effectiveStepStates.some(state => state.placed_items.some(item => (item.z ?? 0) > 0));
+  const isManualMode = manualMode && !hasStackedPlan && !isSimulating;
+  const viewMode: '3d' | '2d' = viewPreference ?? (hasStackedPlan ? '3d' : '2d');
 
   // Danh sách kiện thực tế đang hiển thị cho bước hiện tại (ưu tiên bản chỉnh sửa mô phỏng nếu có)
-  const isStepEdited = Boolean(manualPlacedItemsByStep[clampedStep]);
+  const isStepEdited = !isSimulating && Boolean(manualPlacedItemsByStep[clampedStep]);
   const hasAnyStepEdited = Object.keys(manualPlacedItemsByStep).length > 0;
 
-  const currentPlacedItems: PlacedItemUI[] = useMemo(() => {
-    if (manualPlacedItemsByStep[clampedStep]) {
+  const plannedPlacedItems: PlacedItemUI[] = useMemo(() => {
+    if (isStepEdited) {
       return manualPlacedItemsByStep[clampedStep];
     }
     return activeState?.placed_items || [];
-  }, [manualPlacedItemsByStep, clampedStep, activeState?.placed_items]);
+  }, [isStepEdited, manualPlacedItemsByStep, clampedStep, activeState?.placed_items]);
 
-  // Kiểm tra va chạm chồng lấn giữa các kiện hàng (Bất biến T21-T27: Không được xếp chồng)
+  const previousPlacements = effectiveStepStates[clampedStep - 1]?.placed_items ?? [];
+  const previousById = new Map(previousPlacements.map(item => [item.item_id, item]));
+  const unloadSequence = activeState?.stop_type === 'DELIVERY' && !isManualMode && !isStepEdited
+    ? activeState.unload_sequence ?? [] : [];
+  const canPreviewUnload = !isSimulating && !isPlaying && unloadSequence.length > 0
+    && unloadSequence.every(id => previousById.has(id));
+  const completedUnloads = unloadPreview && unloadPreview.stopId === activeState?.stop_id
+    ? Math.min(unloadPreview.completed, unloadSequence.length) : unloadSequence.length;
+
+  useEffect(() => {
+    if (!isUnloadPlaying || !canPreviewUnload || !activeState) return;
+    if (completedUnloads >= unloadSequence.length) {
+      setIsUnloadPlaying(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setUnloadPreview({
+        stopId: activeState.stop_id,
+        completed: completedUnloads + 1,
+      });
+    }, 1100);
+    return () => window.clearTimeout(timer);
+  }, [isUnloadPlaying, canPreviewUnload, completedUnloads, unloadSequence.length, activeState]);
+  const showingUnload = canPreviewUnload && completedUnloads < unloadSequence.length;
+  const unloadedIds = new Set(unloadSequence.slice(0, completedUnloads));
+  const currentPlacedItems = showingUnload ? previousPlacements.filter(item => !unloadedIds.has(item.item_id)) : plannedPlacedItems;
+  const nextUnloadId = showingUnload ? unloadSequence[completedUnloads] : undefined;
+  const currentWeightKg = currentPlacedItems.reduce((sum, item) => sum + item.weight_kg, 0);
+  const currentWeightBalance = useMemo(
+    () =>
+      !showingUnload && !isStepEdited && activeState?.weight_balance
+        ? activeState.weight_balance
+        : computeWeightBalance(currentPlacedItems, bedLength, bedWidth),
+    [
+      showingUnload,
+      isStepEdited,
+      activeState?.weight_balance,
+      currentPlacedItems,
+      bedLength,
+      bedWidth,
+    ],
+  );
+  const weightBalanceMeta = getWeightBalanceMeta(currentWeightBalance.status);
+  const heights = [...new Set(currentPlacedItems.map(item => item.z ?? 0))].sort((a, b) => a - b);
+  const visibleHeight = !isSimulating && selectedHeight !== undefined && heights.includes(selectedHeight) ? selectedHeight : undefined;
+
+  // Va chạm xảy ra khi hai kiện cùng chiếm một vùng theo cả ba trục.
   const collisionInfo = useMemo(() => {
     const collidingIds = new Set<string>();
     const pairs: { item1: PlacedItemUI; item2: PlacedItemUI }[] = [];
@@ -194,7 +270,9 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           a.x < b.x + b.length_cm &&
           a.x + a.length_cm > b.x &&
           a.y < b.y + b.width_cm &&
-          a.y + a.width_cm > b.y;
+          a.y + a.width_cm > b.y &&
+          (a.z ?? 0) < (b.z ?? 0) + b.height_cm - 0.00001 &&
+          (b.z ?? 0) < (a.z ?? 0) + a.height_cm - 0.00001;
 
         if (isOverlap) {
           collidingIds.add(a.item_id);
@@ -220,18 +298,50 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
   const bedStartX = cabinWidth;
   const bedStartY = 30;
 
-  // Backend là nguồn sự thật cho đường thao tác 2D;
+  // Backend là nguồn sự thật cho đường thao tác 2D/3D;
   const accessPathByItem = useMemo(() => {
     return new Map(
       (activeState?.package_access_paths || []).map((accessPath) => [accessPath.item_id, accessPath]),
     );
   }, [activeState?.package_access_paths]);
 
+  const prevAccessPathByItem = useMemo(() => {
+    return new Map(
+      (effectiveStepStates[clampedStep - 1]?.package_access_paths || []).map((accessPath) => [
+        accessPath.item_id,
+        accessPath,
+      ]),
+    );
+  }, [effectiveStepStates, clampedStep]);
+
   // Sau chỉnh sửa chỉ hiển thị ước tính cục bộ; backend vẫn phải xác nhận lại toàn bộ thao tác.
   const accessPathInfo = useMemo(() => {
-    const map = new Map<string, { isClear: boolean; blockerIds: string[]; points?: { x: number; y: number }[] }>();
+    const map = new Map<
+      string,
+      { isClear: boolean; blockerIds: string[]; points?: { x: number; y: number; z?: number }[] }
+    >();
 
     currentPlacedItems.forEach((itemA) => {
+      if (nextUnloadId) {
+        const isNext = itemA.item_id === nextUnloadId;
+        const prevBackendPath = isNext && !isStepEdited ? prevAccessPathByItem.get(itemA.item_id) : undefined;
+        const fallbackZ = itemA.z ?? 0;
+        const points = isNext
+          ? prevBackendPath?.points && prevBackendPath.points.length >= 2
+            ? prevBackendPath.points
+            : [
+                { x: itemA.x, y: itemA.y, z: fallbackZ },
+                { x: itemA.x, y: itemA.y, z: fallbackZ + 5 },
+                {
+                  x: Math.max(itemA.x, bedLength - itemA.length_cm / 2),
+                  y: itemA.y,
+                  z: fallbackZ + 5,
+                },
+              ]
+          : undefined;
+        map.set(itemA.item_id, { isClear: isNext, blockerIds: [], points });
+        return;
+      }
       if (!isStepEdited) {
         const backendPath = accessPathByItem.get(itemA.item_id);
         map.set(itemA.item_id, {
@@ -267,7 +377,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
     });
 
     return map;
-  }, [isStepEdited, currentPlacedItems, accessPathByItem, bedLength]);
+  }, [isStepEdited, currentPlacedItems, accessPathByItem, prevAccessPathByItem, bedLength, nextUnloadId]);
 
   const isPathToDoorClear = (target: PlacedItemUI): boolean =>
     accessPathInfo.get(target.item_id)?.isClear === true;
@@ -282,7 +392,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
 
   // Diện tích thùng và phần chiếm dụng động
   const totalFloorAreaM2 = (bedLength * bedWidth) / 10000;
-  const occupiedAreaCm2 = currentPlacedItems.reduce((sum, it) => sum + it.length_cm * it.width_cm, 0);
+  const occupiedAreaCm2 = currentPlacedItems.reduce((sum, item) => sum + floorFootprintCm2(item), 0);
   const occupiedAreaM2 = occupiedAreaCm2 / 10000;
   const freeAreaM2 = Math.max(0, totalFloorAreaM2 - occupiedAreaM2);
   const dynamicAreaPercent = totalFloorAreaM2 > 0 ? (occupiedAreaM2 / totalFloorAreaM2) * 100 : 0;
@@ -316,7 +426,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
       const orderPart = parts[0].slice(-3).toUpperCase();
       return `${orderPart}#${parts[1]}`;
     }
-    return item.item_id.slice(-4).toUpperCase();
+    return (item.item_id.length <= 12 ? item.item_id : item.item_id.slice(-4)).toUpperCase();
   };
 
   // Tính toán biến động (delta) kiện bốc/dỡ tại bước hiện tại so với bước trước
@@ -329,20 +439,18 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
         weight: 0,
       };
     }
-    const curr = currentPlacedItems;
+    const curr = plannedPlacedItems;
     const prev = effectiveStepStates[clampedStep - 1]?.placed_items || [];
     const prevIds = new Set(prev.map((i) => i.item_id));
     const currIds = new Set(curr.map((i) => i.item_id));
     const loaded = curr.filter((i) => !prevIds.has(i.item_id));
     const unloaded = prev.filter((i) => !currIds.has(i.item_id));
 
-    if (activeState.stop_type === 'PICKUP' || loaded.length > 0) {
-      const weight = loaded.reduce((sum, i) => sum + i.weight_kg, 0);
-      return { type: 'PICKUP', count: loaded.length || curr.length, weight: weight || activeState.current_weight_kg };
-    } else {
-      const weight = unloaded.reduce((sum, i) => sum + i.weight_kg, 0);
-      return { type: 'DELIVERY', count: unloaded.length, weight };
+    if (activeState.stop_type === 'PICKUP') {
+      return { type: 'PICKUP', count: loaded.length, weight: loaded.reduce((sum, i) => sum + i.weight_kg, 0) };
     }
+    const delivered = showingUnload ? unloaded.filter(item => unloadedIds.has(item.item_id)) : unloaded;
+    return { type: 'DELIVERY', count: delivered.length, weight: delivered.reduce((sum, i) => sum + i.weight_kg, 0) };
   })();
 
   // Gom nhóm kiện theo Đơn hàng có trên xe tại điểm này
@@ -361,9 +469,9 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
     return Array.from(groups.values());
   })();
 
-  // Kiện được chọn hoặc hover để vẽ hành lang ra cửa sau
+  // Kiện được chọn, hover, hoặc kiện sắp dỡ tiếp theo để vẽ hành lang ra cửa sau
   const activeHighlightedItem = (() => {
-    const targetId = selectedItemId || hoveredItemId;
+    const targetId = selectedItemId || hoveredItemId || (showingUnload ? nextUnloadId : undefined);
     if (!targetId) return null;
     return currentPlacedItems.find((item) => item.item_id === targetId) || null;
   })();
@@ -455,7 +563,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
   const handleRotateItem = (itemId: string) => {
     const baseItems = manualPlacedItemsByStep[clampedStep] || activeState?.placed_items || [];
     const targetItem = baseItems.find((i) => i.item_id === itemId);
-    if (!targetItem) return;
+    if (!targetItem || targetItem.floor_rotation_locked) return;
 
     const newLength = targetItem.width_cm;
     const newWidth = targetItem.length_cm;
@@ -557,7 +665,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
     setManualPlacedItemsByStep({});
   };
 
-  if (!effectiveStepStates || effectiveStepStates.length === 0) {
+  if (!hasBedDimensions || effectiveStepStates.length === 0) {
     return (
       <Card
         id="floor-visualizer-section"
@@ -569,7 +677,9 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
         }
         className="card-elevation"
       >
-        <Empty description="Chưa có dữ liệu mô phỏng xếp dỡ 2D cho chuyến đi này" />
+        <Empty description={effectiveStepStates.length === 0
+          ? 'Chưa có dữ liệu mô phỏng xếp dỡ cho chuyến đi này'
+          : 'Thiếu kích thước thùng xe để hiển thị sơ đồ đúng tỷ lệ'} />
       </Card>
     );
   }
@@ -607,7 +717,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           )}
           {isValid && collisionInfo.pairs.length === 0 ? (
             <Tag color="success" icon={<CheckCircleOutlined />} style={{ margin: 0 }}>
-              Chuẩn T21–T27
+              {hasStackedPlan ? 'Xếp chồng demo' : 'Bố trí một lớp'}
             </Tag>
           ) : (
             <Tag color="error" icon={<ExclamationCircleOutlined />} style={{ margin: 0 }}>
@@ -617,8 +727,29 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             </Tag>
           )}
           <Tag color="processing" style={{ margin: 0, fontSize: 12 }}>
-            Thùng: <b>{bedLength} × {bedWidth} cm</b> ({totalFloorAreaM2.toFixed(2)} m²)
+            Thùng:{' '}
+            <b>
+              {bedLength} × {bedWidth}
+              {heightCm > 0 ? ` × ${heightCm}` : ''} cm
+            </b>{' '}
+            ({totalFloorAreaM2.toFixed(2)} m²)
           </Tag>
+          <Segmented
+            aria-label="Chế độ xem thùng xe"
+            size="small"
+            value={viewMode}
+            onChange={(val) => {
+              const mode = val as '3d' | '2d';
+              setViewPreference(mode);
+              if (mode === '3d') {
+                setIsManualMode(false);
+              }
+            }}
+            options={[
+              { label: '3D Thùng xe', value: '3d', icon: <InboxOutlined /> },
+              { label: '2D Mặt sàn', value: '2d', icon: <AppstoreOutlined /> },
+            ]}
+          />
         </Space>
       }
       className="card-elevation"
@@ -643,6 +774,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             <Text strong>Tuyến xe</Text>
             {allRoutes && allRoutes.length > 1 && onSelectRoute ? (
               <Select
+                aria-label="Chọn tuyến xe xem sơ đồ xếp dỡ"
                 size="small"
                 value={route.route_id}
                 onChange={onSelectRoute}
@@ -654,11 +786,12 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                       <span
                         className="route-color-dot"
                         style={{
-                          backgroundColor: ['#1677ff', '#52c41a', '#fa8c16', '#722ed1', '#eb2f96', '#13c2c2'][index % 6],
+                          backgroundColor: MAP_ROUTE_COLORS[index % MAP_ROUTE_COLORS.length],
                         }}
                         aria-hidden="true"
                       />
                       Ngày {r.service_day_index + 1} · {r.plate_number} · {r.driver_name || 'Chưa có tài xế'}
+                      {r.end_location && ` · ${r.stops.find(stop => stop.stop_type === 'DELIVERY')?.location_name ?? r.end_location.name}`}
                     </span>
                   ),
                 }))}
@@ -666,6 +799,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             ) : (
               <strong style={{ fontSize: 14, color: '#0f172a' }}>
                 Ngày {route.service_day_index + 1} · {route.plate_number} · {route.driver_name || 'Chưa có tài xế'}
+                {route.end_location && ` · ${route.stops.find(stop => stop.stop_type === 'DELIVERY')?.location_name ?? route.end_location.name}`}
               </strong>
             )}
           </div>
@@ -736,34 +870,38 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
         }}
       >
         <Space wrap size={8} align="center">
-          <Button.Group size="small">
+          <Space.Compact size="small">
             <Tooltip title="Về điểm đầu tiên">
               <Button
                 icon={<StepBackwardOutlined />}
-                disabled={clampedStep === 0}
+                disabled={isSimulating || clampedStep === 0}
                 onClick={() => handleStepChange(0)}
               />
             </Tooltip>
             <Tooltip title="Điểm trước">
               <Button
-                disabled={clampedStep === 0}
+                disabled={isSimulating || clampedStep === 0}
                 onClick={() => handleStepChange(clampedStep - 1)}
               >
                 Trước
               </Button>
             </Tooltip>
-            <Tooltip title={isPlaying ? 'Tạm dừng' : 'Tự động trình chiếu xếp dỡ'}>
+            <Tooltip title={isPlaying ? 'Tạm dừng' : 'Trình chiếu trạng thái sau từng điểm dừng'}>
               <Button
                 type={isPlaying ? 'primary' : 'default'}
                 icon={isPlaying ? <PauseOutlined /> : <CaretRightOutlined />}
-                onClick={() => setIsPlaying(!isPlaying)}
+                disabled={isSimulating || isManualMode}
+                onClick={() => {
+                  if (!isPlaying && clampedStep === lastStep) handleStepChange(0);
+                  setIsPlaying(!isPlaying);
+                }}
               >
                 {isPlaying ? 'Dừng' : 'Chiếu'}
               </Button>
             </Tooltip>
             <Tooltip title="Điểm tiếp theo">
               <Button
-                disabled={clampedStep === effectiveStepStates.length - 1}
+                disabled={isSimulating || clampedStep === lastStep}
                 onClick={() => handleStepChange(clampedStep + 1)}
               >
                 Tiếp
@@ -772,11 +910,11 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             <Tooltip title="Đến điểm cuối cùng">
               <Button
                 icon={<StepForwardOutlined />}
-                disabled={clampedStep === effectiveStepStates.length - 1}
+                disabled={isSimulating || clampedStep === lastStep}
                 onClick={() => handleStepChange(effectiveStepStates.length - 1)}
               />
             </Tooltip>
-          </Button.Group>
+          </Space.Compact>
 
           <Tag
             color={clampedStep === 0 ? 'blue' : activeState.stop_type === 'PICKUP' ? 'success' : 'warning'}
@@ -795,22 +933,36 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           </Text>
 
           {/* CÔNG TẮC BẬT/TẮT CHẾ ĐỘ DI CHUYỂN THỦ CÔNG */}
-          <Button
-            size="small"
-            type={isManualMode ? 'primary' : 'default'}
-            icon={<DragOutlined />}
-            onClick={() => {
-              setIsManualMode(!isManualMode);
-              if (isPlaying) setIsPlaying(false);
-            }}
-            style={{
-              fontWeight: 500,
-              backgroundColor: isManualMode ? '#7c3aed' : undefined,
-              borderColor: isManualMode ? '#6d28d2' : undefined,
-            }}
+          <Tooltip
+            title={
+              hasStackedPlan
+                ? 'Không hỗ trợ kéo thả thủ công trên mặt sàn khi có kiện xếp chồng nhiều tầng'
+                : 'Bật/tắt kéo thả kiện hàng trên mặt sàn 2D'
+            }
           >
-            {isManualMode ? 'Thoát di chuyển' : 'Di chuyển hàng thủ công'}
-          </Button>
+            <Button
+              size="small"
+              type={isManualMode ? 'primary' : 'default'}
+              disabled={hasStackedPlan || isSimulating}
+              icon={<DragOutlined />}
+              onClick={() => {
+                const nextManual = !isManualMode;
+                setIsManualMode(nextManual);
+                if (nextManual) {
+                  setViewPreference('2d');
+                  setIsPlaying(false);
+                  setIsUnloadPlaying(false);
+                }
+              }}
+              style={{
+                fontWeight: 500,
+                backgroundColor: isManualMode ? '#7c3aed' : undefined,
+                borderColor: isManualMode ? '#6d28d2' : undefined,
+              }}
+            >
+              {isManualMode ? 'Thoát di chuyển' : 'Di chuyển hàng thủ công'}
+            </Button>
+          </Tooltip>
 
           {/* NÚT KHÔI PHỤC BƯỚC NÀY VỀ AI NẾU CÓ CHỈNH SỬA */}
           {isStepEdited && (
@@ -848,9 +1000,46 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             Kiện: <b>{currentPlacedItems.length}</b>
           </Tag>
           <Tag color="blue" style={{ margin: 0 }}>
-            Tải: <b>{currentPlacedItems.reduce((s, i) => s + i.weight_kg, 0).toFixed(0)} kg</b>
+            Tải: <b>{currentWeightKg.toLocaleString('vi-VN')} kg</b>
           </Tag>
         </Space>
+      </div>
+
+      {/* Thanh trạng thái cân bằng trọng tâm (CG) */}
+      <div
+        data-testid="floor-weight-balance-bar"
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          backgroundColor: '#f8fafc',
+          border: '1px solid #e2e8f0',
+          borderRadius: 6,
+          padding: '6px 10px',
+          marginBottom: 10,
+          fontSize: 12,
+        }}
+      >
+        <Space size={8} wrap>
+          <span style={{ color: '#475569', fontWeight: 600 }}>Cân bằng trọng tâm (CG):</span>
+          <Tag color={weightBalanceMeta.tagColor} style={{ margin: 0 }}>
+            {weightBalanceMeta.label}
+          </Tag>
+          <span style={{ color: '#334155' }}>
+            Lệch trái/phải: <b>{currentWeightBalance.lateral_imbalance_percent}%</b>
+          </span>
+          <span style={{ color: '#64748b' }}>
+            Trái {currentWeightBalance.left_weight_kg} kg · Phải {currentWeightBalance.right_weight_kg} kg
+          </span>
+          <span style={{ color: '#64748b' }}>
+            Đầu {currentWeightBalance.front_weight_kg} kg · Đuôi {currentWeightBalance.rear_weight_kg} kg
+          </span>
+        </Space>
+        <span style={{ color: '#64748b', fontSize: 11 }}>
+          CG: ({currentWeightBalance.cg_x_cm} cm, {currentWeightBalance.cg_y_cm} cm)
+        </span>
       </div>
 
       {/* ============================================================ */}
@@ -872,10 +1061,10 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
               <DashboardOutlined style={{ color: '#2563eb', fontSize: 13 }} />
             </div>
             <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
-              {activeState.current_weight_kg?.toFixed(0)} <span style={{ fontSize: 12, fontWeight: 500 }}>kg</span>
+              {currentWeightKg.toLocaleString('vi-VN')} <span style={{ fontSize: 12, fontWeight: 500 }}>kg</span>
             </div>
             <div style={{ fontSize: 11, color: '#475569' }}>
-              Hiệu suất: <b>{activeState.weight_utilization_percent?.toFixed(1) || '0.0'}%</b>
+              <b>Còn {currentPlacedItems.length} kiện trên xe</b>
             </div>
           </div>
         </Col>
@@ -891,7 +1080,9 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: '#64748b' }}>Biến động tại điểm</span>
+              <span style={{ fontSize: 11, color: '#64748b' }}>
+                {showingUnload ? 'Tiến độ dỡ mô phỏng' : 'Biến động theo kế hoạch'}
+              </span>
               <SwapOutlined
                 style={{
                   color: stepDelta.type === 'DEPOT' ? '#2563eb' : stepDelta.type === 'PICKUP' ? '#16a34a' : '#ea580c',
@@ -954,7 +1145,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: '#64748b' }}>Lối dỡ cửa sau T21–T27</span>
+              <span style={{ fontSize: 11, color: '#64748b' }}>Lối dỡ cửa sau</span>
               <SafetyCertificateOutlined
                 style={{
                   color: clampedStep === 0 ? '#3b82f6' : clearCorridorCount === currentPlacedItems.length ? '#16a34a' : '#eab308',
@@ -978,8 +1169,8 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                   : '#d97706',
               }}
             >
-              {clampedStep === 0
-                ? '✓ Sàn xe sẵn sàng'
+              {currentPlacedItems.length === 0
+                ? 'Thùng xe trống'
                 : clearCorridorCount === currentPlacedItems.length
                 ? '✓ 100% thông thoáng'
                 : `${currentPlacedItems.length - clearCorridorCount} kiện chờ dỡ sau`}
@@ -1048,7 +1239,92 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
         </div>
       )}
 
-      {/* KHUNG VẼ XE TẢI & MẶT SÀN 2D SVG BLUEPRINT */}
+      {hasStackedPlan && <Space wrap style={{ marginBottom: 10 }}>
+        <Tag color="geekblue">Xếp chồng theo mô hình nâng demo</Tag>
+        {viewMode === '2d' && (
+          <Select aria-label="Lọc theo độ cao đáy kiện" placeholder="Tất cả độ cao" allowClear
+            value={visibleHeight} onChange={setSelectedHeight}
+            options={heights.map(height => ({ value: height, label: height ? `Đáy kiện ở ${Math.round(height * 10) / 10} cm` : 'Mặt sàn' }))} />
+        )}
+      </Space>}
+
+      {canPreviewUnload && activeState && <Card size="small" title="Thứ tự dỡ tại điểm giao" style={{ marginBottom: 10 }}>
+        <Space direction="vertical" size="small">
+          <Space wrap>
+            <Select aria-label="Bước dỡ kiện" value={completedUnloads}
+              onChange={(completed) => {
+                setIsUnloadPlaying(false);
+                setUnloadPreview({ stopId: activeState.stop_id, completed });
+              }}
+              options={Array.from({ length: unloadSequence.length + 1 }, (_, value) => ({
+                value, label: value === 0 ? 'Trước khi dỡ' : `Sau khi dỡ ${value}/${unloadSequence.length} kiện`,
+              }))} />
+            <Button size="small"
+              onClick={() => {
+                setIsUnloadPlaying(false);
+                setUnloadPreview({ stopId: activeState.stop_id, completed: showingUnload ? completedUnloads + 1 : 0 });
+              }}>
+              {showingUnload ? 'Dỡ kiện tiếp theo' : 'Xem dỡ từ đầu'}
+            </Button>
+            <Button
+              size="small"
+              type={isUnloadPlaying ? 'primary' : 'default'}
+              icon={isUnloadPlaying ? <PauseOutlined /> : <PlayCircleOutlined />}
+              onClick={() => {
+                if (isUnloadPlaying) {
+                  setIsUnloadPlaying(false);
+                  return;
+                }
+                if (!showingUnload) {
+                  setUnloadPreview({ stopId: activeState.stop_id, completed: 0 });
+                }
+                setIsUnloadPlaying(true);
+              }}
+            >
+              {isUnloadPlaying ? 'Tạm dừng dỡ' : 'Phát dỡ tự động'}
+            </Button>
+          </Space>
+          <Space wrap>{unloadSequence.map((id, index) => {
+            const item = previousById.get(id);
+            if (!item) return null;
+            return <Tag key={id} title={id} color={index < completedUnloads ? 'green' : index === completedUnloads ? 'blue' : undefined}>
+              {index + 1}. {getItemShortLabel(item)} · {item.weight_kg.toLocaleString('vi-VN')} kg · cao độ {Math.round((item.z ?? 0) * 10) / 10} cm
+            </Tag>;
+          })}</Space>
+          <Typography.Text type="secondary">
+            Sơ đồ, tải và danh sách kiện cập nhật sau mỗi thao tác dỡ (dỡ tầng cao trước, từ cửa sau ra trước).
+          </Typography.Text>
+        </Space>
+      </Card>}
+
+      {viewMode === '3d' ? (
+        <Cargo3DVisualizer
+          lengthCm={bedLength}
+          widthCm={bedWidth}
+          heightCm={heightCm > 0 ? heightCm : undefined}
+          items={currentPlacedItems}
+          accessPaths={currentPlacedItems.map((item) => {
+            const info = accessPathInfo.get(item.item_id);
+            return {
+              item_id: item.item_id,
+              is_clear: info?.isClear === true,
+              points: info?.points || [],
+              blocker_item_ids: info?.blockerIds || [],
+            };
+          })}
+          showingUnload={showingUnload}
+          nextUnloadId={nextUnloadId}
+          hoveredItemId={hoveredItemId}
+          selectedItemId={selectedItemId}
+          collidingIds={collisionInfo.collidingIds}
+          getItemColor={getItemColor}
+          getItemShortLabel={getItemShortLabel}
+          isPathToDoorClear={isPathToDoorClear}
+          onHoverItem={setHoveredItemId}
+          onSelectItem={setSelectedItemId}
+        />
+      ) : (
+      /* KHUNG VẼ XE TẢI & MẶT SÀN 2D SVG BLUEPRINT */
       <div
         style={{
           border: '2px solid #334155',
@@ -1062,6 +1338,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
       >
         <svg
           ref={svgRef}
+          aria-label="Sơ đồ kiện trong thùng xe"
           width="100%"
           viewBox={`0 0 ${totalSvgWidth} ${totalSvgHeight}`}
           style={{ display: 'block', maxHeight: 380, userSelect: 'none' }}
@@ -1100,7 +1377,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           {/* ============================================================ */}
           <g transform={`translate(${bedStartX}, 18)`}>
             <line x1="0" y1="0" x2={bedCanvasWidth} y2="0" stroke="#64748b" strokeWidth="1.5" />
-            {[0, 100, 200, 300, 400, 500, 600, bedLength].map((mark) => {
+            {[...new Set([0, 100, 200, 300, 400, 500, 600, bedLength])].map((mark) => {
               if (mark > bedLength) return null;
               const mx = mark * scaleX;
               return (
@@ -1127,7 +1404,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           {/* ============================================================ */}
           <g transform={`translate(${bedStartX - 6}, ${bedStartY})`}>
             <line x1="0" y1="0" x2="0" y2={bedCanvasHeight} stroke="#64748b" strokeWidth="1.5" />
-            {[0, 50, 100, 150, 200, bedWidth].map((mark) => {
+            {[...new Set([0, 50, 100, 150, 200, bedWidth])].map((mark) => {
               if (mark > bedWidth) return null;
               const my = mark * scaleY;
               return (
@@ -1318,9 +1595,9 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                     ...currentPlacedItems.filter((i) => i.item_id !== draggingState.itemId),
                     ...currentPlacedItems.filter((i) => i.item_id === draggingState.itemId),
                   ]
-                : currentPlacedItems;
+                : [...currentPlacedItems].sort((a, b) => (a.z ?? 0) - (b.z ?? 0));
 
-              return sortedRenderItems.map((item) => {
+              return sortedRenderItems.filter(item => visibleHeight === undefined || (item.z ?? 0) === visibleHeight).map((item) => {
                 const rx = item.x * scaleX;
                 const ry = item.y * scaleY;
                 const rw = item.length_cm * scaleX;
@@ -1360,7 +1637,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                     }}
                   >
                   {/* Tooltip gốc SVG hiển thị kích thước và khối lượng khi rê chuột */}
-                  <title>{`Kiện: ${label} (Đơn ${item.order_id ? item.order_id.slice(-6).toUpperCase() : 'N/A'})\nKích thước: ${item.length_cm} × ${item.width_cm} × ${item.height_cm || 40} cm\nKhối lượng: ${item.weight_kg.toFixed(1)} kg\nTọa độ: x=${item.x}cm, y=${item.y}cm${isColliding ? '\n⚠️ Đang bị chồng lấn!' : ''}`}</title>
+                  <title>{`Kiện: ${label} (Đơn ${item.order_id ? item.order_id.slice(-6).toUpperCase() : 'N/A'})\nKích thước: ${item.length_cm} × ${item.width_cm} × ${item.height_cm || 40} cm\nKhối lượng: ${item.weight_kg.toFixed(1)} kg\nTọa độ: x=${item.x}cm, y=${item.y}cm, z=${Math.round((item.z ?? 0) * 10) / 10}cm\nĐặt trên: ${item.support_item_id || 'Sàn thùng xe'}${item.cargo_kind === 'FRAGILE' ? '\n⚠️ Hàng dễ vỡ' : ''}${item.no_top_load_requested ? '\n⛔ Cấm đặt hàng lên trên' : ''}${item.floor_rotation_locked ? '\n🔒 Khóa xoay 90° (LWH)' : ''}${isColliding ? '\n⚠️ Đang bị chồng lấn!' : ''}`}</title>
                   {/* Khối kiện hàng */}
                   <rect
                     x={rx}
@@ -1371,9 +1648,21 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                     ry="4"
                     fill={isColliding ? '#b91c1c' : colorInfo.bg}
                     fillOpacity={isColliding ? 0.95 : isHovered || isSelected ? 1.0 : 0.9}
-                    stroke={isColliding ? '#fca5a5' : isSelected ? '#ffffff' : isHovered ? '#67e8f9' : colorInfo.border}
-                    strokeWidth={isColliding ? 2.5 : isSelected ? 3 : isHovered ? 2 : 1}
-                    strokeDasharray={isColliding ? '5 3' : undefined}
+                    stroke={
+                      isColliding
+                        ? '#fca5a5'
+                        : isSelected
+                          ? '#ffffff'
+                          : isHovered
+                            ? '#67e8f9'
+                            : item.cargo_kind === 'FRAGILE'
+                              ? '#ef4444'
+                              : item.floor_rotation_locked
+                                ? '#a855f7'
+                                : colorInfo.border
+                    }
+                    strokeWidth={isColliding ? 2.5 : isSelected ? 3 : isHovered || item.cargo_kind === 'FRAGILE' || item.floor_rotation_locked ? 2 : 1}
+                    strokeDasharray={isColliding ? '5 3' : item.cargo_kind === 'FRAGILE' ? '4 2' : undefined}
                     filter={isColliding ? 'url(#collidingGlow)' : isSelected ? 'url(#glowEffect)' : 'url(#boxShadow)'}
                   />
 
@@ -1556,6 +1845,34 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
               CỬA SAU BỐC DỠ
             </text>
           </g>
+          {currentPlacedItems.length > 0 && (() => {
+            const cgSvgX = bedStartX + currentWeightBalance.cg_x_cm * scaleX;
+            const cgSvgY = bedStartY + currentWeightBalance.cg_y_cm * scaleY;
+            const centerLineY = bedStartY + (bedWidth / 2) * scaleY;
+            return (
+              <g pointerEvents="none" data-testid="floor-2d-cg">
+                <line
+                  x1={bedStartX}
+                  y1={centerLineY}
+                  x2={bedStartX + bedLength * scaleX}
+                  y2={centerLineY}
+                  stroke="rgba(148, 163, 184, 0.4)"
+                  strokeWidth="1"
+                  strokeDasharray="4,4"
+                />
+                <circle
+                  cx={cgSvgX}
+                  cy={cgSvgY}
+                  r="6"
+                  fill="#ffffff"
+                  stroke={weightBalanceMeta.strokeColor}
+                  strokeWidth="2.5"
+                />
+                <line x1={cgSvgX - 10} y1={cgSvgY} x2={cgSvgX + 10} y2={cgSvgY} stroke={weightBalanceMeta.strokeColor} strokeWidth="1.5" />
+                <line x1={cgSvgX} y1={cgSvgY - 10} x2={cgSvgX} y2={cgSvgY + 10} stroke={weightBalanceMeta.strokeColor} strokeWidth="1.5" />
+              </g>
+            );
+          })()}
         </svg>
 
         {/* Chú thích thông tin trực quan nổi dưới góc sơ đồ */}
@@ -1583,17 +1900,18 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           )}
           <span>
             <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', backgroundColor: '#22c55e', marginRight: 4 }} />
-            Lối ra thông suốt
+            {showingUnload ? 'Kiện dỡ tiếp theo' : 'Lối ra thông suốt'}
           </span>
           <span>
             <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', backgroundColor: '#ef4444', marginRight: 4 }} />
-            Bị chắn
+            {showingUnload ? 'Chờ lượt dỡ' : 'Bị chắn'}
           </span>
-          <span style={{ color: '#38bdf8' }}>
+          {!showingUnload && <span style={{ color: '#38bdf8' }}>
             <AimOutlined /> Click kiện để soi hành lang
-          </span>
+          </span>}
         </div>
       </div>
+      )}
 
       {/* ============================================================ */}
       {/* CẢNH BÁO VA CHẠM CHỒNG LẤN KHI MÔ PHỎNG THỦ CÔNG             */}
@@ -1604,7 +1922,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           type="warning"
           showIcon
           icon={<WarningOutlined style={{ color: '#ef4444' }} />}
-          message="Cảnh báo va chạm chồng lấn (Vi phạm Bất biến T21–T27: Không được xếp chồng hàng):"
+          message="Cảnh báo các kiện chiếm cùng không gian"
           description={
             <div style={{ fontSize: 12, marginTop: 4 }}>
               {collisionInfo.pairs.map((pair, idx) => (
@@ -1673,7 +1991,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                   <Tag color="error" icon={<ExclamationCircleOutlined />} style={{ margin: 0 }}>
                     Chồng lấn!
                   </Tag>
-                ) : (
+                ) : showingUnload ? <Tag color="warning">Chờ lượt dỡ</Tag> : (
                   <Tag color="success" icon={<CheckCircleOutlined />} style={{ margin: 0 }}>
                     {isStepEdited ? 'Không chồng lấn cục bộ' : 'Backend xác nhận hợp lệ'}
                   </Tag>
@@ -1688,6 +2006,15 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                       {isStepEdited ? 'Ước tính: ' : 'Backend: '}bị chắn ({blockers.length} kiện)
                     </Tag>
                   </Tooltip>
+                )}
+                {selectedItem.cargo_kind === 'FRAGILE' && (
+                  <Tag color="red" style={{ margin: 0 }}>Dễ vỡ</Tag>
+                )}
+                {selectedItem.no_top_load_requested && (
+                  <Tag color="gold" style={{ margin: 0 }}>Cấm đè</Tag>
+                )}
+                {selectedItem.floor_rotation_locked && (
+                  <Tag color="purple" style={{ margin: 0 }}>Khóa xoay 90°</Tag>
                 )}
               </Space>
 
@@ -1714,20 +2041,27 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             >
               {/* Nhóm điều khiển vị trí & xoay */}
               <Space size={8} wrap align="center">
-                <Tooltip title="Xoay 90° (hoán đổi Chiều Dài ↔ Chiều Rộng)">
+                <Tooltip
+                  title={
+                    selectedItem.floor_rotation_locked
+                      ? 'Đã khóa xoay 90° (LWH)'
+                      : 'Xoay 90° (hoán đổi Chiều Dài ↔ Chiều Rộng)'
+                  }
+                >
                   <Button
                     size="small"
                     type="primary"
                     icon={<RotateRightOutlined />}
+                    disabled={Boolean(selectedItem.floor_rotation_locked)}
                     onClick={() => handleRotateItem(selectedItem.item_id)}
-                    style={{ backgroundColor: '#2563eb' }}
+                    style={selectedItem.floor_rotation_locked ? undefined : { backgroundColor: '#2563eb' }}
                   >
                     Xoay 90° ({selectedItem.width_cm}×{selectedItem.length_cm})
                   </Button>
                 </Tooltip>
 
                 <span style={{ fontSize: 12, color: '#64748b', marginLeft: 4 }}>Dịch chuyển:</span>
-                <Button.Group size="small">
+                <Space.Compact size="small">
                   <Tooltip title="Dịch sang trái 5cm (về phía Cabin X=0)">
                     <Button
                       icon={<ArrowLeftOutlined />}
@@ -1760,15 +2094,15 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                       ↓5cm
                     </Button>
                   </Tooltip>
-                </Button.Group>
+                </Space.Compact>
 
                 <span style={{ fontSize: 12, color: '#64748b', marginLeft: 4 }}>Neo nhanh:</span>
-                <Button.Group size="small">
+                <Space.Compact size="small">
                   <Button onClick={() => handleAlignItem(selectedItem.item_id, 'cabin')}>Sát Cabin</Button>
                   <Button onClick={() => handleAlignItem(selectedItem.item_id, 'door')}>Sát Cửa sau</Button>
                   <Button onClick={() => handleAlignItem(selectedItem.item_id, 'top')}>Mép trên</Button>
                   <Button onClick={() => handleAlignItem(selectedItem.item_id, 'bottom')}>Mép dưới</Button>
-                </Button.Group>
+                </Space.Compact>
               </Space>
 
               {/* Ô nhập tọa độ chính xác X, Y */}
@@ -1875,7 +2209,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
               const isExpanded = expandedOrderKeys.includes(group.orderKey);
               const clearCount = group.items.filter(isPathToDoorClear).length;
               const isAllClear = clearCount === group.items.length;
-              const areaM2 = group.items.reduce((s, it) => s + (it.length_cm * it.width_cm), 0) / 10000;
+              const areaM2 = group.items.reduce((sum, item) => sum + floorFootprintCm2(item), 0) / 10000;
               const pct = totalFloorAreaM2 > 0 ? ((areaM2 / totalFloorAreaM2) * 100).toFixed(1) : '0';
               const shortOrderKey = group.orderKey.length > 10 ? `${group.orderKey.slice(0, 8)}...` : group.orderKey;
 
@@ -1947,7 +2281,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                         </Tag>
                       ) : (
                         <Tag color="error" icon={<ExclamationCircleOutlined />} style={{ margin: 0, fontSize: 11 }}>
-                          Bị chắn ({group.items.length - clearCount} kiện)
+                          {showingUnload ? 'Chờ lượt dỡ' : 'Bị chắn'} ({group.items.length - clearCount} kiện)
                         </Tag>
                       )}
 
@@ -2019,7 +2353,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                             title: 'Mã kiện',
                             dataIndex: 'item_id',
                             key: 'item_id',
-                            width: 120,
+                            width: 150,
                             render: (_, it) => (
                               <Space size={6} wrap>
                                 <strong style={{ color: '#1e40af' }}>{getItemShortLabel(it)}</strong>
@@ -2027,6 +2361,21 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                                 {collisionInfo.collidingIds.has(it.item_id) && (
                                   <Tag color="error" style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>
                                     Chồng lấn
+                                  </Tag>
+                                )}
+                                {it.cargo_kind === 'FRAGILE' && (
+                                  <Tag color="red" style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>
+                                    Dễ vỡ
+                                  </Tag>
+                                )}
+                                {it.no_top_load_requested && (
+                                  <Tag color="gold" style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>
+                                    Cấm đè
+                                  </Tag>
+                                )}
+                                {it.floor_rotation_locked && (
+                                  <Tag color="purple" style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>
+                                    Khóa xoay
                                   </Tag>
                                 )}
                               </Space>
@@ -2042,11 +2391,12 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                             ),
                           },
                           {
-                            title: 'Tọa độ sàn (X, Y)',
+                            title: 'Tọa độ (X, Y, Z)',
                             key: 'position',
                             render: (_, it) => (
                               <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#0369a1' }}>
-                                x={it.x}cm, y={it.y}cm
+                                x={it.x}cm, y={it.y}cm, z={Math.round((it.z ?? 0) * 10) / 10}cm
+                                {it.support_item_id && <><br />Đỡ bởi {getItemShortLabel(currentPlacedItems.find(item => item.item_id === it.support_item_id) ?? it)}</>}
                               </span>
                             ),
                           },
@@ -2066,7 +2416,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                                 <Tag color="success" style={{ margin: 0, fontSize: 11 }}>
                                   ✓ Thông suốt
                                 </Tag>
-                              ) : (
+                              ) : showingUnload ? <Tag color="warning">Chờ lượt dỡ</Tag> : (
                                 <Tooltip title={`Bị chặn bởi: ${blockers.map((b) => getItemShortLabel(b)).join(', ')}`}>
                                   <Tag color="error" style={{ margin: 0, fontSize: 11 }}>
                                     ✕ Bị chắn ({blockers.length})
@@ -2083,10 +2433,18 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
                             render: (_, it) => (
                               <Space size={4}>
                                 {isManualMode && (
-                                  <Tooltip title="Xoay 90° kiện này">
+                                  <Tooltip
+                                    title={
+                                      it.floor_rotation_locked
+                                        ? 'Đã khóa xoay 90° (LWH)'
+                                        : 'Xoay 90° kiện này'
+                                    }
+                                  >
                                     <Button
                                       size="small"
                                       icon={<RotateRightOutlined />}
+                                      disabled={Boolean(it.floor_rotation_locked)}
+                                      aria-label={`Xoay 90° ${getItemShortLabel(it)}`}
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         handleRotateItem(it.item_id);

@@ -1,0 +1,9 @@
+{
+  "jobId": "5856aa39-db45-471b-a84f-86d41c94bca9",
+  "status": "TIMEOUT",
+  "attemptCount": 1,
+  "errorCode": null,
+  "errorMessage": null,
+  "candidates": 0,
+  "completedAt": "2026-11-18T15:13:54.481Z"
+}

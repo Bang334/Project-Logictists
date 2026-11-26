@@ -1,3 +1,4 @@
+from math import isfinite
 from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -101,6 +102,7 @@ class CostPolicy(StrictContractModel):
         "NONE", "FIXED_PER_DAY", "PERCENT_ORDER_VALUE_PER_DAY"
     ] = "NONE"
     late_delivery_penalty_value: float = Field(default=0, ge=0)
+    max_routes_per_day: Optional[int] = Field(default=None, ge=1, le=500)
 
     @model_validator(mode="after")
     def validate_late_delivery_penalty(self):
@@ -115,6 +117,7 @@ class CostPolicy(StrictContractModel):
 class CargoItem(StrictContractModel):
     id: str
     order_id: str
+    customer_id: Optional[str] = None
     order_item_id: Optional[str] = None
     description: str = ""
     length_cm: float = Field(gt=0)
@@ -122,6 +125,25 @@ class CargoItem(StrictContractModel):
     height_cm: float = Field(gt=0)
     weight_kg: float = Field(gt=0)
     can_rotate: bool = True
+    allowed_orientations: Optional[List[Literal["LWH", "WLH"]]] = None
+    cargo_kind: Literal["UNCLASSIFIED", "STANDARD", "FRAGILE"] = "UNCLASSIFIED"
+    allow_upper_tier: bool = False
+    no_top_load_requested: bool = False
+    max_top_load_g: Optional[int] = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def validate_allowed_orientations(self):
+        if self.allowed_orientations is not None:
+            deduped: List[Literal["LWH", "WLH"]] = []
+            for entry in self.allowed_orientations:
+                if entry not in deduped:
+                    deduped.append(entry)
+            if not deduped:
+                raise ValueError("allowed_orientations cannot be empty")
+            self.allowed_orientations = deduped
+            if "WLH" not in deduped:
+                self.can_rotate = False
+        return self
 
 
 class PlacedItem(StrictContractModel):
@@ -133,11 +155,34 @@ class PlacedItem(StrictContractModel):
     width_cm: float
     height_cm: float
     weight_kg: float
+    z: float = Field(default=0, ge=0)
+    support_item_id: Optional[str] = None
+    cargo_kind: Optional[Literal["UNCLASSIFIED", "STANDARD", "FRAGILE"]] = None
+    no_top_load_requested: Optional[bool] = None
+    floor_rotation_locked: Optional[bool] = None
+
+
+class WeightBalanceMetrics(StrictContractModel):
+    total_weight_kg: float = 0.0
+    cg_x_cm: float = 0.0
+    cg_y_cm: float = 0.0
+    cg_x_percent: float = 50.0
+    cg_y_percent: float = 50.0
+    lateral_offset_cm: float = 0.0
+    longitudinal_offset_cm: float = 0.0
+    lateral_imbalance_percent: float = 0.0
+    longitudinal_imbalance_percent: float = 0.0
+    left_weight_kg: float = 0.0
+    right_weight_kg: float = 0.0
+    front_weight_kg: float = 0.0
+    rear_weight_kg: float = 0.0
+    status: Literal["EMPTY", "BALANCED", "MODERATE", "IMBALANCED"] = "EMPTY"
 
 
 class MovementPoint(StrictContractModel):
     x: float
     y: float
+    z: float = Field(default=0, ge=0)
 
 
 class PackageAccessPath(StrictContractModel):
@@ -172,8 +217,15 @@ class FloorState(StrictContractModel):
     is_valid: bool
     unload_sequence: List[str] = Field(default_factory=list)
     package_access_paths: List[PackageAccessPath] = Field(default_factory=list)
+    weight_balance: Optional[WeightBalanceMetrics] = None
     error_code: Optional[str] = None
     error_message: Optional[str] = None
+
+
+class DemoStackingPolicy(StrictContractModel):
+    max_tiers: int = Field(ge=2, le=20)
+    lift_clearance_cm: float = Field(gt=0, allow_inf_nan=False)
+    owner_mode: Literal["SAME_CUSTOMER", "ANY_CUSTOMER"] = "SAME_CUSTOMER"
 
 
 class SpatialValidationResult(StrictContractModel):
@@ -183,7 +235,9 @@ class SpatialValidationResult(StrictContractModel):
     error_message: Optional[str] = None
     max_weight_kg: float = 0.0
     max_area_cm2: float = 0.0
+    max_lateral_imbalance_percent: Optional[float] = None
     step_states: List[FloorState] = Field(default_factory=list)
+    demo_stacking: Optional[DemoStackingPolicy] = None
 
 
 class OrderPair(StrictContractModel):
@@ -234,6 +288,7 @@ class OptimizationRequest(StrictContractModel):
     vehicle: VehicleFloor
     depot: LocationPoint
     orders: List[OrderPair] = Field(min_length=1)
+    demo_stacking: Optional[DemoStackingPolicy] = None
     max_time_seconds: int = Field(default=10, ge=1, le=120)
     distance_matrix_meters: List[List[float]]
     duration_matrix_seconds: List[List[float]]
@@ -244,9 +299,12 @@ class FleetOptimizationRequest(StrictContractModel):
     vehicles: List[FleetVehicle] = Field(min_length=1)
     drivers: List[DriverOption] = Field(min_length=1)
     orders: List[OrderPair] = Field(min_length=1)
+    demo_stacking: Optional[DemoStackingPolicy] = None
     policy: CostPolicy
-    max_time_seconds: int = Field(default=15, ge=1, le=120)
-    search_time_seconds: Optional[int] = Field(default=None, ge=1, le=120)
+    max_time_seconds: int = Field(default=15, ge=1, le=1000)
+    search_time_seconds: Optional[int] = Field(default=None, ge=1, le=1000)
+    early_stop_patience: int = Field(default=0, ge=0, le=1000)
+    hybrid_seed_count: int = Field(default=0, ge=0, le=20)
     distance_matrix_meters: List[List[float]]
     duration_matrix_seconds: List[List[float]]
 
@@ -259,10 +317,16 @@ class FleetOptimizationRequest(StrictContractModel):
         ):
             if len(matrix) != expected or any(len(row) != expected for row in matrix):
                 raise ValueError(f"{name} must be a {expected}x{expected} matrix")
-            if any(value < 0 for row in matrix for value in row):
-                raise ValueError(f"{name} cannot contain negative values")
-        if len(self.vehicles) > len(self.drivers):
-            raise ValueError("Each candidate vehicle requires an available driver")
+            if any(not isfinite(value) or value < 0 for row in matrix for value in row):
+                raise ValueError(f"{name} must contain finite nonnegative values")
+        for name, identifiers in (
+            ("orders", [order.id for order in self.orders]),
+            ("vehicles", [vehicle.id for vehicle in self.vehicles]),
+            ("drivers", [driver.id for driver in self.drivers]),
+            ("items", [item.id for order in self.orders for item in order.items]),
+        ):
+            if len(identifiers) != len(set(identifiers)):
+                raise ValueError(f"{name} must have unique IDs")
         return self
 
 
@@ -309,6 +373,7 @@ class OptimizedRoute(StrictContractModel):
     plate_number: str
     vehicle_length_cm: float
     vehicle_width_cm: float
+    vehicle_height_cm: Optional[float] = None
     driver_id: Optional[str] = None
     driver_name: Optional[str] = None
     driver_license_class: Optional[str] = None
@@ -321,6 +386,7 @@ class OptimizedRoute(StrictContractModel):
     cost: Optional[RouteCostBreakdown] = None
     route_geometry: Optional[Dict] = None
     depot: Optional[LocationPoint] = None
+    end_location: Optional[LocationPoint] = None
 
 
 class UnassignedOrder(StrictContractModel):
@@ -342,8 +408,14 @@ class BenchmarkMetric(StrictContractModel):
     driver_cost_vnd: int
     cargo_holding_cost_vnd: int = 0
     late_delivery_penalty_vnd: int = 0
+    planning_span_days: int = 0
+    physical_vehicle_count: int = 0
+    driver_calendar_salary_vnd: int = 0
+    driver_idle_salary_allocation_vnd: int = 0
+    selection_score_vnd: int = 0
     is_feasible: bool = True
     violations: List[str] = Field(default_factory=list)
+    routes: List[OptimizedRoute] = Field(default_factory=list)
 
 
 class BenchmarkComparisonResponse(StrictContractModel):

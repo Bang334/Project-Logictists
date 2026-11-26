@@ -5,7 +5,7 @@ import { CreateUserDto, ListUsersDto } from './users.dto';
 import { hasPermission, Principal } from '../auth/access';
 
 describe('account boundaries', () => {
-  const valid = { username: ' user ', fullName: ' Name ', password: '🔐'.repeat(3), roleCode: 'DISPATCHER', branchIds: ['9e03c09a-9341-4bc8-97a8-a358e2affb08'] };
+  const valid = { username: ' user ', fullName: ' Name ', password: '🔐'.repeat(3), roleCode: 'TRANSPORT_DISPATCHER', branchIds: ['9e03c09a-9341-4bc8-97a8-a358e2affb08'] };
   it('trims identifiers and counts UTF-8 bytes without trimming passwords', async () => {
     const dto = plainToInstance(CreateUserDto, valid);
     expect(await validate(dto)).toHaveLength(0);

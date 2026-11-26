@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .models import (
+    DemoStackingPolicy,
     FleetOptimizationBatchResponse,
     FleetOptimizationRequest,
 )
@@ -24,6 +25,34 @@ router = APIRouter(prefix="/demo", tags=["Demo Benchmarks"])
 CASES_DIR = Path(__file__).resolve().parent.parent / "benchmarks" / "cases"
 
 CASE_METADATA: Dict[str, Dict[str, Any]] = {
+    "stress_3d_danang_dense_120_orders": {
+        "name": "Đà Nẵng — kiện cồng kềnh, giao gần, 120 đơn",
+        "category": "SCENARIO",
+        "category_name": "Kịch bản demo",
+        "description": "1.260 kiện, tổng thể tích 1.157 m³, 20 xe vật lý và 7 ngày. Lấy tại 36 điểm trên địa bàn Đà Nẵng, giao 11 điểm cách bãi tối đa khoảng 12,2 km. Ma trận đường bộ Mapbox; giá vận hành giả lập.",
+        "suggested_time_limit_sec": 60.0,
+    },
+    "stress_3d_danang_120_orders": {
+        "name": "Đà Nẵng — 120 đơn, 1.260 kiện, 20 xe, 7 ngày",
+        "category": "SCENARIO",
+        "category_name": "Kịch bản demo",
+        "description": "120 đơn với 1–20 kiện mỗi đơn, xếp tối đa 3 tầng. 20 xe vật lý có 140 slot xe-ngày trong 7 ngày, ca 08:00–17:00. Điểm nhận được tách ra nhiều địa điểm tại Đà Nẵng và miền Trung trên ma trận đường bộ Mapbox. Giá vận hành giả lập.",
+        "suggested_time_limit_sec": 30.0,
+    },
+    "scenario_stack_customer_modes": {
+        "name": "Xếp chồng cùng khách và khác khách",
+        "category": "SCENARIO",
+        "category_name": "Kịch bản demo",
+        "description": "Hai khách có hai kiện cùng đáy. Thứ tự lấy và giao cho phép thử đặt kiện nhẹ của khách thứ hai lên kiện của khách thứ nhất.",
+        "suggested_time_limit_sec": 6.0,
+    },
+    "scenario_stack_cost_comparison": {
+        "name": "So sánh chi phí xếp chồng ba tầng",
+        "category": "SCENARIO",
+        "category_name": "Kịch bản demo",
+        "description": "Một đơn, ba kiện cùng đáy và ba xe nhỏ. Bật hoặc tắt xếp chồng trên cùng ma trận quãng đường giả lập để so chi phí.",
+        "suggested_time_limit_sec": 6.0,
+    },
     "novel_1_mekong_hub_spoke": {
         "name": "Mê Kông 2 chiều (Star Topology, Fronthaul-Backhaul)",
         "category": "NOVEL",
@@ -159,16 +188,22 @@ class DemoCaseSummary(BaseModel):
     total_weight_kg: float
     total_volume_cbm: float
     suggested_time_limit_sec: float
+    supports_stacking: bool = False
 
 
 class DemoRunRequest(BaseModel):
     case_id: Optional[str] = Field(default=None, description="Mã kịch bản mẫu có sẵn")
     time_budget_seconds: Optional[float] = Field(
-        default=None, ge=1.0, le=180.0, description="Ngân sách thời gian tìm kiếm (giây)"
+        default=None, ge=1.0, le=1000.0, description="Ngân sách thời gian tìm kiếm (giây)"
     )
     custom_request: Optional[FleetOptimizationRequest] = Field(
         default=None, description="Tùy chọn tải lên tệp JSON FleetOptimizationRequest riêng"
     )
+    hybrid_seed_count: Optional[int] = Field(default=None, ge=0, le=20)
+    early_stop_patience: Optional[int] = Field(default=None, ge=0, le=1000)
+    max_time_seconds: Optional[int] = Field(default=None, ge=1, le=1000)
+    demo_stacking_enabled: Optional[bool] = None
+    demo_stacking_owner_mode: Optional[Literal["SAME_CUSTOMER", "ANY_CUSTOMER"]] = None
 
 
 def _load_case_dict(case_id: str) -> dict:
@@ -238,6 +273,7 @@ def list_demo_cases() -> List[DemoCaseSummary]:
                     total_weight_kg=round(total_weight, 2),
                     total_volume_cbm=round(total_volume, 3),
                     suggested_time_limit_sec=float(meta.get("suggested_time_limit_sec", 6.0)),
+                    supports_stacking=data.get("demo_stacking") is not None,
                 )
             )
         except Exception:
@@ -262,17 +298,41 @@ def run_demo_case(payload: DemoRunRequest) -> FleetOptimizationBatchResponse:
         request = payload.custom_request
     elif payload.case_id:
         raw_dict = _load_case_dict(payload.case_id)
+        raw_dict.pop("scenario_profile", None)
         request = FleetOptimizationRequest(**raw_dict)
     else:
         raise HTTPException(
             status_code=400, detail="Vui lòng cung cấp case_id hoặc custom_request"
         )
 
-    if payload.time_budget_seconds:
-        request.max_time_seconds = float(payload.time_budget_seconds)
+    if payload.max_time_seconds is not None:
+        request.max_time_seconds = payload.max_time_seconds
+        if payload.time_budget_seconds is not None:
+            request.search_time_seconds = min(payload.max_time_seconds, int(round(payload.time_budget_seconds)))
+    elif payload.time_budget_seconds:
+        request.max_time_seconds = int(round(payload.time_budget_seconds))
 
     # Chạy trực tiếp qua MultiStartFleetOptimizer (Hybrid ALNS first)
-    optimizer = MultiStartFleetOptimizer(request)
+    if payload.demo_stacking_enabled is False:
+        stacking_policy = None
+    elif request.demo_stacking is not None:
+        stacking_policy = request.demo_stacking
+    elif payload.demo_stacking_enabled is True:
+        stacking_policy = DemoStackingPolicy(
+            max_tiers=3,
+            lift_clearance_cm=5.0,
+            owner_mode=payload.demo_stacking_owner_mode or "SAME_CUSTOMER",
+        )
+    else:
+        stacking_policy = None
+    if stacking_policy and payload.demo_stacking_owner_mode:
+        stacking_policy = stacking_policy.model_copy(update={"owner_mode": payload.demo_stacking_owner_mode})
+    solver_request = request.model_copy(update={
+        "demo_stacking": stacking_policy,
+        "hybrid_seed_count": request.hybrid_seed_count if payload.hybrid_seed_count is None else payload.hybrid_seed_count,
+        "early_stop_patience": request.early_stop_patience if payload.early_stop_patience is None else payload.early_stop_patience,
+    })
+    optimizer = MultiStartFleetOptimizer(solver_request)
     batch = optimizer.solve(max_candidates=3)
 
     # Đính kèm thông tin depot và baseline route_geometry cho từng route

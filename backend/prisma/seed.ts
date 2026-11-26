@@ -1,10 +1,6 @@
 import { PrismaClient, Role, VehicleStatus, DriverStatus, OrderStatus, StopType } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
-import { seedCentralBranchData } from './seed-central';
-import { seedRetailCatalog } from './seed-retail-catalog';
-import { seedRetailPilotFlow } from './seed-retail-pilot-flow';
-import { seedBuildingMaterials } from './seed-building-materials';
-import { seedMultiSourceRetail } from './seed-multi-source-retail';
+import { seedCentralBranchData, seedDemoDepot } from './seed-central';
 
 const prisma = new PrismaClient();
 
@@ -78,6 +74,10 @@ async function main() {
   });
 
   console.log('✅ Đã tạo 3 chi nhánh Hub vận tải.');
+  const depotsByBranch = new Map(await Promise.all([branchHN, branchDAD, branchSGN].map(async (branch) => {
+    const depot = await seedDemoDepot(prisma, branch);
+    return [branch.id, depot.id] as const;
+  })));
 
   // 2. Tạo Tài khoản Người dùng (Users)
   const salt = await bcrypt.genSalt(10);
@@ -266,11 +266,18 @@ async function main() {
         ...typeData,
       },
     });
+    const homeDepotLocationId = depotsByBranch.get(v.homeBranchId);
     await prisma.vehicle.upsert({
       where: { plateNumber: v.plateNumber },
       update: { vehicleTypeId: vehicleType.id },
-      create: { ...vehicleData, vehicleTypeId: vehicleType.id },
+      create: { ...vehicleData, vehicleTypeId: vehicleType.id, homeDepotLocationId },
     });
+    if (homeDepotLocationId) {
+      await prisma.vehicle.updateMany({
+        where: { plateNumber: v.plateNumber, homeBranchId: v.homeBranchId, homeDepotLocationId: null },
+        data: { homeDepotLocationId },
+      });
+    }
   }
   console.log(`✅ Đã tạo ${vehiclesData.length} xe tải thực tế.`);
 
@@ -866,18 +873,6 @@ async function main() {
 
   // 7. Khởi tạo 30 đơn hàng, đội xe, tài xế cho Chi nhánh Miền Trung (Đà Nẵng - BRANCH-DAD)
   await seedCentralBranchData();
-
-  // 8. Khởi tạo Master Data Vật Liệu Xây Dựng & Đơn hàng Giao tận chân công trình
-  await seedBuildingMaterials(prisma);
-
-  // 9. Dọn dẹp hoàn toàn các sản phẩm thực phẩm cũ (Gạo, sữa, mì)
-  await seedRetailCatalog(prisma);
-
-  // 10. Khởi tạo Dữ liệu chuỗi luồng End-to-End Pilot VLXD
-  await seedRetailPilotFlow(prisma);
-
-  // 11. Khởi tạo Vùng phục vụ (ServiceZone) & Đơn hàng mẫu gom đa nguồn
-  await seedMultiSourceRetail(prisma);
 
   console.log('🎉 KHỞI TẠO MASTER DATA THÀNH CÔNG VÀO POSTGRESQL SUPABASE!');
 }

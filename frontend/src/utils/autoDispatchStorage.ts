@@ -14,12 +14,32 @@ export interface StoredAutoDispatchState {
 
 const STORAGE_PREFIX = 'tms_auto_dispatch_state_';
 const LAST_BRANCH_KEY = 'tms_auto_dispatch_last_branch';
+const DISMISSED_PREFIX = 'tms_auto_dispatch_dismissed_';
+
+export const dismissAutoDispatchState = (branchId: string, jobCreatedAt: string): void => {
+  try {
+    localStorage.setItem(`${DISMISSED_PREFIX}${branchId}`, jobCreatedAt);
+  } catch (error) {
+    console.warn('Lỗi khi ghi nhận phương án đã đóng:', error);
+  }
+  clearAutoDispatchState(branchId);
+};
+
+export const isAutoDispatchJobDismissed = (branchId: string, jobCreatedAt: string): boolean => {
+  try {
+    const cutoff = localStorage.getItem(`${DISMISSED_PREFIX}${branchId}`);
+    return cutoff !== null && Date.parse(jobCreatedAt) <= Date.parse(cutoff);
+  } catch {
+    return false;
+  }
+};
 
 /**
  * Lưu trạng thái điều phối tự động của một chi nhánh vào localStorage.
  */
 export const saveAutoDispatchState = (state: StoredAutoDispatchState): void => {
   try {
+    localStorage.removeItem(`${DISMISSED_PREFIX}${state.branchId}`);
     localStorage.setItem(
       `${STORAGE_PREFIX}${state.branchId}`,
       JSON.stringify(state),

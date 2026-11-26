@@ -1,5 +1,6 @@
+import NetworkDashboardPage from './NetworkDashboardPage';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, Col, Empty, Input, Row, Select, Space, Statistic, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Empty, Input, Row, Select, Space, Statistic, Table, Tag, Tabs, Typography } from 'antd';
 import axios from 'axios';
 import { useAuth } from '../context/AuthContext';
 import { apiErrorMessage } from '../api/client';
@@ -36,7 +37,7 @@ function useSnapshot<T>(key: string, refresh: number, load: () => Promise<T>, en
   return state.key === key ? state : { key, busy: enabled };
 }
 
-export default function DashboardPage({ onNavigate }: { onNavigate: (tab: string) => void }) {
+function OperationalDashboard({ onNavigate }: { onNavigate: (tab: string) => void }) {
   const { user, branchId, setBranchId, can, scopeVersion } = useAuth();
   const [query, setQuery] = useState(initialQuery);
   const [refresh, setRefresh] = useState(0), [securityEpoch, setSecurityEpoch] = useState(0);
@@ -180,4 +181,12 @@ export default function DashboardPage({ onNavigate }: { onNavigate: (tab: string
       ]} />}
     </Card>
   </main>;
+}
+
+export default function DashboardPage(props: { onNavigate: (tab: string) => void }) {
+  const { user, branchId, scopeVersion } = useAuth();
+  return <Tabs destroyOnHidden items={[
+    { key: 'operations', label: 'V?n h?nh', children: <OperationalDashboard {...props} /> },
+    { key: 'network', label: 'M?ng l??i chi nh?nh', children: <NetworkDashboardPage key={`${user?.id}:${branchId}:${scopeVersion}`} {...props} /> },
+  ]} />;
 }

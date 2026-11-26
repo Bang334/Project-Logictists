@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { assertNoDeliveryOrderHold } from '../trips/delivery-planning.rules';
 import { OrderStatus, PackageStatus, Prisma } from '@prisma/client';
 import { createHash, randomUUID } from 'crypto';
 import { Principal, branchFilter, requireBranch, hasPermission } from '../auth/access';
@@ -9,6 +10,11 @@ import { ConfirmOrderDto, UpdateOrderDto } from './dto/update-order.dto';
 import { assertDispatchableOrder, assertPackageManifest, newDispatchOrderWhere, packageHistory, orderFieldError, orderInclude, OrderRecord, serializeOrder, validateOrderInput } from './order-contract';
 import { packageTotals } from './package-measurements';
 import { CancelOrderDto } from './dto/cancel-order.dto';
+import {
+  normalizeAllowedOrientations,
+  parseAllowedOrientationsInput,
+} from './package-orientations';
+import { hasOptionalTopLoadProtection, readTopLoadProtectionFee, TOP_LOAD_PROTECTION_CHARGE } from './top-load-protection';
 
 function json(value: unknown): Prisma.InputJsonValue { return JSON.parse(JSON.stringify(value)); }
 function canonical(value: unknown): string {
@@ -79,6 +85,7 @@ export class OrdersService {
       const id = randomUUID();
       await tx.order.create({ data: { id, orderNumber: 'ORD-' + randomUUID().toUpperCase(), customerId: dto.customerId, branchId, status: OrderStatus.DRAFT, packageDataStatus: 'COMPLETE', notes: dto.notes } });
       await this.writeContents(tx, id, dto, PackageStatus.DRAFT);
+      await this.saveDraftProtectionFee(tx, id, dto);
       await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: 'CREATED', toStatus: 'DRAFT', payload: { auditBranchIds: [branchId] } } });
       return id;
     });
@@ -86,6 +93,7 @@ export class OrdersService {
   private async lockedOrder(tx: Prisma.TransactionClient, id: string, user: Principal, version: number) {
     // Same order row protects edits from manual and automatic assignment transactions.
     await tx.$queryRaw`SELECT id FROM orders WHERE id = ${id} FOR UPDATE`;
+    await assertNoDeliveryOrderHold(tx, [id]);
     const order = await tx.order.findFirst({ where: { id, orderType: 'B2B_TRANSPORT', branchId: branchFilter(user, 'orders.write') }, include: orderInclude });
     if (!order) throw new NotFoundException('Đơn không tồn tại hoặc ngoài phạm vi');
     if (order.version !== version) throw new ConflictException({ code: 'ORDER_VERSION_CONFLICT', message: 'Đơn đã thay đổi. Tải lại để đối chiếu trước khi lưu' });
@@ -108,9 +116,34 @@ export class OrdersService {
       await this.access.branch(user, 'orders.write', old.branchId, tx);
       await this.access.customer(user, dto.customerId, old.branchId, tx);
       this.validateOwnedIds(old, dto);
-      const previousKinds = new Map(old.items.flatMap(item => item.packages.map(pkg => [pkg.id, pkg.cargoKind] as const)));
-      validateOrderInput({ ...dto, items: dto.items.map(item => ({ ...item, packages: item.packages.map(pkg => ({ ...pkg, cargoKind: pkg.cargoKind ?? (pkg.id ? previousKinds.get(pkg.id) : undefined) })) })) }, old.status === 'CONFIRMED');
-      await this.writeContents(tx, id, dto, old.status === 'CONFIRMED' ? PackageStatus.READY : PackageStatus.DRAFT, old);
+      const existingPackages = new Map(old.items.flatMap(item => item.packages.map(pkg => [pkg.id, pkg] as const)));
+      const updated = {
+        ...dto,
+        items: dto.items.map(item => ({ ...item, packages: item.packages.map(pkg => {
+          const previous = pkg.id ? existingPackages.get(pkg.id) : undefined;
+          const preservedOrientations =
+            pkg.allowedOrientations === undefined && previous
+              ? normalizeAllowedOrientations(previous.allowedOrientations)
+              : pkg.allowedOrientations;
+          if (!previous || (pkg.cargoKind != null && pkg.cargoKind !== previous.cargoKind)) {
+            return { ...pkg, allowedOrientations: preservedOrientations };
+          }
+          return {
+            ...pkg, cargoKind: previous.cargoKind,
+            allowUpperTier: pkg.allowUpperTier ?? previous.allowUpperTier,
+            noTopLoadRequested: pkg.noTopLoadRequested ?? previous.noTopLoadRequested,
+            maxTopLoadG: pkg.maxTopLoadG === undefined ? previous.maxTopLoadG : pkg.maxTopLoadG,
+            allowedOrientations: preservedOrientations,
+          };
+        }) })),
+      };
+      validateOrderInput(updated, old.status === 'CONFIRMED');
+      if (old.status === 'CONFIRMED' && (old.charges?.length || readTopLoadProtectionFee(process.env)) &&
+        hasOptionalTopLoadProtection(old.items) !== hasOptionalTopLoadProtection(updated.items)) {
+        throw new ConflictException('Thay đổi dịch vụ có phụ phí cần xác nhận trên đơn nháp');
+      }
+      await this.writeContents(tx, id, updated, old.status === 'CONFIRMED' ? PackageStatus.READY : PackageStatus.DRAFT, old);
+      if (old.status === 'DRAFT') await this.saveDraftProtectionFee(tx, id, updated, old.charges?.[0]?.id);
       await tx.order.update({ where: { id }, data: { customerId: dto.customerId, notes: dto.notes ?? null, packageDataStatus: 'COMPLETE', version: { increment: 1 } } });
       await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: old.packageDataStatus === 'COMPLETE' ? 'UPDATED' : 'PACKAGES_RECONCILED', fromStatus: old.status, toStatus: old.status, payload: json({ before: serializeOrder(old), source: 'USER_DECLARED', auditBranchIds: [old.branchId] }) } });
       return id;
@@ -121,12 +154,18 @@ export class OrdersService {
       const order = await this.lockedOrder(tx, id, user, dto.version);
       if (order.status !== 'DRAFT') throw new ConflictException({ code: 'ORDER_NOT_DRAFT', message: 'Chỉ xác nhận đơn nháp' });
       assertPackageManifest(order);
-      validateOrderInput({ ...order, notes: order.notes ?? undefined, stops: order.stops.map(s => ({ ...s, type: s.type === 'PICKUP' ? 'PICKUP' : 'DELIVERY', windowStart: s.windowStart?.toISOString(), windowEnd: s.windowEnd?.toISOString() })), items: order.items.map(i => ({ ...i, sku: i.sku ?? undefined, packages: i.packages.map(p => ({ ...p, weightG: p.weightG.toString() })) })) }, true);
+      validateOrderInput({ ...order, notes: order.notes ?? undefined, stops: order.stops.map(s => ({ ...s, type: s.type === 'PICKUP' ? 'PICKUP' : 'DELIVERY', windowStart: s.windowStart?.toISOString(), windowEnd: s.windowEnd?.toISOString() })), items: order.items.map(i => ({ ...i, sku: i.sku ?? undefined, packages: i.packages.map(p => ({ ...p, weightG: p.weightG.toString(), allowedOrientations: normalizeAllowedOrientations(p.allowedOrientations) })) })) }, true);
       await this.access.branch(user, 'orders.write', order.branchId, tx);
       await this.access.customer(user, order.customerId, order.branchId, tx);
+      const charge = order.charges?.[0];
+      const fee = Number(charge?.amount ?? 0);
+      if ((dto.acceptedProtectionFeeVnd ?? 0) !== fee) {
+        throw new ConflictException({ code: 'PROTECTION_FEE_ACCEPTANCE_REQUIRED', message: 'Cần chấp nhận đúng phụ phí bảo vệ kiện đã báo trước khi xác nhận đơn' });
+      }
+      if (charge) await tx.orderCharge.update({ where: { id: charge.id }, data: { status: 'CONFIRMED' } });
       await tx.package.updateMany({ where: { orderItem: { orderId: id } }, data: { status: PackageStatus.READY, version: { increment: 1 } } });
       await tx.order.update({ where: { id }, data: { status: OrderStatus.CONFIRMED, version: { increment: 1 } } });
-      await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: 'CONFIRMED', fromStatus: 'DRAFT', toStatus: 'CONFIRMED', payload: { auditBranchIds: [order.branchId] } } });
+      await tx.orderEvent.create({ data: { orderId: id, commandId, actorUserId: user.id, eventType: 'CONFIRMED', fromStatus: 'DRAFT', toStatus: 'CONFIRMED', payload: { auditBranchIds: [order.branchId], ...(charge ? { acceptedProtectionFeeVnd: fee, chargeId: charge.id } : {}) } } });
       return id;
     });
   }
@@ -153,24 +192,35 @@ export class OrdersService {
     const id = order.id;
     const packages: Prisma.PackageWhereInput = { OR: [{ orderItem: { orderId: id } }, { orderId: id }] };
     const tasks: Prisma.StopTaskWhereInput = { OR: [{ orderId: id }, { orderStop: { orderId: id } }, { package: packages }, { allocation: { orderItem: { orderId: id } } }] };
-    const [execution, assignment, task, history, inconsistent, reservation, orderHistory, legacyItems] = await Promise.all([
+    const [execution, assignment, task, history, inconsistent, orderHistory, legacyItems, deliveryHold] = await Promise.all([
       tx.package.findFirst({ where: { AND: [packages, { OR: [{ pickupResults: { some: {} } }, { deliveryResults: { some: {} } }, { arrivedAtPickupPointAt: { not: null } }, { releasedAt: { not: null } }] }] }, select: { id: true } }),
       tx.allocation.findFirst({ where: { OR: [{ orderItem: { orderId: id } }, { package: packages }] }, select: { id: true } }),
       tx.stopTask.findFirst({ where: tasks, select: { id: true, actualQuantity: true, _count: { select: { executionEvents: true, deliveryResults: true } } } }),
       tx.package.findFirst({ where: { AND: [packages, packageHistory] }, select: { id: true } }),
       tx.package.findFirst({ where: { AND: [packages, { OR: [{ orderItemId: null }, { orderItem: { orderId: { not: id } } }, { orderId: { not: id } }, { holdingSlot: { not: null } }, { items: { some: {} } }] }] }, select: { id: true } }),
-      tx.inventoryReservation.findFirst({ where: { orderId: id }, select: { id: true } }),
       tx.orderEvent.findFirst({ where: { orderId: id, OR: [{ eventType: { notIn: ['CREATED', 'UPDATED', 'PACKAGES_RECONCILED', 'CONFIRMED'] } }, { fromStatus: { notIn: ['DRAFT', 'CONFIRMED'] } }, { toStatus: { notIn: ['DRAFT', 'CONFIRMED'] } }] }, select: { id: true } }),
       tx.packageItem.findFirst({ where: { orderItem: { orderId: id } }, select: { id: true } }),
+      tx.deliveryAppointment.findFirst({ where: { orderId: id, OR: [{ status: 'CONFIRMED' }, { status: 'PENDING', expiresAt: { gt: new Date() } }] }, select: { id: true } }),
     ]);
     if (execution || (task && (task.actualQuantity !== null || task._count.executionEvents || task._count.deliveryResults))) return { code: 'ORDER_EXECUTION_EXISTS', message: 'Đơn/kiện có bằng chứng thực thi; không thể hủy trước phân công' };
     if (assignment || task) return { code: 'ORDER_ASSIGNMENT_EXISTS', message: 'Đơn/kiện có phân công hoặc tác vụ vận chuyển; không thể hủy' };
+    if (deliveryHold) return { code: 'ORDER_DELIVERY_HOLD_EXISTS', message: '??n ?ang c? l?ch h?n giao hi?u l?c; c?n x? l? ??t h?n tr??c khi h?y' };
     const expectedPackageStatus = order.status === 'DRAFT' ? 'DRAFT' : 'READY';
-    if (history || inconsistent || reservation || orderHistory || legacyItems || order.allocatedSourceId || order.selectedPickupPointId || order.packageDataStatus !== 'COMPLETE'
+    if (history || inconsistent || orderHistory || legacyItems || order.allocatedSourceId || order.selectedPickupPointId || order.packageDataStatus !== 'COMPLETE'
       || !order.items.length || order.items.some(i => i.quantity !== i.packages.length || !i.packages.length || i.packages.some(p => p.status !== expectedPackageStatus))) {
       return { code: 'ORDER_RECONCILIATION_REQUIRED', message: 'Đơn/kiện có lịch sử hoặc dữ liệu không nhất quán; cần đối soát trước khi hủy' };
     }
     return null;
+  }
+  private async saveDraftProtectionFee(tx: Prisma.TransactionClient, orderId: string, dto: CreateOrderDto, currentId?: string) {
+    const rate = readTopLoadProtectionFee(process.env);
+    const amount = hasOptionalTopLoadProtection(dto.items) ? rate : undefined;
+    if (currentId) {
+      if (amount === undefined) await tx.orderCharge.delete({ where: { id: currentId } });
+      else await tx.orderCharge.update({ where: { id: currentId }, data: { amount } });
+    } else if (amount !== undefined) {
+      await tx.orderCharge.create({ data: { orderId, chargeType: TOP_LOAD_PROTECTION_CHARGE, amount, sourceReference: 'CUSTOMER_NO_TOP_LOAD' } });
+    }
   }
   private validateOwnedIds(old: OrderRecord, dto: CreateOrderDto) {
     dto.stops.forEach((s, i) => { if (!s.id || !old.stops.some(o => o.id === s.id && o.type === s.type)) orderFieldError(`stops.${i}.id`, 'Phải giữ ID và loại điểm của đơn này'); });
@@ -197,9 +247,16 @@ export class OrdersService {
       const data = { orderId, sku: item.sku ?? null, description: item.description.trim(), packageType: item.packageType, quantity: totals.totalPackages, weightKg: Number(totals.weightG) / 1000, volumeM3: Number(totals.volumeMm3) / 1e9, lengthCm: null, widthCm: null, heightCm: null };
       const line = item.id ? await tx.orderItem.update({ where: { id: item.id }, data }) : await tx.orderItem.create({ data });
       for (const p of item.packages) {
-        const data = { lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: BigInt(p.weightG), measurementSource: 'USER_DECLARED', status, ...(p.cargoKind ? { cargoKind: p.cargoKind } : {}) };
+        const normalizedOrientations = parseAllowedOrientationsInput(p.allowedOrientations);
+        const data = {
+          lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: BigInt(p.weightG),
+          cargoKind: p.cargoKind ?? 'UNCLASSIFIED', allowUpperTier: p.allowUpperTier ?? false,
+          noTopLoadRequested: p.noTopLoadRequested ?? false, maxTopLoadG: p.maxTopLoadG ?? null,
+          allowedOrientations: normalizedOrientations === null ? Prisma.DbNull : normalizedOrientations,
+          measurementSource: 'USER_DECLARED' as const, status,
+        };
         if (p.id) await tx.package.update({ where: { id: p.id }, data: { ...data, version: { increment: 1 } } });
-        else await tx.package.create({ data: { ...data, orderItemId: line.id, packageCode: 'PKG-' + randomUUID().toUpperCase(), allowedOrientations: Prisma.DbNull } });
+        else await tx.package.create({ data: { ...data, orderItemId: line.id, packageCode: 'PKG-' + randomUUID().toUpperCase() } });
       }
     }
     const totals = packageTotals(dto.items.flatMap(i => i.packages.map(p => ({ ...p, weightG: BigInt(p.weightG) }))));

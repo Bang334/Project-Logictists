@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsEnum,
   IsISO8601,
   IsInt,
@@ -14,6 +15,14 @@ export enum AutomaticDispatchScheduleMode {
 }
 
 export class RunAutomaticOptimizationDto {
+  @IsOptional()
+  @IsUUID()
+  deliveryBatchId?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  replanWithFleet?: boolean;
+
   @IsUUID()
   idempotencyKey!: string;
 
@@ -32,6 +41,6 @@ export class RunAutomaticOptimizationDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(120)
+  @Max(1000)
   searchBudgetSeconds?: number;
 }

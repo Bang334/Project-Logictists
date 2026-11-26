@@ -1,0 +1,2356 @@
+[
+  {
+    "case": "scenario_stack_cost_comparison",
+    "mode": "SAME_CUSTOMER",
+    "elapsed_seconds": 5.051,
+    "http_status": 200,
+    "solver_run_count": 1,
+    "candidates": [
+      {
+        "rank": 1,
+        "search_strategy": "Packing-aware Hybrid ALNS (seed 0)",
+        "solver_objective": 246000,
+        "is_best_found": true,
+        "result": {
+          "package_contract_version": "1",
+          "job_id": "demo-stack-cost",
+          "status": "SUCCESS",
+          "routes": [
+            {
+              "route_id": "van-1",
+              "vehicle_id": "van-1",
+              "service_day_index": 0,
+              "start_time_sec": 0,
+              "end_time_sec": 4100,
+              "plate_number": "DEMO-01",
+              "vehicle_length_cm": 100.0,
+              "vehicle_width_cm": 100.0,
+              "vehicle_height_cm": 100.0,
+              "driver_id": "driver-1",
+              "driver_name": "Tài xế demo 1",
+              "driver_license_class": "C",
+              "total_distance_km": 29.0,
+              "total_duration_minutes": 68.3,
+              "return_travel_time_sec": 900,
+              "return_waiting_time_sec": 0,
+              "stops": [
+                {
+                  "sequence": 1,
+                  "location_id": "pickup",
+                  "location_name": "Điểm lấy demo",
+                  "stop_type": "PICKUP",
+                  "order_id": "demo-stack-order",
+                  "allocation_id": "demo-stack-order",
+                  "order_stop_id": "pickup",
+                  "latitude": 21.03,
+                  "longitude": 105.85,
+                  "arrival_time_sec": 800,
+                  "departure_time_sec": 1400,
+                  "travel_time_sec": 800,
+                  "waiting_time_sec": 0,
+                  "service_time_sec": 600,
+                  "items_loaded": [
+                    "KIEN-A",
+                    "KIEN-B",
+                    "KIEN-C"
+                  ],
+                  "items_unloaded": [],
+                  "current_weight_kg": 127.0
+                },
+                {
+                  "sequence": 2,
+                  "location_id": "delivery",
+                  "location_name": "Điểm giao demo",
+                  "stop_type": "DELIVERY",
+                  "order_id": "demo-stack-order",
+                  "allocation_id": "demo-stack-order",
+                  "order_stop_id": "delivery",
+                  "latitude": 21.04,
+                  "longitude": 105.86,
+                  "arrival_time_sec": 2600,
+                  "departure_time_sec": 3200,
+                  "travel_time_sec": 1200,
+                  "waiting_time_sec": 0,
+                  "service_time_sec": 600,
+                  "items_loaded": [],
+                  "items_unloaded": [
+                    "KIEN-C",
+                    "KIEN-B",
+                    "KIEN-A"
+                  ],
+                  "current_weight_kg": 0.0
+                }
+              ],
+              "spatial_validation": {
+                "is_valid": true,
+                "violation_code": null,
+                "violation_scenario": null,
+                "error_message": null,
+                "max_weight_kg": 127.0,
+                "max_area_cm2": 10000.0,
+                "max_lateral_imbalance_percent": 0.0,
+                "step_states": [
+                  {
+                    "step_index": 1,
+                    "stop_id": "pickup",
+                    "stop_type": "PICKUP",
+                    "action_description": "Stop 1 (PICKUP) - Điểm lấy demo",
+                    "placed_items": [
+                      {
+                        "item_id": "KIEN-A",
+                        "order_id": "demo-stack-order",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 100.0,
+                        "z": 0.0,
+                        "support_item_id": null,
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      },
+                      {
+                        "item_id": "KIEN-B",
+                        "order_id": "demo-stack-order",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 22.0,
+                        "z": 25.0,
+                        "support_item_id": "KIEN-A",
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      },
+                      {
+                        "item_id": "KIEN-C",
+                        "order_id": "demo-stack-order",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 5.0,
+                        "z": 50.0,
+                        "support_item_id": "KIEN-B",
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      }
+                    ],
+                    "current_weight_kg": 127.0,
+                    "current_occupied_area_cm2": 10000.0,
+                    "floor_area_cm2": 10000.0,
+                    "weight_utilization_percent": 25.4,
+                    "area_utilization_percent": 100.0,
+                    "is_valid": true,
+                    "unload_sequence": [],
+                    "package_access_paths": [
+                      {
+                        "item_id": "KIEN-A",
+                        "is_clear": false,
+                        "points": [],
+                        "blocker_item_ids": [
+                          "KIEN-B",
+                          "KIEN-C"
+                        ]
+                      },
+                      {
+                        "item_id": "KIEN-B",
+                        "is_clear": false,
+                        "points": [],
+                        "blocker_item_ids": [
+                          "KIEN-C"
+                        ]
+                      },
+                      {
+                        "item_id": "KIEN-C",
+                        "is_clear": true,
+                        "points": [
+                          {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 50.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 55.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 55.0
+                          }
+                        ],
+                        "blocker_item_ids": []
+                      }
+                    ],
+                    "weight_balance": {
+                      "total_weight_kg": 127.0,
+                      "cg_x_cm": 50.0,
+                      "cg_y_cm": 50.0,
+                      "cg_x_percent": 50.0,
+                      "cg_y_percent": 50.0,
+                      "lateral_offset_cm": 0.0,
+                      "longitudinal_offset_cm": 0.0,
+                      "lateral_imbalance_percent": 0.0,
+                      "longitudinal_imbalance_percent": 0.0,
+                      "left_weight_kg": 63.5,
+                      "right_weight_kg": 63.5,
+                      "front_weight_kg": 63.5,
+                      "rear_weight_kg": 63.5,
+                      "status": "BALANCED"
+                    },
+                    "error_code": null,
+                    "error_message": null
+                  },
+                  {
+                    "step_index": 2,
+                    "stop_id": "delivery",
+                    "stop_type": "DELIVERY",
+                    "action_description": "Stop 2 (DELIVERY) - Điểm giao demo",
+                    "placed_items": [],
+                    "current_weight_kg": 0.0,
+                    "current_occupied_area_cm2": 0.0,
+                    "floor_area_cm2": 10000.0,
+                    "weight_utilization_percent": 0.0,
+                    "area_utilization_percent": 0.0,
+                    "is_valid": true,
+                    "unload_sequence": [
+                      "KIEN-C",
+                      "KIEN-B",
+                      "KIEN-A"
+                    ],
+                    "package_access_paths": [],
+                    "weight_balance": {
+                      "total_weight_kg": 0.0,
+                      "cg_x_cm": 50.0,
+                      "cg_y_cm": 50.0,
+                      "cg_x_percent": 50.0,
+                      "cg_y_percent": 50.0,
+                      "lateral_offset_cm": 0.0,
+                      "longitudinal_offset_cm": 0.0,
+                      "lateral_imbalance_percent": 0.0,
+                      "longitudinal_imbalance_percent": 0.0,
+                      "left_weight_kg": 0.0,
+                      "right_weight_kg": 0.0,
+                      "front_weight_kg": 0.0,
+                      "rear_weight_kg": 0.0,
+                      "status": "EMPTY"
+                    },
+                    "error_code": null,
+                    "error_message": null
+                  }
+                ],
+                "demo_stacking": {
+                  "max_tiers": 3,
+                  "lift_clearance_cm": 5.0,
+                  "owner_mode": "SAME_CUSTOMER"
+                }
+              },
+              "cost": {
+                "base_fuel_cost_vnd": 87000,
+                "load_fuel_surcharge_vnd": 0,
+                "fuel_cost_vnd": 87000,
+                "cargo_holding_cost_vnd": 0,
+                "late_delivery_penalty_vnd": 0,
+                "cargo_distance_ton_km": 1.524,
+                "cargo_time_ton_hours": 0.042,
+                "vehicle_fixed_cost_vnd": 100000,
+                "driver_fixed_salary_allocation_vnd": 0,
+                "driver_trip_pay_vnd": 59000,
+                "total_cost_vnd": 246000
+              },
+              "route_geometry": {
+                "type": "LineString",
+                "coordinates": [
+                  [
+                    105.83,
+                    21.02
+                  ],
+                  [
+                    105.85,
+                    21.03
+                  ],
+                  [
+                    105.86,
+                    21.04
+                  ],
+                  [
+                    105.83,
+                    21.02
+                  ]
+                ]
+              },
+              "depot": {
+                "id": "depot",
+                "source_location_id": null,
+                "name": "Bãi demo",
+                "latitude": 21.02,
+                "longitude": 105.83
+              },
+              "end_location": null
+            }
+          ],
+          "unassigned_orders": [],
+          "total_distance_km": 29.0,
+          "total_duration_minutes": 68.3,
+          "total_cost_vnd": 246000,
+          "planning_objective": {
+            "planning_span_days": 1,
+            "operating_cost_vnd": 246000,
+            "driver_active_salary_allocation_vnd": 0,
+            "driver_calendar_salary_vnd": 0,
+            "driver_idle_salary_allocation_vnd": 0,
+            "operational_late_penalty_vnd": 0,
+            "selection_score_vnd": 246000,
+            "extra_order_trips": 0,
+            "split_order_count": 0,
+            "max_trips_per_order": 1,
+            "extra_request_trips": 0,
+            "active_route_count": 1,
+            "physical_vehicle_count": 1,
+            "delivery_visit_count": 1
+          },
+          "benchmarks": {
+            "or_tools": {
+              "method_name": "Google OR-Tools Metaheuristic",
+              "description": "Nghiệm khả thi tốt nhất tìm thấy trong giới hạn thời gian",
+              "total_cost_vnd": 246000,
+              "total_distance_km": 29.0,
+              "total_duration_minutes": 68.3,
+              "vehicles_used": 1,
+              "fuel_cost_vnd": 87000,
+              "vehicle_fixed_cost_vnd": 100000,
+              "driver_cost_vnd": 59000,
+              "cargo_holding_cost_vnd": 0,
+              "late_delivery_penalty_vnd": 0,
+              "planning_span_days": 1,
+              "physical_vehicle_count": 1,
+              "driver_calendar_salary_vnd": 0,
+              "driver_idle_salary_allocation_vnd": 0,
+              "selection_score_vnd": 246000,
+              "is_feasible": true,
+              "violations": [],
+              "routes": []
+            },
+            "direct_dedicated": {
+              "method_name": "Direct Dedicated (Đơn lẻ)",
+              "description": "Mỗi chuyến chở một đơn. Xe và tài xế có thể chạy nhiều chuyến nối tiếp trong ca.",
+              "total_cost_vnd": 246000,
+              "total_distance_km": 29.0,
+              "total_duration_minutes": 68.33,
+              "vehicles_used": 1,
+              "fuel_cost_vnd": 87000,
+              "vehicle_fixed_cost_vnd": 100000,
+              "driver_cost_vnd": 59000,
+              "cargo_holding_cost_vnd": 0,
+              "late_delivery_penalty_vnd": 0,
+              "planning_span_days": 1,
+              "physical_vehicle_count": 1,
+              "driver_calendar_salary_vnd": 0,
+              "driver_idle_salary_allocation_vnd": 0,
+              "selection_score_vnd": 246000,
+              "is_feasible": true,
+              "violations": [],
+              "routes": [
+                {
+                  "route_id": "direct:van-3:demo-stack-order",
+                  "vehicle_id": "van-3",
+                  "service_day_index": 0,
+                  "start_time_sec": 0,
+                  "end_time_sec": 4100,
+                  "plate_number": "DEMO-03",
+                  "vehicle_length_cm": 100.0,
+                  "vehicle_width_cm": 100.0,
+                  "vehicle_height_cm": 100.0,
+                  "driver_id": "driver-3",
+                  "driver_name": "Tài xế demo 3",
+                  "driver_license_class": "C",
+                  "total_distance_km": 29.0,
+                  "total_duration_minutes": 68.33333333333333,
+                  "return_travel_time_sec": 900,
+                  "return_waiting_time_sec": 0,
+                  "stops": [
+                    {
+                      "sequence": 1,
+                      "location_id": "pickup",
+                      "location_name": "Điểm lấy demo",
+                      "stop_type": "PICKUP",
+                      "order_id": "demo-stack-order",
+                      "allocation_id": "demo-stack-order",
+                      "order_stop_id": "pickup",
+                      "latitude": 21.03,
+                      "longitude": 105.85,
+                      "arrival_time_sec": 800,
+                      "departure_time_sec": 1400,
+                      "travel_time_sec": 800,
+                      "waiting_time_sec": 0,
+                      "service_time_sec": 600,
+                      "items_loaded": [
+                        "KIEN-A",
+                        "KIEN-B",
+                        "KIEN-C"
+                      ],
+                      "items_unloaded": [],
+                      "current_weight_kg": 127.0
+                    },
+                    {
+                      "sequence": 2,
+                      "location_id": "delivery",
+                      "location_name": "Điểm giao demo",
+                      "stop_type": "DELIVERY",
+                      "order_id": "demo-stack-order",
+                      "allocation_id": "demo-stack-order",
+                      "order_stop_id": "delivery",
+                      "latitude": 21.04,
+                      "longitude": 105.86,
+                      "arrival_time_sec": 2600,
+                      "departure_time_sec": 3200,
+                      "travel_time_sec": 1200,
+                      "waiting_time_sec": 0,
+                      "service_time_sec": 600,
+                      "items_loaded": [],
+                      "items_unloaded": [
+                        "KIEN-C",
+                        "KIEN-B",
+                        "KIEN-A"
+                      ],
+                      "current_weight_kg": 0.0
+                    }
+                  ],
+                  "spatial_validation": {
+                    "is_valid": true,
+                    "violation_code": null,
+                    "violation_scenario": null,
+                    "error_message": null,
+                    "max_weight_kg": 127.0,
+                    "max_area_cm2": 10000.0,
+                    "max_lateral_imbalance_percent": 0.0,
+                    "step_states": [
+                      {
+                        "step_index": 1,
+                        "stop_id": "pickup",
+                        "stop_type": "PICKUP",
+                        "action_description": "Stop 1 (PICKUP) - Điểm lấy demo",
+                        "placed_items": [
+                          {
+                            "item_id": "KIEN-A",
+                            "order_id": "demo-stack-order",
+                            "x": 0.0,
+                            "y": 0.0,
+                            "length_cm": 100.0,
+                            "width_cm": 100.0,
+                            "height_cm": 25.0,
+                            "weight_kg": 100.0,
+                            "z": 0.0,
+                            "support_item_id": null,
+                            "cargo_kind": "STANDARD",
+                            "no_top_load_requested": false,
+                            "floor_rotation_locked": false
+                          },
+                          {
+                            "item_id": "KIEN-B",
+                            "order_id": "demo-stack-order",
+                            "x": 0.0,
+                            "y": 0.0,
+                            "length_cm": 100.0,
+                            "width_cm": 100.0,
+                            "height_cm": 25.0,
+                            "weight_kg": 22.0,
+                            "z": 25.0,
+                            "support_item_id": "KIEN-A",
+                            "cargo_kind": "STANDARD",
+                            "no_top_load_requested": false,
+                            "floor_rotation_locked": false
+                          },
+                          {
+                            "item_id": "KIEN-C",
+                            "order_id": "demo-stack-order",
+                            "x": 0.0,
+                            "y": 0.0,
+                            "length_cm": 100.0,
+                            "width_cm": 100.0,
+                            "height_cm": 25.0,
+                            "weight_kg": 5.0,
+                            "z": 50.0,
+                            "support_item_id": "KIEN-B",
+                            "cargo_kind": "STANDARD",
+                            "no_top_load_requested": false,
+                            "floor_rotation_locked": false
+                          }
+                        ],
+                        "current_weight_kg": 127.0,
+                        "current_occupied_area_cm2": 10000.0,
+                        "floor_area_cm2": 10000.0,
+                        "weight_utilization_percent": 25.4,
+                        "area_utilization_percent": 100.0,
+                        "is_valid": true,
+                        "unload_sequence": [],
+                        "package_access_paths": [
+                          {
+                            "item_id": "KIEN-A",
+                            "is_clear": false,
+                            "points": [],
+                            "blocker_item_ids": [
+                              "KIEN-B",
+                              "KIEN-C"
+                            ]
+                          },
+                          {
+                            "item_id": "KIEN-B",
+                            "is_clear": false,
+                            "points": [],
+                            "blocker_item_ids": [
+                              "KIEN-C"
+                            ]
+                          },
+                          {
+                            "item_id": "KIEN-C",
+                            "is_clear": true,
+                            "points": [
+                              {
+                                "x": 0.0,
+                                "y": 0.0,
+                                "z": 50.0
+                              },
+                              {
+                                "x": 0.0,
+                                "y": 0.0,
+                                "z": 55.0
+                              },
+                              {
+                                "x": 0.0,
+                                "y": 0.0,
+                                "z": 55.0
+                              }
+                            ],
+                            "blocker_item_ids": []
+                          }
+                        ],
+                        "weight_balance": {
+                          "total_weight_kg": 127.0,
+                          "cg_x_cm": 50.0,
+                          "cg_y_cm": 50.0,
+                          "cg_x_percent": 50.0,
+                          "cg_y_percent": 50.0,
+                          "lateral_offset_cm": 0.0,
+                          "longitudinal_offset_cm": 0.0,
+                          "lateral_imbalance_percent": 0.0,
+                          "longitudinal_imbalance_percent": 0.0,
+                          "left_weight_kg": 63.5,
+                          "right_weight_kg": 63.5,
+                          "front_weight_kg": 63.5,
+                          "rear_weight_kg": 63.5,
+                          "status": "BALANCED"
+                        },
+                        "error_code": null,
+                        "error_message": null
+                      },
+                      {
+                        "step_index": 2,
+                        "stop_id": "delivery",
+                        "stop_type": "DELIVERY",
+                        "action_description": "Stop 2 (DELIVERY) - Điểm giao demo",
+                        "placed_items": [],
+                        "current_weight_kg": 0.0,
+                        "current_occupied_area_cm2": 0.0,
+                        "floor_area_cm2": 10000.0,
+                        "weight_utilization_percent": 0.0,
+                        "area_utilization_percent": 0.0,
+                        "is_valid": true,
+                        "unload_sequence": [
+                          "KIEN-C",
+                          "KIEN-B",
+                          "KIEN-A"
+                        ],
+                        "package_access_paths": [],
+                        "weight_balance": {
+                          "total_weight_kg": 0.0,
+                          "cg_x_cm": 50.0,
+                          "cg_y_cm": 50.0,
+                          "cg_x_percent": 50.0,
+                          "cg_y_percent": 50.0,
+                          "lateral_offset_cm": 0.0,
+                          "longitudinal_offset_cm": 0.0,
+                          "lateral_imbalance_percent": 0.0,
+                          "longitudinal_imbalance_percent": 0.0,
+                          "left_weight_kg": 0.0,
+                          "right_weight_kg": 0.0,
+                          "front_weight_kg": 0.0,
+                          "rear_weight_kg": 0.0,
+                          "status": "EMPTY"
+                        },
+                        "error_code": null,
+                        "error_message": null
+                      }
+                    ],
+                    "demo_stacking": {
+                      "max_tiers": 3,
+                      "lift_clearance_cm": 5.0,
+                      "owner_mode": "SAME_CUSTOMER"
+                    }
+                  },
+                  "cost": {
+                    "base_fuel_cost_vnd": 87000,
+                    "load_fuel_surcharge_vnd": 0,
+                    "fuel_cost_vnd": 87000,
+                    "cargo_holding_cost_vnd": 0,
+                    "late_delivery_penalty_vnd": 0,
+                    "cargo_distance_ton_km": 1.524,
+                    "cargo_time_ton_hours": 0.042,
+                    "vehicle_fixed_cost_vnd": 100000,
+                    "driver_fixed_salary_allocation_vnd": 0,
+                    "driver_trip_pay_vnd": 59000,
+                    "total_cost_vnd": 246000
+                  },
+                  "route_geometry": null,
+                  "depot": {
+                    "id": "depot",
+                    "source_location_id": null,
+                    "name": "Bãi demo",
+                    "latitude": 21.02,
+                    "longitude": 105.83
+                  },
+                  "end_location": {
+                    "id": "depot",
+                    "source_location_id": null,
+                    "name": "Bãi demo",
+                    "latitude": 21.02,
+                    "longitude": 105.83
+                  }
+                }
+              ]
+            },
+            "savings_vs_direct_vnd": 0,
+            "savings_vs_direct_percent": 0.0
+          },
+          "diagnostics": [
+            "Hybrid ALNS hoàn tất với seed 0; đã audit lại bằng SpatialValidator production.",
+            "Solver nội bộ: Hybrid ALNS (adaptive, 2417 iters, elite #1).",
+            "Kết quả là best-found trong ngân sách thời gian, không chứng minh tối ưu toàn cục."
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "case": "scenario_stack_cost_comparison",
+    "mode": "ANY_CUSTOMER",
+    "elapsed_seconds": 4.556,
+    "http_status": 200,
+    "solver_run_count": 1,
+    "candidates": [
+      {
+        "rank": 1,
+        "search_strategy": "Packing-aware Hybrid ALNS (seed 0)",
+        "solver_objective": 246000,
+        "is_best_found": true,
+        "result": {
+          "package_contract_version": "1",
+          "job_id": "demo-stack-cost",
+          "status": "SUCCESS",
+          "routes": [
+            {
+              "route_id": "van-1",
+              "vehicle_id": "van-1",
+              "service_day_index": 0,
+              "start_time_sec": 0,
+              "end_time_sec": 4100,
+              "plate_number": "DEMO-01",
+              "vehicle_length_cm": 100.0,
+              "vehicle_width_cm": 100.0,
+              "vehicle_height_cm": 100.0,
+              "driver_id": "driver-1",
+              "driver_name": "Tài xế demo 1",
+              "driver_license_class": "C",
+              "total_distance_km": 29.0,
+              "total_duration_minutes": 68.3,
+              "return_travel_time_sec": 900,
+              "return_waiting_time_sec": 0,
+              "stops": [
+                {
+                  "sequence": 1,
+                  "location_id": "pickup",
+                  "location_name": "Điểm lấy demo",
+                  "stop_type": "PICKUP",
+                  "order_id": "demo-stack-order",
+                  "allocation_id": "demo-stack-order",
+                  "order_stop_id": "pickup",
+                  "latitude": 21.03,
+                  "longitude": 105.85,
+                  "arrival_time_sec": 800,
+                  "departure_time_sec": 1400,
+                  "travel_time_sec": 800,
+                  "waiting_time_sec": 0,
+                  "service_time_sec": 600,
+                  "items_loaded": [
+                    "KIEN-A",
+                    "KIEN-B",
+                    "KIEN-C"
+                  ],
+                  "items_unloaded": [],
+                  "current_weight_kg": 127.0
+                },
+                {
+                  "sequence": 2,
+                  "location_id": "delivery",
+                  "location_name": "Điểm giao demo",
+                  "stop_type": "DELIVERY",
+                  "order_id": "demo-stack-order",
+                  "allocation_id": "demo-stack-order",
+                  "order_stop_id": "delivery",
+                  "latitude": 21.04,
+                  "longitude": 105.86,
+                  "arrival_time_sec": 2600,
+                  "departure_time_sec": 3200,
+                  "travel_time_sec": 1200,
+                  "waiting_time_sec": 0,
+                  "service_time_sec": 600,
+                  "items_loaded": [],
+                  "items_unloaded": [
+                    "KIEN-C",
+                    "KIEN-B",
+                    "KIEN-A"
+                  ],
+                  "current_weight_kg": 0.0
+                }
+              ],
+              "spatial_validation": {
+                "is_valid": true,
+                "violation_code": null,
+                "violation_scenario": null,
+                "error_message": null,
+                "max_weight_kg": 127.0,
+                "max_area_cm2": 10000.0,
+                "max_lateral_imbalance_percent": 0.0,
+                "step_states": [
+                  {
+                    "step_index": 1,
+                    "stop_id": "pickup",
+                    "stop_type": "PICKUP",
+                    "action_description": "Stop 1 (PICKUP) - Điểm lấy demo",
+                    "placed_items": [
+                      {
+                        "item_id": "KIEN-A",
+                        "order_id": "demo-stack-order",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 100.0,
+                        "z": 0.0,
+                        "support_item_id": null,
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      },
+                      {
+                        "item_id": "KIEN-B",
+                        "order_id": "demo-stack-order",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 22.0,
+                        "z": 25.0,
+                        "support_item_id": "KIEN-A",
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      },
+                      {
+                        "item_id": "KIEN-C",
+                        "order_id": "demo-stack-order",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 5.0,
+                        "z": 50.0,
+                        "support_item_id": "KIEN-B",
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      }
+                    ],
+                    "current_weight_kg": 127.0,
+                    "current_occupied_area_cm2": 10000.0,
+                    "floor_area_cm2": 10000.0,
+                    "weight_utilization_percent": 25.4,
+                    "area_utilization_percent": 100.0,
+                    "is_valid": true,
+                    "unload_sequence": [],
+                    "package_access_paths": [
+                      {
+                        "item_id": "KIEN-A",
+                        "is_clear": false,
+                        "points": [],
+                        "blocker_item_ids": [
+                          "KIEN-B",
+                          "KIEN-C"
+                        ]
+                      },
+                      {
+                        "item_id": "KIEN-B",
+                        "is_clear": false,
+                        "points": [],
+                        "blocker_item_ids": [
+                          "KIEN-C"
+                        ]
+                      },
+                      {
+                        "item_id": "KIEN-C",
+                        "is_clear": true,
+                        "points": [
+                          {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 50.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 55.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 55.0
+                          }
+                        ],
+                        "blocker_item_ids": []
+                      }
+                    ],
+                    "weight_balance": {
+                      "total_weight_kg": 127.0,
+                      "cg_x_cm": 50.0,
+                      "cg_y_cm": 50.0,
+                      "cg_x_percent": 50.0,
+                      "cg_y_percent": 50.0,
+                      "lateral_offset_cm": 0.0,
+                      "longitudinal_offset_cm": 0.0,
+                      "lateral_imbalance_percent": 0.0,
+                      "longitudinal_imbalance_percent": 0.0,
+                      "left_weight_kg": 63.5,
+                      "right_weight_kg": 63.5,
+                      "front_weight_kg": 63.5,
+                      "rear_weight_kg": 63.5,
+                      "status": "BALANCED"
+                    },
+                    "error_code": null,
+                    "error_message": null
+                  },
+                  {
+                    "step_index": 2,
+                    "stop_id": "delivery",
+                    "stop_type": "DELIVERY",
+                    "action_description": "Stop 2 (DELIVERY) - Điểm giao demo",
+                    "placed_items": [],
+                    "current_weight_kg": 0.0,
+                    "current_occupied_area_cm2": 0.0,
+                    "floor_area_cm2": 10000.0,
+                    "weight_utilization_percent": 0.0,
+                    "area_utilization_percent": 0.0,
+                    "is_valid": true,
+                    "unload_sequence": [
+                      "KIEN-C",
+                      "KIEN-B",
+                      "KIEN-A"
+                    ],
+                    "package_access_paths": [],
+                    "weight_balance": {
+                      "total_weight_kg": 0.0,
+                      "cg_x_cm": 50.0,
+                      "cg_y_cm": 50.0,
+                      "cg_x_percent": 50.0,
+                      "cg_y_percent": 50.0,
+                      "lateral_offset_cm": 0.0,
+                      "longitudinal_offset_cm": 0.0,
+                      "lateral_imbalance_percent": 0.0,
+                      "longitudinal_imbalance_percent": 0.0,
+                      "left_weight_kg": 0.0,
+                      "right_weight_kg": 0.0,
+                      "front_weight_kg": 0.0,
+                      "rear_weight_kg": 0.0,
+                      "status": "EMPTY"
+                    },
+                    "error_code": null,
+                    "error_message": null
+                  }
+                ],
+                "demo_stacking": {
+                  "max_tiers": 3,
+                  "lift_clearance_cm": 5.0,
+                  "owner_mode": "ANY_CUSTOMER"
+                }
+              },
+              "cost": {
+                "base_fuel_cost_vnd": 87000,
+                "load_fuel_surcharge_vnd": 0,
+                "fuel_cost_vnd": 87000,
+                "cargo_holding_cost_vnd": 0,
+                "late_delivery_penalty_vnd": 0,
+                "cargo_distance_ton_km": 1.524,
+                "cargo_time_ton_hours": 0.042,
+                "vehicle_fixed_cost_vnd": 100000,
+                "driver_fixed_salary_allocation_vnd": 0,
+                "driver_trip_pay_vnd": 59000,
+                "total_cost_vnd": 246000
+              },
+              "route_geometry": {
+                "type": "LineString",
+                "coordinates": [
+                  [
+                    105.83,
+                    21.02
+                  ],
+                  [
+                    105.85,
+                    21.03
+                  ],
+                  [
+                    105.86,
+                    21.04
+                  ],
+                  [
+                    105.83,
+                    21.02
+                  ]
+                ]
+              },
+              "depot": {
+                "id": "depot",
+                "source_location_id": null,
+                "name": "Bãi demo",
+                "latitude": 21.02,
+                "longitude": 105.83
+              },
+              "end_location": null
+            }
+          ],
+          "unassigned_orders": [],
+          "total_distance_km": 29.0,
+          "total_duration_minutes": 68.3,
+          "total_cost_vnd": 246000,
+          "planning_objective": {
+            "planning_span_days": 1,
+            "operating_cost_vnd": 246000,
+            "driver_active_salary_allocation_vnd": 0,
+            "driver_calendar_salary_vnd": 0,
+            "driver_idle_salary_allocation_vnd": 0,
+            "operational_late_penalty_vnd": 0,
+            "selection_score_vnd": 246000,
+            "extra_order_trips": 0,
+            "split_order_count": 0,
+            "max_trips_per_order": 1,
+            "extra_request_trips": 0,
+            "active_route_count": 1,
+            "physical_vehicle_count": 1,
+            "delivery_visit_count": 1
+          },
+          "benchmarks": {
+            "or_tools": {
+              "method_name": "Google OR-Tools Metaheuristic",
+              "description": "Nghiệm khả thi tốt nhất tìm thấy trong giới hạn thời gian",
+              "total_cost_vnd": 246000,
+              "total_distance_km": 29.0,
+              "total_duration_minutes": 68.3,
+              "vehicles_used": 1,
+              "fuel_cost_vnd": 87000,
+              "vehicle_fixed_cost_vnd": 100000,
+              "driver_cost_vnd": 59000,
+              "cargo_holding_cost_vnd": 0,
+              "late_delivery_penalty_vnd": 0,
+              "planning_span_days": 1,
+              "physical_vehicle_count": 1,
+              "driver_calendar_salary_vnd": 0,
+              "driver_idle_salary_allocation_vnd": 0,
+              "selection_score_vnd": 246000,
+              "is_feasible": true,
+              "violations": [],
+              "routes": []
+            },
+            "direct_dedicated": {
+              "method_name": "Direct Dedicated (Đơn lẻ)",
+              "description": "Mỗi chuyến chở một đơn. Xe và tài xế có thể chạy nhiều chuyến nối tiếp trong ca.",
+              "total_cost_vnd": 246000,
+              "total_distance_km": 29.0,
+              "total_duration_minutes": 68.33,
+              "vehicles_used": 1,
+              "fuel_cost_vnd": 87000,
+              "vehicle_fixed_cost_vnd": 100000,
+              "driver_cost_vnd": 59000,
+              "cargo_holding_cost_vnd": 0,
+              "late_delivery_penalty_vnd": 0,
+              "planning_span_days": 1,
+              "physical_vehicle_count": 1,
+              "driver_calendar_salary_vnd": 0,
+              "driver_idle_salary_allocation_vnd": 0,
+              "selection_score_vnd": 246000,
+              "is_feasible": true,
+              "violations": [],
+              "routes": [
+                {
+                  "route_id": "direct:van-3:demo-stack-order",
+                  "vehicle_id": "van-3",
+                  "service_day_index": 0,
+                  "start_time_sec": 0,
+                  "end_time_sec": 4100,
+                  "plate_number": "DEMO-03",
+                  "vehicle_length_cm": 100.0,
+                  "vehicle_width_cm": 100.0,
+                  "vehicle_height_cm": 100.0,
+                  "driver_id": "driver-3",
+                  "driver_name": "Tài xế demo 3",
+                  "driver_license_class": "C",
+                  "total_distance_km": 29.0,
+                  "total_duration_minutes": 68.33333333333333,
+                  "return_travel_time_sec": 900,
+                  "return_waiting_time_sec": 0,
+                  "stops": [
+                    {
+                      "sequence": 1,
+                      "location_id": "pickup",
+                      "location_name": "Điểm lấy demo",
+                      "stop_type": "PICKUP",
+                      "order_id": "demo-stack-order",
+                      "allocation_id": "demo-stack-order",
+                      "order_stop_id": "pickup",
+                      "latitude": 21.03,
+                      "longitude": 105.85,
+                      "arrival_time_sec": 800,
+                      "departure_time_sec": 1400,
+                      "travel_time_sec": 800,
+                      "waiting_time_sec": 0,
+                      "service_time_sec": 600,
+                      "items_loaded": [
+                        "KIEN-A",
+                        "KIEN-B",
+                        "KIEN-C"
+                      ],
+                      "items_unloaded": [],
+                      "current_weight_kg": 127.0
+                    },
+                    {
+                      "sequence": 2,
+                      "location_id": "delivery",
+                      "location_name": "Điểm giao demo",
+                      "stop_type": "DELIVERY",
+                      "order_id": "demo-stack-order",
+                      "allocation_id": "demo-stack-order",
+                      "order_stop_id": "delivery",
+                      "latitude": 21.04,
+                      "longitude": 105.86,
+                      "arrival_time_sec": 2600,
+                      "departure_time_sec": 3200,
+                      "travel_time_sec": 1200,
+                      "waiting_time_sec": 0,
+                      "service_time_sec": 600,
+                      "items_loaded": [],
+                      "items_unloaded": [
+                        "KIEN-C",
+                        "KIEN-B",
+                        "KIEN-A"
+                      ],
+                      "current_weight_kg": 0.0
+                    }
+                  ],
+                  "spatial_validation": {
+                    "is_valid": true,
+                    "violation_code": null,
+                    "violation_scenario": null,
+                    "error_message": null,
+                    "max_weight_kg": 127.0,
+                    "max_area_cm2": 10000.0,
+                    "max_lateral_imbalance_percent": 0.0,
+                    "step_states": [
+                      {
+                        "step_index": 1,
+                        "stop_id": "pickup",
+                        "stop_type": "PICKUP",
+                        "action_description": "Stop 1 (PICKUP) - Điểm lấy demo",
+                        "placed_items": [
+                          {
+                            "item_id": "KIEN-A",
+                            "order_id": "demo-stack-order",
+                            "x": 0.0,
+                            "y": 0.0,
+                            "length_cm": 100.0,
+                            "width_cm": 100.0,
+                            "height_cm": 25.0,
+                            "weight_kg": 100.0,
+                            "z": 0.0,
+                            "support_item_id": null,
+                            "cargo_kind": "STANDARD",
+                            "no_top_load_requested": false,
+                            "floor_rotation_locked": false
+                          },
+                          {
+                            "item_id": "KIEN-B",
+                            "order_id": "demo-stack-order",
+                            "x": 0.0,
+                            "y": 0.0,
+                            "length_cm": 100.0,
+                            "width_cm": 100.0,
+                            "height_cm": 25.0,
+                            "weight_kg": 22.0,
+                            "z": 25.0,
+                            "support_item_id": "KIEN-A",
+                            "cargo_kind": "STANDARD",
+                            "no_top_load_requested": false,
+                            "floor_rotation_locked": false
+                          },
+                          {
+                            "item_id": "KIEN-C",
+                            "order_id": "demo-stack-order",
+                            "x": 0.0,
+                            "y": 0.0,
+                            "length_cm": 100.0,
+                            "width_cm": 100.0,
+                            "height_cm": 25.0,
+                            "weight_kg": 5.0,
+                            "z": 50.0,
+                            "support_item_id": "KIEN-B",
+                            "cargo_kind": "STANDARD",
+                            "no_top_load_requested": false,
+                            "floor_rotation_locked": false
+                          }
+                        ],
+                        "current_weight_kg": 127.0,
+                        "current_occupied_area_cm2": 10000.0,
+                        "floor_area_cm2": 10000.0,
+                        "weight_utilization_percent": 25.4,
+                        "area_utilization_percent": 100.0,
+                        "is_valid": true,
+                        "unload_sequence": [],
+                        "package_access_paths": [
+                          {
+                            "item_id": "KIEN-A",
+                            "is_clear": false,
+                            "points": [],
+                            "blocker_item_ids": [
+                              "KIEN-B",
+                              "KIEN-C"
+                            ]
+                          },
+                          {
+                            "item_id": "KIEN-B",
+                            "is_clear": false,
+                            "points": [],
+                            "blocker_item_ids": [
+                              "KIEN-C"
+                            ]
+                          },
+                          {
+                            "item_id": "KIEN-C",
+                            "is_clear": true,
+                            "points": [
+                              {
+                                "x": 0.0,
+                                "y": 0.0,
+                                "z": 50.0
+                              },
+                              {
+                                "x": 0.0,
+                                "y": 0.0,
+                                "z": 55.0
+                              },
+                              {
+                                "x": 0.0,
+                                "y": 0.0,
+                                "z": 55.0
+                              }
+                            ],
+                            "blocker_item_ids": []
+                          }
+                        ],
+                        "weight_balance": {
+                          "total_weight_kg": 127.0,
+                          "cg_x_cm": 50.0,
+                          "cg_y_cm": 50.0,
+                          "cg_x_percent": 50.0,
+                          "cg_y_percent": 50.0,
+                          "lateral_offset_cm": 0.0,
+                          "longitudinal_offset_cm": 0.0,
+                          "lateral_imbalance_percent": 0.0,
+                          "longitudinal_imbalance_percent": 0.0,
+                          "left_weight_kg": 63.5,
+                          "right_weight_kg": 63.5,
+                          "front_weight_kg": 63.5,
+                          "rear_weight_kg": 63.5,
+                          "status": "BALANCED"
+                        },
+                        "error_code": null,
+                        "error_message": null
+                      },
+                      {
+                        "step_index": 2,
+                        "stop_id": "delivery",
+                        "stop_type": "DELIVERY",
+                        "action_description": "Stop 2 (DELIVERY) - Điểm giao demo",
+                        "placed_items": [],
+                        "current_weight_kg": 0.0,
+                        "current_occupied_area_cm2": 0.0,
+                        "floor_area_cm2": 10000.0,
+                        "weight_utilization_percent": 0.0,
+                        "area_utilization_percent": 0.0,
+                        "is_valid": true,
+                        "unload_sequence": [
+                          "KIEN-C",
+                          "KIEN-B",
+                          "KIEN-A"
+                        ],
+                        "package_access_paths": [],
+                        "weight_balance": {
+                          "total_weight_kg": 0.0,
+                          "cg_x_cm": 50.0,
+                          "cg_y_cm": 50.0,
+                          "cg_x_percent": 50.0,
+                          "cg_y_percent": 50.0,
+                          "lateral_offset_cm": 0.0,
+                          "longitudinal_offset_cm": 0.0,
+                          "lateral_imbalance_percent": 0.0,
+                          "longitudinal_imbalance_percent": 0.0,
+                          "left_weight_kg": 0.0,
+                          "right_weight_kg": 0.0,
+                          "front_weight_kg": 0.0,
+                          "rear_weight_kg": 0.0,
+                          "status": "EMPTY"
+                        },
+                        "error_code": null,
+                        "error_message": null
+                      }
+                    ],
+                    "demo_stacking": {
+                      "max_tiers": 3,
+                      "lift_clearance_cm": 5.0,
+                      "owner_mode": "ANY_CUSTOMER"
+                    }
+                  },
+                  "cost": {
+                    "base_fuel_cost_vnd": 87000,
+                    "load_fuel_surcharge_vnd": 0,
+                    "fuel_cost_vnd": 87000,
+                    "cargo_holding_cost_vnd": 0,
+                    "late_delivery_penalty_vnd": 0,
+                    "cargo_distance_ton_km": 1.524,
+                    "cargo_time_ton_hours": 0.042,
+                    "vehicle_fixed_cost_vnd": 100000,
+                    "driver_fixed_salary_allocation_vnd": 0,
+                    "driver_trip_pay_vnd": 59000,
+                    "total_cost_vnd": 246000
+                  },
+                  "route_geometry": null,
+                  "depot": {
+                    "id": "depot",
+                    "source_location_id": null,
+                    "name": "Bãi demo",
+                    "latitude": 21.02,
+                    "longitude": 105.83
+                  },
+                  "end_location": {
+                    "id": "depot",
+                    "source_location_id": null,
+                    "name": "Bãi demo",
+                    "latitude": 21.02,
+                    "longitude": 105.83
+                  }
+                }
+              ]
+            },
+            "savings_vs_direct_vnd": 0,
+            "savings_vs_direct_percent": 0.0
+          },
+          "diagnostics": [
+            "Hybrid ALNS hoàn tất với seed 0; đã audit lại bằng SpatialValidator production.",
+            "Solver nội bộ: Hybrid ALNS (adaptive, 2526 iters, elite #1).",
+            "Kết quả là best-found trong ngân sách thời gian, không chứng minh tối ưu toàn cục."
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "case": "scenario_stack_customer_modes",
+    "mode": "SAME_CUSTOMER",
+    "elapsed_seconds": 0.04,
+    "http_status": 200,
+    "solver_run_count": 1,
+    "candidates": [
+      {
+        "rank": 1,
+        "search_strategy": "Vét cạn tuyến nhỏ",
+        "solver_objective": 246000,
+        "is_best_found": true,
+        "result": {
+          "package_contract_version": "1",
+          "job_id": "demo-stack-customer-modes",
+          "status": "SUCCESS",
+          "routes": [
+            {
+              "route_id": "van-1",
+              "vehicle_id": "van-1",
+              "service_day_index": 0,
+              "start_time_sec": 0,
+              "end_time_sec": 6200,
+              "plate_number": "DEMO-01",
+              "vehicle_length_cm": 100.0,
+              "vehicle_width_cm": 200.0,
+              "vehicle_height_cm": 100.0,
+              "driver_id": "driver-1",
+              "driver_name": "Tài xế demo 1",
+              "driver_license_class": "C",
+              "total_distance_km": 29.0,
+              "total_duration_minutes": 103.3,
+              "return_travel_time_sec": 900,
+              "return_waiting_time_sec": 0,
+              "stops": [
+                {
+                  "sequence": 1,
+                  "location_id": "pickup-a",
+                  "location_name": "Điểm lấy demo",
+                  "stop_type": "PICKUP",
+                  "order_id": "order-a",
+                  "allocation_id": "order-a",
+                  "order_stop_id": "pickup-a",
+                  "latitude": 21.03,
+                  "longitude": 105.85,
+                  "arrival_time_sec": 800,
+                  "departure_time_sec": 900,
+                  "travel_time_sec": 800,
+                  "waiting_time_sec": 0,
+                  "service_time_sec": 100,
+                  "items_loaded": [
+                    "KIEN-A"
+                  ],
+                  "items_unloaded": [],
+                  "current_weight_kg": 100.0
+                },
+                {
+                  "sequence": 2,
+                  "location_id": "pickup-b",
+                  "location_name": "Điểm lấy demo",
+                  "stop_type": "PICKUP",
+                  "order_id": "order-b",
+                  "allocation_id": "order-b",
+                  "order_stop_id": "pickup-b",
+                  "latitude": 21.03,
+                  "longitude": 105.85,
+                  "arrival_time_sec": 2000,
+                  "departure_time_sec": 2100,
+                  "travel_time_sec": 0,
+                  "waiting_time_sec": 1100,
+                  "service_time_sec": 100,
+                  "items_loaded": [
+                    "KIEN-B"
+                  ],
+                  "items_unloaded": [],
+                  "current_weight_kg": 122.0
+                },
+                {
+                  "sequence": 3,
+                  "location_id": "delivery-b",
+                  "location_name": "Điểm giao demo",
+                  "stop_type": "DELIVERY",
+                  "order_id": "order-b",
+                  "allocation_id": "order-b",
+                  "order_stop_id": "delivery-b",
+                  "latitude": 21.04,
+                  "longitude": 105.86,
+                  "arrival_time_sec": 3300,
+                  "departure_time_sec": 3400,
+                  "travel_time_sec": 1200,
+                  "waiting_time_sec": 0,
+                  "service_time_sec": 100,
+                  "items_loaded": [],
+                  "items_unloaded": [
+                    "KIEN-B"
+                  ],
+                  "current_weight_kg": 100.0
+                },
+                {
+                  "sequence": 4,
+                  "location_id": "delivery-a",
+                  "location_name": "Điểm giao demo",
+                  "stop_type": "DELIVERY",
+                  "order_id": "order-a",
+                  "allocation_id": "order-a",
+                  "order_stop_id": "delivery-a",
+                  "latitude": 21.04,
+                  "longitude": 105.86,
+                  "arrival_time_sec": 5200,
+                  "departure_time_sec": 5300,
+                  "travel_time_sec": 0,
+                  "waiting_time_sec": 1800,
+                  "service_time_sec": 100,
+                  "items_loaded": [],
+                  "items_unloaded": [
+                    "KIEN-A"
+                  ],
+                  "current_weight_kg": 0.0
+                }
+              ],
+              "spatial_validation": {
+                "is_valid": true,
+                "violation_code": null,
+                "violation_scenario": null,
+                "error_message": null,
+                "max_weight_kg": 122.0,
+                "max_area_cm2": 20000.0,
+                "max_lateral_imbalance_percent": 50.0,
+                "step_states": [
+                  {
+                    "step_index": 1,
+                    "stop_id": "pickup-a",
+                    "stop_type": "PICKUP",
+                    "action_description": "Stop 1 (PICKUP) - Điểm lấy demo",
+                    "placed_items": [
+                      {
+                        "item_id": "KIEN-A",
+                        "order_id": "order-a",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 100.0,
+                        "z": 0.0,
+                        "support_item_id": null,
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      }
+                    ],
+                    "current_weight_kg": 100.0,
+                    "current_occupied_area_cm2": 10000.0,
+                    "floor_area_cm2": 20000.0,
+                    "weight_utilization_percent": 20.0,
+                    "area_utilization_percent": 50.0,
+                    "is_valid": true,
+                    "unload_sequence": [],
+                    "package_access_paths": [
+                      {
+                        "item_id": "KIEN-A",
+                        "is_clear": true,
+                        "points": [
+                          {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 0.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 0.0
+                          }
+                        ],
+                        "blocker_item_ids": []
+                      }
+                    ],
+                    "weight_balance": {
+                      "total_weight_kg": 100.0,
+                      "cg_x_cm": 50.0,
+                      "cg_y_cm": 50.0,
+                      "cg_x_percent": 50.0,
+                      "cg_y_percent": 25.0,
+                      "lateral_offset_cm": -50.0,
+                      "longitudinal_offset_cm": 0.0,
+                      "lateral_imbalance_percent": 50.0,
+                      "longitudinal_imbalance_percent": 0.0,
+                      "left_weight_kg": 100.0,
+                      "right_weight_kg": 0.0,
+                      "front_weight_kg": 50.0,
+                      "rear_weight_kg": 50.0,
+                      "status": "IMBALANCED"
+                    },
+                    "error_code": null,
+                    "error_message": null
+                  },
+                  {
+                    "step_index": 2,
+                    "stop_id": "pickup-b",
+                    "stop_type": "PICKUP",
+                    "action_description": "Stop 2 (PICKUP) - Điểm lấy demo",
+                    "placed_items": [
+                      {
+                        "item_id": "KIEN-A",
+                        "order_id": "order-a",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 100.0,
+                        "z": 0.0,
+                        "support_item_id": null,
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      },
+                      {
+                        "item_id": "KIEN-B",
+                        "order_id": "order-b",
+                        "x": 0.0,
+                        "y": 100.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 22.0,
+                        "z": 0.0,
+                        "support_item_id": null,
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      }
+                    ],
+                    "current_weight_kg": 122.0,
+                    "current_occupied_area_cm2": 20000.0,
+                    "floor_area_cm2": 20000.0,
+                    "weight_utilization_percent": 24.4,
+                    "area_utilization_percent": 100.0,
+                    "is_valid": true,
+                    "unload_sequence": [],
+                    "package_access_paths": [
+                      {
+                        "item_id": "KIEN-A",
+                        "is_clear": true,
+                        "points": [
+                          {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 0.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 0.0
+                          }
+                        ],
+                        "blocker_item_ids": []
+                      },
+                      {
+                        "item_id": "KIEN-B",
+                        "is_clear": true,
+                        "points": [
+                          {
+                            "x": 0.0,
+                            "y": 100.0,
+                            "z": 0.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 100.0,
+                            "z": 0.0
+                          }
+                        ],
+                        "blocker_item_ids": []
+                      }
+                    ],
+                    "weight_balance": {
+                      "total_weight_kg": 122.0,
+                      "cg_x_cm": 50.0,
+                      "cg_y_cm": 68.03,
+                      "cg_x_percent": 50.0,
+                      "cg_y_percent": 34.0,
+                      "lateral_offset_cm": -31.97,
+                      "longitudinal_offset_cm": 0.0,
+                      "lateral_imbalance_percent": 32.0,
+                      "longitudinal_imbalance_percent": 0.0,
+                      "left_weight_kg": 100.0,
+                      "right_weight_kg": 22.0,
+                      "front_weight_kg": 61.0,
+                      "rear_weight_kg": 61.0,
+                      "status": "MODERATE"
+                    },
+                    "error_code": null,
+                    "error_message": null
+                  },
+                  {
+                    "step_index": 3,
+                    "stop_id": "delivery-b",
+                    "stop_type": "DELIVERY",
+                    "action_description": "Stop 3 (DELIVERY) - Điểm giao demo",
+                    "placed_items": [
+                      {
+                        "item_id": "KIEN-A",
+                        "order_id": "order-a",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 100.0,
+                        "z": 0.0,
+                        "support_item_id": null,
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      }
+                    ],
+                    "current_weight_kg": 100.0,
+                    "current_occupied_area_cm2": 10000.0,
+                    "floor_area_cm2": 20000.0,
+                    "weight_utilization_percent": 20.0,
+                    "area_utilization_percent": 50.0,
+                    "is_valid": true,
+                    "unload_sequence": [
+                      "KIEN-B"
+                    ],
+                    "package_access_paths": [
+                      {
+                        "item_id": "KIEN-A",
+                        "is_clear": true,
+                        "points": [
+                          {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 0.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 0.0,
+                            "z": 0.0
+                          }
+                        ],
+                        "blocker_item_ids": []
+                      }
+                    ],
+                    "weight_balance": {
+                      "total_weight_kg": 100.0,
+                      "cg_x_cm": 50.0,
+                      "cg_y_cm": 50.0,
+                      "cg_x_percent": 50.0,
+                      "cg_y_percent": 25.0,
+                      "lateral_offset_cm": -50.0,
+                      "longitudinal_offset_cm": 0.0,
+                      "lateral_imbalance_percent": 50.0,
+                      "longitudinal_imbalance_percent": 0.0,
+                      "left_weight_kg": 100.0,
+                      "right_weight_kg": 0.0,
+                      "front_weight_kg": 50.0,
+                      "rear_weight_kg": 50.0,
+                      "status": "IMBALANCED"
+                    },
+                    "error_code": null,
+                    "error_message": null
+                  },
+                  {
+                    "step_index": 4,
+                    "stop_id": "delivery-a",
+                    "stop_type": "DELIVERY",
+                    "action_description": "Stop 4 (DELIVERY) - Điểm giao demo",
+                    "placed_items": [],
+                    "current_weight_kg": 0.0,
+                    "current_occupied_area_cm2": 0.0,
+                    "floor_area_cm2": 20000.0,
+                    "weight_utilization_percent": 0.0,
+                    "area_utilization_percent": 0.0,
+                    "is_valid": true,
+                    "unload_sequence": [
+                      "KIEN-A"
+                    ],
+                    "package_access_paths": [],
+                    "weight_balance": {
+                      "total_weight_kg": 0.0,
+                      "cg_x_cm": 50.0,
+                      "cg_y_cm": 100.0,
+                      "cg_x_percent": 50.0,
+                      "cg_y_percent": 50.0,
+                      "lateral_offset_cm": 0.0,
+                      "longitudinal_offset_cm": 0.0,
+                      "lateral_imbalance_percent": 0.0,
+                      "longitudinal_imbalance_percent": 0.0,
+                      "left_weight_kg": 0.0,
+                      "right_weight_kg": 0.0,
+                      "front_weight_kg": 0.0,
+                      "rear_weight_kg": 0.0,
+                      "status": "EMPTY"
+                    },
+                    "error_code": null,
+                    "error_message": null
+                  }
+                ],
+                "demo_stacking": null
+              },
+              "cost": {
+                "base_fuel_cost_vnd": 87000,
+                "load_fuel_surcharge_vnd": 0,
+                "fuel_cost_vnd": 87000,
+                "cargo_holding_cost_vnd": 0,
+                "late_delivery_penalty_vnd": 0,
+                "cargo_distance_ton_km": 1.464,
+                "cargo_time_ton_hours": 0.127,
+                "vehicle_fixed_cost_vnd": 100000,
+                "driver_fixed_salary_allocation_vnd": 0,
+                "driver_trip_pay_vnd": 59000,
+                "total_cost_vnd": 246000
+              },
+              "route_geometry": {
+                "type": "LineString",
+                "coordinates": [
+                  [
+                    105.83,
+                    21.02
+                  ],
+                  [
+                    105.85,
+                    21.03
+                  ],
+                  [
+                    105.85,
+                    21.03
+                  ],
+                  [
+                    105.86,
+                    21.04
+                  ],
+                  [
+                    105.86,
+                    21.04
+                  ],
+                  [
+                    105.83,
+                    21.02
+                  ]
+                ]
+              },
+              "depot": {
+                "id": "depot",
+                "source_location_id": null,
+                "name": "Bãi demo",
+                "latitude": 21.02,
+                "longitude": 105.83
+              },
+              "end_location": null
+            }
+          ],
+          "unassigned_orders": [],
+          "total_distance_km": 29.0,
+          "total_duration_minutes": 103.3,
+          "total_cost_vnd": 246000,
+          "planning_objective": {
+            "planning_span_days": 1,
+            "operating_cost_vnd": 246000,
+            "driver_active_salary_allocation_vnd": 0,
+            "driver_calendar_salary_vnd": 0,
+            "driver_idle_salary_allocation_vnd": 0,
+            "operational_late_penalty_vnd": 0,
+            "selection_score_vnd": 246000,
+            "extra_order_trips": 0,
+            "split_order_count": 0,
+            "max_trips_per_order": 1,
+            "extra_request_trips": 0,
+            "active_route_count": 1,
+            "physical_vehicle_count": 1,
+            "delivery_visit_count": 2
+          },
+          "benchmarks": {
+            "or_tools": {
+              "method_name": "Google OR-Tools Metaheuristic",
+              "description": "Nghiệm khả thi tốt nhất tìm thấy trong giới hạn thời gian",
+              "total_cost_vnd": 246000,
+              "total_distance_km": 29.0,
+              "total_duration_minutes": 103.3,
+              "vehicles_used": 1,
+              "fuel_cost_vnd": 87000,
+              "vehicle_fixed_cost_vnd": 100000,
+              "driver_cost_vnd": 59000,
+              "cargo_holding_cost_vnd": 0,
+              "late_delivery_penalty_vnd": 0,
+              "planning_span_days": 1,
+              "physical_vehicle_count": 1,
+              "driver_calendar_salary_vnd": 0,
+              "driver_idle_salary_allocation_vnd": 0,
+              "selection_score_vnd": 246000,
+              "is_feasible": true,
+              "violations": [],
+              "routes": []
+            },
+            "direct_dedicated": {
+              "method_name": "Direct Dedicated (Đơn lẻ)",
+              "description": "Mỗi chuyến chở một đơn. Xe và tài xế có thể chạy nhiều chuyến nối tiếp trong ca.",
+              "total_cost_vnd": 0,
+              "total_distance_km": 0.0,
+              "total_duration_minutes": 0.0,
+              "vehicles_used": 0,
+              "fuel_cost_vnd": 0,
+              "vehicle_fixed_cost_vnd": 0,
+              "driver_cost_vnd": 0,
+              "cargo_holding_cost_vnd": 0,
+              "late_delivery_penalty_vnd": 0,
+              "planning_span_days": 0,
+              "physical_vehicle_count": 0,
+              "driver_calendar_salary_vnd": 0,
+              "driver_idle_salary_allocation_vnd": 0,
+              "selection_score_vnd": 0,
+              "is_feasible": false,
+              "violations": [
+                "ASSIGNMENT_UNAVAILABLE:Chưa tìm được lịch chuyến đơn lẻ giao đủ trong các ca khả dụng."
+              ],
+              "routes": []
+            },
+            "savings_vs_direct_vnd": null,
+            "savings_vs_direct_percent": null
+          },
+          "diagnostics": [
+            "Vét cạn đã duyệt hết không gian tuyến nhỏ trong mô hình; phương án hạng 1 là tối ưu trong không gian đã mô hình hóa.",
+            "Đã kiểm tra 8 chuỗi pickup–delivery và 1 phân công giao đủ đơn.",
+            "Mọi tuyến trả về đều đã qua validator tải, time window và xếp/dỡ hình học động.",
+            "Tầng routing đã duyệt hết các chuỗi pickup–delivery và khung xe-ngày đủ điều kiện."
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "case": "scenario_stack_customer_modes",
+    "mode": "ANY_CUSTOMER",
+    "elapsed_seconds": 0.034,
+    "http_status": 200,
+    "solver_run_count": 1,
+    "candidates": [
+      {
+        "rank": 1,
+        "search_strategy": "Vét cạn tuyến nhỏ",
+        "solver_objective": 246000,
+        "is_best_found": true,
+        "result": {
+          "package_contract_version": "1",
+          "job_id": "demo-stack-customer-modes",
+          "status": "SUCCESS",
+          "routes": [
+            {
+              "route_id": "van-1",
+              "vehicle_id": "van-1",
+              "service_day_index": 0,
+              "start_time_sec": 0,
+              "end_time_sec": 6200,
+              "plate_number": "DEMO-01",
+              "vehicle_length_cm": 100.0,
+              "vehicle_width_cm": 200.0,
+              "vehicle_height_cm": 100.0,
+              "driver_id": "driver-1",
+              "driver_name": "Tài xế demo 1",
+              "driver_license_class": "C",
+              "total_distance_km": 29.0,
+              "total_duration_minutes": 103.3,
+              "return_travel_time_sec": 900,
+              "return_waiting_time_sec": 0,
+              "stops": [
+                {
+                  "sequence": 1,
+                  "location_id": "pickup-a",
+                  "location_name": "Điểm lấy demo",
+                  "stop_type": "PICKUP",
+                  "order_id": "order-a",
+                  "allocation_id": "order-a",
+                  "order_stop_id": "pickup-a",
+                  "latitude": 21.03,
+                  "longitude": 105.85,
+                  "arrival_time_sec": 800,
+                  "departure_time_sec": 900,
+                  "travel_time_sec": 800,
+                  "waiting_time_sec": 0,
+                  "service_time_sec": 100,
+                  "items_loaded": [
+                    "KIEN-A"
+                  ],
+                  "items_unloaded": [],
+                  "current_weight_kg": 100.0
+                },
+                {
+                  "sequence": 2,
+                  "location_id": "pickup-b",
+                  "location_name": "Điểm lấy demo",
+                  "stop_type": "PICKUP",
+                  "order_id": "order-b",
+                  "allocation_id": "order-b",
+                  "order_stop_id": "pickup-b",
+                  "latitude": 21.03,
+                  "longitude": 105.85,
+                  "arrival_time_sec": 2000,
+                  "departure_time_sec": 2100,
+                  "travel_time_sec": 0,
+                  "waiting_time_sec": 1100,
+                  "service_time_sec": 100,
+                  "items_loaded": [
+                    "KIEN-B"
+                  ],
+                  "items_unloaded": [],
+                  "current_weight_kg": 122.0
+                },
+                {
+                  "sequence": 3,
+                  "location_id": "delivery-b",
+                  "location_name": "Điểm giao demo",
+                  "stop_type": "DELIVERY",
+                  "order_id": "order-b",
+                  "allocation_id": "order-b",
+                  "order_stop_id": "delivery-b",
+                  "latitude": 21.04,
+                  "longitude": 105.86,
+                  "arrival_time_sec": 3300,
+                  "departure_time_sec": 3400,
+                  "travel_time_sec": 1200,
+                  "waiting_time_sec": 0,
+                  "service_time_sec": 100,
+                  "items_loaded": [],
+                  "items_unloaded": [
+                    "KIEN-B"
+                  ],
+                  "current_weight_kg": 100.0
+                },
+                {
+                  "sequence": 4,
+                  "location_id": "delivery-a",
+                  "location_name": "Điểm giao demo",
+                  "stop_type": "DELIVERY",
+                  "order_id": "order-a",
+                  "allocation_id": "order-a",
+                  "order_stop_id": "delivery-a",
+                  "latitude": 21.04,
+                  "longitude": 105.86,
+                  "arrival_time_sec": 5200,
+                  "departure_time_sec": 5300,
+                  "travel_time_sec": 0,
+                  "waiting_time_sec": 1800,
+                  "service_time_sec": 100,
+                  "items_loaded": [],
+                  "items_unloaded": [
+                    "KIEN-A"
+                  ],
+                  "current_weight_kg": 0.0
+                }
+              ],
+              "spatial_validation": {
+                "is_valid": true,
+                "violation_code": null,
+                "violation_scenario": null,
+                "error_message": null,
+                "max_weight_kg": 122.0,
+                "max_area_cm2": 10000.0,
+                "max_lateral_imbalance_percent": 0.0,
+                "step_states": [
+                  {
+                    "step_index": 1,
+                    "stop_id": "pickup-a",
+                    "stop_type": "PICKUP",
+                    "action_description": "Stop 1 (PICKUP) - Điểm lấy demo",
+                    "placed_items": [
+                      {
+                        "item_id": "KIEN-A",
+                        "order_id": "order-a",
+                        "x": 0.0,
+                        "y": 50.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 100.0,
+                        "z": 0.0,
+                        "support_item_id": null,
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      }
+                    ],
+                    "current_weight_kg": 100.0,
+                    "current_occupied_area_cm2": 10000.0,
+                    "floor_area_cm2": 20000.0,
+                    "weight_utilization_percent": 20.0,
+                    "area_utilization_percent": 50.0,
+                    "is_valid": true,
+                    "unload_sequence": [],
+                    "package_access_paths": [
+                      {
+                        "item_id": "KIEN-A",
+                        "is_clear": true,
+                        "points": [
+                          {
+                            "x": 0.0,
+                            "y": 50.0,
+                            "z": 0.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 50.0,
+                            "z": 5.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 50.0,
+                            "z": 5.0
+                          }
+                        ],
+                        "blocker_item_ids": []
+                      }
+                    ],
+                    "weight_balance": {
+                      "total_weight_kg": 100.0,
+                      "cg_x_cm": 50.0,
+                      "cg_y_cm": 100.0,
+                      "cg_x_percent": 50.0,
+                      "cg_y_percent": 50.0,
+                      "lateral_offset_cm": 0.0,
+                      "longitudinal_offset_cm": 0.0,
+                      "lateral_imbalance_percent": 0.0,
+                      "longitudinal_imbalance_percent": 0.0,
+                      "left_weight_kg": 50.0,
+                      "right_weight_kg": 50.0,
+                      "front_weight_kg": 50.0,
+                      "rear_weight_kg": 50.0,
+                      "status": "BALANCED"
+                    },
+                    "error_code": null,
+                    "error_message": null
+                  },
+                  {
+                    "step_index": 2,
+                    "stop_id": "pickup-b",
+                    "stop_type": "PICKUP",
+                    "action_description": "Stop 2 (PICKUP) - Điểm lấy demo",
+                    "placed_items": [
+                      {
+                        "item_id": "KIEN-A",
+                        "order_id": "order-a",
+                        "x": 0.0,
+                        "y": 50.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 100.0,
+                        "z": 0.0,
+                        "support_item_id": null,
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      },
+                      {
+                        "item_id": "KIEN-B",
+                        "order_id": "order-b",
+                        "x": 0.0,
+                        "y": 50.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 22.0,
+                        "z": 25.0,
+                        "support_item_id": "KIEN-A",
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      }
+                    ],
+                    "current_weight_kg": 122.0,
+                    "current_occupied_area_cm2": 10000.0,
+                    "floor_area_cm2": 20000.0,
+                    "weight_utilization_percent": 24.4,
+                    "area_utilization_percent": 50.0,
+                    "is_valid": true,
+                    "unload_sequence": [],
+                    "package_access_paths": [
+                      {
+                        "item_id": "KIEN-A",
+                        "is_clear": false,
+                        "points": [],
+                        "blocker_item_ids": [
+                          "KIEN-B"
+                        ]
+                      },
+                      {
+                        "item_id": "KIEN-B",
+                        "is_clear": true,
+                        "points": [
+                          {
+                            "x": 0.0,
+                            "y": 50.0,
+                            "z": 25.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 50.0,
+                            "z": 30.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 50.0,
+                            "z": 30.0
+                          }
+                        ],
+                        "blocker_item_ids": []
+                      }
+                    ],
+                    "weight_balance": {
+                      "total_weight_kg": 122.0,
+                      "cg_x_cm": 50.0,
+                      "cg_y_cm": 100.0,
+                      "cg_x_percent": 50.0,
+                      "cg_y_percent": 50.0,
+                      "lateral_offset_cm": 0.0,
+                      "longitudinal_offset_cm": 0.0,
+                      "lateral_imbalance_percent": 0.0,
+                      "longitudinal_imbalance_percent": 0.0,
+                      "left_weight_kg": 61.0,
+                      "right_weight_kg": 61.0,
+                      "front_weight_kg": 61.0,
+                      "rear_weight_kg": 61.0,
+                      "status": "BALANCED"
+                    },
+                    "error_code": null,
+                    "error_message": null
+                  },
+                  {
+                    "step_index": 3,
+                    "stop_id": "delivery-b",
+                    "stop_type": "DELIVERY",
+                    "action_description": "Stop 3 (DELIVERY) - Điểm giao demo",
+                    "placed_items": [
+                      {
+                        "item_id": "KIEN-A",
+                        "order_id": "order-a",
+                        "x": 0.0,
+                        "y": 50.0,
+                        "length_cm": 100.0,
+                        "width_cm": 100.0,
+                        "height_cm": 25.0,
+                        "weight_kg": 100.0,
+                        "z": 0.0,
+                        "support_item_id": null,
+                        "cargo_kind": "STANDARD",
+                        "no_top_load_requested": false,
+                        "floor_rotation_locked": false
+                      }
+                    ],
+                    "current_weight_kg": 100.0,
+                    "current_occupied_area_cm2": 10000.0,
+                    "floor_area_cm2": 20000.0,
+                    "weight_utilization_percent": 20.0,
+                    "area_utilization_percent": 50.0,
+                    "is_valid": true,
+                    "unload_sequence": [
+                      "KIEN-B"
+                    ],
+                    "package_access_paths": [
+                      {
+                        "item_id": "KIEN-A",
+                        "is_clear": true,
+                        "points": [
+                          {
+                            "x": 0.0,
+                            "y": 50.0,
+                            "z": 0.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 50.0,
+                            "z": 5.0
+                          },
+                          {
+                            "x": 0.0,
+                            "y": 50.0,
+                            "z": 5.0
+                          }
+                        ],
+                        "blocker_item_ids": []
+                      }
+                    ],
+                    "weight_balance": {
+                      "total_weight_kg": 100.0,
+                      "cg_x_cm": 50.0,
+                      "cg_y_cm": 100.0,
+                      "cg_x_percent": 50.0,
+                      "cg_y_percent": 50.0,
+                      "lateral_offset_cm": 0.0,
+                      "longitudinal_offset_cm": 0.0,
+                      "lateral_imbalance_percent": 0.0,
+                      "longitudinal_imbalance_percent": 0.0,
+                      "left_weight_kg": 50.0,
+                      "right_weight_kg": 50.0,
+                      "front_weight_kg": 50.0,
+                      "rear_weight_kg": 50.0,
+                      "status": "BALANCED"
+                    },
+                    "error_code": null,
+                    "error_message": null
+                  },
+                  {
+                    "step_index": 4,
+                    "stop_id": "delivery-a",
+                    "stop_type": "DELIVERY",
+                    "action_description": "Stop 4 (DELIVERY) - Điểm giao demo",
+                    "placed_items": [],
+                    "current_weight_kg": 0.0,
+                    "current_occupied_area_cm2": 0.0,
+                    "floor_area_cm2": 20000.0,
+                    "weight_utilization_percent": 0.0,
+                    "area_utilization_percent": 0.0,
+                    "is_valid": true,
+                    "unload_sequence": [
+                      "KIEN-A"
+                    ],
+                    "package_access_paths": [],
+                    "weight_balance": {
+                      "total_weight_kg": 0.0,
+                      "cg_x_cm": 50.0,
+                      "cg_y_cm": 100.0,
+                      "cg_x_percent": 50.0,
+                      "cg_y_percent": 50.0,
+                      "lateral_offset_cm": 0.0,
+                      "longitudinal_offset_cm": 0.0,
+                      "lateral_imbalance_percent": 0.0,
+                      "longitudinal_imbalance_percent": 0.0,
+                      "left_weight_kg": 0.0,
+                      "right_weight_kg": 0.0,
+                      "front_weight_kg": 0.0,
+                      "rear_weight_kg": 0.0,
+                      "status": "EMPTY"
+                    },
+                    "error_code": null,
+                    "error_message": null
+                  }
+                ],
+                "demo_stacking": {
+                  "max_tiers": 3,
+                  "lift_clearance_cm": 5.0,
+                  "owner_mode": "ANY_CUSTOMER"
+                }
+              },
+              "cost": {
+                "base_fuel_cost_vnd": 87000,
+                "load_fuel_surcharge_vnd": 0,
+                "fuel_cost_vnd": 87000,
+                "cargo_holding_cost_vnd": 0,
+                "late_delivery_penalty_vnd": 0,
+                "cargo_distance_ton_km": 1.464,
+                "cargo_time_ton_hours": 0.127,
+                "vehicle_fixed_cost_vnd": 100000,
+                "driver_fixed_salary_allocation_vnd": 0,
+                "driver_trip_pay_vnd": 59000,
+                "total_cost_vnd": 246000
+              },
+              "route_geometry": {
+                "type": "LineString",
+                "coordinates": [
+                  [
+                    105.83,
+                    21.02
+                  ],
+                  [
+                    105.85,
+                    21.03
+                  ],
+                  [
+                    105.85,
+                    21.03
+                  ],
+                  [
+                    105.86,
+                    21.04
+                  ],
+                  [
+                    105.86,
+                    21.04
+                  ],
+                  [
+                    105.83,
+                    21.02
+                  ]
+                ]
+              },
+              "depot": {
+                "id": "depot",
+                "source_location_id": null,
+                "name": "Bãi demo",
+                "latitude": 21.02,
+                "longitude": 105.83
+              },
+              "end_location": null
+            }
+          ],
+          "unassigned_orders": [],
+          "total_distance_km": 29.0,
+          "total_duration_minutes": 103.3,
+          "total_cost_vnd": 246000,
+          "planning_objective": {
+            "planning_span_days": 1,
+            "operating_cost_vnd": 246000,
+            "driver_active_salary_allocation_vnd": 0,
+            "driver_calendar_salary_vnd": 0,
+            "driver_idle_salary_allocation_vnd": 0,
+            "operational_late_penalty_vnd": 0,
+            "selection_score_vnd": 246000,
+            "extra_order_trips": 0,
+            "split_order_count": 0,
+            "max_trips_per_order": 1,
+            "extra_request_trips": 0,
+            "active_route_count": 1,
+            "physical_vehicle_count": 1,
+            "delivery_visit_count": 2
+          },
+          "benchmarks": {
+            "or_tools": {
+              "method_name": "Google OR-Tools Metaheuristic",
+              "description": "Nghiệm khả thi tốt nhất tìm thấy trong giới hạn thời gian",
+              "total_cost_vnd": 246000,
+              "total_distance_km": 29.0,
+              "total_duration_minutes": 103.3,
+              "vehicles_used": 1,
+              "fuel_cost_vnd": 87000,
+              "vehicle_fixed_cost_vnd": 100000,
+              "driver_cost_vnd": 59000,
+              "cargo_holding_cost_vnd": 0,
+              "late_delivery_penalty_vnd": 0,
+              "planning_span_days": 1,
+              "physical_vehicle_count": 1,
+              "driver_calendar_salary_vnd": 0,
+              "driver_idle_salary_allocation_vnd": 0,
+              "selection_score_vnd": 246000,
+              "is_feasible": true,
+              "violations": [],
+              "routes": []
+            },
+            "direct_dedicated": {
+              "method_name": "Direct Dedicated (Đơn lẻ)",
+              "description": "Mỗi chuyến chở một đơn. Xe và tài xế có thể chạy nhiều chuyến nối tiếp trong ca.",
+              "total_cost_vnd": 0,
+              "total_distance_km": 0.0,
+              "total_duration_minutes": 0.0,
+              "vehicles_used": 0,
+              "fuel_cost_vnd": 0,
+              "vehicle_fixed_cost_vnd": 0,
+              "driver_cost_vnd": 0,
+              "cargo_holding_cost_vnd": 0,
+              "late_delivery_penalty_vnd": 0,
+              "planning_span_days": 0,
+              "physical_vehicle_count": 0,
+              "driver_calendar_salary_vnd": 0,
+              "driver_idle_salary_allocation_vnd": 0,
+              "selection_score_vnd": 0,
+              "is_feasible": false,
+              "violations": [
+                "ASSIGNMENT_UNAVAILABLE:Chưa tìm được lịch chuyến đơn lẻ giao đủ trong các ca khả dụng."
+              ],
+              "routes": []
+            },
+            "savings_vs_direct_vnd": null,
+            "savings_vs_direct_percent": null
+          },
+          "diagnostics": [
+            "Vét cạn đã duyệt hết không gian tuyến nhỏ trong mô hình; phương án hạng 1 là tối ưu trong không gian đã mô hình hóa.",
+            "Đã kiểm tra 8 chuỗi pickup–delivery và 1 phân công giao đủ đơn.",
+            "Mọi tuyến trả về đều đã qua validator tải, time window và xếp/dỡ hình học động.",
+            "Tầng routing đã duyệt hết các chuỗi pickup–delivery và khung xe-ngày đủ điều kiện."
+          ]
+        }
+      }
+    ]
+  }
+]

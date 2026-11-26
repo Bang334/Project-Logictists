@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   clearAutoDispatchState,
+  dismissAutoDispatchState,
   getAutoDispatchState,
   getLastSelectedBranch,
+  isAutoDispatchJobDismissed,
   saveAutoDispatchState,
   saveLastSelectedBranch,
   StoredAutoDispatchState,
@@ -54,5 +56,18 @@ describe('autoDispatchStorage', () => {
   it('handles invalid or corrupted JSON safely without crashing', () => {
     localStorage.setItem('tms_auto_dispatch_state_corrupt', '{not-a-valid-json}');
     expect(getAutoDispatchState('corrupt')).toBeNull();
+  });
+
+  it('tracks dismissed job cutoff and clears dismissal when saving a new state', () => {
+    saveAutoDispatchState(mockState);
+    dismissAutoDispatchState('branch-hn-01', '2026-10-02T12:00:00.000Z');
+
+    expect(getAutoDispatchState('branch-hn-01')).toBeNull();
+    expect(isAutoDispatchJobDismissed('branch-hn-01', '2026-10-02T12:00:00.000Z')).toBe(true);
+    expect(isAutoDispatchJobDismissed('branch-hn-01', '2026-10-02T11:59:00.000Z')).toBe(true);
+    expect(isAutoDispatchJobDismissed('branch-hn-01', '2026-10-02T12:01:00.000Z')).toBe(false);
+
+    saveAutoDispatchState(mockState);
+    expect(isAutoDispatchJobDismissed('branch-hn-01', '2026-10-02T12:00:00.000Z')).toBe(false);
   });
 });

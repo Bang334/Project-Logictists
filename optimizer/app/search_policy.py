@@ -12,7 +12,7 @@ from typing import Optional
 from .models import FleetOptimizationRequest
 
 
-MAX_SEARCH_BUDGET_SECONDS = 120
+MAX_SEARCH_BUDGET_SECONDS = 1000
 
 
 @dataclass(frozen=True)
@@ -79,7 +79,7 @@ def calculate_search_policy(
         else:
             # Package-heavy and multi-resource jobs need disproportionately more
             # local-search time than tiny routing graphs. Scale the shared score
-            # while retaining the caller-provided and global 120-second caps.
+            # while retaining the caller-provided and global time caps.
             desired_budget = math.ceil(5 + complexity_score * 1.30)
         time_budget_seconds = min(caller_cap, max(1, desired_budget))
     if time_budget_seconds <= 3:

@@ -1,8 +1,13 @@
+import { MapboxMatrixRateLimitException } from '../mapbox/mapbox.service';
 import { AuthService } from '../auth/auth.service';
-import { Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  GatewayTimeoutException,
+  Logger,
+} from '@nestjs/common';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Prisma } from '@prisma/client';
-import { Job } from 'bullmq';
+import { Job, UnrecoverableError } from 'bullmq';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
@@ -136,6 +141,8 @@ export class OptimizationProcessor extends WorkerHost {
     };
 
     const dto: RunAutomaticOptimizationDto = {
+      ...(typeof request.deliveryBatchId === 'string' ? { deliveryBatchId: request.deliveryBatchId } : {}),
+      ...(request.replanWithFleet === true ? { replanWithFleet: true } : {}),
       idempotencyKey: optimizationJob.id,
       branchId: optimizationJob.branchId,
       ...(typeof request.scheduleMode === 'string'
@@ -261,7 +268,7 @@ export class OptimizationProcessor extends WorkerHost {
           await tx.optimizationResult.createMany({ data: candidateRows });
         }
         return true;
-      }, { timeout: 30_000 });
+      }, { timeout: 120_000 });
       if (!stored) return;
       this.logger.log(
         JSON.stringify({
@@ -277,8 +284,16 @@ export class OptimizationProcessor extends WorkerHost {
       );
       this.emitStatus(optimizationJob.branchId, optimizationJob.id, status);
     } catch (error) {
-      const finalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
-      const status = finalAttempt ? 'FAILED' : 'RETRYING';
+      const isHttpTimeout = error instanceof GatewayTimeoutException;
+      const isNonRetryable = isHttpTimeout || error instanceof BadRequestException
+        || error instanceof MapboxMatrixRateLimitException;
+      const finalAttempt =
+        isNonRetryable || job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+      const status = isHttpTimeout
+        ? 'TIMEOUT'
+        : finalAttempt
+          ? 'FAILED'
+          : 'RETRYING';
       await this.prisma.optimizationJob.updateMany({
         where: {
           id: optimizationJob.id,
@@ -296,6 +311,9 @@ export class OptimizationProcessor extends WorkerHost {
       });
       this.emitStatus(optimizationJob.branchId, optimizationJob.id, status);
       this.logger.error(`Optimization job ${optimizationJob.id} failed`, error);
+      if (isNonRetryable) {
+        throw new UnrecoverableError(this.errorMessage(error));
+      }
       throw error;
     } finally {
       clearInterval(heartbeat);
@@ -314,8 +332,12 @@ export class OptimizationProcessor extends WorkerHost {
   }
 
   private errorCode(error: unknown) {
-    const candidate = error as { response?: { status?: number } };
-    return candidate?.response?.status ? `HTTP_${candidate.response.status}` : 'OPTIMIZATION_FAILED';
+    if (error instanceof GatewayTimeoutException) {
+      return 'OPTIMIZER_HTTP_TIMEOUT';
+    }
+    const candidate = error as { response?: { status?: number }; getStatus?: () => number };
+    const status = candidate?.response?.status ?? candidate?.getStatus?.();
+    return status ? `HTTP_${status}` : 'OPTIMIZATION_FAILED';
   }
 
   private errorMessage(error: unknown) {

@@ -1,0 +1,78 @@
+{
+  "candidates": [
+    {
+      "rank": 1,
+      "status": "SUCCESS",
+      "orders_served": 120,
+      "routes": 11,
+      "cost_vnd": 14005859,
+      "distance_km": 1891.07,
+      "upper_packages": 782,
+      "floor_peak_mean": 35.753367003367,
+      "floor_peak_max": 88.88888888888889,
+      "volume_peak_mean": 24.031177156177154,
+      "volume_peak_max": 51.36217948717948,
+      "routes_floor_above80": 1,
+      "spatial_valid": true
+    }
+  ],
+  "diagnostics": [
+    "Hybrid-first: đã nhận 2/2 nghiệm Hybrid có tuyến; độ phức tạp 350.0, ngân sách tổng 60 giây, 30 giây/seed.",
+    "Đã tìm thấy 2 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+  ],
+  "dataset": {
+    "orders": 120,
+    "packages": 1260,
+    "physical_vehicles": 20,
+    "days": 7,
+    "old_volume_m3": 220.83900000000006,
+    "volume_m3": 1156.719999999998,
+    "volume_multiplier": 5.237842953463825,
+    "dimensions_cm": {
+      "length": [
+        100,
+        120,
+        150
+      ],
+      "width": [
+        80,
+        100,
+        120
+      ],
+      "height": [
+        65,
+        70,
+        75,
+        80
+      ]
+    },
+    "delivery_locations": 11,
+    "max_depot_round_direction_km": 12.2143,
+    "matrix_source": "Preserved db_danang_30_orders.json, exact node remapping"
+  },
+  "branch_update": {
+    "branch": "BRANCH-DAD",
+    "orders_updated": 120,
+    "packages": 1260,
+    "volume_m3": 1156.72,
+    "new_order_version": 2,
+    "method": "OrdersService.update with version checks and audit events",
+    "original_30_orders_retained": true
+  },
+  "full_branch_tests": [
+    {
+      "job_id": "5856aa39-db45-471b-a84f-86d41c94bca9",
+      "orders": 150,
+      "search_seconds": 60,
+      "status": "TIMEOUT",
+      "reason": "Search budget exhausted before a feasible plan was audited"
+    },
+    {
+      "job_id": "4485711a-72a5-4a97-b48a-3be3ad334533",
+      "orders": 150,
+      "search_seconds": 120,
+      "status": "TIMEOUT",
+      "reason": "Optimizer HTTP timeout at 210 seconds"
+    }
+  ]
+}

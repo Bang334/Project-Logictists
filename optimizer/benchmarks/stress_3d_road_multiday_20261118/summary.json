@@ -1,0 +1,37 @@
+{
+  "status": "SUCCESS",
+  "elapsed_seconds": 37.21481210000002,
+  "served_orders": 120,
+  "total_orders": 120,
+  "total_items": 1260,
+  "delivered_items": 1260,
+  "routes": 48,
+  "physical_vehicles": 20,
+  "days": [
+    0,
+    1,
+    2
+  ],
+  "upper_tier_unique_items": 761,
+  "cost_vnd": 106660164,
+  "distance_km": 19958.92,
+  "balanced": true,
+  "unique": true,
+  "spatial_valid": true,
+  "planning_objective": {
+    "planning_span_days": 3,
+    "operating_cost_vnd": 106660164,
+    "driver_active_salary_allocation_vnd": 22014582,
+    "driver_calendar_salary_vnd": 30681840,
+    "driver_idle_salary_allocation_vnd": 8667258,
+    "operational_late_penalty_vnd": 9340800,
+    "selection_score_vnd": 124668222,
+    "extra_order_trips": 0,
+    "split_order_count": 0,
+    "max_trips_per_order": 1,
+    "extra_request_trips": 0,
+    "active_route_count": 48,
+    "physical_vehicle_count": 20,
+    "delivery_visit_count": 120
+  }
+}

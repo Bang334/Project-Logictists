@@ -1,6 +1,25 @@
-import { PrismaClient, VehicleStatus, DriverStatus, OrderStatus, StopType } from '@prisma/client';
+import { Branch, LocationType, PrismaClient, VehicleStatus, DriverStatus, OrderStatus, StopType } from '@prisma/client';
 
 const prisma = new PrismaClient();
+
+export function seedDemoDepot(client: PrismaClient, branch: Pick<Branch, 'id' | 'code' | 'address' | 'latitude' | 'longitude' | 'timezone'>) {
+  const code = `DEMO-DEPOT-${branch.code}`;
+  return client.location.upsert({
+    where: { code },
+    update: {},
+    create: {
+      code,
+      name: `Bãi đỗ xe demo ${branch.code}`,
+      type: LocationType.CENTRAL_WAREHOUSE,
+      managingBranchId: branch.id,
+      address: branch.address,
+      latitude: branch.latitude,
+      longitude: branch.longitude,
+      timezone: branch.timezone,
+    },
+    select: { id: true },
+  });
+}
 
 export async function seedCentralBranchData() {
   console.log('🚀 Bắt đầu nạp dữ liệu vận tải phong phú cho Chi nhánh Miền Trung (BRANCH-DAD)...');
@@ -13,6 +32,7 @@ export async function seedCentralBranchData() {
   if (!branchDAD) {
     throw new Error('Không tìm thấy Chi nhánh Miền Trung (BRANCH-DAD) trong cơ sở dữ liệu!');
   }
+  const demoDepot = await seedDemoDepot(prisma, branchDAD);
 
   // 2. Tạo/Cập nhật các khách hàng doanh nghiệp đối tác tại Miền Trung
   const customers = [
@@ -211,7 +231,11 @@ export async function seedCentralBranchData() {
         status: v.status,
         vehicleTypeId: vehicleType.id,
       },
-      create: { ...vehicleData, vehicleTypeId: vehicleType.id },
+      create: { ...vehicleData, vehicleTypeId: vehicleType.id, homeDepotLocationId: demoDepot.id },
+    });
+    await prisma.vehicle.updateMany({
+      where: { plateNumber: v.plateNumber, homeBranchId: branchDAD.id, homeDepotLocationId: null },
+      data: { homeDepotLocationId: demoDepot.id },
     });
   }
   console.log(`✅ Đã bổ sung ${additionalVehicles.length} xe tải vào đội xe Chi nhánh Miền Trung.`);

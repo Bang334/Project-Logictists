@@ -18,10 +18,12 @@ from .models import (
 from .route_evaluator import schedule_and_evaluate_route
 from ..models import (
     CargoItem as ProductionCargoItem,
+    DemoStackingPolicy,
     StopAction,
     VehicleFloor,
 )
-from ..spatial_validator import SpatialValidator
+from ..packing_rules import resolve_can_rotate
+from ..stacking import validate_stop_actions
 
 
 @dataclass
@@ -42,6 +44,7 @@ def _validate_spatial_route(
     cargo_by_id: Dict[str, CargoItem],
     *,
     max_time_seconds: float,
+    demo_stacking: DemoStackingPolicy | None = None,
 ) -> Tuple[bool, str, List[List[PlacedItem]], List[List[str]]]:
     floor = VehicleFloor(
         id=vehicle.id,
@@ -62,12 +65,18 @@ def _validate_spatial_route(
             ProductionCargoItem(
                 id=cargo_by_id[item_id].id,
                 order_id=cargo_by_id[item_id].order_id,
+                customer_id=getattr(cargo_by_id[item_id], "customer_id", None),
                 description=cargo_by_id[item_id].description,
                 length_cm=cargo_by_id[item_id].length_cm,
                 width_cm=cargo_by_id[item_id].width_cm,
                 height_cm=cargo_by_id[item_id].height_cm,
                 weight_kg=cargo_by_id[item_id].weight_kg,
-                can_rotate=cargo_by_id[item_id].can_rotate,
+                can_rotate=resolve_can_rotate(cargo_by_id[item_id]),
+                allowed_orientations=getattr(cargo_by_id[item_id], "allowed_orientations", None),
+                cargo_kind=getattr(cargo_by_id[item_id], "cargo_kind", "UNCLASSIFIED"),
+                allow_upper_tier=bool(getattr(cargo_by_id[item_id], "allow_upper_tier", False)),
+                no_top_load_requested=bool(getattr(cargo_by_id[item_id], "no_top_load_requested", False)),
+                max_top_load_g=getattr(cargo_by_id[item_id], "max_top_load_g", None),
             )
             for item_id in stop.items_loaded
         ]
@@ -81,11 +90,13 @@ def _validate_spatial_route(
             )
         )
 
-    result = SpatialValidator(
+    result = validate_stop_actions(
+        demo_stacking,
         floor,
+        actions,
         max_search_nodes=20_000,
         max_time_seconds=max_time_seconds,
-    ).validate_plan(actions)
+    )
     layouts: List[List[PlacedItem]] = []
     unload_sequences: List[List[str]] = []
     for state in result.step_states:
@@ -216,6 +227,7 @@ def audit_solution(
                 route.stops,
                 cargo_by_id,
                 max_time_seconds=spatial_remaining,
+                demo_stacking=getattr(policy, "demo_stacking", None),
             )
             spatial_remaining -= time.monotonic() - spatial_started_at
         if not route_spatial_valid:
@@ -391,6 +403,7 @@ def _repair_spatial_routes(
                 evaluation.stops,
                 cargo_by_id,
                 max_time_seconds=min(spatial_time_limit_sec, remaining),
+                demo_stacking=getattr(policy, "demo_stacking", None),
             )
             if valid:
                 best = evaluation

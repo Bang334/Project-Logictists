@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Prisma } from '@prisma/client';
@@ -14,6 +15,7 @@ import { resolveBranchScope } from '../auth/branch-scope';
 import { RunAutomaticOptimizationDto } from './dto/run-automatic-optimization.dto';
 import { TripsService } from './trips.service';
 import { OutboxService } from '../common/services/outbox.service';
+import { SettingsService } from '../settings/settings.service';
 import * as ExcelJS from 'exceljs';
 import { OPTIMIZATION_PROGRESS_STAGES } from './optimization-progress';
 
@@ -69,11 +71,21 @@ export class OptimizationJobsService {
     @InjectQueue(OPTIMIZATION_QUEUE) private readonly queue: Queue,
     private readonly tripsService: TripsService,
     private readonly outbox: OutboxService,
+    @Optional() private readonly settingsService?: SettingsService,
   ) {}
 
   async create(user: JobUser, dto: RunAutomaticOptimizationDto) {
     const branchId = resolveBranchScope(user, dto.branchId);
+    const effectiveSettings = this.settingsService
+      ? await this.settingsService.resolveEffectiveSettings(branchId)
+      : null;
+    const effectiveSearchBudget =
+      dto.searchBudgetSeconds ??
+      effectiveSettings?.optimization.defaultSearchBudgetSeconds ??
+      null;
     const request = {
+      ...(dto.deliveryBatchId ? { deliveryBatchId: dto.deliveryBatchId } : {}),
+      ...(dto.replanWithFleet ? { replanWithFleet: true } : {}),
       branchId,
       scheduleMode: dto.scheduleMode ?? null,
       customStartTime: dto.customStartTime ?? null,
@@ -103,6 +115,26 @@ export class OptimizationJobsService {
     let job;
     try {
       job = await this.prisma.$transaction(async (tx) => {
+        if (dto.deliveryBatchId) {
+          await tx.$queryRaw`SELECT id FROM delivery_planning_batches WHERE id = ${dto.deliveryBatchId} FOR UPDATE`;
+          const batch = await tx.deliveryPlanningBatch.findUnique({ where: { id: dto.deliveryBatchId }, include: { appointments: true } });
+          const hasEligibleAppointments = dto.replanWithFleet
+            ? batch?.appointments.some(row => row.status === 'CONFIRMED' || row.status === 'CHANGE_REQUESTED')
+            : batch?.appointments.some(row => row.status === 'CONFIRMED');
+          if (!batch || batch.branchId !== branchId || batch.status !== 'OFFERING' || batch.appointments.some(row => row.status === 'PENDING') || !hasEligibleAppointments) {
+            throw new ConflictException('Đợt đề xuất chưa đủ điều kiện chốt hoặc ngoài chi nhánh');
+          }
+          if (batch.finalOptimizationJobId) {
+            const running = await tx.optimizationJob.findUnique({ where: { id: batch.finalOptimizationJobId } });
+            if (running && !['FAILED','CANCELLED','INFEASIBLE','TIMEOUT','PARTIAL'].includes(running.status)) {
+              const runningParams = running.parameters && typeof running.parameters === 'object' && !Array.isArray(running.parameters) ? running.parameters as Record<string, unknown> : {};
+              const sameMode = Boolean(runningParams.replanWithFleet) === Boolean(dto.replanWithFleet);
+              if (sameMode || ['PENDING', 'RUNNING', 'RETRYING', 'APPLYING', 'APPLIED'].includes(running.status)) {
+                throw new ConflictException('Đợt này đã có lượt tối ưu chốt; hãy sử dụng job đó');
+              }
+            }
+          }
+        }
         const created = await tx.optimizationJob.create({
           data: {
             status: 'PENDING',
@@ -110,10 +142,13 @@ export class OptimizationJobsService {
             createdById: user.id,
             idempotencyKey: dto.idempotencyKey,
             requestHash,
-            requestSnapshot: request,
+            requestSnapshot: { ...request, searchBudgetSeconds: effectiveSearchBudget },
             schemaVersion: '2',
+            policyVersion: effectiveSettings?.policyVersion ?? null,
             parameters: {
               ...request,
+              searchBudgetSeconds: effectiveSearchBudget,
+              policyVersion: effectiveSettings?.policyVersion ?? null,
               progress: {
                 stage: 'QUEUED',
                 details: {},
@@ -122,6 +157,7 @@ export class OptimizationJobsService {
             },
           },
         });
+        if (dto.deliveryBatchId) await tx.deliveryPlanningBatch.update({ where: { id: dto.deliveryBatchId }, data: { finalOptimizationJobId: created.id } });
         await this.outbox.enqueue(
           {
             aggregateType: 'OptimizationJob',
@@ -165,17 +201,42 @@ export class OptimizationJobsService {
   }
 
   async get(user: JobUser, id: string) {
-    const job = await this.getAuthorizedJob(user, id);
-    const results = await this.prisma.optimizationResult.findMany({
-      where: { optimizationJobId: id },
-      orderBy: { candidateNumber: 'asc' },
-      select: {
-        candidateNumber: true,
-        feasibilityStatus: true,
-        objectiveBreakdown: true,
-      },
-    });
-    return this.toPublicJob(job, results.map((result) => this.toCandidateSummary(result)));
+    const job = await this.readPublicJob(user, Prisma.sql`WHERE j.id = ${id}`);
+    if (!job) throw new NotFoundException(`Không tìm thấy optimization job ${id}`);
+    return job;
+  }
+
+  async getLatestRestorable(user: JobUser, branchId?: string) {
+    const branch = resolveBranchScope(user, branchId);
+    return this.readPublicJob(user, Prisma.sql`
+      WHERE j."branchId" = ${branch}
+        AND j.status IN ('PENDING','RUNNING','RETRYING','CANCEL_REQUESTED','SUCCEEDED','PARTIAL','APPLIED')
+      ORDER BY j."createdAt" DESC, j.id DESC LIMIT 1
+    `);
+  }
+
+  private async readPublicJob(user: JobUser, filter: Prisma.Sql) {
+    type Row = Parameters<OptimizationJobsService['toPublicJob']>[0] & {
+      summaries: Parameters<OptimizationJobsService['toCandidateSummary']>[0][];
+    };
+    // Status polling needs three snapshot fields, even for multi-megabyte requests.
+    const [job] = await this.prisma.$queryRaw<Row[]>`
+      SELECT j.id, j."branchId", j.status, j."schemaVersion", j.parameters, j.result,
+        j."errorCode", j."errorMessage", j."attemptCount", j."startedAt", j."completedAt",
+        j."createdAt", j."updatedAt",
+        jsonb_build_object(
+          'planningEpochIso', j."requestSnapshot"->'planningEpochIso',
+          'scheduleMode', j."requestSnapshot"->'scheduleMode',
+          'searchBudgetSeconds', j."requestSnapshot"->'searchBudgetSeconds'
+        ) AS "requestSnapshot",
+        COALESCE((SELECT jsonb_agg(jsonb_build_object(
+          'candidateNumber', r."candidateNumber", 'feasibilityStatus', r."feasibilityStatus",
+          'objectiveBreakdown', r."objectiveBreakdown") ORDER BY r."candidateNumber")
+          FROM optimization_results r WHERE r."optimizationJobId" = j.id), '[]'::jsonb) AS summaries
+      FROM optimization_jobs j ${filter}`;
+    if (!job) return null;
+    if (!hasPermission(user, 'trips.plan', job.branchId)) throw new ForbiddenException('Không có quyền truy cập job ngoài chi nhánh');
+    return this.toPublicJob(job, job.summaries.map(result => this.toCandidateSummary(result)));
   }
 
   async getCandidate(user: JobUser, id: string, candidateNumber: number) {

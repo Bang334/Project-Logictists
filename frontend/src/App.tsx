@@ -16,13 +16,9 @@ const CustomersPage = lazy(() => import('./pages/CustomersPage'));
 const FleetPage = lazy(() => import('./pages/FleetPage'));
 const DispatchPage = lazy(() => import('./pages/DispatchPage'));
 const AutomaticDispatchPage = lazy(() => import('./pages/AutomaticDispatchPage'));
-const CatalogPage = lazy(() => import('./pages/CatalogPage'));
-const InventoryPage = lazy(() => import('./pages/InventoryPage'));
-const RetailOrdersPage = lazy(() => import('./pages/RetailOrdersPage'));
-const OrderProcessingPage = lazy(() => import('./pages/OrderProcessingPage'));
-const PickupPointOpsPage = lazy(() => import('./pages/PickupPointOpsPage'));
-const RetailAnalyticsPage = lazy(() => import('./pages/RetailAnalyticsPage'));
-const CustomerPortalPage = lazy(() => import('./pages/CustomerPortalPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+
+const CustomerDeliveryInbox = lazy(() => import('./components/DeliveryAppointments').then(module => ({ default: module.CustomerDeliveryInbox })));
 
 const { Content } = Layout;
 
@@ -59,20 +55,8 @@ const MainLayout: React.FC = () => {
         return <TripMonitoringPage />;
       case 'dashboard':
         return <DashboardPage onNavigate={setCurrentTab} />;
-      case 'customer-shop':
-        return <CustomerPortalPage />;
-      case 'catalog':
-        return <CatalogPage />;
-      case 'inventory':
-        return <InventoryPage />;
-      case 'sales-orders':
-        return <RetailOrdersPage />;
-      case 'order-processing':
-        return <OrderProcessingPage />;
-      case 'pickup-ops':
-        return <PickupPointOpsPage />;
-      case 'retail-analytics':
-        return <RetailAnalyticsPage />;
+      case 'delivery-appointments':
+        return <main id="main-content" className="tms-page"><CustomerDeliveryInbox /></main>;
       case 'orders':
         return <OrdersPage />;
       case 'customers':
@@ -84,7 +68,9 @@ const MainLayout: React.FC = () => {
         return <DispatchPage />;
       case 'dispatch-auto':
       case 'tracking-demo':
-        return <AutomaticDispatchPage />;
+        return <AutomaticDispatchPage onNavigate={setCurrentTab} />;
+      case 'settings':
+        return <SettingsPage />;
       default:
         return <DashboardPage onNavigate={setCurrentTab} />;
     }

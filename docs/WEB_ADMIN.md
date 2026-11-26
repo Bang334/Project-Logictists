@@ -1,5 +1,7 @@
 # Web Admin TMS — chức năng, contract và kiểm chứng
 
+> **Cập nhật 22/11/2026:** ba vai trò chi nhánh thay mô hình bốn vai trò; Quản lý tài nguyên được quản lý hồ sơ/lịch trong chi nhánh, Điều phối viên tiếp nhận xử lý đơn. Các mô tả ADMIN/DISPATCHER cũ bên dưới là lịch sử và phải đọc theo [ma trận quyền và bàn giao hiện hành](PHAN_QUYEN_BA_VAI_TRO.md). Quyền dựng luồng điều phối/lịch hẹn của Người 1 được giữ để phối hợp riêng theo yêu cầu người dùng.
+
 **Đồng bộ Supabase và ca làm (14/11/2026):** đã sao lưu schema `public` và dữ liệu vào `C:/Users/ASUS/.codex/backups/tms-shifts-20261114/before.dump` (ngoài Git), phục hồi trên PostgreSQL 17 riêng với `btree_gist`. Hai migration `20261017120000_fleet_schedules` và `20261105120000_driver_shift_ready_location` chạy đạt trên bản sao; đối chiếu số dòng và hash các cột cũ khớp 101 bảng / 1.195 dòng. Thử ca qua đêm, ca tiếp giáp, chặn chồng ca và chặn giờ sẵn sàng ngoài ca trên bản sao.
 
 Áp đúng hai file SQL lên Supabase trong một transaction, ghi lịch sử/checksum trong cùng transaction; không chạy toàn bộ migration pending, không seed. Kiểm tra sau commit: `driver_shifts` có 0 dòng, đủ khóa ngoại, CHECK, EXCLUDE chống chồng ca và trigger bảo vệ lịch/reservation. Ca mới cần được khai báo trước khi giữ tài nguyên cho tài xế; không tạo ca giả cho dữ liệu cũ. Backup là của schema `public`, không phải toàn bộ schema hạ tầng Supabase.

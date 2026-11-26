@@ -9,13 +9,27 @@ const location = '00000000-0000-4000-8000-000000000002';
 describe('EventsGateway session and scope authorization', () => {
   const auth = { authenticateToken: jest.fn() };
   const access = { branch: jest.fn(), trip: jest.fn() };
-  const tx = { $queryRaw: jest.fn().mockResolvedValue([{ active: true }]) };
+  const tx = { $queryRaw: jest.fn().mockResolvedValue([{ active: true }]), customer: { findFirst: jest.fn() } };
   const prisma = { $transaction: jest.fn(async callback => callback(tx)), trip: { findUnique: jest.fn() } };
   const gateway = new EventsGateway(auth as unknown as AuthService, access as unknown as ResourceAccess, prisma as unknown as PrismaService);
   const socket = () => ({ id: 'socket-1', connected: true, handshake: { auth: { token: 'test' } }, rooms: new Set<string>(), join: jest.fn(), leave: jest.fn(), emit: jest.fn(), disconnect: jest.fn() }) as unknown as Socket;
   beforeEach(() => {
     jest.clearAllMocks();
     auth.authenticateToken.mockResolvedValue({ id: 'user-1', role: 'STAFF', locationId: location, grants: [] });
+  });
+  it('chỉ tài khoản khách sở hữu đề xuất mới nhận thông báo; kiểm tra lại quyền mỗi lần phát', async () => {
+    const client = socket();
+    auth.authenticateToken.mockResolvedValue({ id: 'customer-user', role: 'CUSTOMER', grants: [] });
+    await gateway.handleConnection(client);
+    gateway.server = { sockets: { sockets: new Map([[client.id, client]]) } } as unknown as Server;
+    tx.customer.findFirst.mockResolvedValue({ id: 'customer-1' });
+    await gateway.emitDeliveryAppointment('customer-1', 'offer', 2);
+    expect(client.emit).toHaveBeenCalledWith('delivery:appointment-updated', { appointmentId: 'offer', version: 2 });
+    jest.mocked(client.emit).mockClear();
+    tx.customer.findFirst.mockResolvedValue(null);
+    await gateway.emitDeliveryAppointment('another-customer', 'other-offer', 1);
+    expect(client.emit).not.toHaveBeenCalled();
+    expect(tx.customer.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ OR: expect.arrayContaining([{ userId: 'customer-user' }]) }) }));
   });
   it('loads the current session and joins only its authorized location', async () => {
     const client = socket();
@@ -39,7 +53,7 @@ describe('EventsGateway session and scope authorization', () => {
   it('rechecks current grants before sending job invalidations with event identity', async () => {
     const client = socket();
     client.rooms.add(`branch:${branch}`);
-    auth.authenticateToken.mockResolvedValue({ id: 'user-1', grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: branch, permissions: ['trips.plan', 'trips.read'] }] });
+    auth.authenticateToken.mockResolvedValue({ id: 'user-1', grants: [{ role: 'BRANCH_DISPATCH_LEAD', scopeType: 'BRANCH', branchId: branch, permissions: ['trips.plan', 'trips.read'] }] });
     await gateway.handleConnection(client);
     gateway.server = { sockets: { sockets: new Map([[client.id, client]]) } } as unknown as Server;
     await gateway.emitOptimizationJobUpdate(branch, { jobId: 'job-1', status: 'RUNNING' });
@@ -53,7 +67,7 @@ describe('EventsGateway session and scope authorization', () => {
     const client = socket();
     client.rooms.add(`branch:${branch}`);
     jest.mocked(client.leave).mockImplementation(room => { client.rooms.delete(room); });
-    auth.authenticateToken.mockResolvedValue({ id: 'user-1', grants: [{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: branch, permissions: ['trips.read'] }] });
+    auth.authenticateToken.mockResolvedValue({ id: 'user-1', grants: [{ role: 'BRANCH_DISPATCH_LEAD', scopeType: 'BRANCH', branchId: branch, permissions: ['trips.read'] }] });
     await gateway.handleConnection(client);
     gateway.server = { sockets: { sockets: new Map([[client.id, client]]) } } as unknown as Server;
     prisma.trip.findUnique.mockResolvedValue({ id: 'trip-1', managingBranchId: branch, version: 2 });

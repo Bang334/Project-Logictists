@@ -1,5 +1,7 @@
 # KẾ HOẠCH XÂY DỰNG LOGISTICS / TRANSPORTATION MANAGEMENT SYSTEM
 
+> **Chốt 22/11/2026 — phân quyền:** web quản lý dùng ba vai trò chi nhánh: Trưởng chi nhánh, Quản lý tài nguyên, Điều phối viên vận tải. Điều phối viên tiếp nhận nghiệp vụ Xử lý đơn; quyền duyệt vẫn thuộc Trưởng chi nhánh và phát hành thuộc Điều phối viên. Nhóm lập kế hoạch, điều phối thủ công/tự động và tối ưu do Người 1 xây dựng trên web admin thuộc chức năng của Trưởng chi nhánh; người phát triển không phải vai trò sử dụng. [Phạm vi và giới hạn triển khai](docs/PHAN_QUYEN_BA_VAI_TRO.md).
+
 > **Chốt 19/11/2026 — khách đặt đơn vận tải:** áp dụng [quy tắc đặt, sửa và hủy đơn vận tải](#quy-tac-dat-sua-va-huy-don-van-tai) cho thao tác của khách hàng.
 
 > **Cập nhật 19/11/2026 — điều phối tài xế:** xem [lịch ca tuần, phân xe và lịch chuyến đầu ca](#lich-ca-tuan-va-lich-chuyen-dau-ca) để áp dụng giờ ca và quy trình chốt lịch ngày.
@@ -21,6 +23,23 @@ Ngày lập: 09/09/2026 · Phiên bản: 0.3 · Trạng thái: Bản nháp để
 **Cập nhật thiết kế ngày 23/09/2026:** người dùng yêu cầu chốt cấu trúc database chung. [THIET_KE_DATABASE.md v0.2](THIET_KE_DATABASE.md) là nguồn chuẩn cho bảng/quan hệ, nguồn dữ liệu nhân sự–lương–bảo dưỡng–thanh toán và ràng buộc Order–Package–TripPlan–Reservation. Các mô tả schema khái niệm cũ bên dưới được đọc theo bản này khi có khác biệt. Công thức, định mức, quyền nghiệp vụ chi tiết và các mục POL01–POL08 vẫn cần chốt; không suy việc chốt thiết kế là cho phép viết code/chạy migration.
 
 > Tài liệu này mô tả phương án nghiệp vụ và kỹ thuật đề xuất, chưa phải đặc tả đã được duyệt. Người dùng đã cho phép tạo file kế hoạch; chưa cho phép triển khai ứng dụng. Chỉ bắt đầu viết code, tạo database hoặc migration khi người dùng nói chính xác: **“OK, bắt đầu triển khai”**.
+
+## Mô hình xếp chồng demo ngày 08/11/2026
+
+Mở rộng quy tắc một lớp trong mục 6.5 cho demo khi cấu hình thiết bị nâng và giới hạn tầng. Loại hàng và yêu cầu không đặt hàng lên trên lưu theo từng kiện. Chính sách dùng ngưỡng 30% cộng dồn và giới hạn theo tải bao bì khai báo. Hai chế độ xét chủ hàng theo Customer, gồm chỉ cùng khách và cho phép khác khách. Kiện cùng mặt đáy có thể ghép khi kiện đỡ lên xe trước, xuống sau và cả hai có đường qua cửa. Điều phối tự động thử bố trí khác đơn trên tuyến đã tìm được. Kiện dễ vỡ và dữ liệu cũ đặt sàn. Mọi cấu hình chưa bật demo tiếp tục áp dụng quy tắc một lớp và T21–T27. Phụ phí demo là khoản riêng trong `OrderCharge` và cần chấp nhận trước khi xác nhận đơn. Xem [cấu hình demo](README.md#phân-loại-kiện-và-xếp-chồng-demo).
+
+## Thu gọn về TMS thuần vận tải ngày 08/11/2026
+
+Theo yêu cầu người dùng, dừng phạm vi bán lẻ gồm danh mục, tồn kho, giỏ hàng, đặt hàng đa nguồn, xử lý xuất hàng và báo cáo bán lẻ. Phần kế hoạch bán lẻ bên dưới được lưu làm lịch sử. Đơn vận chuyển, kiện, lấy/giao, điều phối, tối ưu, lịch hẹn giao và thực thi chuyến tiếp tục thuộc phạm vi TMS. Xem [README](README.md#chuyển-về-tms-thuần-vận-tải) để chuẩn bị chuyển schema.
+
+## Cập nhật chính sách thời gian giao ngày 02/11/2026
+
+- **Đã chốt theo yêu cầu người dùng:** khách đặt hàng không chọn hạn hoặc cửa sổ giao cứng. Bộ tối ưu được phép lập lịch giao muộn, cân đối chi phí vận chuyển với penalty trễ.
+- Khoảng miễn phạt tính từ `orderedAt` gốc, dùng `deliveryGraceDays` của chi nhánh (người dùng nêu 2–3 ngày làm ví dụ; không tự thay cấu hình hiện có). Sau đó phạt tăng theo thời gian trễ và cách tính/mức phạt đã cấu hình. Không biến mốc miễn phạt thành hạn cấm giao.
+- Ca xe/tài xế, pickup trước delivery, tải và bố trí/xếp dỡ vẫn là ràng buộc bắt buộc. Phạm vi lập kế hoạch hiện tại là 7 ngày, không phải hạn giao của đơn.
+- Khi đổi ngày lập kế hoạch, tuổi đơn vẫn tính từ `orderedAt` gốc. Từ 08/11/2026, khởi động dev tự reset lịch cho đơn seed demo quá hạn, chưa phân công và chưa có lịch hẹn giao. PostgreSQL từ xa cần cấp quyền reset trong cấu hình. Đây là thao tác dành cho dữ liệu thử nghiệm.
+- Quyết định này thay thế các mô tả cửa sổ giao bắt buộc/khách chọn hạn giao trong luồng đơn hàng bên dưới. Không suy ra việc thay đổi ca làm việc hoặc cấu hình phạt tài chính chưa được người dùng chốt.
+- **Cấu hình dev Hà Nội ngày 02/11/2026:** người dùng giao quyền lựa chọn mức phạt; giữ miễn phạt 2 ngày và chọn `FIXED_PER_DAY = 50000` (50.000 VND/đơn/ngày trễ, tính tỷ lệ theo số giây, làm tròn VND). Bộ demo hiện có giá trị đơn bằng 0 nên không dùng % giá trị đơn. Đây là cấu hình của chi nhánh dev, không là mặc định cho mọi chi nhánh.
 
 ## Cập nhật luồng bán hàng ngày 31/10/2026
 
@@ -717,7 +736,7 @@ Chi tiết triển khai, giới hạn migration, hợp đồng với Người 1 
 
 ## Phân quyền web quản lý và duyệt kế hoạch chuyến (14/11/2026)
 
-Web quản lý có Admin và bốn vai trò theo chi nhánh: Trưởng điều phối (Trưởng chi nhánh), Quản lý tài nguyên, Điều phối viên vận tải và Xử lý đơn/lịch hẹn. Admin dùng trang Tài khoản để gán vai trò quản lý và chi nhánh. Tài khoản quản lý cũ cần được gán vai trò mới trước khi có thể làm việc theo chính sách này. DRIVER phục vụ mobile và CUSTOMER phục vụ cổng mua hàng.
+Cập nhật quyết định 22/11/2026: Web quản lý có Admin và ba vai trò theo chi nhánh: Trưởng điều phối (Trưởng chi nhánh), Quản lý tài nguyên và Điều phối viên vận tải. Điều phối viên tiếp nhận quyền xử lý đơn/lịch hẹn của vai trò Xử lý đơn cũ. Mã ORDER_SCHEDULER được ngừng và có migration đối soát sang TRANSPORT_DISPATCHER; không tự suy vai trò từ DISPATCHER cũ. Admin dùng trang Tài khoản để gán vai trò quản lý và chi nhánh. Tài khoản quản lý cũ cần được gán vai trò mới trước khi có thể làm việc theo chính sách này. DRIVER phục vụ mobile và CUSTOMER tiếp tục dùng lịch hẹn giao hiện hành.
 
 Bộ tối ưu hoặc Trưởng điều phối lập kế hoạch. Trưởng điều phối duyệt phiên bản cụ thể trong chi nhánh quản lý. Điều phối viên vận tải phát hành phiên bản đó. Chỉnh sửa tăng version và làm mất hiệu lực duyệt cho phiên bản hiện hành. Khi phát hành, API tiếp tục kiểm tra tải, phương án xếp/dỡ, xe, tài xế và reservation trong transaction.
 

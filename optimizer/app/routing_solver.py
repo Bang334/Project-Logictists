@@ -22,6 +22,8 @@ from .models import (
     can_driver_drive_vehicle,
 )
 from .spatial_validator import SpatialValidator
+from .packing_rules import resolve_can_rotate
+from .stacking import effective_floor_capacity_cm2, sync_route_stacking_unloads, validate_stop_actions
 from .baseline_calculator import BaselineCostCalculator
 from .hybrid_alns_engine import PackingAwareHybridALNSOptimizer
 from .route_costing import (
@@ -73,9 +75,14 @@ class FleetRoutingSolver:
         validation_budget_share: float = VALIDATION_BUDGET_SHARE,
         consolidation_budget_share: float = CONSOLIDATION_BUDGET_SHARE,
         enable_hybrid_fallback: bool = True,
+        should_split_orders: bool = True,
     ):
         self.objective_request = request
-        request, _ = split_infeasible_orders_across_fleet(request)
+        request, _ = (
+            split_infeasible_orders_across_fleet(request)
+            if should_split_orders
+            else (request, 0)
+        )
         self.request = request
         self.search_strategy = search_strategy
         self.uses_adaptive_total_budget = time_budget_seconds is not None
@@ -272,7 +279,7 @@ class FleetRoutingSolver:
                     ):
                         continue
                     if not all(
-                        self._order_physically_fits_vehicle(order, vehicle)
+                        self._order_physically_fits_vehicle(order, vehicle, self.request.demo_stacking)
                         for order in order_subset
                     ):
                         continue
@@ -311,11 +318,13 @@ class FleetRoutingSolver:
                             if remaining_seconds <= 0:
                                 routing_enumeration_completed = False
                                 break
-                            spatial = SpatialValidator(
+                            spatial = validate_stop_actions(
+                                self.request.demo_stacking,
                                 vehicle,
+                                actions,
                                 max_time_seconds=min(1.5, remaining_seconds),
                                 max_search_nodes=5000,
-                            ).validate_plan(actions)
+                            )
                             spatial_cache[spatial_key] = spatial
                         if spatial.violation_code == "PLACEMENT_SEARCH_LIMIT_REACHED":
                             spatial_validation_completed = False
@@ -409,7 +418,18 @@ class FleetRoutingSolver:
                 all_order_ids - covered_order_ids,
                 key=lambda order_id: len(options_by_order[order_id]),
             )
+            max_routes_per_day = self.request.policy.max_routes_per_day
             for vehicle_index, option_order_ids, route in options_by_order[next_order_id]:
+                if (
+                    max_routes_per_day is not None
+                    and sum(
+                        1
+                        for item in selected_routes
+                        if item.service_day_index == self.request.vehicles[vehicle_index].service_day_index
+                    )
+                    >= max_routes_per_day
+                ):
+                    continue
                 if vehicle_index in used_vehicle_indices:
                     continue
                 if covered_order_ids.intersection(option_order_ids):
@@ -682,6 +702,7 @@ class FleetRoutingSolver:
                     self.request,
                     time_budget_seconds=hybrid_budget_seconds,
                     initial_plan=plan,
+                    should_split_orders=False,
                 )
                 hybrid_plan = hybrid.solve()
                 hybrid_served = len(self.request.orders) - len(hybrid_plan.unassigned_orders)
@@ -862,16 +883,16 @@ class FleetRoutingSolver:
 
         vehicle_capacities = []
         for vehicle in self.request.vehicles:
-            vehicle_area = vehicle.length_cm * vehicle.width_cm
+            vehicle_area = effective_floor_capacity_cm2(vehicle, self.request.demo_stacking)
             max_fitting_order_area = max(
                 (
                     sum(item.length_cm * item.width_cm for item in order.items)
                     for order in self.request.orders
-                    if self._order_physically_fits_vehicle(order, vehicle)
+                    if self._order_physically_fits_vehicle(order, vehicle, self.request.demo_stacking)
                 ),
                 default=0.0,
             )
-            usable_area = min(
+            usable_area = vehicle_area if self.request.demo_stacking is not None else min(
                 vehicle_area,
                 max(max_fitting_order_area, vehicle_area * 0.88),
             )
@@ -1011,6 +1032,21 @@ class FleetRoutingSolver:
                 routing.AddSoftSameVehicleConstraint(
                     pickup_indices, max(1, pair_penalty // 50)
                 )
+
+        max_routes_per_day = self.request.policy.max_routes_per_day
+        if max_routes_per_day is not None:
+            vehicles_by_day: Dict[int, List[int]] = {}
+            for v_idx, vehicle in enumerate(self.request.vehicles):
+                vehicles_by_day.setdefault(vehicle.service_day_index, []).append(v_idx)
+            for day_vehicle_indices in vehicles_by_day.values():
+                if len(day_vehicle_indices) > max_routes_per_day:
+                    active_day_vehicles = [
+                        routing.NextVar(routing.Start(v_idx)) != routing.End(v_idx)
+                        for v_idx in day_vehicle_indices
+                    ]
+                    routing.solver().Add(
+                        routing.solver().Sum(active_day_vehicles) <= max_routes_per_day
+                    )
 
         return manager, routing, time_dimension
 
@@ -1211,14 +1247,16 @@ class FleetRoutingSolver:
                 0.05,
                 vehicle_deadline - time.monotonic(),
             )
-            spatial = SpatialValidator(
+            spatial = validate_stop_actions(
+                self.request.demo_stacking,
                 vehicle,
+                stop_actions,
                 max_time_seconds=min(
                     2.0,
                     spatial_remaining_seconds,
                     max(0.05, vehicle_budget * 0.8),
                 ),
-            ).validate_plan(stop_actions)
+            )
             if not spatial.is_valid:
                 # Phối hợp định tuyến & bố trí hàng: tìm kiếm hoán vị chuỗi stop không bị chắn lối ra cửa (T24/T26)
                 orders_on_route = [self.order_by_id[oid] for oid in route_order_ids if oid in self.order_by_id]
@@ -1288,11 +1326,12 @@ class FleetRoutingSolver:
                     plate_number=vehicle.plate_number,
                     vehicle_length_cm=vehicle.length_cm,
                     vehicle_width_cm=vehicle.width_cm,
+                    vehicle_height_cm=vehicle.height_cm,
                     total_distance_km=round(route_distance_meters / 1000, 2),
                     total_duration_minutes=round(route_duration_seconds / 60, 1),
                     return_travel_time_sec=return_travel_time_sec,
                     return_waiting_time_sec=return_waiting_time_sec,
-                    stops=scheduled_stops,
+                    stops=sync_route_stacking_unloads(scheduled_stops, spatial) if self.request.demo_stacking is not None else scheduled_stops,
                     spatial_validation=spatial,
                 )
             )
@@ -1452,7 +1491,7 @@ class FleetRoutingSolver:
             evaluated = self._evaluate_resequence_candidate(
                 vehicle, vehicle_index, actions, node_id_to_idx
             )
-            spatial = SpatialValidator(vehicle).validate_plan(actions)
+            spatial = validate_stop_actions(self.request.demo_stacking, vehicle, actions)
             if evaluated is None or not spatial.is_valid:
                 assigned_order_ids.difference_update(remaining_ids)
                 for allocation_id in remaining_ids:
@@ -1545,10 +1584,21 @@ class FleetRoutingSolver:
                 if time.monotonic() >= deadline:
                     limit_reached = True
                     break
-                if not self._order_physically_fits_vehicle(order, vehicle):
+                if not self._order_physically_fits_vehicle(order, vehicle, self.request.demo_stacking):
                     continue
 
                 route_index = route_index_by_vehicle_id.get(vehicle.id)
+                if (
+                    self.request.policy.max_routes_per_day is not None
+                    and route_index is None
+                    and sum(
+                        1
+                        for r in routes
+                        if r.service_day_index == vehicle.service_day_index
+                    )
+                    >= self.request.policy.max_routes_per_day
+                ):
+                    continue
                 if (
                     best_candidate is not None
                     and best_candidate[1] is None
@@ -1630,6 +1680,7 @@ class FleetRoutingSolver:
                 plate_number=vehicle.plate_number,
                 vehicle_length_cm=vehicle.length_cm,
                 vehicle_width_cm=vehicle.width_cm,
+                vehicle_height_cm=vehicle.height_cm,
                 total_distance_km=round(distance_meters / 1000, 2),
                 total_duration_minutes=round(
                     (duration_seconds - vehicle.available_start_sec) / 60, 1
@@ -1639,7 +1690,7 @@ class FleetRoutingSolver:
                     round(duration_seconds) - scheduled[-1].departure_time_sec,
                 ),
                 return_waiting_time_sec=0,
-                stops=scheduled,
+                stops=sync_route_stacking_unloads(scheduled, spatial) if self.request.demo_stacking is not None else scheduled,
                 spatial_validation=spatial,
             )
             if route_index is None:
@@ -1685,6 +1736,7 @@ class FleetRoutingSolver:
             plate_number=vehicle.plate_number,
             vehicle_length_cm=vehicle.length_cm,
             vehicle_width_cm=vehicle.width_cm,
+            vehicle_height_cm=vehicle.height_cm,
             total_distance_km=round(distance_meters / 1000, 2),
             total_duration_minutes=round(
                 (route_end_seconds - vehicle.available_start_sec) / 60,
@@ -1695,7 +1747,7 @@ class FleetRoutingSolver:
                 round(route_end_seconds) - scheduled[-1].departure_time_sec,
             ),
             return_waiting_time_sec=0,
-            stops=scheduled,
+            stops=sync_route_stacking_unloads(scheduled, spatial) if spatial.demo_stacking is not None else scheduled,
             spatial_validation=spatial,
         )
 
@@ -1807,7 +1859,7 @@ class FleetRoutingSolver:
                     if time.monotonic() >= deadline:
                         break
                     if not all(
-                        self._order_physically_fits_vehicle(order, vehicle)
+                        self._order_physically_fits_vehicle(order, vehicle, self.request.demo_stacking)
                         and self._order_allows_vehicle(order, vehicle)
                         for order in combined_orders
                     ):
@@ -1879,18 +1931,18 @@ class FleetRoutingSolver:
 
     @staticmethod
     def _order_physically_fits_vehicle(
-        order: OrderPair, vehicle: FleetVehicle
+        order: OrderPair, vehicle: FleetVehicle, demo_stacking=None
     ) -> bool:
         if sum(item.weight_kg for item in order.items) > vehicle.payload_limit_kg:
             return False
         if (
             sum(item.length_cm * item.width_cm for item in order.items)
-            > vehicle.length_cm * vehicle.width_cm
+            > effective_floor_capacity_cm2(vehicle, demo_stacking)
         ):
             return False
         for item in order.items:
             orientations = [(item.length_cm, item.width_cm)]
-            if item.can_rotate:
+            if resolve_can_rotate(item, d11_default=True if demo_stacking is None else None):
                 orientations.append((item.width_cm, item.length_cm))
             if item.height_cm > vehicle.height_cm or not any(
                 length <= vehicle.length_cm and width <= vehicle.width_cm
@@ -1917,7 +1969,7 @@ class FleetRoutingSolver:
         physical_compatible = [
             vehicle
             for vehicle in weight_compatible
-            if self._order_physically_fits_vehicle(order, vehicle)
+            if self._order_physically_fits_vehicle(order, vehicle, self.request.demo_stacking)
         ]
         if not physical_compatible:
             return (
@@ -2173,12 +2225,13 @@ class FleetRoutingSolver:
             remaining_seconds = effective_deadline - time.monotonic()
             if remaining_seconds <= 0:
                 break
-            val = SpatialValidator(
+            sp = validate_stop_actions(
+                self.request.demo_stacking,
                 vehicle,
+                cand_actions,
                 max_time_seconds=min(1.5, remaining_seconds),
                 max_search_nodes=5000,
             )
-            sp = val.validate_plan(cand_actions)
             if sp.is_valid:
                 if best_valid is None or score < best_valid[0]:
                     best_valid = (score, cand_actions, evaluated, sp)
@@ -2201,7 +2254,7 @@ class FleetRoutingSolver:
         scheduled: List[ScheduledStop] = []
         current_weight = 0.0
         current_area = 0.0
-        max_vehicle_area = vehicle.length_cm * vehicle.width_cm
+        max_vehicle_area = effective_floor_capacity_cm2(vehicle, self.request.demo_stacking)
         current_time = float(vehicle.available_start_sec)
         previous_index = vehicle_index
         total_distance = 0.0
@@ -2362,7 +2415,7 @@ class OrToolsRoutingSolver:
                 fuel_price_per_liter_vnd=1,
                 monthly_working_minutes=1,
             ),
-            max_time_seconds=self.request.max_time_seconds,
+            max_time_seconds=self.request.max_time_seconds, demo_stacking=self.request.demo_stacking,
             distance_matrix_meters=self.request.distance_matrix_meters,
             duration_matrix_seconds=self.request.duration_matrix_seconds,
         )

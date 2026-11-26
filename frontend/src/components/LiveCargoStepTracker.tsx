@@ -16,6 +16,7 @@ import {
   CarOutlined,
 } from '@ant-design/icons';
 import { OptimizedRouteUI, PlacedItemUI } from '../types';
+import { computeWeightBalance, getWeightBalanceMeta } from '../utils/weightBalance';
 
 const currency = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' });
 
@@ -193,38 +194,57 @@ export const LiveCargoStepTracker: React.FC<LiveCargoStepTrackerProps> = ({
       </div>
 
       {/* 3. Tải Trọng & Thể Tích Thực Tế */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
-        <div style={{ background: '#f8fafc', padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-            <span style={{ color: '#64748b' }}>Tải trọng trên xe:</span>
-            <strong style={{ color: weightPercent > 85 ? '#dc2626' : '#1e3a8a' }}>
-              {currentWeightKg} / {maxWeightKg} kg ({weightPercent}%)
-            </strong>
-          </div>
-          <Progress
-            percent={weightPercent}
-            size="small"
-            status={weightPercent > 90 ? 'exception' : 'active'}
-            strokeColor={weightPercent > 85 ? '#ef4444' : '#10b981'}
-            showInfo={false}
-          />
-        </div>
+      {(() => {
+        const balance = currentStepState?.weight_balance ?? computeWeightBalance(placedItems, vehicleLengthCm, vehicleWidthCm);
+        const balanceMeta = getWeightBalanceMeta(balance.status);
+        return (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 12 }}>
+              <div style={{ background: '#f8fafc', padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                  <span style={{ color: '#64748b' }}>Tải trọng trên xe:</span>
+                  <strong style={{ color: weightPercent > 85 ? '#dc2626' : '#1e3a8a' }}>
+                    {currentWeightKg} / {maxWeightKg} kg ({weightPercent}%)
+                  </strong>
+                </div>
+                <Progress
+                  percent={weightPercent}
+                  size="small"
+                  status={weightPercent > 90 ? 'exception' : 'active'}
+                  strokeColor={weightPercent > 85 ? '#ef4444' : '#10b981'}
+                  showInfo={false}
+                />
+              </div>
 
-        <div style={{ background: '#f8fafc', padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-            <span style={{ color: '#64748b' }}>Diện tích sàn chiếm:</span>
-            <strong style={{ color: '#2563eb' }}>
-              {placedItems.length} kiện ({areaPercent}%)
-            </strong>
-          </div>
-          <Progress
-            percent={areaPercent}
-            size="small"
-            strokeColor="#3b82f6"
-            showInfo={false}
-          />
-        </div>
-      </div>
+              <div style={{ background: '#f8fafc', padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                  <span style={{ color: '#64748b' }}>Diện tích sàn chiếm:</span>
+                  <strong style={{ color: '#2563eb' }}>
+                    {placedItems.length} kiện ({areaPercent}%)
+                  </strong>
+                </div>
+                <Progress
+                  percent={areaPercent}
+                  size="small"
+                  strokeColor="#3b82f6"
+                  showInfo={false}
+                />
+              </div>
+
+              <div style={{ background: '#f8fafc', padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12, marginBottom: 4 }}>
+                  <span style={{ color: '#64748b' }}>Cân bằng trọng tâm:</span>
+                  <Tag color={balanceMeta.tagColor} style={{ margin: 0, fontSize: 11 }}>{balanceMeta.label}</Tag>
+                </div>
+                <div style={{ fontSize: 11, color: '#334155', display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Trái {balance.left_weight_kg} / Phải {balance.right_weight_kg} kg</span>
+                  <span>Lệch T/P: {balance.lateral_imbalance_percent}%</span>
+                </div>
+              </div>
+            </div>
+          </>
+        );
+      })()}
 
       {/* 4. SƠ ĐỒ 2D MẶT SÀN THÙNG XE KHÔNG CHỒNG (SVG BLUEPRINT CHUẨN TỈ LỆ 100%) */}
       <div
@@ -342,11 +362,13 @@ export const LiveCargoStepTracker: React.FC<LiveCargoStepTrackerProps> = ({
                 const itemY = bedStartY + item.y;
                 const itemWidth = Math.max(6, item.length_cm);
                 const itemHeight = Math.max(6, item.width_cm);
+                const isFragile = item.cargo_kind === 'FRAGILE';
+                const isLocked = Boolean(item.floor_rotation_locked);
 
                 return (
                   <g key={item.item_id || idx}>
                     <Tooltip
-                      title={`Kiện #${idx + 1} (${item.order_id || 'Đơn'}) · Dài: ${item.length_cm}cm, Rộng: ${item.width_cm}cm, Cao: ${item.height_cm}cm · Nặng: ${item.weight_kg}kg · Tọa độ: (${item.x}, ${item.y})`}
+                      title={`Kiện #${idx + 1} (${item.order_id || 'Đơn'}) · Dài: ${item.length_cm}cm, Rộng: ${item.width_cm}cm, Cao: ${item.height_cm}cm · Nặng: ${item.weight_kg}kg · Tọa độ: (${item.x}, ${item.y})${isFragile ? ' · Dễ vỡ' : ''}${item.no_top_load_requested ? ' · Cấm đè' : ''}${isLocked ? ' · Khóa xoay LWH' : ''}`}
                     >
                       <rect
                         x={itemX}
@@ -354,9 +376,10 @@ export const LiveCargoStepTracker: React.FC<LiveCargoStepTrackerProps> = ({
                         width={itemWidth}
                         height={itemHeight}
                         rx="3"
-                        fill={colorObj.bg}
-                        stroke={colorObj.border}
-                        strokeWidth="1.5"
+                        fill={isFragile ? '#fef3c7' : colorObj.bg}
+                        stroke={isFragile ? '#d97706' : colorObj.border}
+                        strokeWidth={isFragile ? '2' : '1.5'}
+                        strokeDasharray={isLocked ? '3,2' : undefined}
                         style={{ cursor: 'pointer', transition: 'all 0.2s' }}
                       />
                     </Tooltip>
@@ -364,7 +387,7 @@ export const LiveCargoStepTracker: React.FC<LiveCargoStepTrackerProps> = ({
                       <text
                         x={itemX + itemWidth / 2}
                         y={itemY + itemHeight / 2}
-                        fill={colorObj.text}
+                        fill={isFragile ? '#92400e' : colorObj.text}
                         fontSize={Math.min(11, Math.max(8, itemHeight / 2))}
                         fontWeight="bold"
                         textAnchor="middle"
@@ -378,6 +401,35 @@ export const LiveCargoStepTracker: React.FC<LiveCargoStepTrackerProps> = ({
                 );
               })
             )}
+            {placedItems.length > 0 && (() => {
+              const balance = currentStepState?.weight_balance ?? computeWeightBalance(placedItems, vehicleLengthCm, vehicleWidthCm);
+              const balanceMeta = getWeightBalanceMeta(balance.status);
+              const cgSvgX = bedStartX + balance.cg_x_cm;
+              const cgSvgY = bedStartY + balance.cg_y_cm;
+              return (
+                <g pointerEvents="none" data-testid="live-tracker-cg">
+                  <line
+                    x1={bedStartX}
+                    y1={bedStartY + vehicleWidthCm / 2}
+                    x2={bedStartX + vehicleLengthCm}
+                    y2={bedStartY + vehicleWidthCm / 2}
+                    stroke="rgba(148, 163, 184, 0.35)"
+                    strokeWidth="1"
+                    strokeDasharray="4,4"
+                  />
+                  <circle
+                    cx={cgSvgX}
+                    cy={cgSvgY}
+                    r="5"
+                    fill="#ffffff"
+                    stroke={balanceMeta.strokeColor}
+                    strokeWidth="2.5"
+                  />
+                  <line x1={cgSvgX - 8} y1={cgSvgY} x2={cgSvgX + 8} y2={cgSvgY} stroke={balanceMeta.strokeColor} strokeWidth="1.5" />
+                  <line x1={cgSvgX} y1={cgSvgY - 8} x2={cgSvgX} y2={cgSvgY + 8} stroke={balanceMeta.strokeColor} strokeWidth="1.5" />
+                </g>
+              );
+            })()}
           </svg>
         </div>
 

@@ -110,7 +110,6 @@ export function interpolateAlongRoute(
   bearing: number;
   segmentIndex: number;
   traveledKm: number;
-  traveledCoordinates: [number, number][];
 } {
   const { coordinates, cumulativeDistances, totalDistanceKm } = profile;
 
@@ -120,7 +119,6 @@ export function interpolateAlongRoute(
       bearing: 0,
       segmentIndex: 0,
       traveledKm: 0,
-      traveledCoordinates: [],
     };
   }
 
@@ -130,28 +128,21 @@ export function interpolateAlongRoute(
       bearing: 0,
       segmentIndex: 0,
       traveledKm: 0,
-      traveledCoordinates: [coordinates[0]],
     };
   }
 
   const clampedProgress = Math.max(0, Math.min(1, progress));
   const targetDistance = clampedProgress * totalDistanceKm;
 
-  // Find the segment where targetDistance falls
-  let segIndex = 0;
-  for (let i = 0; i < cumulativeDistances.length - 1; i++) {
-    if (
-      targetDistance >= cumulativeDistances[i] &&
-      targetDistance <= cumulativeDistances[i + 1]
-    ) {
-      segIndex = i;
-      break;
-    }
+  // Find the first segment ending at or beyond the current distance.
+  let low = 1;
+  let high = coordinates.length - 1;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (cumulativeDistances[middle] < targetDistance) low = middle + 1;
+    else high = middle;
   }
-
-  if (targetDistance >= totalDistanceKm) {
-    segIndex = coordinates.length - 2;
-  }
+  const segIndex = targetDistance >= totalDistanceKm ? coordinates.length - 2 : low - 1;
 
   const startCoord = coordinates[segIndex];
   const endCoord = coordinates[segIndex + 1];
@@ -172,15 +163,12 @@ export function interpolateAlongRoute(
   );
 
   const currentPoint: [number, number] = [interpolatedLng, interpolatedLat];
-  const traveledCoords = coordinates.slice(0, segIndex + 1);
-  traveledCoords.push(currentPoint);
 
   return {
     coord: currentPoint,
     bearing,
     segmentIndex: segIndex,
     traveledKm: targetDistance,
-    traveledCoordinates: traveledCoords,
   };
 }
 
@@ -296,6 +284,7 @@ export const HANOI_DEMO_STOPS = [
 export function calculateStopMilestonesKm(
   profile: RouteProfile,
   stops: Array<{ latitude: number; longitude: number }>,
+  waypointIndices?: number[],
 ): number[] {
   if (!stops || stops.length === 0) return [];
   if (!profile || profile.coordinates.length < 2) {
@@ -304,6 +293,11 @@ export function calculateStopMilestonesKm(
   }
 
   const { coordinates, cumulativeDistances, totalDistanceKm } = profile;
+  if (waypointIndices && waypointIndices.length >= stops.length + 1
+    && waypointIndices.every((index, i) => Number.isInteger(index) && index >= 0
+      && index < coordinates.length && (i === 0 || index >= waypointIndices[i - 1]))) {
+    return stops.map((_, i) => cumulativeDistances[waypointIndices[i + 1]]);
+  }
   const milestones: number[] = [];
 
   let lastIndex = 0;
@@ -321,6 +315,9 @@ export function calculateStopMilestonesKm(
         bestDist = d;
         bestIdx = c;
       }
+      // Older saved plans have no waypoint indices. Keep the first nearby
+      // visit when the route later returns to the same address.
+      if (bestDist < 0.05 && c > bestIdx && d > bestDist + 0.005) break;
     }
 
     const distAlongRoute = cumulativeDistances[bestIdx] || 0;
@@ -340,15 +337,14 @@ export function calculateStopMilestonesKm(
  * - Step s + 1: Truck reached Stop s and loaded/unloaded cargo
  */
 export function getStepIndexForDistance(
-  milestonesKm: number[],
+  milestonesKm: readonly number[],
   traveledKm: number,
 ): number {
   if (!milestonesKm || milestonesKm.length === 0) return 0;
 
-  // Nếu xe chưa chạm tới Stop 1 (dung sai 0.15 km): xe vẫn đang ở Bước 0 (Xuất bến, xe rỗng)
   let activeStep = 0;
   for (let i = 0; i < milestonesKm.length; i++) {
-    if (traveledKm >= milestonesKm[i] - 0.15) {
+    if (traveledKm + 1e-9 >= milestonesKm[i]) {
       activeStep = i + 1;
     } else {
       break;

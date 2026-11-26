@@ -1,0 +1,659 @@
+[
+  {
+    "repeat": 1,
+    "request_sha256": "b00393e75e65b1616c2b07a78fc65d08210291fc24ce884c6e2c889ed886ea77",
+    "quality_winner": "savings_hybrid",
+    "production": {
+      "case": "db_hanoi_16_orders.json",
+      "algorithm": "production",
+      "seed": 0,
+      "budget": 15,
+      "wall_seconds": 77.9961,
+      "over_budget": true,
+      "solver_status": "PARTIAL",
+      "objective_profile": "production_v1",
+      "production_objective": {
+        "planning_span_days": 2,
+        "operating_cost_vnd": 8560430,
+        "driver_active_salary_allocation_vnd": 2310630,
+        "driver_calendar_salary_vnd": 4909090,
+        "driver_idle_salary_allocation_vnd": 2598460,
+        "operational_late_penalty_vnd": 63632246,
+        "selection_score_vnd": 74791136,
+        "extra_order_trips": 0,
+        "split_order_count": 0,
+        "max_trips_per_order": 1,
+        "extra_request_trips": 0,
+        "active_route_count": 6,
+        "physical_vehicle_count": 3,
+        "delivery_visit_count": 15
+      },
+      "served_requests": 15,
+      "total_requests": 16,
+      "delivered_packages": 168,
+      "total_packages": 268,
+      "complete_manifest": false,
+      "unique_balanced_manifest": true,
+      "spatial_valid": true,
+      "basic_schedule_valid": true,
+      "spatial_errors": [],
+      "spatial_certificate_routes": 6,
+      "spatial_search_routes": 0,
+      "schedule_errors": [],
+      "routes": 6,
+      "physical_vehicles": 3,
+      "service_days_used": [
+        0,
+        1
+      ],
+      "extra_order_trips": 0,
+      "cost_vnd": 8560430,
+      "reported_cost_vnd": 8560430,
+      "distance_km": 964.67
+    },
+    "savings_hybrid": {
+      "case": "db_hanoi_16_orders.json",
+      "algorithm": "savings_hybrid",
+      "seed": 0,
+      "budget": 15,
+      "wall_seconds": 71.1179,
+      "over_budget": true,
+      "solver_status": "SUCCESS",
+      "cache_load_cycles": true,
+      "savings_seconds": 3.535,
+      "savings_routes": 0,
+      "seed_strategy": null,
+      "seed_served_orders": 0,
+      "portfolio_streams": [
+        "direct-alns",
+        "adaptive-sa-alns",
+        "ortools-alns"
+      ],
+      "winner_stream": "adaptive-sa-alns",
+      "stream_metrics": {
+        "direct-alns": {
+          "quality": [
+            0,
+            -15,
+            -168,
+            0,
+            6,
+            75066030,
+            8990288,
+            3
+          ],
+          "solve_wall_seconds": 64.9519,
+          "audited_wall_seconds": 65.1323,
+          "cpu_seconds": 62.1094,
+          "audit": {
+            "objective_profile": "production_v1",
+            "production_objective": {
+              "planning_span_days": 2,
+              "operating_cost_vnd": 8990288,
+              "driver_active_salary_allocation_vnd": 2407978,
+              "driver_calendar_salary_vnd": 4909090,
+              "driver_idle_salary_allocation_vnd": 2501112,
+              "operational_late_penalty_vnd": 63574630,
+              "selection_score_vnd": 75066030,
+              "extra_order_trips": 0,
+              "split_order_count": 0,
+              "max_trips_per_order": 1,
+              "extra_request_trips": 0,
+              "active_route_count": 6,
+              "physical_vehicle_count": 3,
+              "delivery_visit_count": 15
+            },
+            "served_requests": 15,
+            "total_requests": 16,
+            "delivered_packages": 168,
+            "total_packages": 268,
+            "complete_manifest": false,
+            "unique_balanced_manifest": true,
+            "spatial_valid": true,
+            "basic_schedule_valid": true,
+            "spatial_errors": [],
+            "spatial_certificate_routes": 6,
+            "spatial_search_routes": 0,
+            "schedule_errors": [],
+            "routes": 6,
+            "physical_vehicles": 3,
+            "service_days_used": [
+              0,
+              1
+            ],
+            "extra_order_trips": 0,
+            "cost_vnd": 8990288,
+            "reported_cost_vnd": 8990288,
+            "distance_km": 992.83
+          },
+          "seed": {
+            "seed_seconds": 0.0,
+            "seed_strategy": null,
+            "seed_routes": 0,
+            "seed_served_orders": 0
+          },
+          "load_cycle_cache": {
+            "hits": 14,
+            "exact_searches": 33,
+            "exact_search_seconds": 55.1106
+          }
+        },
+        "adaptive-sa-alns": {
+          "quality": [
+            0,
+            -16,
+            -268,
+            0,
+            6,
+            84817794,
+            9928119,
+            3
+          ],
+          "solve_wall_seconds": 14.039,
+          "audited_wall_seconds": 15.0634,
+          "cpu_seconds": 13.0469,
+          "audit": {
+            "objective_profile": "production_v1",
+            "production_objective": {
+              "planning_span_days": 2,
+              "operating_cost_vnd": 9928119,
+              "driver_active_salary_allocation_vnd": 2627448,
+              "driver_calendar_salary_vnd": 4909090,
+              "driver_idle_salary_allocation_vnd": 2281642,
+              "operational_late_penalty_vnd": 72608033,
+              "selection_score_vnd": 84817794,
+              "extra_order_trips": 0,
+              "split_order_count": 0,
+              "max_trips_per_order": 1,
+              "extra_request_trips": 0,
+              "active_route_count": 6,
+              "physical_vehicle_count": 3,
+              "delivery_visit_count": 16
+            },
+            "served_requests": 16,
+            "total_requests": 16,
+            "delivered_packages": 268,
+            "total_packages": 268,
+            "complete_manifest": true,
+            "unique_balanced_manifest": true,
+            "spatial_valid": true,
+            "basic_schedule_valid": true,
+            "spatial_errors": [],
+            "spatial_certificate_routes": 6,
+            "spatial_search_routes": 0,
+            "schedule_errors": [],
+            "routes": 6,
+            "physical_vehicles": 3,
+            "service_days_used": [
+              0,
+              1
+            ],
+            "extra_order_trips": 0,
+            "cost_vnd": 9928119,
+            "reported_cost_vnd": 9928119,
+            "distance_km": 1073.67
+          },
+          "seed": {
+            "seed_seconds": 0.0,
+            "seed_strategy": null,
+            "seed_routes": 0,
+            "seed_served_orders": 0
+          },
+          "load_cycle_cache": {
+            "hits": 19,
+            "exact_searches": 14,
+            "exact_search_seconds": 3.6628
+          }
+        },
+        "ortools-alns": {
+          "quality": [
+            0,
+            -15,
+            -168,
+            0,
+            5,
+            77314026,
+            9159926,
+            3
+          ],
+          "solve_wall_seconds": 66.16,
+          "audited_wall_seconds": 66.3007,
+          "cpu_seconds": 63.1094,
+          "audit": {
+            "objective_profile": "production_v1",
+            "production_objective": {
+              "planning_span_days": 2,
+              "operating_cost_vnd": 9159926,
+              "driver_active_salary_allocation_vnd": 2428509,
+              "driver_calendar_salary_vnd": 4909090,
+              "driver_idle_salary_allocation_vnd": 2480581,
+              "operational_late_penalty_vnd": 65673519,
+              "selection_score_vnd": 77314026,
+              "extra_order_trips": 0,
+              "split_order_count": 0,
+              "max_trips_per_order": 1,
+              "extra_request_trips": 0,
+              "active_route_count": 5,
+              "physical_vehicle_count": 3,
+              "delivery_visit_count": 15
+            },
+            "served_requests": 15,
+            "total_requests": 16,
+            "delivered_packages": 168,
+            "total_packages": 268,
+            "complete_manifest": false,
+            "unique_balanced_manifest": true,
+            "spatial_valid": true,
+            "basic_schedule_valid": true,
+            "spatial_errors": [],
+            "spatial_certificate_routes": 5,
+            "spatial_search_routes": 0,
+            "schedule_errors": [],
+            "routes": 5,
+            "physical_vehicles": 3,
+            "service_days_used": [
+              0,
+              1
+            ],
+            "extra_order_trips": 0,
+            "cost_vnd": 9159926,
+            "reported_cost_vnd": 9159926,
+            "distance_km": 1030.75
+          },
+          "seed": {
+            "seed_seconds": 3.535,
+            "seed_strategy": null,
+            "seed_routes": 0,
+            "seed_served_orders": 0,
+            "seed_attempts": [
+              {
+                "seed_seconds": 1.7694,
+                "seed_strategy": null,
+                "seed_routes": 0,
+                "seed_served_orders": 0
+              },
+              {
+                "seed_seconds": 1.7636,
+                "seed_strategy": null,
+                "seed_routes": 0,
+                "seed_served_orders": 0
+              }
+            ]
+          },
+          "load_cycle_cache": {
+            "hits": 27,
+            "exact_searches": 37,
+            "exact_search_seconds": 57.1169
+          }
+        }
+      },
+      "worker_errors": [],
+      "alns_requested_seconds": 15.0,
+      "objective_profile": "production_v1",
+      "production_objective": {
+        "planning_span_days": 2,
+        "operating_cost_vnd": 9928119,
+        "driver_active_salary_allocation_vnd": 2627448,
+        "driver_calendar_salary_vnd": 4909090,
+        "driver_idle_salary_allocation_vnd": 2281642,
+        "operational_late_penalty_vnd": 72608033,
+        "selection_score_vnd": 84817794,
+        "extra_order_trips": 0,
+        "split_order_count": 0,
+        "max_trips_per_order": 1,
+        "extra_request_trips": 0,
+        "active_route_count": 6,
+        "physical_vehicle_count": 3,
+        "delivery_visit_count": 16
+      },
+      "served_requests": 16,
+      "total_requests": 16,
+      "delivered_packages": 268,
+      "total_packages": 268,
+      "complete_manifest": true,
+      "unique_balanced_manifest": true,
+      "spatial_valid": true,
+      "basic_schedule_valid": true,
+      "spatial_errors": [],
+      "spatial_certificate_routes": 6,
+      "spatial_search_routes": 0,
+      "schedule_errors": [],
+      "routes": 6,
+      "physical_vehicles": 3,
+      "service_days_used": [
+        0,
+        1
+      ],
+      "extra_order_trips": 0,
+      "cost_vnd": 9928119,
+      "reported_cost_vnd": 9928119,
+      "distance_km": 1073.67
+    }
+  },
+  {
+    "repeat": 1,
+    "request_sha256": "89514910a6bb62a8655995f6d387cce333d95f26ecf5f14d362f63e2bc71a134",
+    "quality_winner": "savings_hybrid",
+    "production": {
+      "case": "scenario_4_tight_windows.json",
+      "algorithm": "production",
+      "seed": 0,
+      "budget": 15,
+      "wall_seconds": 14.684,
+      "over_budget": false,
+      "solver_status": "SUCCESS",
+      "objective_profile": "production_v1",
+      "production_objective": {
+        "planning_span_days": 1,
+        "operating_cost_vnd": 1829128,
+        "driver_active_salary_allocation_vnd": 644058,
+        "driver_calendar_salary_vnd": 5752845,
+        "driver_idle_salary_allocation_vnd": 5108787,
+        "operational_late_penalty_vnd": 0,
+        "selection_score_vnd": 6937915,
+        "extra_order_trips": 0,
+        "split_order_count": 0,
+        "max_trips_per_order": 1,
+        "extra_request_trips": 0,
+        "active_route_count": 2,
+        "physical_vehicle_count": 2,
+        "delivery_visit_count": 18
+      },
+      "served_requests": 18,
+      "total_requests": 18,
+      "delivered_packages": 48,
+      "total_packages": 48,
+      "complete_manifest": true,
+      "unique_balanced_manifest": true,
+      "spatial_valid": true,
+      "basic_schedule_valid": true,
+      "spatial_errors": [],
+      "spatial_certificate_routes": 2,
+      "spatial_search_routes": 0,
+      "schedule_errors": [],
+      "routes": 2,
+      "physical_vehicles": 2,
+      "service_days_used": [
+        0
+      ],
+      "extra_order_trips": 0,
+      "cost_vnd": 1829128,
+      "reported_cost_vnd": 1829128,
+      "distance_km": 139.43
+    },
+    "savings_hybrid": {
+      "case": "scenario_4_tight_windows.json",
+      "algorithm": "savings_hybrid",
+      "seed": 0,
+      "budget": 15,
+      "wall_seconds": 13.7771,
+      "over_budget": false,
+      "solver_status": "SUCCESS",
+      "cache_load_cycles": true,
+      "savings_seconds": 1.7909,
+      "savings_routes": 2,
+      "seed_strategy": "parallel-insertion-gls",
+      "seed_served_orders": 18,
+      "portfolio_streams": [
+        "direct-alns",
+        "ortools-alns",
+        "adaptive-sa-alns"
+      ],
+      "winner_stream": "ortools-alns",
+      "stream_metrics": {
+        "direct-alns": {
+          "quality": [
+            0,
+            -18,
+            -48,
+            0,
+            2,
+            6943631,
+            1787022,
+            2
+          ],
+          "solve_wall_seconds": 13.6737,
+          "audited_wall_seconds": 13.7005,
+          "cpu_seconds": 13.4531,
+          "audit": {
+            "objective_profile": "production_v1",
+            "production_objective": {
+              "planning_span_days": 1,
+              "operating_cost_vnd": 1787022,
+              "driver_active_salary_allocation_vnd": 596236,
+              "driver_calendar_salary_vnd": 5752845,
+              "driver_idle_salary_allocation_vnd": 5156609,
+              "operational_late_penalty_vnd": 0,
+              "selection_score_vnd": 6943631,
+              "extra_order_trips": 0,
+              "split_order_count": 0,
+              "max_trips_per_order": 1,
+              "extra_request_trips": 0,
+              "active_route_count": 2,
+              "physical_vehicle_count": 2,
+              "delivery_visit_count": 18
+            },
+            "served_requests": 18,
+            "total_requests": 18,
+            "delivered_packages": 48,
+            "total_packages": 48,
+            "complete_manifest": true,
+            "unique_balanced_manifest": true,
+            "spatial_valid": true,
+            "basic_schedule_valid": true,
+            "spatial_errors": [],
+            "spatial_certificate_routes": 2,
+            "spatial_search_routes": 0,
+            "schedule_errors": [],
+            "routes": 2,
+            "physical_vehicles": 2,
+            "service_days_used": [
+              0
+            ],
+            "extra_order_trips": 0,
+            "cost_vnd": 1787022,
+            "reported_cost_vnd": 1787022,
+            "distance_km": 145.55
+          },
+          "seed": {
+            "seed_seconds": 0.0,
+            "seed_strategy": null,
+            "seed_routes": 0,
+            "seed_served_orders": 0
+          },
+          "load_cycle_cache": {
+            "hits": 19,
+            "exact_searches": 24,
+            "exact_search_seconds": 1.0482
+          }
+        },
+        "ortools-alns": {
+          "quality": [
+            0,
+            -18,
+            -48,
+            0,
+            2,
+            6906313,
+            1778231,
+            2
+          ],
+          "solve_wall_seconds": 13.2438,
+          "audited_wall_seconds": 13.2956,
+          "cpu_seconds": 12.6719,
+          "audit": {
+            "objective_profile": "production_v1",
+            "production_objective": {
+              "planning_span_days": 1,
+              "operating_cost_vnd": 1778231,
+              "driver_active_salary_allocation_vnd": 624763,
+              "driver_calendar_salary_vnd": 5752845,
+              "driver_idle_salary_allocation_vnd": 5128082,
+              "operational_late_penalty_vnd": 0,
+              "selection_score_vnd": 6906313,
+              "extra_order_trips": 0,
+              "split_order_count": 0,
+              "max_trips_per_order": 1,
+              "extra_request_trips": 0,
+              "active_route_count": 2,
+              "physical_vehicle_count": 2,
+              "delivery_visit_count": 18
+            },
+            "served_requests": 18,
+            "total_requests": 18,
+            "delivered_packages": 48,
+            "total_packages": 48,
+            "complete_manifest": true,
+            "unique_balanced_manifest": true,
+            "spatial_valid": true,
+            "basic_schedule_valid": true,
+            "spatial_errors": [],
+            "spatial_certificate_routes": 2,
+            "spatial_search_routes": 0,
+            "schedule_errors": [],
+            "routes": 2,
+            "physical_vehicles": 2,
+            "service_days_used": [
+              0
+            ],
+            "extra_order_trips": 0,
+            "cost_vnd": 1778231,
+            "reported_cost_vnd": 1778231,
+            "distance_km": 132.33
+          },
+          "seed": {
+            "seed_seconds": 1.7909,
+            "seed_strategy": "parallel-insertion-gls",
+            "seed_routes": 2,
+            "seed_served_orders": 18,
+            "seed_attempts": [
+              {
+                "seed_seconds": 0.9076,
+                "seed_strategy": "parallel-insertion-gls",
+                "seed_routes": 2,
+                "seed_served_orders": 18
+              },
+              {
+                "seed_seconds": 0.883,
+                "seed_strategy": "path-cheapest-arc-gls",
+                "seed_routes": 3,
+                "seed_served_orders": 18
+              }
+            ]
+          },
+          "load_cycle_cache": {
+            "hits": 47,
+            "exact_searches": 33,
+            "exact_search_seconds": 1.8518
+          }
+        },
+        "adaptive-sa-alns": {
+          "quality": [
+            0,
+            -18,
+            -48,
+            0,
+            2,
+            6971126,
+            1817121,
+            2
+          ],
+          "solve_wall_seconds": 12.5945,
+          "audited_wall_seconds": 12.6382,
+          "cpu_seconds": 12.0781,
+          "audit": {
+            "objective_profile": "production_v1",
+            "production_objective": {
+              "planning_span_days": 1,
+              "operating_cost_vnd": 1817121,
+              "driver_active_salary_allocation_vnd": 598840,
+              "driver_calendar_salary_vnd": 5752845,
+              "driver_idle_salary_allocation_vnd": 5154005,
+              "operational_late_penalty_vnd": 0,
+              "selection_score_vnd": 6971126,
+              "extra_order_trips": 0,
+              "split_order_count": 0,
+              "max_trips_per_order": 1,
+              "extra_request_trips": 0,
+              "active_route_count": 2,
+              "physical_vehicle_count": 2,
+              "delivery_visit_count": 18
+            },
+            "served_requests": 18,
+            "total_requests": 18,
+            "delivered_packages": 48,
+            "total_packages": 48,
+            "complete_manifest": true,
+            "unique_balanced_manifest": true,
+            "spatial_valid": true,
+            "basic_schedule_valid": true,
+            "spatial_errors": [],
+            "spatial_certificate_routes": 2,
+            "spatial_search_routes": 0,
+            "schedule_errors": [],
+            "routes": 2,
+            "physical_vehicles": 2,
+            "service_days_used": [
+              0
+            ],
+            "extra_order_trips": 0,
+            "cost_vnd": 1817121,
+            "reported_cost_vnd": 1817121,
+            "distance_km": 150.15
+          },
+          "seed": {
+            "seed_seconds": 0.0,
+            "seed_strategy": null,
+            "seed_routes": 0,
+            "seed_served_orders": 0
+          },
+          "load_cycle_cache": {
+            "hits": 77,
+            "exact_searches": 42,
+            "exact_search_seconds": 1.0566
+          }
+        }
+      },
+      "worker_errors": [],
+      "alns_requested_seconds": 15.0,
+      "objective_profile": "production_v1",
+      "production_objective": {
+        "planning_span_days": 1,
+        "operating_cost_vnd": 1778231,
+        "driver_active_salary_allocation_vnd": 624763,
+        "driver_calendar_salary_vnd": 5752845,
+        "driver_idle_salary_allocation_vnd": 5128082,
+        "operational_late_penalty_vnd": 0,
+        "selection_score_vnd": 6906313,
+        "extra_order_trips": 0,
+        "split_order_count": 0,
+        "max_trips_per_order": 1,
+        "extra_request_trips": 0,
+        "active_route_count": 2,
+        "physical_vehicle_count": 2,
+        "delivery_visit_count": 18
+      },
+      "served_requests": 18,
+      "total_requests": 18,
+      "delivered_packages": 48,
+      "total_packages": 48,
+      "complete_manifest": true,
+      "unique_balanced_manifest": true,
+      "spatial_valid": true,
+      "basic_schedule_valid": true,
+      "spatial_errors": [],
+      "spatial_certificate_routes": 2,
+      "spatial_search_routes": 0,
+      "schedule_errors": [],
+      "routes": 2,
+      "physical_vehicles": 2,
+      "service_days_used": [
+        0
+      ],
+      "extra_order_trips": 0,
+      "cost_vnd": 1778231,
+      "reported_cost_vnd": 1778231,
+      "distance_km": 132.33
+    }
+  }
+]

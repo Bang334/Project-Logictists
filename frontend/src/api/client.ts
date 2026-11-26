@@ -4,6 +4,14 @@ import axios, { CanceledError, InternalAxiosRequestConfig } from 'axios';
 import { AccountQuery, CreateAccount, parseAccount, parseAccountDetail, parseAccountList, parseAvailableDrivers } from '../types/accounts';
 import { BranchInput, parseBranchPage, parseManagedBranch } from '../types/branches';
 import {
+  EffectiveSettings,
+  ResetBranchOverridesPayload,
+  ScopedSettingsResponse,
+  SettingAuditLogsResponse,
+  UpdateBranchSettingsPayload,
+  UpdateCompanySettingsPayload,
+} from '../types/settings';
+import {
   Branch,
   ApplyOptimizationResponseUI,
   AutomaticOptimizationResponseUI,
@@ -137,7 +145,7 @@ export const ordersApi = {
   },
   create: async (data: OrderInput, key: string) => parseOrder((await client.post<unknown>('/orders', data, { headers: { 'Idempotency-Key': key }, timeout: 25000 })).data),
   update: async (id: string, data: OrderInput & { version: number }, key: string) => parseOrder((await client.patch<unknown>(`/orders/${id}`, data, { headers: { 'Idempotency-Key': key }, timeout: 25000 })).data),
-  confirm: async (id: string, version: number, key: string) => parseOrder((await client.post<unknown>(`/orders/${id}/confirm`, { version }, { headers: { 'Idempotency-Key': key }, timeout: 25000 })).data),
+  confirm: async (id: string, version: number, key: string, acceptedProtectionFeeVnd?: number) => parseOrder((await client.post<unknown>(`/orders/${id}/confirm`, { version, acceptedProtectionFeeVnd }, { headers: { 'Idempotency-Key': key }, timeout: 25000 })).data),
 };
 
 export const tripsApi = {
@@ -190,6 +198,11 @@ export const tripsApi = {
     apiClient.get<AutomaticOptimizationResponseUI>(
       `/trips/automatic-optimization/jobs/${jobId}`,
     ),
+  getLatestAutomaticOptimizationJob: (branchId: string) =>
+    apiClient.get<AutomaticOptimizationResponseUI | null>(
+      '/trips/automatic-optimization/jobs/latest',
+      { params: { branchId } },
+    ),
   listAutomaticOptimizationJobs: (branchId: string) =>
     apiClient.get<AutomaticOptimizationResponseUI[]>(
       '/trips/automatic-optimization/jobs',
@@ -222,6 +235,31 @@ export const tripsApi = {
 export const locationsApi = {
   getAll: () => apiClient.get<Location[]>('/locations'),
 };
+
+async function getDrivingRouteThrough(waypoints: [number, number][], signal?: AbortSignal) {
+  const token = import.meta.env.VITE_MAPBOX_TOKEN;
+  if (!token || waypoints.length < 2 || waypoints.length > 25) return null;
+  const path = waypoints.map(([longitude, latitude]) => `${longitude},${latitude}`).join(';');
+  try {
+    const response = await axios.get<{
+      routes?: { geometry?: { type?: string; coordinates?: unknown }; distance?: number; duration?: number }[];
+    }>(`https://api.mapbox.com/directions/v5/mapbox/driving/${path}`, {
+      params: { geometries: 'geojson', overview: 'full', access_token: token },
+      timeout: 10_000,
+      signal,
+    });
+    const route = response.data.routes?.[0];
+    const coordinates = route?.geometry?.coordinates;
+    if (route?.geometry?.type !== 'LineString' || !Array.isArray(coordinates) || coordinates.length < 2
+      || !coordinates.every((position): position is [number, number] => Array.isArray(position)
+        && position.length === 2 && position.every(value => typeof value === 'number' && Number.isFinite(value)))
+      || typeof route.distance !== 'number' || !Number.isFinite(route.distance)
+      || typeof route.duration !== 'number' || !Number.isFinite(route.duration)) return null;
+    return { coordinates, distanceMeters: route.distance, durationSeconds: route.duration };
+  } catch {
+    return null;
+  }
+}
 
 export const mapboxApi = {
   geocode: async (query: string) => {
@@ -257,24 +295,25 @@ export const mapboxApi = {
       return null;
     }
   },
-  getDrivingRoute: async (startLng: number, startLat: number, endLng: number, endLat: number) => {
-    const token = import.meta.env.VITE_MAPBOX_TOKEN;
-    if (!token) return null;
-    try {
-      const res = await axios.get(
-        `https://api.mapbox.com/directions/v5/mapbox/driving/${startLng},${startLat};${endLng},${endLat}?geometries=geojson&overview=full&access_token=${token}`,
-      );
-      if (res.data.routes && res.data.routes.length > 0) {
-        const route = res.data.routes[0];
-        return {
-          coordinates: route.geometry.coordinates as [number, number][],
-          distanceMeters: route.distance as number,
-          durationSeconds: route.duration as number,
-        };
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  },
+  getDrivingRouteThrough,
+  getDrivingRoute: (startLng: number, startLat: number, endLng: number, endLat: number) =>
+    getDrivingRouteThrough([[startLng, startLat], [endLng, endLat]]),
+};
+
+export const settingsApi = {
+  getCompany: () => apiClient.get<ScopedSettingsResponse>('/settings/company'),
+  updateCompany: (data: UpdateCompanySettingsPayload) =>
+    apiClient.put<ScopedSettingsResponse>('/settings/company', data),
+  getBranch: (branchId: string) =>
+    apiClient.get<ScopedSettingsResponse>(`/settings/branches/${branchId}`),
+  updateBranch: (branchId: string, data: UpdateBranchSettingsPayload) =>
+    apiClient.put<ScopedSettingsResponse>(`/settings/branches/${branchId}`, data),
+  resetBranchOverrides: (branchId: string, data: ResetBranchOverridesPayload) =>
+    apiClient.delete<ScopedSettingsResponse>(`/settings/branches/${branchId}/overrides`, { data }),
+  getEffective: (branchId?: string) =>
+    apiClient.get<EffectiveSettings>('/settings/effective', {
+      params: branchId ? { branchId } : undefined,
+    }),
+  getAuditLogs: (params?: { branchId?: string; page?: number; pageSize?: number }) =>
+    apiClient.get<SettingAuditLogsResponse>('/settings/audit-logs', { params }),
 };

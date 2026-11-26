@@ -1,6 +1,6 @@
 import dayjs, { Dayjs } from 'dayjs';
 import { useAuth } from '../context/AuthContext';
-import React, { useMemo, useEffect, useRef, useState } from 'react';
+import React, { startTransition, useCallback, useMemo, useEffect, useRef, useState } from 'react';
 import {
   Row,
   Col,
@@ -32,20 +32,22 @@ import {
   PauseCircleOutlined,
   EnvironmentOutlined,
 } from '@ant-design/icons';
-import { apiErrorMessage, vehiclesApi, driversApi, ordersApi, tripsApi } from '../api/client';
+import { apiErrorMessage, branchesApi, vehiclesApi, driversApi, ordersApi, tripsApi } from '../api/client';
 import {
   Vehicle,
   Driver,
   Order,
   Trip,
+  Branch,
   LoadProfileResult,
   OptimizationResultUI,
 } from '../types';
-import MapboxMap from '../components/MapboxMap';
+import MapboxMap, { type MapMarker } from '../components/MapboxMap';
 import FloorPackingVisualizer from '../components/FloorPackingVisualizer';
 import { MapLocationPickerModal } from '../components/MapLocationPickerModal';
 import { formatDecimal } from '../utils/format';
 import { ResourceAvailabilityNotice } from '../components/ResourceAvailabilityNotice';
+import { buildRouteProfile, calculateStopMilestonesKm, getStepIndexForDistance } from '../utils/geoSimulation';
 
 const { Title, Text } = Typography;
 
@@ -59,6 +61,10 @@ const DispatchPage: React.FC = () => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [mapBranch, setMapBranch] = useState<Branch | null>(null);
+  const [branchMapError, setBranchMapError] = useState('');
+  const [branchMapRetry, setBranchMapRetry] = useState(0);
   const [submitting, setSubmitting] = useState(false);
 
   // Form State
@@ -89,16 +95,23 @@ const DispatchPage: React.FC = () => {
   const [profileLoading, setProfileLoading] = useState(false);
   const profileRequest = useRef(0);
   const [optimizing, setOptimizing] = useState(false);
-  const [optimizationResult, setOptimizationResult] = useState<OptimizationResultUI | null>(null);
+  const [optimization, setOptimization] = useState<{ inputKey: string; result: OptimizationResultUI } | null>(null);
   const [orderedStopIds, setOrderedStopIds] = useState<string[]>([]);
   const [draftRouteGeometry, setDraftRouteGeometry] = useState<any>(null);
   const [draftRouteStats, setDraftRouteStats] = useState<{ distanceKm: number; durationMinutes: number } | null>(null);
   const [draftRouteError, setDraftRouteError] = useState<string | null>(null);
   const [enableSim, setEnableSim] = useState<boolean>(false);
+  const [packingStep, setPackingStep] = useState(0);
+  const optimizationInputKey = JSON.stringify([branchId, selectedVehicleId, selectedOrderIds]);
+  const latestOptimizationInput = useRef(optimizationInputKey);
+  useEffect(() => {
+    latestOptimizationInput.current = optimizationInputKey;
+  }, [optimizationInputKey]);
 
   const fetchData = async () => {
     try {
       setLoading(true);
+      setLoadError('');
       const [vRes, dRes, oRes, tRes] = await Promise.all([
         can('trips.plan') ? vehiclesApi.getAvailable() : { data: [] },
         can('trips.plan') ? driversApi.getAvailable() : { data: [] },
@@ -124,7 +137,8 @@ const DispatchPage: React.FC = () => {
       if (selected && selected.id !== activeTrip?.id) {
         fetchLoadProfile(selected.id);
       }
-    } catch {
+    } catch (error) {
+      setLoadError(apiErrorMessage(error));
       message.error('Lỗi khi tải dữ liệu điều phối');
     } finally {
       setLoading(false);
@@ -136,6 +150,21 @@ const DispatchPage: React.FC = () => {
     // Initial load only; later refreshes are triggered explicitly after mutations.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    let live = true;
+    setMapBranch(null);
+    setBranchMapError('');
+    if (!branchId) return;
+    void branchesApi.getById(branchId).then(({ data }) => {
+      if (!Number.isFinite(data.latitude) || !Number.isFinite(data.longitude)
+        || Math.abs(data.latitude) > 90 || Math.abs(data.longitude) > 180) {
+        throw new Error('Chi nhánh chưa có tọa độ hợp lệ.');
+      }
+      if (live) setMapBranch(data);
+    }).catch(error => { if (live) setBranchMapError(apiErrorMessage(error)); });
+    return () => { live = false; };
+  }, [branchId, branchMapRetry]);
 
   const fetchLoadProfile = async (tripId: string) => {
     const request = ++profileRequest.current;
@@ -149,11 +178,14 @@ const DispatchPage: React.FC = () => {
   };
 
   const handleSelectTrip = (trip: Trip) => {
+    setEnableSim(false);
     setActiveTrip(trip);
     fetchLoadProfile(trip.id);
   };
 
   const handleStartEdit = (trip: Trip) => {
+    setEnableSim(false);
+    setOptimization(null);
     const operationalStops = trip.stops
       .filter((stop) => stop.stopType === 'PICKUP' || stop.stopType === 'DELIVERY')
       .sort((a, b) => a.sequence - b.sequence);
@@ -317,7 +349,9 @@ const DispatchPage: React.FC = () => {
     try {
       setOptimizing(true);
       const res = await tripsApi.optimize({ vehicleId: selectedVehicleId, orderIds: selectedOrderIds });
-      setOptimizationResult(res.data);
+      if (latestOptimizationInput.current !== optimizationInputKey) return;
+      setOptimization({ inputKey: optimizationInputKey, result: res.data });
+      setPackingStep(0);
       if (res.data.status === 'SUCCESS') {
         setOrderedStopIds(res.data.stops.map((stop) => stop.location_id));
         message.success(
@@ -348,12 +382,13 @@ const DispatchPage: React.FC = () => {
       setSelectedOrderIds((current) => current.filter((id) => id !== order.id));
       setOrderedStopIds((current) => current.filter((id) => !stopIds.has(id)));
     }
-    setOptimizationResult(null);
+    setOptimization(null);
   };
 
   const moveStop = (index: number, offset: -1 | 1) => {
     const target = index + offset;
     if (target < 0 || target >= orderedStopIds.length) return;
+    setOptimization(null);
     setOrderedStopIds((current) => {
       const next = [...current];
       [next[index], next[target]] = [next[target], next[index]];
@@ -418,10 +453,12 @@ const DispatchPage: React.FC = () => {
 
   // Tự động kết nối tuyến đường (Mapbox Driving Directions) ngay khi người dùng chọn đơn / đổi thứ tự điểm dừng
   useEffect(() => {
+    setEnableSim(false);
+    setPackingStep(0);
+    setDraftRouteGeometry(null);
+    setDraftRouteStats(null);
+    setDraftRouteError(null);
     if (chosenOrders.length === 0 || orderedStopIds.length === 0) {
-      setDraftRouteGeometry(null);
-      setDraftRouteStats(null);
-      setDraftRouteError(null);
       return;
     }
 
@@ -511,78 +548,102 @@ const DispatchPage: React.FC = () => {
     startLocation,
   ]);
 
+  const hasDraft = chosenOrders.length > 0;
+  const savedGeometry = useMemo(() => {
+    if (!activeTrip?.routeGeometry) return null;
+    try {
+      return JSON.parse(activeTrip.routeGeometry);
+    } catch {
+      return null;
+    }
+  }, [activeTrip?.routeGeometry]);
+  const routeGeometry = hasDraft ? draftRouteGeometry : savedGeometry;
+  const optimizationResult = hasDraft && optimization?.inputKey === optimizationInputKey
+    && optimization.result.stops.length === orderedStopIds.length
+    && optimization.result.stops.every((stop, index) => stop.location_id === orderedStopIds[index])
+    ? optimization.result : null;
+  const packingMilestonesKm = useMemo(() => {
+    if (!optimizationResult || draftRouteGeometry?.type !== 'LineString' || draftRouteGeometry.coordinates?.length < 2) return [];
+    return calculateStopMilestonesKm(buildRouteProfile(draftRouteGeometry.coordinates), optimizationResult.stops);
+  }, [draftRouteGeometry, optimizationResult]);
+  const syncPackingStep = useCallback((_progress: number, _coordinate: [number, number], _speed: number, traveledKm: number) => {
+    if (packingMilestonesKm.length) {
+      const step = getStepIndexForDistance(packingMilestonesKm, traveledKm);
+      startTransition(() => setPackingStep(step));
+    }
+  }, [packingMilestonesKm]);
+  const stopSimulation = useCallback(() => setEnableSim(false), []);
+  const canSimulate = routeGeometry?.type === 'LineString'
+    && Array.isArray(routeGeometry.coordinates)
+    && routeGeometry.coordinates.length >= 2;
+  const isSimulating = enableSim && canSimulate;
+  const toggleSimulation = () => {
+    if (!isSimulating) setPackingStep(0);
+    setEnableSim(!isSimulating);
+  };
+
   // Chuẩn bị markers hiển thị trên Mapbox Map
-  const mapMarkers: any[] = [];
-  let routeGeometry: any = null;
+  const mapMarkers = useMemo(() => {
+    const markers: MapMarker[] = [];
 
-  if (chosenOrders.length > 0) {
-    routeGeometry = draftRouteGeometry;
-    if (startLocation) {
-      mapMarkers.push({
-        id: 'draft-depot',
-        latitude: startLocation.latitude,
-        longitude: startLocation.longitude,
-        title: 'Điểm bắt đầu chuyến',
-        subtitle: startLocation.address,
-        type: 'DEPOT',
-      });
-    }
-    const stopById = new Map(chosenOrders.flatMap((order) => order.stops).map((stop) => [stop.id, stop]));
-    orderedStopIds.forEach((stopId, index) => {
-      const stop = stopById.get(stopId);
-      if (!stop) return;
-      mapMarkers.push({
-        id: stop.id,
-        latitude: stop.latitude,
-        longitude: stop.longitude,
-        title: `${index + 1}. ${stop.type === 'PICKUP' ? 'Nhận hàng' : 'Giao hàng'}`,
-        subtitle: stop.address,
-        type: stop.type,
-        sequence: index + 1,
-      });
-    });
-    if (endLocation) {
-      mapMarkers.push({
-        id: 'draft-end',
-        latitude: endLocation.latitude,
-        longitude: endLocation.longitude,
-        title: 'Điểm kết thúc chuyến',
-        subtitle: endLocation.address,
-        type: 'DEPOT',
-      });
-    }
-  } else if (activeTrip) {
-    if (activeTrip.vehicle?.homeBranch) {
-      mapMarkers.push({
-        id: 'depot',
-        latitude: activeTrip.vehicle.homeBranch.latitude,
-        longitude: activeTrip.vehicle.homeBranch.longitude,
-        title: `Tổng kho xuất phát: ${activeTrip.vehicle.homeBranch.name}`,
-        subtitle: activeTrip.vehicle.homeBranch.address,
-        type: 'DEPOT',
-      });
-    }
-
-    activeTrip.stops.forEach((stop) => {
-      mapMarkers.push({
-        id: stop.id,
-        latitude: stop.latitude,
-        longitude: stop.longitude,
-        title: `Điểm ${stop.sequence}: ${stop.stopType === 'PICKUP' ? 'Lấy Hàng' : 'Giao Hàng'}`,
-        subtitle: stop.address,
-        type: stop.stopType,
-        sequence: stop.sequence,
-      });
-    });
-
-    if (activeTrip.routeGeometry) {
-      try {
-        routeGeometry = JSON.parse(activeTrip.routeGeometry);
-      } catch {
-        routeGeometry = null;
+    if (hasDraft) {
+      if (startLocation) {
+        markers.push({
+          id: 'draft-depot',
+          latitude: startLocation.latitude,
+          longitude: startLocation.longitude,
+          title: 'Điểm bắt đầu chuyến',
+          subtitle: startLocation.address,
+          type: 'DEPOT',
+        });
       }
+      const stopById = new Map(chosenOrders.flatMap((order) => order.stops).map((stop) => [stop.id, stop]));
+      orderedStopIds.forEach((stopId, index) => {
+        const stop = stopById.get(stopId);
+        if (!stop) return;
+        markers.push({
+          id: stop.id,
+          latitude: stop.latitude,
+          longitude: stop.longitude,
+          title: `${index + 1}. ${stop.type === 'PICKUP' ? 'Nhận hàng' : 'Giao hàng'}`,
+          subtitle: stop.address,
+          type: stop.type,
+          sequence: index + 1,
+        });
+      });
+      if (endLocation) {
+        markers.push({
+          id: 'draft-end',
+          latitude: endLocation.latitude,
+          longitude: endLocation.longitude,
+          title: 'Điểm kết thúc chuyến',
+          subtitle: endLocation.address,
+          type: 'DEPOT',
+        });
+      }
+    } else if (activeTrip) {
+      activeTrip.stops.forEach((stop) => {
+        const { stopType } = stop;
+        const action = {
+          DEPOT_START: 'Xuất phát',
+          DEPOT_END: 'Kết thúc chuyến',
+          PICKUP: 'Lấy hàng',
+          DELIVERY: 'Giao hàng',
+        }[stopType];
+        const isCargoStop = stopType === 'PICKUP' || stopType === 'DELIVERY';
+        markers.push({
+          id: stop.id,
+          latitude: stop.latitude,
+          longitude: stop.longitude,
+          title: isCargoStop ? `Điểm ${stop.sequence} · ${action}` : action,
+          subtitle: stop.address,
+          type: isCargoStop ? stopType : 'DEPOT',
+          sequence: stop.sequence,
+        });
+      });
     }
-  }
+    return markers;
+  }, [activeTrip, chosenOrders, endLocation, hasDraft, orderedStopIds, startLocation]);
 
   const loadColumns = [
     {
@@ -903,7 +964,17 @@ const DispatchPage: React.FC = () => {
           {/* DANH SÁCH CÁC CHUYẾN ĐI ĐÃ TẠO */}
           <Card title={publishingOnly ? 'Kế hoạch chờ phát hành' : 'Chuyến đi đang quản lý'} variant="borderless" className="card-elevation">
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {!trips.length && <Text type="secondary">{publishingOnly ? 'Chưa có kế hoạch đã duyệt chờ phát hành.' : 'Chưa có chuyến đi.'}</Text>}
+              {loadError ? <Alert type="error" showIcon message="Không tải được danh sách chuyến" description={loadError}
+                action={<Button onClick={() => void fetchData()}>Thử lại</Button>} />
+                : !trips.length && (publishingOnly ? <Space direction="vertical" size="middle">
+                  <Alert type="info" showIcon message="Chưa có kế hoạch đã duyệt chờ phát hành"
+                    description="Danh sách này chỉ hiển thị kế hoạch đã được Trưởng chi nhánh duyệt và chưa phát hành trong chi nhánh đang chọn." />
+                  <Text>1. Trưởng chi nhánh lập và duyệt kế hoạch chuyến.</Text>
+                  <Text>2. Bạn chọn kế hoạch để kiểm tra xe, tài xế, tuyến và phương án xếp/dỡ.</Text>
+                  <Text>3. Phát hành kế hoạch khi thông tin đã phù hợp.</Text>
+                  <Text type="secondary">Nếu chưa thấy kế hoạch, hãy kiểm tra chi nhánh đang chọn hoặc liên hệ Trưởng chi nhánh để hoàn tất duyệt.</Text>
+                  <Button onClick={() => void fetchData()}>Tải lại danh sách</Button>
+                </Space> : <Text type="secondary">Chưa có chuyến đi.</Text>)}
               {trips.map((t) => (
                 <div
                   key={t.id}
@@ -952,13 +1023,13 @@ const DispatchPage: React.FC = () => {
                       </>
                     )}
                     <Button
-                      type={enableSim ? 'default' : 'primary'}
+                      type={isSimulating ? 'default' : 'primary'}
                       size="small"
-                      icon={enableSim ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
-                      disabled={!routeGeometry}
-                      onClick={() => setEnableSim(!enableSim)}
+                      icon={isSimulating ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                      disabled={!canSimulate || !selectedVehicle}
+                      onClick={toggleSimulation}
                     >
-                      {enableSim ? 'Dừng mô phỏng' : 'Demo xe chạy'}
+                      {isSimulating ? 'Dừng mô phỏng' : 'Mô phỏng xe'}
                     </Button>
                   </Space>
                 </div>
@@ -971,13 +1042,13 @@ const DispatchPage: React.FC = () => {
                     <Tag color="blue">{formatDecimal(activeTrip.totalDistanceKm)} km</Tag>
                     <Tag color="purple">~{formatDecimal(activeTrip.totalDurationMinutes)} phút</Tag>
                     <Button
-                      type={enableSim ? 'default' : 'primary'}
+                      type={isSimulating ? 'default' : 'primary'}
                       size="small"
-                      icon={enableSim ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
-                      disabled={!routeGeometry}
-                      onClick={() => setEnableSim(!enableSim)}
+                      icon={isSimulating ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                      disabled={!canSimulate}
+                      onClick={toggleSimulation}
                     >
-                      {enableSim ? 'Dừng mô phỏng' : 'Demo xe chạy'}
+                      {isSimulating ? 'Dừng mô phỏng' : 'Mô phỏng xe'}
                     </Button>
                     {['DRAFT', 'PLANNED'].includes(activeTrip.status) && (
                       <Button size="small" disabled={!can('trips.plan')} onClick={() => handleStartEdit(activeTrip)}>Chỉnh sửa kế hoạch</Button>
@@ -999,21 +1070,7 @@ const DispatchPage: React.FC = () => {
                     )}
                   </Space>
                 </div>
-              ) : (
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span>Bản Đồ Lộ Trình Mapbox</span>
-                  {routeGeometry && (
-                    <Button
-                      type={enableSim ? 'default' : 'primary'}
-                      size="small"
-                      icon={enableSim ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
-                      onClick={() => setEnableSim(!enableSim)}
-                    >
-                      {enableSim ? 'Dừng mô phỏng' : 'Demo xe chạy'}
-                    </Button>
-                  )}
-                </div>
-              )
+              ) : 'Bản đồ chi nhánh — chưa chọn chuyến'
             }
             variant="borderless"
             className="card-elevation"
@@ -1027,22 +1084,43 @@ const DispatchPage: React.FC = () => {
                 style={{ marginBottom: 12 }}
               />
             )}
-            <MapboxMap
+            {!hasDraft && !activeTrip && <Alert type="info" showIcon
+              message="Chưa có tuyến chuyến để hiển thị"
+              description={mapBranch && mapBranch.id === branchId
+                ? `Bản đồ đang hiển thị khu vực ${mapBranch.name}. Khi chọn kế hoạch, bản đồ sẽ hiển thị các điểm lấy/giao và tuyến của chuyến đó.`
+                : 'Chọn kế hoạch trong danh sách bên trái để xem tuyến chuyến.'}
+              style={{ marginBottom: 12 }} />}
+            {!hasDraft && !activeTrip && branchMapError ? <Alert type="warning" showIcon
+              message="Không tải được vị trí chi nhánh" description={branchMapError}
+              action={<Button onClick={() => setBranchMapRetry(value => value + 1)}>Thử lại</Button>} />
+              : !hasDraft && !activeTrip && (!mapBranch || mapBranch.id !== branchId)
+                ? (branchId ? <Spin aria-label="Đang tải vị trí chi nhánh" /> : <Text type="secondary">Chọn chi nhánh để xem khu vực trên bản đồ.</Text>)
+                : <MapboxMap
+              key={hasDraft || activeTrip ? 'trip-map' : `branch-map-${branchId}`}
+              emptyCenter={mapBranch && mapBranch.id === branchId ? [mapBranch.longitude, mapBranch.latitude] : undefined}
               markers={mapMarkers}
               routeGeometry={routeGeometry}
               height={460}
-              enableSimulation={enableSim}
-              autoPlaySimulation={enableSim}
-              vehiclePlate={activeTrip ? activeTrip.vehicle?.plateNumber : selectedVehicle?.plateNumber || '29C-678.92'}
-              driverName={activeTrip ? activeTrip.assignments[0]?.driver?.fullName : drivers.find(d => d.id === selectedDriverId)?.fullName || 'Tài xế'}
-            />
+              enableSimulation={isSimulating}
+              autoPlaySimulation={isSimulating}
+              vehiclePlate={hasDraft ? selectedVehicle?.plateNumber : activeTrip?.vehicle?.plateNumber}
+              driverName={hasDraft
+                ? drivers.find(d => d.id === selectedDriverId)?.fullName
+                : activeTrip?.assignments.find(assignment => assignment.role === 'PRIMARY')?.driver.fullName}
+              onSimulationProgress={syncPackingStep}
+              onSimulationStop={stopSimulation}
+            />}
           </Card>
 
           {/* KẾT QUẢ TỐI ƯU TUYẾN & MÔ PHỎNG XẾP DỠ MẶT SÀN 2D (HYBRID ALNS / DYNAMIC 2D SPATIAL VALIDATOR) */}
           {optimizationResult && (
             <div style={{ marginBottom: '20px' }}>
               <FloorPackingVisualizer
+                key={optimizationResult.job_id}
                 vehicle={selectedVehicle}
+                selectedStepIndex={packingStep}
+                onStepChange={setPackingStep}
+                isSimulating={isSimulating && packingMilestonesKm.length > 0}
                 stepStates={optimizationResult.spatial_validation?.step_states || []}
                 isValid={optimizationResult.spatial_validation?.is_valid ?? true}
                 violations={

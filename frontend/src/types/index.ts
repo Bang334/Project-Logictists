@@ -1,3 +1,8 @@
+import type { PackageHandling } from './orders';
+import type { WeightBalanceMetrics } from '../utils/weightBalance';
+
+export type { WeightBalanceMetrics };
+
 export interface User {
   role?: 'ADMIN' | 'DISPATCHER' | 'STAFF' | 'CUSTOMER' | 'DRIVER';
   phone?: string | null;
@@ -117,8 +122,7 @@ export interface Driver {
   perKmPay?: string;
 }
 
-export interface OrderPackage {
-  cargoKind?: import('./orders').CargoKind | 'UNCLASSIFIED';
+export interface OrderPackage extends PackageHandling {
   id: string; orderId: string; orderItemId: string; packageCode: string;
   lengthMm: number; widthMm: number; heightMm: number; weightG: string;
   pickupStopId: string | null; deliveryStopId: string | null; status: string; version: number;
@@ -157,6 +161,7 @@ export interface OrderStop {
 export interface Order {
   cancellationAllowed?: boolean;
   cancellation?: { reason: string | null; actorUserId: string | null; actorName: string | null; occurredAt: string } | null;
+  protectionFeeVnd?: number;
   id: string;
   orderNumber: string;
   customerId: string;
@@ -265,16 +270,21 @@ export interface PlacedItemUI {
   order_id: string;
   x: number;
   y: number;
+  z?: number;
+  support_item_id?: string | null;
   length_cm: number;
   width_cm: number;
   height_cm: number;
   weight_kg: number;
+  cargo_kind?: 'UNCLASSIFIED' | 'STANDARD' | 'FRAGILE' | null;
+  no_top_load_requested?: boolean | null;
+  floor_rotation_locked?: boolean | null;
 }
 
 export interface PackageAccessPathUI {
   item_id: string;
   is_clear: boolean;
-  points: Array<{ x: number; y: number }>;
+  points: Array<{ x: number; y: number; z?: number }>;
   blocker_item_ids: string[];
 }
 
@@ -289,6 +299,7 @@ export interface FloorStepStateUI {
   floor_area_cm2: number;
   weight_utilization_percent: number;
   area_utilization_percent: number;
+  weight_balance?: WeightBalanceMetrics | null;
   is_valid: boolean;
   unload_sequence?: string[];
   package_access_paths?: PackageAccessPathUI[];
@@ -301,6 +312,7 @@ export interface SpatialValidationUI {
   error_message?: string;
   max_weight_kg: number;
   max_area_cm2: number;
+  max_lateral_imbalance_percent?: number;
   step_states: FloorStepStateUI[];
 }
 
@@ -358,6 +370,7 @@ export interface OptimizedRouteUI {
   plate_number: string;
   vehicle_length_cm: number;
   vehicle_width_cm: number;
+  vehicle_height_cm?: number;
   driver_id?: string;
   driver_name?: string;
   driver_license_class?: string;
@@ -371,13 +384,15 @@ export interface OptimizedRouteUI {
     latitude: number;
     longitude: number;
   };
+  end_location?: OptimizedRouteUI['depot'] | null;
   stops: OptimizedStopUI[];
   spatial_validation: SpatialValidationUI;
   cost?: RouteCostBreakdownUI;
-  route_geometry?: { type: 'LineString'; coordinates: [number, number][] };
+  route_geometry?: { type: 'LineString'; coordinates: [number, number][]; waypoint_indices?: number[] };
 }
 
 export interface BenchmarkMetricUI {
+  routes?: OptimizedRouteUI[];
   method_name: string;
   description: string;
   total_cost_vnd: number;
@@ -389,6 +404,11 @@ export interface BenchmarkMetricUI {
   driver_cost_vnd: number;
   cargo_holding_cost_vnd: number;
   late_delivery_penalty_vnd: number;
+  planning_span_days?: number;
+  physical_vehicle_count?: number;
+  driver_calendar_salary_vnd?: number;
+  driver_idle_salary_allocation_vnd?: number;
+  selection_score_vnd?: number;
   is_feasible: boolean;
   violations: string[];
 }
@@ -559,6 +579,7 @@ export interface ApplyOptimizationResponseUI {
 }
 
 export interface DemoCaseSummaryUI {
+  supports_stacking?: boolean;
   id: string;
   filename: string;
   name: string;
@@ -574,10 +595,15 @@ export interface DemoCaseSummaryUI {
 }
 
 export interface RunDemoOptimizationPayloadUI {
+  branchId?: string;
+  demoStackingEnabled?: boolean;
+  demoStackingOwnerMode?: DemoStackingOwnerMode;
   caseId?: string;
   timeBudgetSeconds?: number;
   customRequest?: any;
 }
+
+export type DemoStackingOwnerMode = 'SAME_CUSTOMER' | 'ANY_CUSTOMER';
 
 export interface DemoOptimizationResponseUI extends AutomaticOptimizationResponseUI {
   candidateResults?: Record<number, FleetOptimizationResultUI>;

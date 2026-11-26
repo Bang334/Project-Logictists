@@ -22,6 +22,12 @@ class CargoItem:
     weight_kg: float
     can_rotate: bool = True
     description: str = ""
+    customer_id: Optional[str] = None
+    allowed_orientations: Optional[List[str]] = None
+    cargo_kind: str = "STANDARD"
+    allow_upper_tier: bool = False
+    no_top_load_requested: bool = False
+    max_top_load_g: Optional[int] = None
 
 
 @dataclass
@@ -37,6 +43,7 @@ class OrderPair:
     delivery_window_start_sec: int = 0
     delivery_window_end_sec: int = 86400
     order_value_vnd: int = 0
+    ordered_at_sec: int = 0
     allowed_source_vehicle_ids: List[str] = field(default_factory=list)
     source_order_id: Optional[str] = None
     split_group_id: Optional[str] = None
@@ -97,12 +104,14 @@ class DriverOption:
 
 @dataclass
 class CostPolicy:
+    delivery_grace_days: int = 2
     fuel_price_per_liter_vnd: int = 23800
     monthly_working_minutes: int = 10560
     cargo_holding_cost_vnd_per_ton_hour: int = 15000
     unassigned_order_penalty_vnd: int = 10_000_000  # 10 tr VND / đơn bị bỏ rơi
     late_delivery_penalty_mode: str = "FIXED_PER_DAY"
     late_delivery_penalty_value: float = 500000.0
+    demo_stacking: Optional[object] = None
 
 
 @dataclass
@@ -113,6 +122,8 @@ class PlacedItem:
     y: float
     length_cm: float
     width_cm: float
+    weight_kg: Optional[float] = None
+    cargo_kind: str = "UNCLASSIFIED"
 
 
 @dataclass

@@ -30,9 +30,9 @@ export class PermissionGuard implements CanActivate {
       if (request.user.role !== 'ADMIN' || request.user.grants.some(g => g.role === 'ADMIN' && g.scopeType === 'COMPANY')) return true;
     }
     if (!permission) { assertPermission({ ...request.user, grants: [] }, 'branches.read'); return false; }
-    if (permission === 'authenticated') return true;
     const selected = request.headers['x-branch-id'];
     if (typeof selected === 'string' && selected !== 'ALL') request.user.selectedBranchId = selected;
+    if (permission === 'authenticated') return true;
     assertPermission(request.user, permission, request.user.selectedBranchId);
     return true;
   }

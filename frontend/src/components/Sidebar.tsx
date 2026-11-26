@@ -3,15 +3,12 @@ import { canOpenTab } from '../utils/navigationAccess';
 import React from 'react';
 import { Layout, Menu } from 'antd';
 import {
-  AppstoreOutlined,
-  BarChartOutlined,
   CarOutlined,
   CompassOutlined,
   DashboardOutlined,
   DatabaseOutlined,
   InboxOutlined,
-  ShopOutlined,
-  ShoppingOutlined,
+  SettingOutlined,
   ThunderboltOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -28,7 +25,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
   const { can, user, branchId } = useAuth();
   const menuItems = [
     { key: 'audit-logs', icon: <DatabaseOutlined />, label: 'Nhật ký thao tác' },
-    { key: 'trips', icon: <CarOutlined />, label: 'Tra cứu chuyến' },
+    { key: 'trips', icon: <CarOutlined />, label: 'Chuyến vận tải' },
     { key: 'customers', icon: <UserOutlined aria-hidden="true" />, label: 'Khách hàng vận tải' },
     {
       key: 'dashboard',
@@ -37,8 +34,8 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
     },
     {
       key: 'orders',
-      icon: <ShoppingOutlined style={{ fontSize: '16px' }} />,
-      label: 'Quản lý Đơn hàng',
+      icon: <InboxOutlined style={{ fontSize: '16px' }} />,
+      label: 'Đơn hàng',
     },
     {
       key: 'dispatch-manual',
@@ -55,13 +52,8 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
       icon: <CarOutlined style={{ fontSize: '16px' }} />,
       label: 'Đội Xe & Tài Xế',
     },
-    { key: 'catalog', icon: <AppstoreOutlined />, label: 'Danh mục hàng' },
-    { key: 'inventory', icon: <DatabaseOutlined />, label: 'Tồn kho' },
-    { key: 'sales-orders', icon: <ShoppingOutlined />, label: 'Đơn bán lẻ' },
-    { key: 'order-processing', icon: <InboxOutlined />, label: 'Xử lý đơn bán lẻ' },
-    { key: 'pickup-ops', icon: <ShopOutlined />, label: 'Điểm nhận hàng' },
-    { key: 'retail-analytics', icon: <BarChartOutlined />, label: 'Báo cáo bán lẻ' },
-    { key: 'customer-shop', icon: <ShopOutlined />, label: 'Đặt hàng' },
+    { key: 'delivery-appointments', icon: <InboxOutlined />, label: 'Lịch hẹn giao hàng' },
+    { key: 'settings', icon: <SettingOutlined aria-hidden="true" />, label: 'Cấu hình chung' },
     { key: 'accounts', icon: <UserOutlined aria-hidden="true" />, label: 'Quản lý tài khoản' },
   ];
 
@@ -86,7 +78,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
           mode="inline"
           selectedKeys={[currentTab]}
           onClick={({ key }) => onSelectTab(key)}
-          items={menuItems.filter((item) => canOpenTab(user, item.key, can, branchId))}
+          items={menuItems.filter((item) => canOpenTab(user, item.key, can, branchId)).map(item => ({ ...item, icon: <span aria-hidden="true">{item.icon}</span> }))}
         />
         <div className="tms-sidebar-footer">
           <span

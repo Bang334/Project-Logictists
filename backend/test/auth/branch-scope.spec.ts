@@ -3,7 +3,7 @@ import { ForbiddenException, BadRequestException } from '@nestjs/common';
 import { resolveBranchScope, resolveLocationScope, assertLocationAccess } from '../../src/auth/branch-scope';
 import { branchFilter, Principal } from '../../src/auth/access';
 const principal = (grants: Principal['grants']): Principal => ({ id: 'u', username: 'u', fullName: 'U', sessionId: 's', grants });
-const dispatcher = principal([{ role: 'DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-sgn', permissions: ['trips.plan'] }]);
+const dispatcher = principal([{ role: 'BRANCH_DISPATCH_LEAD', scopeType: 'BRANCH', branchId: 'branch-sgn', permissions: ['trips.plan'] }]);
 describe('resolveBranchScope with authoritative grants', () => {
   it('cho phép admin chọn chi nhánh khác', () => {
     expect(resolveBranchScope(principal([{ role: 'ADMIN', scopeType: 'COMPANY', branchId: null, permissions: ['trips.plan'] }]), 'branch-hn')).toBe('branch-hn');

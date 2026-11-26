@@ -1,13 +1,17 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-describe('Merged retail and TMS database contract', () => {
+describe('Merged transport and admin database contract', () => {
   it('giữ model retail/TMS/auth và lịch sử thực thi sau khi đơn giản lịch/cửa xe', () => {
     const schema = readFileSync(join(process.cwd(), 'prisma', 'schema.prisma'), 'utf8');
-    for (const model of ['AuthSession', 'AuthLoginLimit', 'Allocation', 'Package', 'OrderStop', 'UserRoleScope', 'UserLocationScope', 'TrackingDevice', 'Invoice', 'TripExecutionSnapshot', 'PickupResult', 'DriverDeliveryState', 'ServiceZone', 'ServiceZoneProvince', 'StoreServiceZone', 'FulfillmentGroup', 'FulfillmentLine', 'TransportRequest', 'TransportRequestPackage', 'RetailQuote']) {
+    for (const model of ['AuthSession', 'AuthLoginLimit', 'Allocation', 'Package', 'OrderStop', 'UserRoleScope', 'UserLocationScope', 'TrackingDevice', 'Invoice', 'TripExecutionSnapshot', 'PickupResult', 'DriverDeliveryState']) {
       expect(schema).toContain(`model ${model} {`);
     }
-    expect([...schema.matchAll(/^model\s+\w+\s*\{/gm)]).toHaveLength(96);
+    expect([...schema.matchAll(/^model\s+\w+\s*\{/gm)]).toHaveLength(75);
+    for (const model of ['DeliveryPlanningBatch', 'DeliveryAppointment', 'DeliveryCapacityHold', 'SystemSetting']) {
+      expect(schema).toContain(`model ${model} {`);
+    }
+    expect(schema).not.toMatch(/^model\s+(ServiceZone|FulfillmentGroup|TransportRequest|RetailQuote|InventoryReservation|SalesInvoice)\s*\{/m);
     expect(schema).toContain('model CustomerBranch {');
     expect(schema).toContain('@@id([customerId, branchId])');
     expect(schema).not.toMatch(/^model\s+(DriverLeave|VehicleDoor)\s*\{/m);

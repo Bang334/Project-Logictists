@@ -1,7 +1,7 @@
 """An engine's claimed packing flag must never stand in for a checked witness."""
 import pytest
 
-from app.models import CargoItem, PlacedItem, StopAction
+from app.models import CargoItem, DemoStackingPolicy, PlacedItem, StopAction
 from benchmarks.algorithm_comparison.layout_certificate import verify_layout_certificate
 from test_benchmark_contract import comparison_request
 
@@ -23,6 +23,39 @@ def certificate():
 
 def test_fixed_certificate_proves_nonstacking_and_access_without_layout_search():
     assert verify_layout_certificate(*certificate()) is None
+
+
+def test_demo_stack_certificate_checks_published_geometry_and_unload_order():
+    from app.stacking import validate_stop_actions
+
+    vehicle = comparison_request().vehicles[0]
+    vehicle.length_cm = 50
+    policy = DemoStackingPolicy(max_tiers=2, lift_clearance_cm=5)
+    bottom = CargoItem(
+        id="bottom", order_id="order", length_cm=50, width_cm=50,
+        height_cm=20, weight_kg=100, cargo_kind="STANDARD", max_top_load_g=30000,
+    )
+    top = bottom.model_copy(update={
+        "id": "top", "weight_kg": 20, "allow_upper_tier": True,
+    })
+    actions = [
+        StopAction(stop_id="pickup", sequence=1, stop_type="PICKUP", items_to_load=[bottom, top]),
+        StopAction(stop_id="delivery", sequence=2, stop_type="DELIVERY", items_to_unload=["bottom", "top"]),
+    ]
+    result = validate_stop_actions(policy, vehicle, actions)
+    assert result.is_valid
+    layouts = [state.placed_items for state in result.step_states]
+    unloads = [state.unload_sequence for state in result.step_states]
+    assert unloads[1] == ["top", "bottom"]
+    assert verify_layout_certificate(vehicle, actions, layouts, unloads, demo_stacking=policy) is None
+    assert verify_layout_certificate(vehicle, actions, layouts, unloads) == "certificate stacking policy required"
+    assert verify_layout_certificate(
+        vehicle, actions, layouts, [[], ["bottom", "top"]], demo_stacking=policy,
+    ) == "certificate stack unload sequence"
+    next(item for item in layouts[0] if item.item_id == "top").support_item_id = "missing"
+    assert verify_layout_certificate(
+        vehicle, actions, layouts, unloads, demo_stacking=policy,
+    ) == "certificate stack support"
 
 
 @pytest.mark.parametrize("corruption,reason", [

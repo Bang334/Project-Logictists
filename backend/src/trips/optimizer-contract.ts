@@ -18,6 +18,23 @@ export type OptimizerStop = {
   current_weight_kg: number;
 };
 
+export type OptimizerWeightBalanceMetrics = {
+  total_weight_kg: number;
+  cg_x_cm: number;
+  cg_y_cm: number;
+  cg_x_percent: number;
+  cg_y_percent: number;
+  lateral_offset_cm: number;
+  longitudinal_offset_cm: number;
+  lateral_imbalance_percent: number;
+  longitudinal_imbalance_percent: number;
+  left_weight_kg: number;
+  right_weight_kg: number;
+  front_weight_kg: number;
+  rear_weight_kg: number;
+  status: 'EMPTY' | 'BALANCED' | 'MODERATE' | 'IMBALANCED';
+};
+
 export type OptimizedRouteResult = {
   route_id: string;
   vehicle_id: string;
@@ -27,6 +44,7 @@ export type OptimizedRouteResult = {
   plate_number: string;
   vehicle_length_cm: number;
   vehicle_width_cm: number;
+  vehicle_height_cm?: number;
   driver_id?: string;
   driver_name?: string;
   driver_license_class?: string;
@@ -40,14 +58,17 @@ export type OptimizedRouteResult = {
     latitude: number;
     longitude: number;
   };
+  end_location?: OptimizedRouteResult['depot'] | null;
   stops: OptimizerStop[];
   spatial_validation: {
+    demo_stacking?: { max_tiers: number; lift_clearance_cm: number; owner_mode?: 'SAME_CUSTOMER' | 'ANY_CUSTOMER' } | null;
     is_valid: boolean;
     violation_code?: string;
     violation_scenario?: string;
     error_message?: string;
     max_weight_kg: number;
     max_area_cm2: number;
+    max_lateral_imbalance_percent?: number | null;
     step_states: Array<{
       step_index: number;
       stop_id: string;
@@ -62,12 +83,18 @@ export type OptimizedRouteResult = {
         width_cm: number;
         height_cm: number;
         weight_kg: number;
+        z?: number;
+        support_item_id?: string | null;
+        cargo_kind?: 'UNCLASSIFIED' | 'STANDARD' | 'FRAGILE' | null;
+        no_top_load_requested?: boolean | null;
+        floor_rotation_locked?: boolean | null;
       }>;
       current_weight_kg: number;
       current_occupied_area_cm2: number;
       floor_area_cm2: number;
       weight_utilization_percent: number;
       area_utilization_percent: number;
+      weight_balance?: OptimizerWeightBalanceMetrics | null;
       is_valid: boolean;
       unload_sequence?: string[];
       package_access_paths: Array<{
@@ -108,8 +135,14 @@ export type BenchmarkMetric = {
   driver_cost_vnd: number;
   cargo_holding_cost_vnd: number;
   late_delivery_penalty_vnd: number;
+  planning_span_days?: number;
+  physical_vehicle_count?: number;
+  driver_calendar_salary_vnd?: number;
+  driver_idle_salary_allocation_vnd?: number;
+  selection_score_vnd?: number;
   is_feasible: boolean;
   violations: string[];
+  routes?: OptimizedRouteResult[];
 };
 
 export type BenchmarkComparison = {
@@ -148,7 +181,7 @@ export type FleetOptimizationResult = {
     physical_vehicle_count?: number;
     delivery_visit_count?: number;
   };
-  benchmarks?: BenchmarkComparison;
+  benchmarks?: BenchmarkComparison | null;
   diagnostics: string[];
 };
 
@@ -174,6 +207,48 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+const VALID_WEIGHT_BALANCE_STATUSES = new Set([
+  'EMPTY',
+  'BALANCED',
+  'MODERATE',
+  'IMBALANCED',
+]);
+const VALID_CARGO_KINDS = new Set(['UNCLASSIFIED', 'STANDARD', 'FRAGILE']);
+
+function assertWeightBalanceMetrics(value: unknown) {
+  if (!isRecord(value)) {
+    throw new Error('Optimizer trả spatial step.weight_balance không hợp lệ');
+  }
+  for (const field of [
+    'total_weight_kg',
+    'cg_x_cm',
+    'cg_y_cm',
+    'cg_x_percent',
+    'cg_y_percent',
+    'lateral_imbalance_percent',
+    'longitudinal_imbalance_percent',
+    'left_weight_kg',
+    'right_weight_kg',
+    'front_weight_kg',
+    'rear_weight_kg',
+  ]) {
+    if (!isFiniteNumber(value[field]) || Number(value[field]) < 0) {
+      throw new Error(`Optimizer trả weight_balance.${field} không hợp lệ`);
+    }
+  }
+  for (const signedField of ['lateral_offset_cm', 'longitudinal_offset_cm']) {
+    if (!isFiniteNumber(value[signedField])) {
+      throw new Error(`Optimizer trả weight_balance.${signedField} không hợp lệ`);
+    }
+  }
+  if (
+    typeof value.status !== 'string' ||
+    !VALID_WEIGHT_BALANCE_STATUSES.has(value.status)
+  ) {
+    throw new Error('Optimizer trả weight_balance.status không hợp lệ');
+  }
 }
 
 export function assertFleetOptimizationResult(
@@ -272,7 +347,13 @@ export function assertFleetOptimizationResult(
       }
     }
   }
-  for (const route of value.routes) {
+  const benchmarkRoutes = isRecord(value.benchmarks) && isRecord(value.benchmarks.direct_dedicated)
+    ? value.benchmarks.direct_dedicated.routes
+    : undefined;
+  if (benchmarkRoutes !== undefined && !Array.isArray(benchmarkRoutes)) {
+    throw new Error('Optimizer trả danh sách chuyến đơn lẻ không hợp lệ');
+  }
+  for (const [index, route] of [...value.routes, ...(benchmarkRoutes ?? [])].entries()) {
     if (
       !isRecord(route) ||
       typeof route.route_id !== 'string' ||
@@ -282,6 +363,12 @@ export function assertFleetOptimizationResult(
       route.spatial_validation.is_valid !== true
     ) {
       throw new Error('Optimizer trả route thiếu dữ liệu hoặc chưa vượt spatial validator');
+    }
+    const endLocation = route.end_location;
+    if (endLocation != null && (!isRecord(endLocation) || typeof endLocation.id !== 'string'
+      || typeof endLocation.name !== 'string' || !isFiniteNumber(endLocation.longitude)
+      || !isFiniteNumber(endLocation.latitude))) {
+      throw new Error('Optimizer trả điểm kết thúc tuyến không hợp lệ');
     }
     for (const field of [
       'service_day_index',
@@ -297,8 +384,16 @@ export function assertFleetOptimizationResult(
       }
     }
     if (
+      route.vehicle_height_cm !== undefined &&
+      route.vehicle_height_cm !== null &&
+      (!isFiniteNumber(route.vehicle_height_cm) || Number(route.vehicle_height_cm) <= 0)
+    ) {
+      throw new Error('Optimizer trả route.vehicle_height_cm không hợp lệ');
+    }
+    if (
       !Number.isInteger(route.service_day_index) ||
-      Number(route.end_time_sec) <= Number(route.start_time_sec)
+      Number(route.end_time_sec) < Number(route.start_time_sec) ||
+      (index < value.routes.length && route.end_time_sec === route.start_time_sec)
     ) {
       throw new Error('Optimizer trả khung thời gian tuyến không hợp lệ');
     }
@@ -309,6 +404,14 @@ export function assertFleetOptimizationResult(
       !Array.isArray(route.spatial_validation.step_states)
     ) {
       throw new Error('Optimizer trả thông tin xe/tài xế/spatial không hợp lệ');
+    }
+    if (
+      route.spatial_validation.max_lateral_imbalance_percent !== undefined &&
+      route.spatial_validation.max_lateral_imbalance_percent !== null &&
+      (!isFiniteNumber(route.spatial_validation.max_lateral_imbalance_percent) ||
+        Number(route.spatial_validation.max_lateral_imbalance_percent) < 0)
+    ) {
+      throw new Error('Optimizer trả max_lateral_imbalance_percent không hợp lệ');
     }
     for (const step of route.spatial_validation.step_states) {
       if (
@@ -326,9 +429,35 @@ export function assertFleetOptimizationResult(
       ) {
         throw new Error('Optimizer trả spatial step không hợp lệ');
       }
+      if (step.weight_balance !== undefined && step.weight_balance !== null) {
+        assertWeightBalanceMetrics(step.weight_balance);
+      }
       for (const placed of step.placed_items) {
         if (!isRecord(placed) || typeof placed.item_id !== 'string') {
           throw new Error('Optimizer trả placement không hợp lệ');
+        }
+        if ((placed.z !== undefined && (!isFiniteNumber(placed.z) || Number(placed.z) < 0)) ||
+          (placed.support_item_id != null && typeof placed.support_item_id !== 'string')) {
+          throw new Error('Optimizer trả tầng xếp kiện không hợp lệ');
+        }
+        if (
+          placed.cargo_kind != null &&
+          (typeof placed.cargo_kind !== 'string' ||
+            !VALID_CARGO_KINDS.has(placed.cargo_kind))
+        ) {
+          throw new Error('Optimizer trả placement.cargo_kind không hợp lệ');
+        }
+        if (
+          placed.no_top_load_requested != null &&
+          typeof placed.no_top_load_requested !== 'boolean'
+        ) {
+          throw new Error('Optimizer trả placement.no_top_load_requested không hợp lệ');
+        }
+        if (
+          placed.floor_rotation_locked != null &&
+          typeof placed.floor_rotation_locked !== 'boolean'
+        ) {
+          throw new Error('Optimizer trả placement.floor_rotation_locked không hợp lệ');
         }
         for (const field of [
           'x',
@@ -457,7 +586,7 @@ export function assertFleetOptimizationResult(
       throw new Error('Optimizer trả unassigned_orders không hợp lệ');
     }
   }
-  if (value.benchmarks !== undefined) {
+  if (value.benchmarks !== undefined && value.benchmarks !== null) {
     if (!isRecord(value.benchmarks)) {
       throw new Error('Optimizer benchmarks phải là object');
     }

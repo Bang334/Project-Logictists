@@ -3,8 +3,8 @@ import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import {
   buildRouteProfile,
+  getStepIndexForDistance,
   interpolateAlongRoute,
-  HANOI_SAMPLE_DEMO_ROUTE,
   RouteProfile,
 } from '../utils/geoSimulation';
 import { MapSimulationOverlay } from './MapSimulationOverlay';
@@ -35,14 +35,20 @@ export const MAP_ROUTE_COLORS = [
 interface MapboxMapProps {
   markers?: MapMarker[];
   routeGeometry?: any; // GeoJSON LineString or FeatureCollection
+  connectMarkers?: boolean; // Chỉ tự động vẽ line nối các markers khi được bật tường minh (mặc định false)
   height?: string | number;
   interactive?: boolean;
+  // Initial view only; route/marker updates continue to control the viewport.
+  emptyCenter?: [number, number];
   onMarkerClick?: (marker: MapMarker) => void;
 
   // Realtime Simulation Props
   enableSimulation?: boolean;
   autoPlaySimulation?: boolean;
+  followSimulationVehicle?: boolean;
   showControls?: boolean;
+  simulationFocus?: { coordinate: [number, number]; progress: number };
+  simulationMilestonesKm?: readonly number[];
   vehiclePlate?: string;
   driverName?: string;
   onSimulationProgress?: (
@@ -128,55 +134,61 @@ const ROUTE_COLOR_EXPRESSION = [
   MAP_ROUTE_COLORS[0],
 ];
 
+const EMPTY_MAP_MARKERS: MapMarker[] = [];
+const EMPTY_MILESTONES: readonly number[] = [];
+const STOP_FOCUS_ZOOM = 13;
+const VEHICLE_FOLLOW_ZOOM = 14;
+
 const MapboxMap: React.FC<MapboxMapProps> = ({
-  markers = [],
+  markers = EMPTY_MAP_MARKERS,
   routeGeometry,
+  connectMarkers = false,
   height = '100%',
   interactive = true,
+  emptyCenter,
   onMarkerClick,
   enableSimulation = false,
   autoPlaySimulation = false,
+  followSimulationVehicle = false,
   showControls = true,
-  vehiclePlate = '29C-678.92',
+  simulationFocus,
+  simulationMilestonesKm = EMPTY_MILESTONES,
+  vehiclePlate = 'Xe mô phỏng',
   driverName = 'Tài xế',
   onSimulationProgress,
   onSimulationStop,
 }) => {
   const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const mapContainer = useRef<HTMLDivElement>(null);
+  const initialEmptyCenterRef = useRef(emptyCenter);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   const truckMarkerRef = useRef<mapboxgl.Marker | null>(null);
   const truckElementRef = useRef<HTMLDivElement | null>(null);
+  const simulationFocusRef = useRef(simulationFocus);
 
   // Simulation State
   const [isPlaying, setIsPlaying] = useState<boolean>(autoPlaySimulation && !prefersReducedMotion);
   const [progress, setProgress] = useState<number>(0);
   const [speedMultiplier, setSpeedMultiplier] = useState<number>(1);
-  const [currentSpeedKmh, setCurrentSpeedKmh] = useState<number>(45);
 
   const progressRef = useRef<number>(0);
-  const isPlayingRef = useRef<boolean>(autoPlaySimulation);
+  const isPlayingRef = useRef<boolean>(autoPlaySimulation && !prefersReducedMotion);
   const speedMultiplierRef = useRef<number>(1);
   const animationFrameRef = useRef<number | null>(null);
   const lastTimestampRef = useRef<number | null>(null);
-  const lastUiUpdateRef = useRef<number>(0);
   const lastProgressUpdateRef = useRef<number>(0);
+  const hasManualZoomRef = useRef(false);
   const simulationIdentity = `${vehiclePlate}:${driverName}`;
   const previousSimulationIdentityRef = useRef(simulationIdentity);
-
-  // Sync refs with states
-  useEffect(() => {
-    progressRef.current = progress;
-  }, [progress]);
-
-  useEffect(() => {
-    isPlayingRef.current = isPlaying;
-  }, [isPlaying]);
 
   useEffect(() => {
     speedMultiplierRef.current = speedMultiplier;
   }, [speedMultiplier]);
+
+  useEffect(() => {
+    simulationFocusRef.current = simulationFocus;
+  }, [simulationFocus]);
 
   // Extract flat coordinates array for route profile
   const routeCoordinates = useMemo<[number, number][]>(() => {
@@ -203,12 +215,12 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       }
     }
 
-    if (markers && markers.length >= 2) {
+    if (connectMarkers && markers && markers.length >= 2) {
       return markers.map((m) => [m.longitude, m.latitude] as [number, number]);
     }
 
-    return enableSimulation ? HANOI_SAMPLE_DEMO_ROUTE : [];
-  }, [routeGeometry, enableSimulation, markers]);
+    return [];
+  }, [routeGeometry, markers, connectMarkers]);
 
   const allRouteCoordinates = useMemo<[number, number][]>(() => {
     if (routeGeometry?.type === 'FeatureCollection' && Array.isArray(routeGeometry.features)) {
@@ -225,7 +237,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     return buildRouteProfile(routeCoordinates);
   }, [routeCoordinates]);
 
-  // Khởi tạo Mapbox Map - Giữ map ĐỨNG YÊN HOÀN TOÀN (pitch = 0, bearing = 0)
+  // Khởi tạo bản đồ ở góc nhìn phẳng (pitch = 0, bearing = 0).
   useEffect(() => {
     const token = import.meta.env.VITE_MAPBOX_TOKEN;
     if (!token || !mapContainer.current) return;
@@ -235,7 +247,9 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     const initialCenter: [number, number] =
       routeCoordinates.length > 0
         ? [routeCoordinates[0][0], routeCoordinates[0][1]]
-        : [105.854, 21.0283];
+        : markers.length > 0
+          ? [markers[0].longitude, markers[0].latitude]
+          : initialEmptyCenterRef.current ?? [105.854, 21.0283];
 
     const map = new mapboxgl.Map({
       container: mapContainer.current,
@@ -253,6 +267,11 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     }
 
     mapRef.current = map;
+    hasManualZoomRef.current = false;
+    const rememberManualZoom = (event: { type: 'zoomstart' }) => {
+      if ('originalEvent' in event && event.originalEvent) hasManualZoomRef.current = true;
+    };
+    map.on('zoomstart', rememberManualZoom);
 
     const resizeObserver = new ResizeObserver(() => {
       map.resize();
@@ -262,6 +281,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     }
 
     return () => {
+      map.off('zoomstart', rememberManualZoom);
       resizeObserver.disconnect();
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
@@ -281,11 +301,11 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   useEffect(() => {
     setProgress(0);
     progressRef.current = 0;
-    if (enableSimulation) {
-      setIsPlaying(true);
-      isPlayingRef.current = true;
-    }
-  }, [routeCoordinates, enableSimulation]);
+    lastTimestampRef.current = null;
+    const shouldPlay = enableSimulation && autoPlaySimulation && !prefersReducedMotion;
+    setIsPlaying(shouldPlay);
+    isPlayingRef.current = shouldPlay;
+  }, [routeCoordinates, enableSimulation, autoPlaySimulation, prefersReducedMotion]);
 
   // Một phiên mô phỏng chỉ thuộc về đúng một cặp xe - tài xế.
   useEffect(() => {
@@ -482,17 +502,20 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       }
 
       // 2. Tuyến đường đã đi qua (CHẠY TỚI ĐÂU ĐỔI MÀU TỚI ĐÓ)
-      const emptyTraveled = {
-        type: 'Feature',
-        geometry: { type: 'LineString', coordinates: [] },
-      };
+      const emptyLine = { type: 'FeatureCollection' as const, features: [] };
+
+      if (!map.getSource('next-route') && routeCoordinates.length > 1) {
+        map.addSource('next-route', { type: 'geojson', data: emptyLine });
+      } else if (!enableSimulation) {
+        map.getSource<mapboxgl.GeoJSONSource>('next-route')?.setData(emptyLine);
+      }
 
       if (map.getSource('traveled-route')) {
-        (map.getSource('traveled-route') as mapboxgl.GeoJSONSource).setData(emptyTraveled as any);
+        if (!enableSimulation) map.getSource<mapboxgl.GeoJSONSource>('traveled-route')?.setData(emptyLine);
       } else if (routeCoordinates.length > 1) {
         map.addSource('traveled-route', {
           type: 'geojson',
-          data: emptyTraveled as any,
+          data: emptyLine,
         });
 
         // Vệt phát sáng neon bên dưới
@@ -523,17 +546,28 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         });
       }
 
+      if (map.getSource('next-route') && !map.getLayer('next-route-line')) {
+        map.addLayer({
+          id: 'next-route-line',
+          type: 'line',
+          source: 'next-route',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': '#b45309', 'line-width': 6.5, 'line-dasharray': [2, 1.2] },
+        });
+      }
+
       allRouteCoordinates.forEach((coordinate) => bounds.extend(coordinate));
 
-      if (!bounds.isEmpty()) {
+      if (!simulationFocusRef.current && !bounds.isEmpty()) {
         map.fitBounds(bounds, { padding: 50, maxZoom: 14.5, duration: 1000 });
       }
     }
 
-    if (map.isStyleLoaded()) {
+    if (map.getSource('route') || map.isStyleLoaded()) {
       setupRouteLayers();
     } else {
       map.once('load', setupRouteLayers);
+      return () => { map.off('load', setupRouteLayers); };
     }
   }, [
     markers,
@@ -544,15 +578,15 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     enableSimulation,
   ]);
 
-  // Hàm cập nhật vị trí xe và ĐỔI MÀU ĐƯỜNG TỚI ĐÂU THEO TỚI ĐÓ (Bản đồ đứng yên)
+  // Cập nhật vị trí xe và các đoạn đường theo tiến độ mô phỏng.
   const updateTruckPosition = useCallback(
-    (currentProg: number) => {
+    (currentProg: number, refreshTrail = true, notifyProgress = true) => {
       const map = mapRef.current;
       const truck = truckMarkerRef.current;
       const truckEl = truckElementRef.current;
       if (!map || !truck || !truckEl || routeProfile.totalDistanceKm === 0) return;
 
-      const { coord, bearing, traveledKm, traveledCoordinates } = interpolateAlongRoute(
+      const { coord, bearing, traveledKm, segmentIndex } = interpolateAlongRoute(
         routeProfile,
         currentProg,
       );
@@ -570,39 +604,63 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       const simulatedSpeed = isPlayingRef.current
         ? Math.round(45 + Math.sin(currentProg * 50) * 8 + Math.random() * 3)
         : 0;
-      const now = performance.now();
-      if (now - lastUiUpdateRef.current >= 100) {
-        setCurrentSpeedKmh(simulatedSpeed);
-        lastUiUpdateRef.current = now;
-      }
-
       const speedPill = truckEl.querySelector('.speed-pill');
       if (speedPill) {
         speedPill.textContent = `${simulatedSpeed} km/h`;
       }
 
       // ĐỔI MÀU ĐƯỜNG: Vệt đường đã đi qua (traveled-route) dài ra đến đúng vị trí của chiếc xe
-      const traveledSource = map.getSource('traveled-route') as mapboxgl.GeoJSONSource | undefined;
+      const traveledSource = refreshTrail
+        ? map.getSource<mapboxgl.GeoJSONSource>('traveled-route')
+        : undefined;
       if (traveledSource) {
+        const traveledCoordinates = routeProfile.coordinates.slice(0, segmentIndex + 1);
+        traveledCoordinates.push(coord);
         traveledSource.setData({
           type: 'Feature',
+          properties: null,
           geometry: {
             type: 'LineString',
-            coordinates: traveledCoordinates.length > 1 ? traveledCoordinates : [coord, coord],
+            coordinates: traveledCoordinates,
           },
-        } as any);
+        });
       }
 
-      // MAP ĐỨNG YÊN HOÀN TOÀN: Không gọi map.easeTo, giữ nguyên góc nhìn tổng thể cho người dùng
-      onSimulationProgress?.(currentProg, coord, simulatedSpeed, traveledKm);
+      if (refreshTrail) {
+        const nextSource = map.getSource<mapboxgl.GeoJSONSource>('next-route');
+        if (nextSource) {
+          const nextIndex = getStepIndexForDistance(simulationMilestonesKm, traveledKm);
+          const nextKm = simulationMilestonesKm[nextIndex] ?? routeProfile.totalDistanceKm;
+          if (simulationMilestonesKm.length === 0 || nextKm <= traveledKm + 1e-9) {
+            nextSource.setData({ type: 'FeatureCollection', features: [] });
+          } else {
+            const next = interpolateAlongRoute(routeProfile, nextKm / routeProfile.totalDistanceKm);
+            const firstVertex = routeProfile.cumulativeDistances[segmentIndex + 1] <= traveledKm + 1e-9
+              ? segmentIndex + 2
+              : segmentIndex + 1;
+            nextSource.setData({
+              type: 'Feature',
+              properties: null,
+              geometry: {
+                type: 'LineString',
+                coordinates: [coord, ...routeProfile.coordinates.slice(firstVertex, next.segmentIndex + 1), next.coord],
+              },
+            });
+          }
+        }
+      }
+
+      if (notifyProgress) onSimulationProgress?.(currentProg, coord, simulatedSpeed, traveledKm);
+      return coord;
     },
-    [routeProfile, onSimulationProgress],
+    [routeProfile, onSimulationProgress, simulationMilestonesKm],
   );
 
   // Tạo và quản lý Truck Marker (Xe luôn luôn hiện diện trên tuyến đường)
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !enableSimulation || routeCoordinates.length < 2) {
+    const start = simulationFocus?.coordinate ?? routeCoordinates[0];
+    if (!map || !start || (!simulationFocus && (!enableSimulation || routeCoordinates.length < 2))) {
       if (truckMarkerRef.current) {
         truckMarkerRef.current.remove();
         truckMarkerRef.current = null;
@@ -627,7 +685,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         rotationAlignment: 'viewport',
         pitchAlignment: 'viewport',
       })
-        .setLngLat(routeCoordinates[0])
+        .setLngLat(start)
         .addTo(map);
 
       truckMarkerRef.current = marker;
@@ -639,25 +697,54 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       }
     }
 
-    updateTruckPosition(progressRef.current);
-  }, [enableSimulation, routeCoordinates, vehiclePlate, updateTruckPosition]);
+    if (!simulationFocus) updateTruckPosition(progressRef.current);
+
+    const refreshAfterLoad = () => updateTruckPosition(progressRef.current, true, false);
+    if (!map.getSource('route') && !map.isStyleLoaded()) {
+      map.once('load', refreshAfterLoad);
+      return () => { map.off('load', refreshAfterLoad); };
+    }
+  }, [enableSimulation, routeCoordinates, vehiclePlate, updateTruckPosition, simulationFocus]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !simulationFocus) return;
+
+    isPlayingRef.current = false;
+    setIsPlaying(false);
+    lastTimestampRef.current = null;
+    progressRef.current = simulationFocus.progress;
+    setProgress(simulationFocus.progress);
+    updateTruckPosition(simulationFocus.progress, true, false);
+    const center = routeProfile.totalDistanceKm > 0
+      ? interpolateAlongRoute(routeProfile, simulationFocus.progress).coord
+      : simulationFocus.coordinate;
+    markersRef.current.forEach((marker) => marker.getPopup()?.remove());
+    truckMarkerRef.current?.setLngLat(center);
+    map.easeTo({
+      center,
+      ...(hasManualZoomRef.current ? {} : { zoom: STOP_FOCUS_ZOOM }),
+      duration: prefersReducedMotion ? 0 : 450,
+    });
+  }, [simulationFocus, routeProfile, interactive, prefersReducedMotion, updateTruckPosition]);
 
   // Animation Loop chạy mô phỏng 60 FPS
   useEffect(() => {
-    if (!enableSimulation || prefersReducedMotion) return;
+    if (!enableSimulation || routeProfile.totalDistanceKm === 0) return;
 
     const animate = (timestamp: number) => {
-      if (!lastTimestampRef.current) {
-        lastTimestampRef.current = timestamp;
-      }
-      const deltaSeconds = (timestamp - lastTimestampRef.current) / 1000;
+      // A slow frame or a background tab should not make the truck leap ahead.
+      const deltaSeconds = Math.min(timestamp - (lastTimestampRef.current ?? timestamp), 50) / 1000;
       lastTimestampRef.current = timestamp;
 
       if (isPlayingRef.current && routeProfile.totalDistanceKm > 0) {
-        // Tốc độ trực quan: Hoàn thành 1 vòng trong ~20 giây (ở tốc độ 1x)
-        const baseDurationSeconds = 20;
+        const map = mapRef.current;
+        const cameraZoom = map?.getZoom() ?? VEHICLE_FOLLOW_ZOOM;
+        // Thay đổi nhịp phát từ từ để vẫn theo kịp xe khi xem toàn tuyến.
+        const zoomSpeedMultiplier = Math.max(0.35, Math.min(2, 2 ** ((VEHICLE_FOLLOW_ZOOM - cameraZoom) / 4)));
+        const baseDurationSeconds = 75;
         const progressIncrement =
-          (deltaSeconds / baseDurationSeconds) * speedMultiplierRef.current;
+          (deltaSeconds / baseDurationSeconds) * speedMultiplierRef.current * zoomSpeedMultiplier;
 
         let nextProgress = progressRef.current + progressIncrement;
         if (nextProgress >= 1) {
@@ -666,12 +753,26 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
           setIsPlaying(false);
         }
 
-        if (timestamp - lastProgressUpdateRef.current >= 100 || nextProgress === 1) {
+        const refreshTrail = timestamp - lastProgressUpdateRef.current >= 100 || nextProgress === 1;
+        if (refreshTrail) {
           setProgress(nextProgress);
           lastProgressUpdateRef.current = timestamp;
         }
         progressRef.current = nextProgress;
-        updateTruckPosition(nextProgress);
+        const center = updateTruckPosition(nextProgress, refreshTrail);
+        // jumpTo would interrupt Mapbox's zoom animation, including the +/− controls.
+        if (followSimulationVehicle && center && map && !map.isZooming()) {
+          if (hasManualZoomRef.current) {
+            map.jumpTo({ center });
+          } else {
+            const currentZoom = map.getZoom();
+            const zoomDelta = VEHICLE_FOLLOW_ZOOM - currentZoom;
+            const zoom = prefersReducedMotion || Math.abs(zoomDelta) < 0.005
+              ? VEHICLE_FOLLOW_ZOOM
+              : currentZoom + zoomDelta * (1 - Math.exp(-9 * deltaSeconds));
+            map.jumpTo({ center, zoom });
+          }
+        }
       }
 
       animationFrameRef.current = requestAnimationFrame(animate);
@@ -684,13 +785,9 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [enableSimulation, prefersReducedMotion, routeProfile.totalDistanceKm, updateTruckPosition]);
+  }, [enableSimulation, followSimulationVehicle, prefersReducedMotion, routeProfile.totalDistanceKm, updateTruckPosition]);
 
   // Handlers
-  const handleTogglePlay = () => {
-    setIsPlaying((prev) => !prev);
-  };
-
   const handleSeek = (val: number) => {
     setProgress(val);
     progressRef.current = val;
@@ -698,10 +795,21 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   };
 
   const handleReset = () => {
+    isPlayingRef.current = true;
     setIsPlaying(true);
     setProgress(0);
     progressRef.current = 0;
     updateTruckPosition(0);
+  };
+
+  const handleTogglePlay = () => {
+    if (!isPlayingRef.current && progressRef.current >= 1) {
+      handleReset();
+      return;
+    }
+    isPlayingRef.current = !isPlayingRef.current;
+    setIsPlaying(isPlayingRef.current);
+    updateTruckPosition(progressRef.current);
   };
 
   return (
@@ -716,13 +824,12 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     >
       <div ref={mapContainer} style={{ width: '100%', height: '100%', position: 'relative' }} />
 
-      {enableSimulation && showControls && (
+      {enableSimulation && showControls && routeProfile.totalDistanceKm > 0 && (
         <MapSimulationOverlay
           isPlaying={isPlaying}
           progress={progress}
           speedMultiplier={speedMultiplier}
-          followVehicle={false}
-          currentSpeedKmh={currentSpeedKmh}
+          followVehicle={followSimulationVehicle}
           traveledDistanceKm={progress * routeProfile.totalDistanceKm}
           totalDistanceKm={routeProfile.totalDistanceKm}
           vehiclePlate={vehiclePlate}
@@ -738,4 +845,4 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   );
 };
 
-export default MapboxMap;
+export default React.memo(MapboxMap);

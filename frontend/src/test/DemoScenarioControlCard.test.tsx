@@ -59,6 +59,8 @@ describe('DemoScenarioControlCard', () => {
 
     render(
       <DemoScenarioControlCard
+        stackingEnabled={true}
+        onChangeStacking={vi.fn()}
         cases={mockCases}
         loadingCases={false}
         selectedCaseId="novel_1_mekong_hub_spoke"
@@ -87,9 +89,12 @@ describe('DemoScenarioControlCard', () => {
   }, 15000);
 
   it('hiển thị thông báo khi có kết quả tối ưu demo', () => {
+    const toggleStacking = vi.fn();
     render(
       <DemoScenarioControlCard
-        cases={mockCases}
+        stackingEnabled={true}
+        onChangeStacking={toggleStacking}
+        cases={mockCases.map(c => ({ ...c, supports_stacking: c.id === 'novel_1_mekong_hub_spoke' }))}
         loadingCases={false}
         selectedCaseId="novel_1_mekong_hub_spoke"
         onSelectCaseId={vi.fn()}
@@ -108,5 +113,38 @@ describe('DemoScenarioControlCard', () => {
     expect(
       screen.getByText('Đang hiển thị kết quả từ Chế độ Demo (Benchmark)'),
     ).toBeInTheDocument();
+    expect(screen.getByLabelText('Chế độ xếp chồng theo khách hàng', { selector: 'input' })).toBeInTheDocument();
+    expect(screen.getByText('Chỉ kiện cùng khách hàng')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Cho phép xếp chồng demo'));
+    expect(toggleStacking).toHaveBeenCalledWith(false);
   });
+
+  it('hiển thị nút chạy và tùy chọn xếp chồng khi tải JSON tùy chỉnh', () => {
+    const handleRun = vi.fn();
+    render(
+      <DemoScenarioControlCard
+        stackingEnabled={true}
+        onChangeStacking={vi.fn()}
+        cases={mockCases}
+        loadingCases={false}
+        selectedCaseId="novel_1_mekong_hub_spoke"
+        onSelectCaseId={vi.fn()}
+        timeBudgetSeconds={8}
+        onChangeTimeBudget={vi.fn()}
+        running={false}
+        onRunDemo={handleRun}
+        onClearDemo={vi.fn()}
+        hasResult={false}
+        isCustomUpload={true}
+        onToggleCustomUpload={vi.fn()}
+        customFileName="custom-demo.json"
+        onCustomJsonLoaded={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText('Cho phép xếp chồng demo')).toBeInTheDocument();
+    expect(screen.getByText(/custom-demo\.json/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Chạy tối ưu Demo/i }));
+    expect(handleRun).toHaveBeenCalledTimes(1);
+  }, 15000);
 });

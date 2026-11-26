@@ -1,19 +1,14 @@
-import { Controller, Get, Req, UseGuards } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
-import { Role } from '@prisma/client';
-import { AuthenticatedUser } from '../auth/branch-scope';
-import { Roles } from '../auth/roles.decorator';
-import { RolesGuard } from '../auth/roles.guard';
+import { Controller, Get, Req } from '@nestjs/common';
+import { AuthRequest, RequirePermission } from '../auth/access';
 import { LocationsService } from './locations.service';
 
 @Controller('locations')
-@UseGuards(AuthGuard('jwt'), RolesGuard)
-@Roles(Role.ADMIN, Role.STAFF, Role.DISPATCHER, Role.DRIVER)
+@RequirePermission('branches.read')
 export class LocationsController {
   constructor(private readonly locationsService: LocationsService) {}
 
   @Get()
-  findMapLocations(@Req() req: { user: AuthenticatedUser }) {
+  findMapLocations(@Req() req: AuthRequest) {
     return this.locationsService.findMapLocations(req.user);
   }
 }

@@ -189,7 +189,7 @@ def schedule_and_evaluate_route(
 
     if use_fast_packing:
         packing_ok, packing_reason = FastPackingChecker(
-            vehicle, allow_layout_search=allow_layout_search
+            vehicle, allow_layout_search=allow_layout_search, demo_stacking=getattr(policy, "demo_stacking", None)
         ).validate_route_stops(
             scheduled, cargo_by_id
         )

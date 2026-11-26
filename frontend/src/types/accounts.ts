@@ -35,11 +35,14 @@ export function parseAccountDetail(value: unknown): AccountDetail {
 }
 export interface AccountQuery { page: number; pageSize: number; search?: string; status?: 'active' | 'locked'; branchId?: string }
 export const branchRoleLabels = {
-  BRANCH_DISPATCH_LEAD: 'Trưởng điều phối chi nhánh',
+  BRANCH_DISPATCH_LEAD: 'Trưởng chi nhánh (Trưởng điều phối)',
   RESOURCE_MANAGER: 'Nhân viên quản lý tài nguyên',
   TRANSPORT_DISPATCHER: 'Điều phối viên vận tải',
-  ORDER_SCHEDULER: 'Nhân viên xử lý đơn và lịch hẹn',
 };
+export function roleLabel(code: string): string {
+  const labels: Record<string, string> = { ...branchRoleLabels, ADMIN: 'Quản trị hệ thống', DRIVER: 'Tài xế', CUSTOMER: 'Khách hàng', ORDER_SCHEDULER: 'Xử lý đơn (vai trò cũ — cần chuyển)' };
+  return labels[code] ?? code;
+}
 export interface CreateAccount { username: string; fullName: string; password: string; roleCode: keyof typeof branchRoleLabels | 'DRIVER'; branchIds: string[]; driverId?: string }
 export interface AvailableDriver { id: string; fullName: string; homeBranchId: string }
 export function parseAvailableDrivers(value: unknown): AvailableDriver[] {

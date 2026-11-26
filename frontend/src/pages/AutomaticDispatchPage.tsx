@@ -1,4 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import axios from 'axios';
+import { DispatcherDeliveryPlanning } from '../components/DeliveryAppointments';
 import {
   Alert,
   Button,
@@ -20,7 +22,6 @@ import {
   Popover,
   TimePicker,
   Popconfirm,
-  InputNumber,
 } from 'antd';
 import dayjs from 'dayjs';
 import {
@@ -50,8 +51,9 @@ import {
   DeleteOutlined,
   ReloadOutlined,
   ExperimentOutlined,
+  SettingOutlined,
 } from '@ant-design/icons';
-import { branchesApi, driversApi, ordersApi, tripsApi, vehiclesApi } from '../api/client';
+import { branchesApi, driversApi, mapboxApi, ordersApi, settingsApi, tripsApi, vehiclesApi } from '../api/client';
 import { getRealtimeSocket } from '../api/realtime';
 import MapboxMap, { MAP_ROUTE_COLORS, MapMarker } from '../components/MapboxMap';
 import FloorPackingVisualizer from '../components/FloorPackingVisualizer';
@@ -70,11 +72,15 @@ import {
   Branch,
   Driver,
   OptimizedRouteUI,
+  OptimizationCandidateSummaryUI,
+  DemoStackingOwnerMode,
   FleetOptimizationResultUI,
+  PlanningObjectiveBreakdownUI,
   Order,
   RunAutomaticOptimizationPayloadUI,
   Vehicle,
 } from '../types';
+import { EffectiveSettings, STACKING_OWNER_MODE_LABELS } from '../types/settings';
 import { useAuth } from '../context/AuthContext';
 import {
   calculateStopMilestonesKm,
@@ -83,8 +89,9 @@ import {
 } from '../utils/geoSimulation';
 import {
   clearAutoDispatchState,
+  dismissAutoDispatchState,
   getAutoDispatchState,
-
+  isAutoDispatchJobDismissed,
   saveAutoDispatchState,
   saveLastSelectedBranch,
 } from '../utils/autoDispatchStorage';
@@ -94,10 +101,19 @@ import { formatDecimal } from '../utils/format';
 const { Text, Title, Paragraph } = Typography;
 const currency = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' });
 const getRouteKey = (route: OptimizedRouteUI) => route.route_id;
+const DIRECT_COMPARISON = 0;
 
-const AutomaticDispatchPage: React.FC = () => {
+function RouteDetails({ route, render }: { route: OptimizedRouteUI; render: (route: OptimizedRouteUI) => React.ReactNode }) {
+  return <>{render(route)}</>;
+}
+
+interface AutomaticDispatchPageProps {
+  onNavigate?: (tab: string) => void;
+}
+
+const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigate }) => {
   const { message } = AntdApp.useApp();
-  const { user, can, branchId, setBranchId } = useAuth();
+  const { user, can, branchId, setBranchId, scopeVersion } = useAuth();
   const [branches, setBranches] = useState<Branch[]>([]);
   const selectedBranchId = branchId;
   const setSelectedBranchId = setBranchId;
@@ -106,7 +122,8 @@ const AutomaticDispatchPage: React.FC = () => {
   const [availableOrders, setAvailableOrders] = useState<Order[]>([]);
   const [availableVehicles, setAvailableVehicles] = useState<Vehicle[]>([]);
   const [availableDrivers, setAvailableDrivers] = useState<Driver[]>([]);
-  const [loadingCounts, setLoadingCounts] = useState(true);
+  const [loadingCounts, setLoadingCounts] = useState({ orders: true, vehicles: true, drivers: true });
+  const countRequest = useRef(0);
   const [optimization, setOptimization] = useState<AutomaticOptimizationResponseUI | null>(null);
   const [selectedCandidateNumber, setSelectedCandidateNumber] = useState(1);
   const [selectedCandidateResult, setSelectedCandidateResult] = useState<FleetOptimizationResultUI | null>(null);
@@ -117,7 +134,14 @@ const AutomaticDispatchPage: React.FC = () => {
   const [appliedTripCount, setAppliedTripCount] = useState<number | null>(null);
   const [selectedVehicleForMap, setSelectedVehicleForMap] = useState<string | 'ALL'>('ALL');
   const [enableSim, setEnableSim] = useState<boolean>(false);
+  const [directRoadAttempt, setDirectRoadAttempt] = useState(0);
+  const [directRoad, setDirectRoad] = useState<{
+    route: OptimizedRouteUI;
+    attempt: number;
+    coordinates: [number, number][] | null;
+  }>();
   const [activeStepIndex, setActiveStepIndex] = useState<number>(0);
+  const [mapStopSelection, setMapStopSelection] = useState<{ route: OptimizedRouteUI; step: number }>();
   const [mapLayoutMode, setMapLayoutMode] = useState<'HALF' | 'FULL'>('HALF');
   const [scheduleMode, setScheduleMode] = useState<AutomaticDispatchScheduleModeUI>('CURRENT_TIME');
   const [customStartTime, setCustomStartTime] = useState<dayjs.Dayjs | null>(null);
@@ -130,6 +154,12 @@ const AutomaticDispatchPage: React.FC = () => {
   const [loadingDemoCases, setLoadingDemoCases] = useState<boolean>(false);
   const [selectedDemoCaseId, setSelectedDemoCaseId] = useState<string>('novel_1_mekong_hub_spoke');
   const [demoTimeBudgetSeconds, setDemoTimeBudgetSeconds] = useState<number>(6);
+  const [demoStackingEnabled, setDemoStackingEnabled] = useState(true);
+  const [demoStackingOwnerMode, setDemoStackingOwnerMode] = useState<DemoStackingOwnerMode>('SAME_CUSTOMER');
+  const [effectiveSettings, setEffectiveSettings] = useState<EffectiveSettings | null>(null);
+  const [demoStackingRuns, setDemoStackingRuns] = useState<Record<string, Partial<Record<'off' | DemoStackingOwnerMode, OptimizationCandidateSummaryUI>>>>({});
+  const demoComparisonKey = `${selectedDemoCaseId}:${demoTimeBudgetSeconds}`;
+  const demoComparison = demoStackingRuns[demoComparisonKey];
   const [demoCandidatesMap, setDemoCandidatesMap] = useState<Record<number, FleetOptimizationResultUI> | null>(null);
   const [runningDemo, setRunningDemo] = useState<boolean>(false);
   const [customDemoJson, setCustomDemoJson] = useState<any | null>(null);
@@ -157,82 +187,96 @@ const AutomaticDispatchPage: React.FC = () => {
   const restoreStateForBranch = useCallback(
     async (branchId: string, reqId: number): Promise<boolean> => {
       const stored = getAutoDispatchState(branchId);
-      if (!stored) {
-        if (restoreRequestIdRef.current === reqId) {
-          setOptimization(null);
-          setAppliedTripCount(null);
-          setIsRestoredFromStorage(false);
+      let job: AutomaticOptimizationResponseUI | null = null;
+      let storedInvalid = false;
+      if (stored) {
+        try {
+          const response = await tripsApi.getAutomaticOptimizationJob(stored.optimizationJobId);
+          if (response.data.branchId === branchId && response.data.status !== 'CANCELLED') {
+            job = response.data;
+          } else {
+            storedInvalid = true;
+          }
+        } catch (error) {
+          if (axios.isAxiosError(error) && (error.response?.status === 404 || error.response?.status === 403)) {
+            storedInvalid = true;
+          }
+          // Keep the stored pointer if the server is temporarily unavailable.
         }
-        return false;
       }
-      try {
-        const response = await tripsApi.getAutomaticOptimizationJob(
-          stored.optimizationJobId,
-        );
-        // Nếu đã có request đổi chi nhánh mới hơn, hủy bỏ kết quả cũ
-        if (restoreRequestIdRef.current !== reqId) return false;
+      if (restoreRequestIdRef.current !== reqId) return false;
 
-        // BẢO VỆ CHẶT CHẼ: Nếu phương án không thuộc chi nhánh này
-        if (response.data.branchId !== branchId) {
-          clearAutoDispatchState(branchId);
-          setOptimization(null);
-          setAppliedTripCount(null);
-          setIsRestoredFromStorage(false);
+      if (!job) {
+        try {
+          const response = await tripsApi.getLatestAutomaticOptimizationJob(branchId);
+          job = response.data || null;
+          if (!job && storedInvalid) {
+            clearAutoDispatchState(branchId);
+          }
+        } catch {
           return false;
         }
-
-        setOptimization(response.data);
-        setAppliedTripCount(stored.appliedTripCount ?? null);
-        if (stored.scheduleMode) {
-          setScheduleMode(stored.scheduleMode);
-        }
-        if (stored.useCustomTime !== undefined) {
-          setUseCustomTime(stored.useCustomTime);
-        }
-        if (stored.customStartTimeStr) {
-          setCustomStartTime(dayjs(stored.customStartTimeStr));
-        }
-        if (stored.selectedVehicleForMap) {
-          setSelectedVehicleForMap(stored.selectedVehicleForMap);
-        }
-        setIsRestoredFromStorage(true);
-        return true;
-      } catch {
-        if (restoreRequestIdRef.current === reqId) {
-          clearAutoDispatchState(branchId);
-          setOptimization(null);
-          setAppliedTripCount(null);
-          setIsRestoredFromStorage(false);
-        }
       }
-      return false;
+      if (restoreRequestIdRef.current !== reqId || !job || job.branchId !== branchId
+        || isAutoDispatchJobDismissed(branchId, job.createdAt)) return false;
+
+      const preferences = stored?.optimizationJobId === job.id ? stored : null;
+      const restoredScheduleMode = preferences?.scheduleMode ?? job.scheduleMode ?? 'CURRENT_TIME';
+      const restoredCustomStart = preferences?.customStartTimeStr ?? null;
+      const restoredUseCustomTime = preferences?.useCustomTime ?? false;
+      setOptimization(job);
+      setAppliedTripCount(preferences?.appliedTripCount ?? null);
+      setScheduleMode(restoredScheduleMode);
+      setUseCustomTime(restoredUseCustomTime);
+      setCustomStartTime(restoredCustomStart ? dayjs(restoredCustomStart) : null);
+      setIsRestoredFromStorage(true);
+      saveAutoDispatchState({
+        branchId,
+        optimizationJobId: job.id,
+        appliedTripCount: preferences?.appliedTripCount ?? null,
+        scheduleMode: restoredScheduleMode,
+        customStartTimeStr: restoredCustomStart,
+        useCustomTime: restoredUseCustomTime,
+        selectedVehicleForMap: preferences?.selectedVehicleForMap,
+        savedAt: new Date().toISOString(),
+      });
+      return true;
     },
     [],
   );
 
   const loadCounts = useCallback(async (branchId: string, isCurrent: () => boolean) => {
-    try {
-      setLoadingCounts(true);
-      const [orders, vehicles, drivers] = await Promise.all([
-        ordersApi.getAvailableForDispatch(branchId),
-        vehiclesApi.getAvailable(branchId),
-        driversApi.getAvailable(branchId),
-      ]);
-      if (!isCurrent()) return;
-      setAvailableOrders(orders.data);
-      setAvailableVehicles(vehicles.data);
-      setAvailableDrivers(drivers.data);
-      setCounts({
-        orders: orders.data.length,
-        vehicles: vehicles.data.length,
-        drivers: drivers.data.length,
-        packages: orders.data.reduce((sum, order) => sum + order.totalPackages, 0),
-      });
-    } catch {
-      if (isCurrent()) message.error('Không tải được nguồn lực cho tối ưu tự động');
-    } finally {
-      if (isCurrent()) setLoadingCounts(false);
+    const request = ++countRequest.current;
+    const current = () => request === countRequest.current && isCurrent();
+    setLoadingCounts({ orders: true, vehicles: true, drivers: true });
+    async function load<T,>(
+      key: 'orders' | 'vehicles' | 'drivers', label: string,
+      fetch: Promise<{ data: T[] }>, update: (rows: T[]) => void,
+    ) {
+      try {
+        const { data } = await fetch;
+        if (current()) update(data);
+      } catch {
+        if (current()) message.error(`Không tải được ${label} cho tối ưu tự động`);
+      } finally {
+        if (current()) setLoadingCounts(previous => ({ ...previous, [key]: false }));
+      }
     }
+    await Promise.all([
+      load('orders', 'đơn hàng', ordersApi.getAvailableForDispatch(branchId), rows => {
+        setAvailableOrders(rows);
+        setCounts(previous => ({ ...previous, orders: rows.length,
+          packages: rows.reduce((sum, order) => sum + order.totalPackages, 0) }));
+      }),
+      load('vehicles', 'danh sách xe', vehiclesApi.getAvailable(branchId), rows => {
+        setAvailableVehicles(rows);
+        setCounts(previous => ({ ...previous, vehicles: rows.length }));
+      }),
+      load('drivers', 'danh sách tài xế', driversApi.getAvailable(branchId), rows => {
+        setAvailableDrivers(rows);
+        setCounts(previous => ({ ...previous, drivers: rows.length }));
+      }),
+    ]);
   }, [message]);
 
   useEffect(() => {
@@ -258,8 +302,31 @@ const AutomaticDispatchPage: React.FC = () => {
   }, [user?.id]);
 
   useEffect(() => {
+    if (!settingsApi?.getEffective) return;
+    let active = true;
+    settingsApi
+      .getEffective(selectedBranchId)
+      .then((response) => {
+        if (!active) return;
+        setEffectiveSettings(response.data);
+        setDemoStackingEnabled(response.data.stacking.enabled);
+        setDemoStackingOwnerMode(response.data.stacking.ownerMode);
+        if (!response.data.optimization.demoAllowOverride) {
+          setDemoTimeBudgetSeconds(response.data.optimization.defaultSearchBudgetSeconds);
+        }
+      })
+      .catch(() => {
+        if (active) setEffectiveSettings(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedBranchId, scopeVersion]);
+
+  useEffect(() => {
     if (!selectedBranchId) {
-      setLoadingCounts(false);
+      ++countRequest.current;
+      setLoadingCounts({ orders: false, vehicles: false, drivers: false });
       setOptimization(null);
       setAppliedTripCount(null);
       return;
@@ -290,9 +357,13 @@ const AutomaticDispatchPage: React.FC = () => {
   useEffect(() => {
     setSelectedCandidateNumber(1);
     setSelectedCandidateResult(null);
-    setSelectedVehicleForMap('ALL');
+    const stored = activeOptimizationBranchId ? getAutoDispatchState(activeOptimizationBranchId) : null;
+    setSelectedVehicleForMap(stored && stored.optimizationJobId === activeOptimizationJobId
+      ? stored.selectedVehicleForMap ?? 'ALL'
+      : 'ALL');
+    setEnableSim(false);
     setActiveStepIndex(0);
-  }, [activeOptimizationJobId]);
+  }, [activeOptimizationBranchId, activeOptimizationJobId]);
 
   useEffect(() => {
     if (!activeOptimizationJobId || !activeOptimizationStatus) return;
@@ -380,13 +451,15 @@ const AutomaticDispatchPage: React.FC = () => {
     };
     socket.on('connect', onConnect);
     socket.on('optimization:job-updated', onJobUpdate);
-    if (socket.connected) void reloadSnapshot();
+    if (socket.connected && ['PENDING', 'RUNNING', 'RETRYING', 'CANCEL_REQUESTED'].includes(activeOptimizationStatus ?? '')) {
+      void reloadSnapshot();
+    }
     return () => {
       disposed = true;
       socket.off('connect', onConnect);
       socket.off('optimization:job-updated', onJobUpdate);
     };
-  }, [activeOptimizationJobId, selectedBranchId]);
+  }, [activeOptimizationJobId, activeOptimizationStatus, selectedBranchId]);
 
   const startOptimization = async () => {
     if (!selectedBranchId) {
@@ -409,6 +482,7 @@ const AutomaticDispatchPage: React.FC = () => {
       optimizationIdempotencyKeyRef.current = payload.idempotencyKey;
       const response = await tripsApi.runAutomaticOptimization(payload);
       optimizationIdempotencyKeyRef.current = null;
+      restoreRequestIdRef.current += 1;
       setOptimization(response.data);
       setIsRestoredFromStorage(false);
 
@@ -437,7 +511,7 @@ const AutomaticDispatchPage: React.FC = () => {
   };
 
   const applyOptimization = async () => {
-    if (!optimization) return;
+    if (!optimization || selectedCandidateNumber === DIRECT_COMPARISON) return;
     if (optimization.branchId !== selectedBranchId) {
       message.error(
         'Phương án tối ưu không thuộc chi nhánh đang chọn! Vui lòng chọn lại hoặc chạy tối ưu mới.',
@@ -497,10 +571,14 @@ const AutomaticDispatchPage: React.FC = () => {
 
     // 1. DỌN SẠCH LOCALSTORAGE NGAY LẬP TỨC
     if (selectedBranchId) {
-      clearAutoDispatchState(selectedBranchId);
+      if (optimization?.branchId === selectedBranchId) {
+        dismissAutoDispatchState(selectedBranchId, optimization.createdAt);
+      } else {
+        clearAutoDispatchState(selectedBranchId);
+      }
     }
-    if (optBranchId && optBranchId !== selectedBranchId) {
-      clearAutoDispatchState(optBranchId);
+    if (optimization && optBranchId && optBranchId !== selectedBranchId) {
+      dismissAutoDispatchState(optBranchId, optimization.createdAt);
     }
 
     // 2. DỌN SẠCH TOÀN BỘ REACT STATE
@@ -591,13 +669,35 @@ const AutomaticDispatchPage: React.FC = () => {
       setActiveStepIndex(0);
       setEnableSim(false);
 
+      const supportsStacking =
+        isCustomDemoUpload ||
+        Boolean(demoCases.find((c) => c.id === selectedDemoCaseId)?.supports_stacking);
+      const allowDemoOverride = effectiveSettings?.optimization.demoAllowOverride ?? true;
+      const effectiveDemoStacking = allowDemoOverride
+        ? demoStackingEnabled
+        : (effectiveSettings?.stacking.enabled ?? demoStackingEnabled);
+      const effectiveDemoOwnerMode = allowDemoOverride
+        ? demoStackingOwnerMode
+        : (effectiveSettings?.stacking.ownerMode ?? demoStackingOwnerMode);
+      const effectiveDemoBudget = allowDemoOverride
+        ? demoTimeBudgetSeconds
+        : (effectiveSettings?.optimization.defaultSearchBudgetSeconds ?? demoTimeBudgetSeconds);
       const payload: RunDemoOptimizationPayloadUI = {
+        ...(selectedBranchId ? { branchId: selectedBranchId } : {}),
         caseId: isCustomDemoUpload ? undefined : selectedDemoCaseId,
         customRequest: isCustomDemoUpload ? customDemoJson : undefined,
-        timeBudgetSeconds: demoTimeBudgetSeconds,
+        timeBudgetSeconds: effectiveDemoBudget,
+        demoStackingEnabled: supportsStacking ? effectiveDemoStacking : undefined,
+        demoStackingOwnerMode:
+          effectiveDemoStacking && supportsStacking ? effectiveDemoOwnerMode : undefined,
       };
 
       const res = await tripsApi.runDemoOptimization(payload);
+      if (payload.demoStackingEnabled !== undefined && res.data.candidates[0]) {
+        const best = res.data.candidates[0];
+        const mode = payload.demoStackingEnabled ? payload.demoStackingOwnerMode ?? 'SAME_CUSTOMER' : 'off';
+        setDemoStackingRuns(runs => ({ ...runs, [demoComparisonKey]: { ...runs[demoComparisonKey], [mode]: best } }));
+      }
       setOptimization(res.data);
       if (res.data.candidateResults) {
         setDemoCandidatesMap(res.data.candidateResults);
@@ -630,9 +730,82 @@ const AutomaticDispatchPage: React.FC = () => {
       ? Boolean(optimization && (optimization.branchId === 'demo-branch' || (optimization as any).isDemo))
       : Boolean(optimization && selectedBranchId && optimization.branchId === selectedBranchId),
   );
-  const result = isOptimizationValid
+  const isApplied = appliedTripCount !== null || (isOptimizationValid && optimization?.status === 'APPLIED');
+  const optimizerResult = isOptimizationValid
     ? selectedCandidateResult ?? optimization?.result
     : null;
+  const directMetric = optimizerResult?.benchmarks?.direct_dedicated ?? optimization?.result?.benchmarks?.direct_dedicated;
+  const directRoutes = directMetric?.is_feasible ? directMetric.routes : undefined;
+  const showingDirect = selectedCandidateNumber === DIRECT_COMPARISON && Boolean(directRoutes?.length);
+  const result = useMemo(() => showingDirect && optimizerResult && directMetric && directRoutes?.length ? {
+    ...optimizerResult,
+    routes: directRoutes,
+    unassigned_orders: [],
+    total_cost_vnd: directMetric.total_cost_vnd,
+    total_distance_km: directMetric.total_distance_km,
+    total_duration_minutes: directMetric.total_duration_minutes,
+    diagnostics: [],
+  } : optimizerResult, [showingDirect, optimizerResult, directMetric, directRoutes]);
+  const directCandidate: OptimizationCandidateSummaryUI | undefined = directMetric && directRoutes?.length ? {
+    candidateNumber: DIRECT_COMPARISON,
+    searchStrategy: 'Chuyến đơn lẻ',
+    improvementSequence: 0,
+    solverObjective: directMetric.selection_score_vnd || directMetric.total_cost_vnd,
+    planningSpanDays: directMetric.planning_span_days ?? 0,
+    driverCalendarSalaryVnd: directMetric.driver_calendar_salary_vnd ?? 0,
+    driverIdleSalaryAllocationVnd: directMetric.driver_idle_salary_allocation_vnd ?? 0,
+    operationalLatePenaltyVnd: 0,
+    isBestFound: false,
+    feasibilityStatus: 'SUCCESS',
+    totalCostVnd: directMetric.total_cost_vnd,
+    totalDistanceKm: directMetric.total_distance_km,
+    totalDurationMinutes: directMetric.total_duration_minutes,
+    routeCount: directRoutes.length,
+    physicalVehicleCount: directMetric.physical_vehicle_count ?? new Set(directRoutes.map(route => route.vehicle_id)).size,
+    deliveryVisitCount: directRoutes.reduce((total, route) => total + route.stops.filter(stop => stop.stop_type === 'DELIVERY').length, 0),
+    unassignedOrderCount: 0,
+  } : undefined;
+  const activePlanningObjective = useMemo<PlanningObjectiveBreakdownUI | null>(() => {
+    if (!optimizerResult) return null;
+    if (optimizerResult.planning_objective && optimizerResult.planning_objective.selection_score_vnd > 0) {
+      return optimizerResult.planning_objective;
+    }
+    const matchedCandidate = optimization?.candidates.find(
+      (candidate) => candidate.candidateNumber === selectedCandidateNumber,
+    ) ?? optimization?.candidates[0];
+    if (
+      matchedCandidate &&
+      matchedCandidate.solverObjective > 0 &&
+      matchedCandidate.planningSpanDays > 0
+    ) {
+      return {
+        planning_span_days: matchedCandidate.planningSpanDays,
+        driver_calendar_salary_vnd: matchedCandidate.driverCalendarSalaryVnd,
+        driver_idle_salary_allocation_vnd: matchedCandidate.driverIdleSalaryAllocationVnd,
+        operational_late_penalty_vnd: matchedCandidate.operationalLatePenaltyVnd,
+        selection_score_vnd: matchedCandidate.solverObjective,
+        physical_vehicle_count: matchedCandidate.physicalVehicleCount,
+        active_route_count: matchedCandidate.activeRouteCount,
+      };
+    }
+    return null;
+  }, [optimizerResult, optimization, selectedCandidateNumber]);
+  const canProposeDeliveryWindow = useMemo(() => {
+    if (showingDirect || appliedTripCount !== null || starting || applying || loadingCandidate
+      || optimization?.scheduleMode !== 'NEXT_DAY' || optimization.status !== 'SUCCEEDED' || !result) return false;
+
+    // A split order is eligible only when all of its deliveries fall on day zero of the plan.
+    const deliveryDayZero = new Map<string, boolean>();
+    for (const route of result.routes) {
+      for (const stop of route.stops) {
+        if (stop.stop_type === 'DELIVERY' && stop.order_id) {
+          deliveryDayZero.set(stop.order_id, deliveryDayZero.get(stop.order_id) !== false
+            && Math.floor(stop.arrival_time_sec / 86_400) === 0);
+        }
+      }
+    }
+    return [...deliveryDayZero.values()].includes(true);
+  }, [showingDirect, appliedTripCount, starting, applying, loadingCandidate, optimization, result]);
   const splitOrderRouteCounts = useMemo(() => {
     const routeKeysByOrder = new Map<string, Set<string>>();
     for (const route of result?.routes ?? []) {
@@ -652,7 +825,15 @@ const AutomaticDispatchPage: React.FC = () => {
   }, [result]);
 
   const selectCandidate = async (candidateNumber: number) => {
-    if (!optimization || candidateNumber === selectedCandidateNumber) return;
+    if (!optimization || loadingCandidate || candidateNumber === selectedCandidateNumber) return;
+    if (candidateNumber === DIRECT_COMPARISON) {
+      if (!directRoutes?.length) return;
+      setSelectedCandidateNumber(DIRECT_COMPARISON);
+      setSelectedVehicleForMap(getRouteKey(directRoutes[0]));
+      setActiveStepIndex(0);
+      setEnableSim(false);
+      return;
+    }
     if (pageMode === 'DEMO' && demoCandidatesMap && demoCandidatesMap[candidateNumber]) {
       setSelectedCandidateNumber(candidateNumber);
       setSelectedCandidateResult(demoCandidatesMap[candidateNumber]);
@@ -717,11 +898,42 @@ const AutomaticDispatchPage: React.FC = () => {
     return result.routes.find((route) => getRouteKey(route) === selectedVehicleForMap) || null;
   }, [result, selectedVehicleForMap]);
 
-  // Tuyến xe đang được theo dõi diễn biến mô phỏng và hàng hóa
-  const currentActiveRoute = useMemo(
-    () => selectedRouteInfo || (result?.routes.length ? result.routes[0] : null),
-    [selectedRouteInfo, result],
-  );
+  useEffect(() => {
+    if (!showingDirect || !selectedRouteInfo) return;
+    const route = selectedRouteInfo;
+    const controller = new AbortController();
+    const loadRoad = async () => {
+      const depot = route.depot;
+      const end = route.end_location ?? depot;
+      const waypoints: [number, number][] = depot ? [
+        [depot.longitude, depot.latitude],
+        ...route.stops.map((stop): [number, number] => [stop.longitude, stop.latitude]),
+      ] : [];
+      const last = waypoints[waypoints.length - 1];
+      if (last && end && (last[0] !== end.longitude || last[1] !== end.latitude)) {
+        waypoints.push([end.longitude, end.latitude]);
+      }
+      const road = await mapboxApi.getDrivingRouteThrough(waypoints, controller.signal);
+      if (!controller.signal.aborted) {
+        setDirectRoad({ route, attempt: directRoadAttempt, coordinates: road?.coordinates ?? null });
+      }
+    };
+    void loadRoad();
+    return () => controller.abort();
+  }, [showingDirect, selectedRouteInfo, directRoadAttempt]);
+
+  const currentDirectRoad = directRoad?.route === selectedRouteInfo && directRoad.attempt === directRoadAttempt
+    ? directRoad : undefined;
+  const loadingDirectRoad = showingDirect && Boolean(selectedRouteInfo) && !currentDirectRoad;
+  const selectMapRoute = useCallback((routeKey: string, stepIndex?: number) => {
+    setSelectedVehicleForMap(routeKey);
+    setActiveStepIndex(stepIndex ?? 0);
+    setEnableSim(false);
+    const route = stepIndex === undefined ? undefined : result?.routes.find(item => getRouteKey(item) === routeKey);
+    setMapStopSelection(route && stepIndex !== undefined ? { route, step: stepIndex } : undefined);
+  }, [result]);
+
+  const currentActiveRoute = selectedRouteInfo;
 
   const resolveDepot = useCallback((route: OptimizedRouteUI) => {
     if (route.depot) return route.depot;
@@ -739,6 +951,7 @@ const AutomaticDispatchPage: React.FC = () => {
 
   const getRouteCoordinates = useCallback(
     (route: OptimizedRouteUI): [number, number][] => {
+      if (showingDirect) return currentDirectRoad?.route === route ? currentDirectRoad.coordinates ?? [] : [];
       if (route.route_geometry?.coordinates && route.route_geometry.coordinates.length >= 2) {
         return route.route_geometry.coordinates;
       }
@@ -746,10 +959,14 @@ const AutomaticDispatchPage: React.FC = () => {
       const coords: [number, number][] = [];
       if (depot) coords.push([depot.longitude, depot.latitude]);
       (route.stops || []).forEach((s) => coords.push([s.longitude, s.latitude]));
-      if (depot && coords.length > 0) coords.push([depot.longitude, depot.latitude]);
+      const end = route.end_location ?? ((route.return_travel_time_sec ?? 0) > 0 ? depot : null);
+      const last = coords[coords.length - 1];
+      if (end && (!last || last[0] !== end.longitude || last[1] !== end.latitude)) {
+        coords.push([end.longitude, end.latitude]);
+      }
       return coords;
     },
-    [resolveDepot],
+    [showingDirect, currentDirectRoad, resolveDepot],
   );
 
   const routeProfileForSim = useMemo(() => {
@@ -759,11 +976,52 @@ const AutomaticDispatchPage: React.FC = () => {
     return buildRouteProfile(coords);
   }, [currentActiveRoute, getRouteCoordinates]);
 
+  const canSimulate = (routeProfileForSim?.totalDistanceKm ?? 0) > 0;
+  const isSimulating = enableSim && canSimulate;
+  const stopSimulation = useCallback(() => setEnableSim(false), []);
+
   // Cột mốc cự ly (km) cho từng điểm dừng: đảm bảo chỉ khi xe thực sự chạm điểm dừng mới chất/dỡ hàng
   const stopMilestonesKm = useMemo(() => {
     if (!routeProfileForSim || !currentActiveRoute?.stops) return [];
-    return calculateStopMilestonesKm(routeProfileForSim, currentActiveRoute.stops);
-  }, [routeProfileForSim, currentActiveRoute]);
+    return calculateStopMilestonesKm(routeProfileForSim, currentActiveRoute.stops,
+      showingDirect ? undefined : currentActiveRoute.route_geometry?.waypoint_indices);
+  }, [routeProfileForSim, currentActiveRoute, showingDirect]);
+
+  const hasReturnLeg = (currentActiveRoute?.return_travel_time_sec ?? 0) > 0;
+  const simulationFocus = useMemo(() => {
+    if (!mapStopSelection || mapStopSelection.route !== currentActiveRoute) return undefined;
+    const { route, step } = mapStopSelection;
+    const depot = resolveDepot(route);
+    const location = step === 0 ? depot : route.stops[step - 1] ?? route.end_location ?? depot;
+    if (!location) return undefined;
+
+    const distance = step === 0 ? 0 : stopMilestonesKm[step - 1] ?? routeProfileForSim?.totalDistanceKm ?? 0;
+    const total = routeProfileForSim?.totalDistanceKm ?? 0;
+    return {
+      coordinate: [location.longitude, location.latitude] as [number, number],
+      progress: total > 0 ? distance / total : 0,
+    };
+  }, [mapStopSelection, currentActiveRoute, resolveDepot, routeProfileForSim, stopMilestonesKm]);
+  const showSimulation = isSimulating || Boolean(simulationFocus);
+  const journeyArrowClass = (step: number) => {
+    if (!showSimulation) return 'journey-arrow';
+    if (step <= activeStepIndex) return 'journey-arrow journey-arrow-traveled';
+    if (step === activeStepIndex + 1) return 'journey-arrow journey-arrow-next';
+    return 'journey-arrow';
+  };
+
+  const syncSimulationStep = useCallback((progress: number, _coordinate: [number, number], _speed: number, traveledKm: number) => {
+    const step = progress === 1 && hasReturnLeg
+      ? stopMilestonesKm.length + 1
+      : getStepIndexForDistance(stopMilestonesKm, traveledKm);
+    startTransition(() => setActiveStepIndex(step));
+  }, [hasReturnLeg, stopMilestonesKm]);
+
+  const selectMapMarker = useCallback((marker: MapMarker) => {
+    const route = marker.type === 'DEPOT' ? currentActiveRoute : result?.routes[marker.routeIndex ?? -1];
+    const step = marker.type === 'DEPOT' ? 0 : marker.sequence;
+    if (route && step !== undefined) selectMapRoute(getRouteKey(route), step);
+  }, [currentActiveRoute, result, selectMapRoute]);
 
   const mapMarkers = useMemo(() => {
     const depotMarkers = new Map<string, MapMarker>();
@@ -793,8 +1051,8 @@ const AutomaticDispatchPage: React.FC = () => {
             id: `depot-${depotKey}`,
             latitude: depot.latitude,
             longitude: depot.longitude,
-            title: `Công ty / chi nhánh: ${depot.name}`,
-            subtitle: `Điểm xuất phát và kết thúc · ${depotRouteCounts.get(depotKey) || 1} tuyến xe`,
+            title: `${showingDirect ? 'Điểm xuất phát' : 'Công ty / chi nhánh'}: ${depot.name}`,
+            subtitle: `${depotRouteCounts.get(depotKey) || 1} tuyến xe`,
             type: 'DEPOT',
             color: '#0f3d5e',
           });
@@ -803,7 +1061,7 @@ const AutomaticDispatchPage: React.FC = () => {
 
       stopMarkers.push(
         ...route.stops.map((stop) => ({
-          id: `${getRouteKey(route)}-${stop.location_id}`,
+          id: `${getRouteKey(route)}-${stop.sequence}-${stop.location_id}`,
           latitude: stop.latitude,
           longitude: stop.longitude,
           title: `${route.plate_number} (${route.driver_name}) · ${stop.stop_type === 'PICKUP' ? 'Nhận' : 'Giao'} hàng`,
@@ -819,7 +1077,7 @@ const AutomaticDispatchPage: React.FC = () => {
     });
 
     return [...depotMarkers.values(), ...stopMarkers];
-  }, [activeRoutesForMap, result, resolveDepot]);
+  }, [activeRoutesForMap, result, resolveDepot, showingDirect]);
 
   const routeGeometry = useMemo(
     () => ({
@@ -1234,8 +1492,7 @@ const AutomaticDispatchPage: React.FC = () => {
                     fontSize: 11,
                   }}
                   onClick={() => {
-                    setSelectedVehicleForMap(routeKey);
-                    setActiveStepIndex(0);
+                    selectMapRoute(routeKey);
                     const targetEl =
                       document.getElementById('floor-visualizer-section') ||
                       document.getElementById('map-card-section');
@@ -1517,7 +1774,7 @@ const AutomaticDispatchPage: React.FC = () => {
                 className="driver-schedule-timeline"
                 mode="left"
                 items={schedule.items.map((item) => {
-                  const isStopActive = isThisRouteActive && item.stopIndex !== undefined && activeStepIndex === item.stopIndex;
+                  const isStopActive = isThisRouteActive && item.stopIndex !== undefined && activeStepIndex === item.stopIndex + 1;
                   return {
                     label: (
                       <div style={{ fontSize: 12, fontWeight: 600, color: '#1e40af', textAlign: 'right' }}>
@@ -1553,8 +1810,7 @@ const AutomaticDispatchPage: React.FC = () => {
                       <div
                         onClick={() => {
                           if (item.stopIndex !== undefined) {
-                            setSelectedVehicleForMap(routeKey);
-                            setActiveStepIndex(item.stopIndex);
+                            selectMapRoute(routeKey, item.stopIndex + 1);
                             const targetEl = document.getElementById('floor-visualizer-section') || document.getElementById('map-card-section');
                             targetEl?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                           }
@@ -1620,13 +1876,12 @@ const AutomaticDispatchPage: React.FC = () => {
             <Table
               size="small"
               pagination={false}
-              rowKey="location_id"
+              rowKey="sequence"
               dataSource={route.stops}
               onRow={(_, index) => ({
                 onClick: () => {
                   if (index !== undefined) {
-                    setSelectedVehicleForMap(routeKey);
-                    setActiveStepIndex(index);
+                    selectMapRoute(routeKey, index + 1);
                     const targetEl = document.getElementById('floor-visualizer-section') || document.getElementById('map-card-section');
                     targetEl?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                   }
@@ -1634,8 +1889,8 @@ const AutomaticDispatchPage: React.FC = () => {
                 style: {
                   cursor: 'pointer',
                   backgroundColor:
-                    isThisRouteActive && activeStepIndex === index ? '#eff6ff' : undefined,
-                  fontWeight: isThisRouteActive && activeStepIndex === index ? 600 : 'normal',
+                    isThisRouteActive && activeStepIndex === (index ?? -1) + 1 ? '#eff6ff' : undefined,
+                  fontWeight: isThisRouteActive && activeStepIndex === (index ?? -1) + 1 ? 600 : 'normal',
                 },
               })}
               columns={[
@@ -2341,7 +2596,7 @@ const AutomaticDispatchPage: React.FC = () => {
                   <ExperimentOutlined style={{ fontSize: 16, color: '#7c3aed' }} />
                   <span style={{ fontWeight: 700, color: '#6d28d9' }}>Thử nghiệm Demo Kịch bản mẫu (Benchmarks)</span>
                   <Tag color="purple" style={{ margin: 0, borderRadius: 10, fontWeight: 700 }}>
-                    17 kịch bản
+                    {demoCases.length || 19} kịch bản
                   </Tag>
                 </Space>
               ),
@@ -2352,6 +2607,12 @@ const AutomaticDispatchPage: React.FC = () => {
 
       {pageMode === 'DEMO' ? (
         <DemoScenarioControlCard
+          stackingEnabled={demoStackingEnabled}
+          onChangeStacking={setDemoStackingEnabled}
+          stackingOwnerMode={demoStackingOwnerMode}
+          onChangeStackingOwnerMode={setDemoStackingOwnerMode}
+          allowOverride={effectiveSettings?.optimization.demoAllowOverride ?? true}
+          stackingComparison={demoComparison ? { off: demoComparison.off, on: demoComparison[demoStackingOwnerMode] } : undefined}
           cases={demoCases}
           loadingCases={loadingDemoCases}
           selectedCaseId={selectedDemoCaseId}
@@ -2495,6 +2756,7 @@ const AutomaticDispatchPage: React.FC = () => {
             loading={starting}
             disabled={
               !selectedBranchId
+              || loadingCounts.orders || loadingCounts.vehicles || loadingCounts.drivers
               || counts.orders === 0
               || applying
             }
@@ -2516,21 +2778,36 @@ const AutomaticDispatchPage: React.FC = () => {
             icon={<CheckCircleOutlined />}
             loading={applying}
             disabled={
+              showingDirect ||
               !isOptimizationValid ||
               !optimization ||
               !result ||
               result.routes.length === 0 ||
               !['SUCCEEDED', 'PARTIAL'].includes(optimization.status) ||
-              appliedTripCount !== null ||
+              isApplied ||
               starting
             }
             onClick={applyOptimization}
           >
-            {appliedTripCount === null
-              ? `Áp dụng phương án #${selectedCandidateNumber}`
-              : `Đã áp dụng ${appliedTripCount} chuyến`}
+            {showingDirect
+              ? 'Chuyến đơn lẻ · Chỉ xem'
+              : isApplied
+                ? (appliedTripCount !== null ? `Đã áp dụng ${appliedTripCount} chuyến` : 'Đã áp dụng phương án')
+                : `Áp dụng phương án #${selectedCandidateNumber}`}
           </Button>
-          {appliedTripCount !== null && (
+          {pageMode === 'BRANCH' && selectedBranchId && <DispatcherDeliveryPlanning
+            key={selectedBranchId}
+            branchId={selectedBranchId}
+            jobId={optimization?.id}
+            candidateNumber={selectedCandidateNumber}
+            canPropose={canProposeDeliveryWindow}
+            onJob={async id => {
+              const response = await tripsApi.getAutomaticOptimizationJob(id);
+              setOptimization(response.data); setSelectedCandidateNumber(1); setSelectedCandidateResult(null); setAppliedTripCount(null); setIsRestoredFromStorage(false);
+              saveAutoDispatchState({ branchId: selectedBranchId, optimizationJobId: id, appliedTripCount: null, scheduleMode, customStartTimeStr: customStartTime?.toISOString() ?? null, useCustomTime, savedAt: new Date().toISOString() });
+            }}
+          />}
+          {isApplied && (
             <>
               <Button
                 type="primary"
@@ -2558,7 +2835,7 @@ const AutomaticDispatchPage: React.FC = () => {
               </Button>
             </>
           )}
-          {appliedTripCount === null && isOptimizationValid && optimization && pageMode === 'BRANCH' && (
+          {!isApplied && isOptimizationValid && optimization && pageMode === 'BRANCH' && (
             ['FAILED', 'TIMEOUT', 'CANCELLED', 'INFEASIBLE'].includes(optimization.status) ? (
               <Button
                 size="large"
@@ -2591,6 +2868,48 @@ const AutomaticDispatchPage: React.FC = () => {
           )}
         </Space>
       </div>
+      )}
+
+      {pageMode === 'BRANCH' && effectiveSettings && (
+        <Card size="small" style={{ marginBottom: 16, background: '#f8fafc' }}>
+          <Space wrap size={[8, 8]} style={{ width: '100%', justifyContent: 'space-between' }}>
+            <Space wrap size={[8, 6]}>
+              <Text strong style={{ fontSize: 13 }}>
+                Cấu hình hiệu lực:
+              </Text>
+              <Tag color={effectiveSettings.stacking.enabled ? 'green' : 'default'}>
+                {effectiveSettings.stacking.enabled
+                  ? `Xếp chồng: Bật · ${STACKING_OWNER_MODE_LABELS[effectiveSettings.stacking.ownerMode]} · Tối đa ${effectiveSettings.stacking.maxTiers} tầng`
+                  : 'Xếp chồng: Tắt (chỉ xếp 1 lớp)'}
+              </Tag>
+              <Tag color="blue">
+                Khởi đầu: {effectiveSettings.optimization.defaultSearchBudgetSeconds}s · Trần: {effectiveSettings.optimization.maxTimeSeconds}s
+              </Tag>
+              <Tag>Số seed: {effectiveSettings.optimization.hybridSeedCount || 'Tự động'}</Tag>
+              {effectiveSettings.optimization.earlyStopPatience > 0 && (
+                <Tag>Dừng sớm: {effectiveSettings.optimization.earlyStopPatience} phương án/seed</Tag>
+              )}
+              <Tag color="purple">
+                {effectiveSettings.optimization.maxRoutesPerDay !== null
+                  ? `Tối đa ${effectiveSettings.optimization.maxRoutesPerDay} chuyến/ngày`
+                  : 'Không giới hạn số chuyến/ngày'}
+              </Tag>
+              <Tag color={effectiveSettings.sources.stacking === 'BRANCH' || effectiveSettings.sources.optimization === 'BRANCH' ? 'gold' : 'geekblue'}>
+                {effectiveSettings.policyVersion}
+              </Tag>
+            </Space>
+            {onNavigate && can('settings.read') && (
+              <Button
+                size="small"
+                type="link"
+                icon={<SettingOutlined />}
+                onClick={() => onNavigate('settings')}
+              >
+                Mở Cấu hình chung
+              </Button>
+            )}
+          </Space>
+        </Card>
       )}
 
       {pageMode === 'BRANCH' && !loadingBranches && branches.length === 0 && (
@@ -2639,7 +2958,7 @@ const AutomaticDispatchPage: React.FC = () => {
         {/* Thẻ 1: Đơn sẵn sàng */}
         <Col xs={12} sm={12} lg={6}>
           <Card
-            loading={loadingCounts}
+            loading={loadingCounts.orders}
             bordered={false}
             style={{
               borderRadius: 12,
@@ -2690,7 +3009,7 @@ const AutomaticDispatchPage: React.FC = () => {
         {/* Thẻ 2: Kiện vật lý */}
         <Col xs={12} sm={12} lg={6}>
           <Card
-            loading={loadingCounts}
+            loading={loadingCounts.orders}
             bordered={false}
             style={{
               borderRadius: 12,
@@ -2741,7 +3060,7 @@ const AutomaticDispatchPage: React.FC = () => {
         {/* Thẻ 3: Xe khả dụng */}
         <Col xs={12} sm={12} lg={6}>
           <Card
-            loading={loadingCounts}
+            loading={loadingCounts.vehicles}
             bordered={false}
             style={{
               borderRadius: 12,
@@ -2792,7 +3111,7 @@ const AutomaticDispatchPage: React.FC = () => {
         {/* Thẻ 4: Tài xế khả dụng */}
         <Col xs={12} sm={12} lg={6}>
           <Card
-            loading={loadingCounts}
+            loading={loadingCounts.drivers}
             bordered={false}
             style={{
               borderRadius: 12,
@@ -2844,18 +3163,21 @@ const AutomaticDispatchPage: React.FC = () => {
 
       {result ? (
         <>
-          {result.benchmarks && (
+          {optimizerResult?.benchmarks && (
             <BenchmarkCostComparisonCard
-              benchmarks={result.benchmarks}
-              optimizationStatus={result.status}
-              unassignedOrderCount={result.unassigned_orders.length}
+              benchmarks={optimizerResult.benchmarks}
+              optimizationStatus={optimizerResult.status}
+              unassignedOrderCount={optimizerResult.unassigned_orders.length}
+              planningObjective={activePlanningObjective}
+              onSelectDirect={directCandidate ? () => void selectCandidate(DIRECT_COMPARISON) : undefined}
+              showingDirect={showingDirect}
             />
           )}
-          {optimization && optimization.candidates.length > 0 && (
+          {optimization && (optimization.candidates.length > 0 || directCandidate) && (
             <Card
-              title="Top phương án tối ưu giao đủ 100% đơn"
+              title="So sánh phương án điều phối"
               extra={
-                <Button
+                pageMode === 'BRANCH' && optimization.candidates.length > 0 && <Button
                   icon={<ExportOutlined />}
                   loading={exportingCandidates}
                   onClick={exportCandidates}
@@ -2863,7 +3185,7 @@ const AutomaticDispatchPage: React.FC = () => {
                   Xuất Excel
                 </Button>
               }
-              style={{ marginBottom: 16 }}
+              className="dispatch-candidate-card"
             >
               {optimization.candidates.some((c) => c.unassignedOrderCount > 0) ? (
                 <Alert
@@ -2873,7 +3195,7 @@ const AutomaticDispatchPage: React.FC = () => {
                   description="Hiển thị phương án khả thi có tỷ lệ phục vụ cao nhất. Vui lòng kiểm tra tab Đơn chưa xếp hoặc bổ sung thêm xe/tài xế khả dụng."
                   style={{ marginBottom: 12 }}
                 />
-              ) : (
+              ) : optimization.candidates.length > 0 && (
                 <Alert
                   type="success"
                   showIcon
@@ -2883,14 +3205,16 @@ const AutomaticDispatchPage: React.FC = () => {
                 />
               )}
               <Table
+                className="dispatch-candidate-table"
                 size="small"
                 rowKey="candidateNumber"
                 loading={loadingCandidate}
                 pagination={false}
-                dataSource={optimization.candidates}
+                scroll={{ x: 960 }}
+                dataSource={directCandidate ? [...optimization.candidates, directCandidate] : optimization.candidates}
                 rowClassName={(candidate) =>
                   candidate.candidateNumber === selectedCandidateNumber
-                    ? 'ant-table-row-selected'
+                    ? 'dispatch-candidate-selected'
                     : ''
                 }
                 onRow={(candidate) => ({
@@ -2901,9 +3225,10 @@ const AutomaticDispatchPage: React.FC = () => {
                   {
                     title: 'Hạng',
                     dataIndex: 'candidateNumber',
-                    width: 100,
+                    width: 96,
                     render: (value: number) =>
-                      value === 1 ? <Tag color="green">#1 tốt nhất</Tag> : `#${value}`,
+                      value === DIRECT_COMPARISON ? <Tag color="blue">Đối chuẩn</Tag>
+                        : value === 1 ? <Tag color="green">#1 tốt nhất</Tag> : `#${value}`,
                   },
                   {
                     title: 'Chiến lược tìm kiếm',
@@ -2914,22 +3239,31 @@ const AutomaticDispatchPage: React.FC = () => {
                     ),
                   },
                   {
-                    title: 'Tổng chi phí',
+                    title: 'Chi phí chạy chuyến',
                     dataIndex: 'totalCostVnd',
-                    render: (value: number) => <Text strong>{currency.format(value)}</Text>,
+                    render: (value: number, candidate) => (
+                      <Space direction="vertical" size={0}>
+                        <Text strong>{currency.format(value)}</Text>
+                        {candidate.driverIdleSalaryAllocationVnd > 0 && (
+                          <Text type="secondary" style={{ fontSize: 11 }}>
+                            +{currency.format(candidate.driverIdleSalaryAllocationVnd)} lương chờ lịch
+                          </Text>
+                        )}
+                      </Space>
+                    ),
                   },
                   {
-                    title: 'Điểm xếp hạng',
+                    title: 'Chi phí toàn đội',
                     dataIndex: 'solverObjective',
                     render: (value: number, candidate) => (
                       <Tooltip
-                        title={`Lịch ${candidate.planningSpanDays} ngày · Lương lịch ${currency.format(candidate.driverCalendarSalaryVnd)} · Lương thời gian rảnh ${currency.format(candidate.driverIdleSalaryAllocationVnd)} · Penalty trễ vận hành ${currency.format(candidate.operationalLatePenaltyVnd)}`}
+                        title={`Chi phí chạy chuyến ${currency.format(candidate.totalCostVnd)} + Lương tài xế chờ lịch ${currency.format(candidate.driverIdleSalaryAllocationVnd)} (Tổng lương lịch ${candidate.planningSpanDays} ngày: ${currency.format(candidate.driverCalendarSalaryVnd)}) + Penalty trễ vận hành ${currency.format(candidate.operationalLatePenaltyVnd)}`}
                       >
                         <Space direction="vertical" size={0}>
-                          <Text strong>{currency.format(value)}</Text>
+                          <Text strong style={{ color: '#047857' }}>{currency.format(value)}</Text>
                           <Text type="secondary" style={{ fontSize: 12 }}>
                             {candidate.planningSpanDays > 0
-                              ? `Hoàn tất trong ${candidate.planningSpanDays} ngày`
+                              ? `Hoàn tất trong ${candidate.planningSpanDays} ngày · Lương lịch ${currency.format(candidate.driverCalendarSalaryVnd)}`
                               : 'Kết quả cũ chưa có breakdown'}
                           </Text>
                         </Space>
@@ -2939,23 +3273,22 @@ const AutomaticDispatchPage: React.FC = () => {
                   {
                     title: 'Chênh với #1',
                     render: (_, candidate) => {
-                      if (candidate.unassignedOrderCount > 0) {
+                      if (candidate.unassignedOrderCount > 0 || !optimization.candidates[0] || optimization.candidates[0].unassignedOrderCount > 0) {
                         return <Text type="secondary">—</Text>;
                       }
                       const best = optimization.candidates[0]?.solverObjective ?? candidate.solverObjective;
                       const diff = candidate.solverObjective - best;
-                      return diff === 0 ? '0 đ' : `+${currency.format(diff)}`;
+                      return diff > 0 ? `+${currency.format(diff)}` : currency.format(diff);
                     },
                   },
                   {
-                    title: 'Quãng đường',
-                    dataIndex: 'totalDistanceKm',
-                    render: (value: number) => `${value.toFixed(2)} km`,
-                  },
-                  {
-                    title: 'Thời gian',
-                    dataIndex: 'totalDurationMinutes',
-                    render: (value: number) => `${value.toFixed(1)} phút`,
+                    title: 'Lộ trình',
+                    render: (_, candidate) => (
+                      <Space direction="vertical" size={0}>
+                        <Text>{formatDecimal(candidate.totalDistanceKm)} km</Text>
+                        <Text type="secondary">{formatDecimal(candidate.totalDurationMinutes)} phút</Text>
+                      </Space>
+                    ),
                   },
                   {
                     title: 'Gom đơn & Xe',
@@ -2968,7 +3301,9 @@ const AutomaticDispatchPage: React.FC = () => {
                       const visits = candidate.deliveryVisitCount ?? 0;
                       return (
                         <Space size={4} wrap>
-                          {extraTrips === 0 ? (
+                          {candidate.candidateNumber === DIRECT_COMPARISON ? (
+                            <Tag>Không ghép đơn</Tag>
+                          ) : extraTrips === 0 ? (
                             <Tag color="cyan" style={{ margin: 0 }}>
                               Gom 1 chuyến/đơn
                             </Tag>
@@ -2993,7 +3328,6 @@ const AutomaticDispatchPage: React.FC = () => {
                       );
                     },
                   },
-                  { title: 'Lượt chuyến', dataIndex: 'routeCount' },
                   {
                     title: 'Đơn chưa xếp',
                     dataIndex: 'unassignedOrderCount',
@@ -3009,6 +3343,9 @@ const AutomaticDispatchPage: React.FC = () => {
                     render: (_, candidate) => (
                       <Button
                         size="small"
+                        onClick={(event) => { event.stopPropagation(); void selectCandidate(candidate.candidateNumber); }}
+                        aria-pressed={candidate.candidateNumber === selectedCandidateNumber}
+                        aria-label={candidate.candidateNumber === DIRECT_COMPARISON ? 'So sánh Chuyến đơn lẻ' : `So sánh phương án #${candidate.candidateNumber}`}
                         type={candidate.candidateNumber === selectedCandidateNumber ? 'primary' : 'default'}
                       >
                         {candidate.candidateNumber === selectedCandidateNumber ? 'Đang chọn' : 'So sánh'}
@@ -3027,6 +3364,7 @@ const AutomaticDispatchPage: React.FC = () => {
                   <Space wrap>
                     <NodeIndexOutlined style={{ color: '#1677ff', fontSize: 16 }} />
                     <span>Bản đồ lộ trình</span>
+                    {showingDirect && <Tag color="blue">Chuyến đơn lẻ · Tuyến đường Mapbox</Tag>}
                     {optimization?.scheduleMode === 'CURRENT_TIME' ? (
                       <Tag color="cyan" icon={<ClockCircleOutlined />}>
                         Khởi hành từ giờ hiện tại
@@ -3066,10 +3404,7 @@ const AutomaticDispatchPage: React.FC = () => {
                     <Select
                       aria-label="Chọn tuyến xe hiển thị trên bản đồ"
                       value={selectedVehicleForMap}
-                      onChange={(value) => {
-                        setSelectedVehicleForMap(value);
-                        setActiveStepIndex(0);
-                      }}
+                      onChange={(routeKey) => selectMapRoute(routeKey)}
                       size="small"
                       popupMatchSelectWidth={false}
                       options={[
@@ -3089,6 +3424,7 @@ const AutomaticDispatchPage: React.FC = () => {
                                 aria-hidden="true"
                               />
                               Ngày {route.service_day_index + 1} · {route.plate_number} · {route.driver_name || 'Chưa có tài xế'}
+                              {showingDirect && ` · ${dayjs(optimization?.planningEpochIso).add(route.start_time_sec, 'second').format('HH:mm')}`}
                             </span>
                           ),
                         })),
@@ -3096,27 +3432,39 @@ const AutomaticDispatchPage: React.FC = () => {
                     />
                   </div>
                   <Button
-                    type={enableSim ? 'default' : 'primary'}
-                    icon={enableSim ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                    type={showSimulation ? 'default' : 'primary'}
+                    icon={showSimulation ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
+                    loading={loadingDirectRoad}
+                    disabled={!canSimulate && !showSimulation}
                     onClick={() => {
-                      if (!enableSim && selectedVehicleForMap === 'ALL' && result.routes.length > 0) {
-                        setSelectedVehicleForMap(getRouteKey(result.routes[0]));
-                      }
-                      setEnableSim(!enableSim);
+                      setMapStopSelection(undefined);
+                      if (!showSimulation) setActiveStepIndex(0);
+                      setEnableSim(!showSimulation);
                     }}
                   >
-                    {enableSim ? 'Dừng mô phỏng' : 'Mô phỏng xe'}
+                    {showSimulation ? 'Dừng mô phỏng' : 'Mô phỏng xe'}
                   </Button>
                 </div>
 
+                {!selectedRouteInfo && <Alert type="info" showIcon message="Chọn một tuyến xe để xem sơ đồ xếp dỡ và mô phỏng." />}
+                {showingDirect && currentDirectRoad?.coordinates === null && (
+                  <Alert type="error" showIcon message="Không tải được tuyến đường từ Mapbox."
+                    action={<Button size="small" onClick={() => setDirectRoadAttempt(attempt => attempt + 1)}>Thử lại</Button>} />
+                )}
+
                 <div className="automatic-map-legend" aria-label="Chú giải bản đồ">
                   <span className="map-legend-item map-legend-depot">
-                    <BankOutlined /> Công ty
+                    <BankOutlined /> {showingDirect ? 'Điểm xuất phát' : 'Công ty'}
                   </span>
                   <ArrowRightOutlined aria-hidden="true" />
                   <span className="map-legend-item map-legend-sequence">1 · 2 · 3 · … Điểm dừng</span>
                   <span className="map-legend-item map-legend-pickup">Nhận hàng</span>
                   <span className="map-legend-item map-legend-delivery">Giao hàng</span>
+                  {showSimulation && canSimulate && <>
+                    <span className="map-legend-item map-legend-traveled">Đã đi</span>
+                    <span className="map-legend-item map-legend-next-leg">Chặng kế tiếp</span>
+                    <span className="map-legend-item map-legend-pending">Chưa đi</span>
+                  </>}
                 </div>
 
                 {selectedRouteInfo && (
@@ -3137,7 +3485,7 @@ const AutomaticDispatchPage: React.FC = () => {
                         size="small"
                         type="text"
                         icon={<CloseOutlined />}
-                        onClick={() => setSelectedVehicleForMap('ALL')}
+                        onClick={() => selectMapRoute('ALL')}
                       >
                         Xem tất cả
                       </Button>
@@ -3145,36 +3493,43 @@ const AutomaticDispatchPage: React.FC = () => {
 
                     <div className="automatic-route-journey" aria-label="Thứ tự lộ trình">
                       <Tooltip title={selectedRouteInfo.depot?.name || 'Công ty / chi nhánh'}>
-                        <span
+                        <button
+                          type="button"
+                          aria-current={activeStepIndex === 0 ? 'step' : undefined}
                           className={`journey-node journey-node-depot ${activeStepIndex === 0 ? 'journey-node-active' : ''}`}
-                          style={{ cursor: 'pointer' }}
-                          onClick={() => setActiveStepIndex(0)}
+                          onClick={() => selectMapRoute(getRouteKey(selectedRouteInfo), 0)}
                         >
                           <BankOutlined />
-                          <span>Công ty</span>
-                        </span>
+                          <span>{showingDirect ? 'Xuất phát' : 'Công ty'}</span>
+                        </button>
                       </Tooltip>
                       {selectedRouteInfo.stops.map((stop) => (
                         <React.Fragment key={`${getRouteKey(selectedRouteInfo)}-${stop.sequence}-${stop.location_id}`}>
-                          <ArrowRightOutlined className="journey-arrow" aria-hidden="true" />
+                          <ArrowRightOutlined className={journeyArrowClass(stop.sequence)} aria-hidden="true" />
                           <Tooltip title={`${stop.stop_type === 'PICKUP' ? 'Nhận' : 'Giao'} · ${stop.location_name}`}>
-                            <span
+                            <button
+                              type="button"
+                              aria-current={activeStepIndex === stop.sequence ? 'step' : undefined}
                               className={`journey-node ${stop.stop_type === 'PICKUP' ? 'journey-node-pickup' : 'journey-node-delivery'} ${activeStepIndex === stop.sequence ? 'journey-node-active' : ''}`}
-                              style={{ cursor: 'pointer' }}
-                              onClick={() => setActiveStepIndex(stop.sequence)}
+                              onClick={() => selectMapRoute(getRouteKey(selectedRouteInfo), stop.sequence)}
                             >
                               {stop.sequence}
-                            </span>
+                            </button>
                           </Tooltip>
                         </React.Fragment>
                       ))}
-                      <ArrowRightOutlined className="journey-arrow" aria-hidden="true" />
-                      <span
-                        className={`journey-node journey-node-return ${activeStepIndex > selectedRouteInfo.stops.length ? 'journey-node-active' : ''}`}
-                      >
-                        <BankOutlined />
-                        <span>Về công ty</span>
-                      </span>
+                      {hasReturnLeg && <>
+                        <ArrowRightOutlined className={journeyArrowClass(selectedRouteInfo.stops.length + 1)} aria-hidden="true" />
+                        <button
+                          type="button"
+                          aria-current={activeStepIndex > selectedRouteInfo.stops.length ? 'step' : undefined}
+                          className={`journey-node journey-node-return ${activeStepIndex > selectedRouteInfo.stops.length ? 'journey-node-active' : ''}`}
+                          onClick={() => selectMapRoute(getRouteKey(selectedRouteInfo), selectedRouteInfo.stops.length + 1)}
+                        >
+                          <BankOutlined />
+                          <span>Về bến</span>
+                        </button>
+                      </>}
                     </div>
                   </div>
                 )}
@@ -3182,43 +3537,48 @@ const AutomaticDispatchPage: React.FC = () => {
                   markers={mapMarkers}
                   routeGeometry={routeGeometry}
                   height={mapLayoutMode === 'FULL' ? 640 : 560}
-                  enableSimulation={enableSim}
-                  autoPlaySimulation={enableSim}
-                  vehiclePlate={currentActiveRoute?.plate_number || '29C-678.92'}
-                  driverName={currentActiveRoute?.driver_name || 'Tài xế'}
-                  onSimulationProgress={(_prog, _coord, _speed, traveledKm) => {
-                    if (stopMilestonesKm.length > 0) {
-                      const stepIdx = getStepIndexForDistance(stopMilestonesKm, traveledKm);
-                      setActiveStepIndex(stepIdx);
-                    }
-                  }}
-                  onSimulationStop={() => setEnableSim(false)}
+                  enableSimulation={showSimulation}
+                  autoPlaySimulation={isSimulating}
+                  followSimulationVehicle
+                  simulationFocus={simulationFocus}
+                  simulationMilestonesKm={stopMilestonesKm}
+                  vehiclePlate={currentActiveRoute?.plate_number}
+                  driverName={currentActiveRoute?.driver_name}
+                  onSimulationProgress={syncSimulationStep}
+                  onSimulationStop={stopSimulation}
+                  onMarkerClick={selectMapMarker}
                 />
               </Card>
             </Col>
             <Col xs={24} xl={mapLayoutMode === 'FULL' ? 0 : 12} style={{ display: mapLayoutMode === 'FULL' ? 'none' : 'block' }}>
-              <FloorPackingVisualizer
+              {currentActiveRoute ? <FloorPackingVisualizer
+                key={JSON.stringify([activeOptimizationJobId, selectedCandidateNumber, showingDirect, currentActiveRoute.route_id])}
                 route={currentActiveRoute}
+                vehicle={availableVehicles.find(vehicle => vehicle.id === currentActiveRoute.vehicle_id)}
                 allRoutes={result.routes}
-                onSelectRoute={(vehicleId) => {
-                  setSelectedVehicleForMap(vehicleId);
-                  setActiveStepIndex(0);
-                }}
+                onSelectRoute={(routeKey) => selectMapRoute(routeKey)}
                 vehicleDimensions={{
-                  lengthCm: currentActiveRoute?.vehicle_length_cm || 430,
-                  widthCm: currentActiveRoute?.vehicle_width_cm || 190,
+                  lengthCm: currentActiveRoute.vehicle_length_cm || 0,
+                  widthCm: currentActiveRoute.vehicle_width_cm || 0,
+                  heightCm:
+                    currentActiveRoute.vehicle_height_cm ||
+                    availableVehicles.find((vehicle) => vehicle.id === currentActiveRoute.vehicle_id)
+                      ?.heightCm ||
+                    undefined,
                 }}
-                stepStates={currentActiveRoute?.spatial_validation?.step_states || []}
-                isValid={currentActiveRoute?.spatial_validation?.is_valid ?? true}
+                stepStates={currentActiveRoute.spatial_validation?.step_states || []}
+                isValid={currentActiveRoute.spatial_validation?.is_valid ?? true}
                 violations={
-                  currentActiveRoute?.spatial_validation?.error_message
+                  currentActiveRoute.spatial_validation?.error_message
                     ? [currentActiveRoute.spatial_validation.error_message]
                     : []
                 }
                 selectedStepIndex={activeStepIndex}
-                onStepChange={(stepIdx) => setActiveStepIndex(stepIdx)}
-                isSimulating={enableSim}
-              />
+                onStepChange={setActiveStepIndex}
+                isSimulating={showSimulation && canSimulate}
+              /> : <Card title="Sơ đồ xếp dỡ thùng xe" className="card-elevation">
+                <Empty description="Chọn một tuyến xe trên bản đồ để xem hàng trên xe." />
+              </Card>}
             </Col>
           </Row>
 
@@ -3276,7 +3636,7 @@ const AutomaticDispatchPage: React.FC = () => {
                             <strong>Hết ca làm việc hôm nay:</strong> Nếu bạn đang điều phối vào cuối buổi chiều (gần 17:00), xe và tài xế không còn đủ thời gian di chuyển. Hãy chọn <strong>"Ngày tiếp theo (ca mai)"</strong> hoặc bật <strong>"Chỉnh giờ cụ thể"</strong> về <strong>08:00 sáng</strong> trên thanh công cụ.
                           </li>
                           <li>
-                            <strong>Lệch ngày đơn hàng:</strong> Hãy đảm bảo ngày giao nhận của đơn hàng nằm trong hoặc sau thời điểm điều phối.
+                            <strong>Thời gian chờ của đơn:</strong> Đơn cũ vẫn được xếp giao; sau khoảng miễn phạt, chi phí trễ tăng theo thời gian. Không cần dời ngày đặt đơn.
                           </li>
                         </ul>
                       }
@@ -3290,7 +3650,7 @@ const AutomaticDispatchPage: React.FC = () => {
               items={result.routes.map((route) => ({
                 key: getRouteKey(route),
                 label: `Ngày ${route.service_day_index + 1} · ${route.plate_number} · ${route.driver_name} (Hạng ${route.driver_license_class || 'C'}) · ${currency.format(route.cost?.total_cost_vnd || 0)}`,
-                children: renderRoute(route),
+                children: <RouteDetails route={route} render={renderRoute} />,
               }))}
               defaultActiveKey={result.routes[0] ? [getRouteKey(result.routes[0])] : []}
             />
@@ -3304,7 +3664,7 @@ const AutomaticDispatchPage: React.FC = () => {
               message={
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
                   <Text strong>{result.unassigned_orders.length} đơn chưa được xếp tuyến</Text>
-                  <Tag color="orange">Chi tiết lý do từ chối</Tag>
+                  <Tag color="orange">Chi tiết đơn chưa xếp tuyến</Tag>
                 </div>
               }
               description={

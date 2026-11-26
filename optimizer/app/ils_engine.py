@@ -26,12 +26,14 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
         time_budget_seconds: Optional[float] = None,
         random_seed: int = 0,
         include_benchmarks: bool = True,
+        should_split_orders: bool = True,
     ) -> None:
         super().__init__(
             request,
             max_iterations=max_iterations,
             time_budget_seconds=time_budget_seconds,
             random_seed=random_seed,
+            should_split_orders=should_split_orders,
         )
         self.include_benchmarks = include_benchmarks
 
@@ -190,6 +192,7 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
         self,
         routes: List[List[ScheduledStop]],
         unassigned: List[str],
+        deadline: Optional[float] = None,
     ) -> Optional[Tuple[int, List[List[ScheduledStop]], List[str]]]:
         current_cost, _, _ = self._evaluate_plan_cost(routes, unassigned)
         current_key = self._candidate_key(routes, unassigned)
@@ -200,14 +203,49 @@ class PackingAwareILSOptimizer(ALNSFleetOptimizer):
         for src_i in active_indices:
             src_v = self.vehicles[src_i]
             stops = routes[src_i]
+            w = 0.0
+            max_w = 0.0
+            for st in stops:
+                oid = st.allocation_id or st.order_id
+                ord_obj = self.order_by_id.get(oid) if oid else None
+                if ord_obj:
+                    w += ord_obj.total_weight_kg if st.stop_type == "PICKUP" else -ord_obj.total_weight_kg
+                    if w > max_w:
+                        max_w = w
             for tgt_i in empty_indices:
+                if deadline is not None and time.perf_counter() >= deadline:
+                    break
                 tgt_v = self.vehicles[tgt_i]
-                if tgt_v.fixed_operating_cost_vnd >= src_v.fixed_operating_cost_vnd and tgt_v.fuel_consumption_liters_per_100_km >= src_v.fuel_consumption_liters_per_100_km:
+                max_routes = getattr(self.request.policy, "max_routes_per_day", None)
+                if (
+                    max_routes is not None
+                    and tgt_v.service_day_index != src_v.service_day_index
+                    and sum(
+                        1
+                        for idx, r in enumerate(routes)
+                        if r and self.vehicles[idx].service_day_index == tgt_v.service_day_index
+                    )
+                    >= max_routes
+                ):
+                    continue
+                if (
+                    tgt_v.service_day_index >= src_v.service_day_index
+                    and tgt_v.fixed_operating_cost_vnd >= src_v.fixed_operating_cost_vnd
+                    and tgt_v.fuel_consumption_liters_per_100_km >= src_v.fuel_consumption_liters_per_100_km
+                ):
+                    continue
+                if max_w > tgt_v.payload_limit_kg + 0.01:
+                    continue
+                if not self._vehicle_has_compatible_driver(tgt_v) or any(
+                    not self._order_allows_vehicle(self.order_by_id[s.allocation_id or s.order_id], tgt_v)
+                    for s in stops
+                    if s.stop_type == "PICKUP" and (s.allocation_id or s.order_id) in self.order_by_id
+                ):
                     continue
                 if self._schedule_stops(tgt_i, stops) is not None and self._validate_stops_cached(tgt_i, stops):
-                    cand_routes = copy.deepcopy(routes)
+                    cand_routes = list(routes)
                     cand_routes[src_i] = []
-                    cand_routes[tgt_i] = copy.deepcopy(stops)
+                    cand_routes[tgt_i] = stops
                     c_cost, _, _ = self._evaluate_plan_cost(cand_routes, unassigned)
                     c_key = self._candidate_key(cand_routes, unassigned)
                     if c_key < current_key:

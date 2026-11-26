@@ -3,7 +3,7 @@ import { Alert, App, Button, Form, Input, Modal, Popconfirm, Select, Space, Tabl
 import axios from 'axios';
 import { accountsApi, apiErrorMessage } from '../api/client';
 import { useAuth } from '../context/AuthContext';
-import { Account, AccountDetail, AccountList, AccountQuery, AvailableDriver, canManageAccounts, CreateAccount, branchRoleLabels } from '../types/accounts';
+import { Account, AccountDetail, AccountList, AccountQuery, AvailableDriver, canManageAccounts, CreateAccount, branchRoleLabels, roleLabel } from '../types/accounts';
 
 const webRoles = Object.entries(branchRoleLabels).map(([value, label]) => ({ value, label }));
 
@@ -128,15 +128,15 @@ export default function AccountsPage() {
       columns={[
         { title: 'Username', dataIndex: 'username' },
         { title: 'Họ tên', dataIndex: 'fullName' },
-        { title: 'Vai trò', render: (_, a) => [...new Set(a.roleScopes.map(s => s.role.code))].join(', ') || 'Chưa có vai trò hoạt động' },
+        { title: 'Vai trò', render: (_, a) => [...new Set(a.roleScopes.map(s => roleLabel(s.role.code)))].join(', ') || 'Chưa có vai trò hoạt động' },
         { title: 'Chi nhánh', render: (_, a) => a.roleScopes.some(s => s.scopeType === 'COMPANY') ? 'Toàn công ty' : [...new Set(a.roleScopes.flatMap(s => s.branch ? [s.branch.name] : []))].join(', ') || 'Chưa có phạm vi' },
         { title: 'Trạng thái', render: (_, a) => <Tag color={a.active ? 'green' : 'default'}>{a.active ? 'Đang hoạt động' : 'Đã khóa'}</Tag> },
         { title: 'Ngày tạo', render: (_, a) => new Date(a.createdAt).toLocaleString('vi-VN') },
         { title: 'Hồ sơ', render: (_, a) => <Space>
           <Button onClick={() => void openEdit(a)}>Chi tiết / sửa</Button>
-          {!a.active && a.id !== user?.id && ['DRIVER', 'DISPATCHER'].includes(a.role) && !a.roleScopes.some(scope => scope.role.code === 'ADMIN') && canManageAccounts(user, 'users.lock') && <Popconfirm title="Mở khóa tài khoản?" description="Các phiên cũ vẫn bị thu hồi; người dùng phải đăng nhập lại." onConfirm={() => unlock(a)}><Button disabled={!!locking}>Mở khóa</Button></Popconfirm>}
+          {!a.active && a.id !== user?.id && (['DRIVER', 'DISPATCHER'].includes(a.role) || (a.role === 'STAFF' && a.roleScopes.some(scope => scope.role.code in branchRoleLabels || scope.role.code === 'ORDER_SCHEDULER'))) && !a.roleScopes.some(scope => scope.role.code === 'ADMIN') && canManageAccounts(user, 'users.lock') && <Popconfirm title="Mở khóa tài khoản?" description="Các phiên cũ vẫn bị thu hồi; người dùng phải đăng nhập lại." onConfirm={() => unlock(a)}><Button disabled={!!locking}>Mở khóa</Button></Popconfirm>}
         </Space> },
-        { title: 'Thao tác', render: (_, a) => a.active && a.id !== user?.id && ['DRIVER', 'DISPATCHER'].includes(a.role) && !a.roleScopes.some(s => s.role.code === 'ADMIN') && canManageAccounts(user, 'users.lock') && <Popconfirm title={`Khóa tài khoản ${a.username}?`} description="Mọi phiên đang hoạt động sẽ bị thu hồi." okText="Xác nhận khóa" cancelText="Hủy" onConfirm={() => lock(a)}>
+        { title: 'Thao tác', render: (_, a) => a.active && a.id !== user?.id && (['DRIVER', 'DISPATCHER'].includes(a.role) || (a.role === 'STAFF' && a.roleScopes.some(scope => scope.role.code in branchRoleLabels || scope.role.code === 'ORDER_SCHEDULER'))) && !a.roleScopes.some(s => s.role.code === 'ADMIN') && canManageAccounts(user, 'users.lock') && <Popconfirm title={`Khóa tài khoản ${a.username}?`} description="Mọi phiên đang hoạt động sẽ bị thu hồi." okText="Xác nhận khóa" cancelText="Hủy" onConfirm={() => lock(a)}>
           <Button danger disabled={!!locking} loading={locking === a.id}>Khóa</Button>
         </Popconfirm> },
       ]} />
@@ -147,7 +147,7 @@ export default function AccountsPage() {
         <Form.Item name="fullName" label="Họ tên" rules={[{ required: true, whitespace: true, message: 'Nhập họ tên' }, { max: 200, message: 'Họ tên tối đa 200 ký tự' }]}><Input autoComplete="off" /></Form.Item>
         <Form.Item name="password" label="Mật khẩu" rules={[{ required: true, message: 'Nhập mật khẩu' }, { validator: (_, value: unknown) => typeof value === 'string' && new TextEncoder().encode(value).length >= 12 && new TextEncoder().encode(value).length <= 72 ? Promise.resolve() : Promise.reject(new Error('Mật khẩu phải có từ 12 đến 72 byte UTF-8')) }]}><Input.Password autoComplete="new-password" /></Form.Item>
         <Form.Item name="confirmPassword" label="Xác nhận mật khẩu" dependencies={['password']} rules={[{ required: true, message: 'Xác nhận mật khẩu' }, { validator: (_, value: unknown) => value === form.getFieldValue('password') ? Promise.resolve() : Promise.reject(new Error('Mật khẩu xác nhận không khớp')) }]}><Input.Password autoComplete="new-password" /></Form.Item>
-        <Form.Item name="roleCode" label="Vai trò" rules={[{ required: true, message: 'Chọn vai trò' }]}><Select onChange={() => { form.setFieldsValue({ driverId: undefined, branchIds: [] }); }} options={[...webRoles, { value: 'DRIVER', label: 'Tài xế (mobile)' }]} placeholder="Chọn vai trò" /></Form.Item>
+        <Form.Item name="roleCode" label="Vai trò" rules={[{ required: true, message: 'Chọn vai trò' }]}><Select virtual={false} onChange={() => { form.setFieldsValue({ driverId: undefined, branchIds: [] }); }} options={[...webRoles, { value: 'DRIVER', label: 'Tài xế (mobile)' }]} placeholder="Chọn vai trò" /></Form.Item>
         {roleCode === 'DRIVER' && <>
           {driversError && <Alert type="error" message={driversError} />}
           <Form.Item name="driverId" label="Hồ sơ tài xế có sẵn" rules={[{ required: true, message: 'Chọn tài xế chưa có tài khoản' }]}>
@@ -160,12 +160,13 @@ export default function AccountsPage() {
     </Modal>
     <Modal title="Chi tiết và phạm vi tài khoản" open={!!editing} footer={null} closable={!saving} maskClosable={!saving} onCancel={() => { if (!saving) setEditing(undefined); }}>
       <Typography.Paragraph>{editing?.username} — {editing?.roleScopes.map(scope => scope.role.code).filter((value, index, values) => values.indexOf(value) === index).join(', ')}</Typography.Paragraph>
+      {editing?.scopeHistory.some(scope => scope.active && scope.role.code === 'ORDER_SCHEDULER') && <Alert type="warning" message="Vai trò Xử lý đơn đã ngừng. Chọn Điều phối viên vận tải và giữ đúng chi nhánh để chuyển; lưu sẽ thu hồi phiên cũ." />}
       {canEditTarget && <Alert type="warning" message="Lưu thay đổi sẽ thu hồi phiên hiện tại của tài khoản. Không thay liên kết nhân viên/tài xế hoặc cấp vai trò ADMIN." />}
-      {editing?.scopeHistory.map((scope, index) => <div key={index}>{scope.role.code} — {scope.branch?.name ?? (scope.scopeType === 'COMPANY' ? 'Toàn công ty' : 'Phạm vi địa điểm của module khác')}: <Tag>{!scope.active ? 'Đã thu hồi' : !scope.role.active ? 'Vai trò đã ngừng' : scope.branch && !scope.branch.active ? 'Chi nhánh đã ngừng' : 'Đang được cấp'}</Tag></div>)}
+      {editing?.scopeHistory.map((scope, index) => <div key={index}>{roleLabel(scope.role.code)} — {scope.branch?.name ?? (scope.scopeType === 'COMPANY' ? 'Toàn công ty' : 'Phạm vi địa điểm của module khác')}: <Tag>{!scope.active ? 'Đã thu hồi' : !scope.role.active ? 'Vai trò đã ngừng' : scope.branch && !scope.branch.active ? 'Chi nhánh đã ngừng' : 'Đang được cấp'}</Tag></div>)}
       {formError && <Alert type="error" message={formError} />}
       <Form form={editForm} layout="vertical" onFinish={edit} disabled={saving || !canEditTarget}>
         <Form.Item name="fullName" label="Tên hiển thị" rules={[{ required: true, whitespace: true }, { max: 200 }]}><Input /></Form.Item>
-        {editing && editing.role !== 'DRIVER' && <Form.Item name="roleCode" label="Vai trò quản lý" rules={[{ required: true }]}><Select options={webRoles} /></Form.Item>}
+        {editing && editing.role !== 'DRIVER' && <Form.Item name="roleCode" label="Vai trò quản lý" rules={[{ required: true }]}><Select virtual={false} options={webRoles} /></Form.Item>}
         {editing && editing.role !== 'DRIVER' && <Form.Item name="branchIds" label="Phạm vi chi nhánh" rules={[{ required: true, type: 'array', min: 1 }]}><Select maxCount={1} mode="multiple" options={[...branchOptions, ...editing.scopeHistory.flatMap(scope => scope.active && scope.branch && !scope.branch.active ? [{ value: scope.branch.id, label: `${scope.branch.name} (đã ngừng)`, disabled: true }] : [])]} /></Form.Item>}
         {canEditTarget && <Button type="primary" htmlType="submit" loading={saving}>Xác nhận lưu thay đổi</Button>}
       </Form>

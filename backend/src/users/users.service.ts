@@ -68,6 +68,7 @@ export class UsersService {
       if (unlock && target.active) return tx.user.findUniqueOrThrow({ where: { id }, select: userSelect });
       if (target.updatedAt.toISOString() !== new Date(dto.expectedUpdatedAt).toISOString()) throw new ConflictException({ code: 'VERSION_CONFLICT', message: 'Tài khoản đã thay đổi. Hãy tải lại' });
       const roleCode = 'roleCode' in dto ? dto.roleCode : undefined;
+      if (roleCode && !isBranchWebRole(roleCode)) throw new BadRequestException('Vai trò quản lý không còn được hỗ trợ');
       if (roleCode && (!('branchIds' in dto) || !dto.branchIds)) throw new BadRequestException('Cần chọn chi nhánh khi gán vai trò');
       if ('branchIds' in dto && dto.branchIds) {
         if (dto.branchIds.length !== 1) throw new BadRequestException('Tài khoản chỉ được gán một chi nhánh');
@@ -89,7 +90,7 @@ export class UsersService {
       }
       const user = await tx.user.update({ where: { id }, data: { updatedAt: new Date(Math.max(Date.now(), target.updatedAt.getTime() + 1)), ...(unlock ? { active: true } : { ...('fullName' in dto ? { fullName: dto.fullName } : {}) }) }, select: userSelect });
       if (!unlock) await tx.authSession.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });
-      await tx.auditLog.create({ data: { entityType: 'User', entityId: id, action: unlock ? 'ACCOUNT_UNLOCKED' : 'ACCOUNT_UPDATED', performedBy: actorId, actorUserId: actorId, changeSummary: { fields: Object.keys(dto).filter(key => key !== 'expectedUpdatedAt') } } });
+      await tx.auditLog.create({ data: { entityType: 'User', entityId: id, action: unlock ? 'ACCOUNT_UNLOCKED' : 'ACCOUNT_UPDATED', performedBy: actorId, actorUserId: actorId, changeSummary: { fields: Object.keys(dto).filter(key => key !== 'expectedUpdatedAt'), ...(roleCode || ('branchIds' in dto && dto.branchIds) ? { previousScopes: target.roleScopes.filter(scope => scope.active).map(scope => ({ roleCode: scope.role.code, scopeType: scope.scopeType, branchId: scope.branchId })), nextRoleCode: roleCode ?? null, nextBranchIds: 'branchIds' in dto ? dto.branchIds ?? [] : [] } : {}) } } });
       return user;
     });
     if (!unlock) this.events.disconnectUser(id);
@@ -97,6 +98,7 @@ export class UsersService {
   }
 
   async create(dto: CreateUserDto, actorId: string, idempotencyKey: string) {
+    if (dto.roleCode !== 'DRIVER' && !isBranchWebRole(dto.roleCode)) throw new BadRequestException('Vai trò quản lý không còn được hỗ trợ');
     if (dto.branchIds.length !== 1) throw new BadRequestException('Tài khoản chỉ được gán một chi nhánh');
     if (!/^[a-zA-Z0-9_-]{16,100}$/.test(idempotencyKey)) throw new BadRequestException({ code: 'IDEMPOTENCY_KEY_REQUIRED', message: 'Cần Idempotency-Key từ 16 đến 100 ký tự' });
     if ((dto.roleCode === 'DRIVER') !== !!dto.driverId) throw new BadRequestException({ code: 'DRIVER_LINK_REQUIRED', field: 'driverId', message: 'Tài khoản DRIVER phải chọn hồ sơ tài xế; DISPATCHER không được liên kết tài xế' });
@@ -157,8 +159,8 @@ export class UsersService {
       const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM users WHERE id = ${id} FOR UPDATE`;
       if (!rows.length) throw new NotFoundException({ code: 'USER_NOT_FOUND', message: 'Tài khoản không tồn tại' });
       const target = await tx.user.findUniqueOrThrow({ where: { id }, select: { active: true, updatedAt: true, role: true, roleScopes: { select: { role: { select: { code: true } } } } } });
-      if (target.role === 'ADMIN' || target.roleScopes.some(scope => scope.role.code === 'ADMIN') || !['DRIVER', 'DISPATCHER'].includes(target.role)) {
-        throw new ForbiddenException({ code: 'ACCOUNT_TARGET_DENIED', message: 'Chỉ được khóa tài khoản DRIVER hoặc DISPATCHER; không được khóa ADMIN' });
+      if (target.role === 'ADMIN' || target.roleScopes.some(scope => scope.role.code === 'ADMIN') || !(['DRIVER', 'DISPATCHER'].includes(target.role) || (target.role === 'STAFF' && target.roleScopes.some(scope => isBranchWebRole(scope.role.code) || scope.role.code === 'ORDER_SCHEDULER')))) {
+        throw new ForbiddenException({ code: 'ACCOUNT_TARGET_DENIED', message: 'Chỉ được khóa tài khoản tài xế hoặc vận hành chi nhánh; không được khóa ADMIN' });
       }
       if (target.active && target.updatedAt.toISOString() !== new Date(expectedUpdatedAt).toISOString()) throw new ConflictException({ code: 'VERSION_CONFLICT', message: 'Tài khoản đã thay đổi. Hãy tải lại' });
       const user = target.active ? await tx.user.update({ where: { id }, data: { active: false, updatedAt: new Date(Math.max(Date.now(), target.updatedAt.getTime() + 1)) }, select: userSelect }) : await tx.user.findUniqueOrThrow({ where: { id }, select: userSelect });

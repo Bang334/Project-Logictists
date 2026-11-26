@@ -1,0 +1,9 @@
+{
+  "jobId": "4485711a-72a5-4a97-b48a-3be3ad334533",
+  "status": "TIMEOUT",
+  "attemptCount": 1,
+  "errorCode": "OPTIMIZER_HTTP_TIMEOUT",
+  "errorMessage": "timeout of 210000ms exceeded",
+  "candidates": 0,
+  "completedAt": "2026-11-18T15:19:37.163Z"
+}

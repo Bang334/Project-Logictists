@@ -1,0 +1,531 @@
+{
+  "run_mode": "production candidates endpoint with DemoStackingPolicy(max_tiers=3,lift_clearance_cm=5)",
+  "case_count": 19,
+  "results": [
+    {
+      "file": "db_danang_30_orders.json",
+      "http_status": 200,
+      "solver_run_count": 2,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 2/2 nghiệm Hybrid có tuyến; độ phức tạp 46.2, ngân sách tổng 66 giây, 33 giây/seed.",
+        "Đã tìm thấy 2 lượt giao đủ 100% đơn, trong đó có 2 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 1)",
+          "status": "SUCCESS",
+          "served": 30,
+          "orders": 30,
+          "routes": 13,
+          "cost_vnd": 32762033,
+          "distance_km": 4081.13,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        },
+        {
+          "rank": 2,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 30,
+          "orders": 30,
+          "routes": 14,
+          "cost_vnd": 34034007,
+          "distance_km": 4164.06,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 359.92
+    },
+    {
+      "file": "db_hanoi_16_orders.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 0/2 nghiệm Hybrid có tuyến; độ phức tạp 62.15, ngân sách tổng 86 giây, 43 giây/seed.",
+        "Hybrid không trả được tuyến; đã chạy đúng 1 lượt OR-Tools fallback.",
+        "Có 2 lượt Hybrid gặp lỗi: Packing-aware Hybrid ALNS (seed 0): A process in the process pool was terminated abruptly while the future was running or pending.; Packing-aware Hybrid ALNS (seed 1): A process in the process pool was terminated abruptly while the future was running or pending.",
+        "Cảnh báo: Không có lượt tìm kiếm nào giao đủ 100% đơn. Hiển thị 1 phương án khả thi có tỷ lệ phục vụ cao nhất để hỗ trợ điều phối."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Chèn rẻ nhất song song + Guided Local Search",
+          "status": "PARTIAL",
+          "served": 3,
+          "orders": 16,
+          "routes": 1,
+          "cost_vnd": 999864,
+          "distance_km": 63.93,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 41.083
+    },
+    {
+      "file": "db_nhatrang_2_orders.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Vét cạn đã thay thế multi-start OR-Tools cho bài toán 2 đơn, ngân sách chung 12 giây.",
+        "Đã loại sớm 0 khung xe-ngày không thể tự phục vụ bất kỳ đơn nào.",
+        "Vét cạn chạm giới hạn thời gian hoặc giới hạn tìm bố trí; kết quả chỉ là nghiệm tốt nhất đã tìm thấy.",
+        "Đã kiểm tra 56 chuỗi pickup–delivery và 77 phân công giao đủ đơn.",
+        "Mọi tuyến trả về đều đã qua validator tải, time window và xếp/dỡ hình học động.",
+        "Tầng routing đã duyệt hết các chuỗi pickup–delivery và khung xe-ngày đủ điều kiện.",
+        "Một số chuỗi bị chạm giới hạn tìm bố trí; không dùng chúng để kết luận bất khả thi."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Vét cạn tuyến nhỏ",
+          "status": "SUCCESS",
+          "served": 2,
+          "orders": 2,
+          "routes": 1,
+          "cost_vnd": 535487,
+          "distance_km": 22.13,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        },
+        {
+          "rank": 2,
+          "strategy": "Vét cạn tuyến nhỏ",
+          "status": "SUCCESS",
+          "served": 2,
+          "orders": 2,
+          "routes": 1,
+          "cost_vnd": 535487,
+          "distance_km": 22.13,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        },
+        {
+          "rank": 3,
+          "strategy": "Vét cạn tuyến nhỏ",
+          "status": "SUCCESS",
+          "served": 2,
+          "orders": 2,
+          "routes": 1,
+          "cost_vnd": 535487,
+          "distance_km": 22.13,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 5.459
+    },
+    {
+      "file": "db_songthan_4_orders.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 20.05, ngân sách tổng 32 giây, 32 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 4,
+          "orders": 4,
+          "routes": 1,
+          "cost_vnd": 1460120,
+          "distance_km": 56.35,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 33.089
+    },
+    {
+      "file": "novel_1_mekong_hub_spoke.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 27.8, ngân sách tổng 30 giây, 30 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 15,
+          "orders": 15,
+          "routes": 2,
+          "cost_vnd": 4973305,
+          "distance_km": 665.81,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 29.088
+    },
+    {
+      "file": "novel_2_long_narrow_timber.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 22.75, ngân sách tổng 30 giây, 30 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 12,
+          "orders": 12,
+          "routes": 1,
+          "cost_vnd": 1885001,
+          "distance_km": 210.26,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 30.211
+    },
+    {
+      "file": "novel_3_three_shift_relay.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 30.15, ngân sách tổng 30 giây, 30 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 18,
+          "orders": 18,
+          "routes": 1,
+          "cost_vnd": 1839789,
+          "distance_km": 178.92,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 28.343
+    },
+    {
+      "file": "novel_4_3tier_asymmetric_fleet.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 29.35, ngân sách tổng 30 giây, 30 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 16,
+          "orders": 16,
+          "routes": 2,
+          "cost_vnd": 2963210,
+          "distance_km": 452.36,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 28.016
+    },
+    {
+      "file": "novel_5_rolling_3day_horizon.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 26.7, ngân sách tổng 30 giây, 30 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 18,
+          "orders": 18,
+          "routes": 1,
+          "cost_vnd": 2464695,
+          "distance_km": 263.57,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 28.555
+    },
+    {
+      "file": "scenario_1_multi_item.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 41.6, ngân sách tổng 15 giây, 15 giây/seed.",
+        "Cảnh báo: Không có lượt tìm kiếm nào giao đủ 100% đơn. Hiển thị 1 phương án khả thi có tỷ lệ phục vụ cao nhất để hỗ trợ điều phối."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 10,
+          "orders": 10,
+          "routes": 2,
+          "cost_vnd": 3107321,
+          "distance_km": 338.2,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 18.232
+    },
+    {
+      "file": "scenario_2_heavy_cargo.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 23.45, ngân sách tổng 15 giây, 15 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 12,
+          "orders": 12,
+          "routes": 2,
+          "cost_vnd": 4016956,
+          "distance_km": 412.73,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 13.035
+    },
+    {
+      "file": "scenario_3_dispersed.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 28.2, ngân sách tổng 15 giây, 15 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 14,
+          "orders": 14,
+          "routes": 3,
+          "cost_vnd": 9116344,
+          "distance_km": 1066.91,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 15.649
+    },
+    {
+      "file": "scenario_4_tight_windows.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 34.65, ngân sách tổng 15 giây, 15 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 18,
+          "orders": 18,
+          "routes": 2,
+          "cost_vnd": 1923991,
+          "distance_km": 157.25,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 15.176
+    },
+    {
+      "file": "scenario_5_heterogeneous_fleet.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 40.0, ngân sách tổng 15 giây, 15 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 20,
+          "orders": 20,
+          "routes": 3,
+          "cost_vnd": 5076686,
+          "distance_km": 520.59,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 14.738
+    },
+    {
+      "file": "scenario_6_dynamic_reuse.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 24.7, ngân sách tổng 15 giây, 15 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 14,
+          "orders": 14,
+          "routes": 1,
+          "cost_vnd": 1693719,
+          "distance_km": 143.14,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 13.047
+    },
+    {
+      "file": "scenario_7_multi_depot_overnight.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 37.2, ngân sách tổng 15 giây, 15 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 18,
+          "orders": 18,
+          "routes": 3,
+          "cost_vnd": 11835246,
+          "distance_km": 1236.94,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 15.249
+    },
+    {
+      "file": "scenario_8_dense_fragmentation.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 42.25, ngân sách tổng 15 giây, 15 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 16,
+          "orders": 16,
+          "routes": 2,
+          "cost_vnd": 4049815,
+          "distance_km": 410.83,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 14.259
+    },
+    {
+      "file": "scenario_stack_cost_comparison.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Hybrid-first: đã nhận 1/1 nghiệm Hybrid có tuyến; độ phức tạp 4.1, ngân sách tổng 6 giây, 6 giây/seed.",
+        "Đã tìm thấy 1 lượt giao đủ 100% đơn, trong đó có 1 phương án có lộ trình khác biệt."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Packing-aware Hybrid ALNS (seed 0)",
+          "status": "SUCCESS",
+          "served": 1,
+          "orders": 1,
+          "routes": 1,
+          "cost_vnd": 246000,
+          "distance_km": 29.0,
+          "spatial_valid": true,
+          "stacked_items_observed": 2,
+          "max_z_cm": 50.0
+        }
+      ],
+      "elapsed_seconds": 4.621
+    },
+    {
+      "file": "scenario_stack_customer_modes.json",
+      "http_status": 200,
+      "solver_run_count": 1,
+      "diagnostics": [
+        "Vét cạn đã thay thế multi-start OR-Tools cho bài toán 2 đơn, ngân sách chung 3 giây.",
+        "Đã loại sớm 0 khung xe-ngày không thể tự phục vụ bất kỳ đơn nào.",
+        "Vét cạn đã duyệt hết không gian tuyến nhỏ trong mô hình; phương án hạng 1 là tối ưu trong không gian đã mô hình hóa.",
+        "Đã kiểm tra 8 chuỗi pickup–delivery và 1 phân công giao đủ đơn.",
+        "Mọi tuyến trả về đều đã qua validator tải, time window và xếp/dỡ hình học động.",
+        "Tầng routing đã duyệt hết các chuỗi pickup–delivery và khung xe-ngày đủ điều kiện."
+      ],
+      "candidates": [
+        {
+          "rank": 1,
+          "strategy": "Vét cạn tuyến nhỏ",
+          "status": "SUCCESS",
+          "served": 2,
+          "orders": 2,
+          "routes": 1,
+          "cost_vnd": 246000,
+          "distance_km": 29.0,
+          "spatial_valid": true,
+          "stacked_items_observed": 0,
+          "max_z_cm": 0.0
+        }
+      ],
+      "elapsed_seconds": 0.044
+    }
+  ]
+}

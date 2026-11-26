@@ -6,10 +6,11 @@ export const PERMISSIONS = [
   'drivers.read', 'drivers.manage', 'customers.read', 'customers.write', 'customers.manage', 'orders.read',
   'orders.write', 'trips.read', 'trips.plan', 'trips.approve', 'trips.publish',
   'users.read', 'users.create', 'users.lock',
+  'settings.read', 'settings.manage',
 ] as const;
 export const DRIVER_PERMISSIONS = ['driver.profile.read', 'driver.assignments.read', 'driver.assignments.respond', 'driver.trips.execute'] as const;
-export const BRANCH_WEB_ROLES = ['BRANCH_DISPATCH_LEAD', 'RESOURCE_MANAGER', 'TRANSPORT_DISPATCHER', 'ORDER_SCHEDULER'] as const;
-export function isBranchWebRole(role: string): boolean {
+export const BRANCH_WEB_ROLES = ['BRANCH_DISPATCH_LEAD', 'RESOURCE_MANAGER', 'TRANSPORT_DISPATCHER'] as const;
+export function isBranchWebRole(role: string): role is typeof BRANCH_WEB_ROLES[number] {
   return BRANCH_WEB_ROLES.some(code => code === role);
 }
 export type PermissionCode = typeof PERMISSIONS[number] | typeof DRIVER_PERMISSIONS[number];
@@ -39,19 +40,23 @@ export interface AuthRequest {
   user: Principal;
   headers: Record<string, string | string[] | undefined>;
 }
+// Database grants can remove capabilities. They cannot exceed the approved role policy.
+export const BRANCH_ROLE_PERMISSIONS: Record<typeof BRANCH_WEB_ROLES[number], readonly PermissionCode[]> = {
+  BRANCH_DISPATCH_LEAD: ['branches.read', 'vehicles.read', 'drivers.read', 'customers.read', 'orders.read', 'trips.read', 'trips.plan', 'trips.approve', 'settings.read'],
+  RESOURCE_MANAGER: ['branches.read', 'vehicles.read', 'vehicles.manage', 'drivers.read', 'drivers.manage', 'trips.read'],
+  TRANSPORT_DISPATCHER: ['branches.read', 'vehicles.read', 'drivers.read', 'customers.read', 'orders.read', 'orders.write', 'trips.read', 'trips.publish'],
+};
+export function grantAllows(grant: AccessGrant, permission: string): boolean {
+  if (!grant.permissions.includes(permission)) return false;
+  if (grant.role === 'ADMIN') return grant.scopeType === 'COMPANY' && grant.branchId === null && !permission.startsWith('driver.') && permission !== 'trips.approve' && permission !== 'trips.publish';
+  if (grant.role === 'DRIVER') return grant.scopeType === 'BRANCH' && !!grant.branchId && DRIVER_PERMISSIONS.some(code => code === permission);
+  return isBranchWebRole(grant.role) && grant.scopeType === 'BRANCH' && !!grant.branchId &&
+    BRANCH_ROLE_PERMISSIONS[grant.role].some(code => code === permission);
+}
 export function hasPermission(user: Principal, permission: PermissionCode, branchId?: string | null): boolean {
-  if ((permission === 'trips.approve' || permission === 'trips.publish') && branchId && user.selectedBranchId && branchId !== user.selectedBranchId) return false;
-  if (permission.startsWith('driver.')) return user.grants.some(g => g.role === 'DRIVER' && g.scopeType === 'BRANCH' && !!g.branchId && (!branchId || g.branchId === branchId) && g.permissions.includes(permission));
-  // Account administration is a closed capability, even if a dispatcher is accidentally granted it.
-  // Grants are loaded from PostgreSQL on every request; usernames confer no authority.
-  if (permission.startsWith('users.')) return user.grants.some(g =>
-    g.role === 'ADMIN' && g.scopeType === 'COMPANY' && g.branchId === null && g.permissions.includes(permission));
-  return user.grants.some(g => g.permissions.includes(permission) && (
-    (g.role === 'ADMIN' && permission !== 'trips.approve' && permission !== 'trips.publish' && g.scopeType === 'COMPANY' && g.branchId === null) ||
-    (isBranchWebRole(g.role) && g.scopeType === 'BRANCH' && !!g.branchId && (!branchId || g.branchId === branchId) &&
-      (permission !== 'trips.approve' || g.role === 'BRANCH_DISPATCH_LEAD') &&
-      (permission !== 'trips.publish' || g.role === 'TRANSPORT_DISPATCHER'))
-  ));
+  if (branchId && user.selectedBranchId && branchId !== user.selectedBranchId) return false;
+  return user.grants.some(g => grantAllows(g, permission) &&
+    (g.scopeType === 'COMPANY' || (!branchId || g.branchId === branchId)));
 }
 export function assertPermission(user: Principal, permission: PermissionCode, branchId?: string | null) {
   if (!hasPermission(user, permission, branchId)) {

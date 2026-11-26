@@ -46,3 +46,18 @@ def test_percentage_penalty_uses_order_value():
         delivery_time_sec=3 * 86_400,
         policy=_policy("PERCENT_ORDER_VALUE_PER_DAY", 1.5),
     ) == 30_000
+
+
+def test_old_order_keeps_elapsed_waiting_time_across_planning_days():
+    order = _order()
+    order.ordered_at_sec = -4 * 86_400
+    policy = _policy('FIXED_PER_DAY', 120_000)
+    assert calculate_late_delivery_penalty(order, 0, policy) == 240_000
+    assert calculate_late_delivery_penalty(order, 12 * 3600, policy) == 300_000
+    assert calculate_late_delivery_penalty(order, 86_400, policy) == 360_000
+
+
+def test_disabled_financial_penalty_does_not_charge_an_old_order():
+    order = _order()
+    order.ordered_at_sec = -4 * 86_400
+    assert calculate_late_delivery_penalty(order, 86_400, _policy('NONE', 120_000)) == 0

@@ -1,50 +1,30 @@
-import { ForbiddenException } from '@nestjs/common';
-import { Role } from '@prisma/client';
-import { PrismaService } from '../../src/prisma/prisma.service';
 import { LocationsService } from '../../src/locations/locations.service';
+import { PrismaService } from '../../src/prisma/prisma.service';
+import { Principal } from '../../src/auth/access';
 
-describe('LocationsService', () => {
-  const findMany = jest.fn();
-  const service = new LocationsService({ location: { findMany } } as unknown as PrismaService);
-
-  beforeEach(() => {
-    findMany.mockReset().mockResolvedValue([]);
+describe('LocationsService live branch grants', () => {
+  const db = { location: { findMany: jest.fn().mockResolvedValue([]) } };
+  const service = new LocationsService(db as unknown as PrismaService);
+  const principal = (grants: Principal['grants'], overrides: Partial<Principal> = {}): Principal => ({ id: 'user', username: 'user', fullName: 'User', sessionId: 'session', grants, ...overrides });
+  beforeEach(() => jest.clearAllMocks());
+  it('uses COMPANY ADMIN grant rather than account type or username', async () => {
+    await service.findMapLocations(principal([{ role: 'ADMIN', scopeType: 'COMPANY', branchId: null, permissions: ['branches.read'] }]));
+    expect(db.location.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { active: true } }));
+    await expect(service.findMapLocations(principal([], { role: 'ADMIN' }))).rejects.toThrow();
   });
-
-  it('cho phép admin xem toàn bộ địa điểm đang hoạt động', async () => {
-    await service.findMapLocations({ id: 'admin', role: Role.ADMIN });
-
-    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { active: true },
-    }));
+  it.each(['DISPATCHER', 'STAFF'] as const)('uses operational branch grants for legacy account type %s', async role => {
+    const user = principal([{ role: 'TRANSPORT_DISPATCHER', scopeType: 'BRANCH', branchId: 'branch-a', permissions: ['branches.read'] }], { role, branchId: 'foreign', locationId: 'foreign-location' });
+    await service.findMapLocations(user);
+    expect(db.location.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { active: true, managingBranchId: { in: ['branch-a'] } } }));
+    expect(db.location.findMany).toHaveBeenCalledWith(expect.objectContaining({ select: expect.objectContaining({ latitude: true, longitude: true }) }));
+    db.location.findMany.mockClear();
+    await expect(service.findMapLocations({ ...user, selectedBranchId: 'branch-b' })).rejects.toThrow();
+    expect(db.location.findMany).not.toHaveBeenCalled();
   });
-
-  it('giới hạn dispatcher theo chi nhánh được gán', async () => {
-    await service.findMapLocations({
-      id: 'dispatcher',
-      role: Role.DISPATCHER,
-      branchId: 'branch-1',
-    });
-
-    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { active: true, managingBranchId: 'branch-1' },
-    }));
-  });
-
-  it('giới hạn staff theo địa điểm làm việc', async () => {
-    await service.findMapLocations({
-      id: 'staff',
-      role: Role.STAFF,
-      locationId: 'location-1',
-    });
-
-    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { active: true, id: 'location-1' },
-    }));
-  });
-
-  it('từ chối tài khoản vận hành chưa được gán phạm vi', async () => {
-    await expect(service.findMapLocations({ id: 'driver', role: Role.DRIVER }))
-      .rejects.toBeInstanceOf(ForbiddenException);
+  it('does not allow DRIVER or a retired role to obtain map locations using a legacy branch column', async () => {
+    for (const role of ['DRIVER', 'ORDER_SCHEDULER']) {
+      await expect(service.findMapLocations(principal([{ role, scopeType: 'BRANCH', branchId: 'branch-a', permissions: ['branches.read'] }], { branchId: 'branch-a' }))).rejects.toThrow();
+    }
+    expect(db.location.findMany).not.toHaveBeenCalled();
   });
 });

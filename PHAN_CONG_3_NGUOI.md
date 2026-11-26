@@ -1,5 +1,7 @@
 # PHÂN CÔNG XÂY DỰNG TMS — 3 NGƯỜI
 
+> **Cập nhật 22/11/2026 — Người 2:** triển khai phân quyền ba vai trò chi nhánh, tài khoản, scope và giao diện web ngoài điều phối. Theo xác nhận trực tiếp của người dùng, phần lịch hẹn/lập/duyệt/phát hành thuộc Người 1 được giữ để bàn giao phối hợp, không tự sửa. Xem [ma trận và ranh giới](docs/PHAN_QUYEN_BA_VAI_TRO.md).
+
 > **Cập nhật 03/11/2026 — Người 2:** triển khai web/backend quản trị DRIVER/DISPATCHER, đổi mật khẩu cá nhân và vòng đời chi nhánh theo chính sách đã chốt. [Bàn giao và kiểm chứng](docs/WEB_ADMIN.md#account-branch-admin). API đổi mật khẩu dùng chung đã có; UI/thiết bị app tài xế chưa thể tích hợp vì checkout không có mã nguồn mobile hiện hành. Không suy ra quyền deploy hoặc chạy migration trên database thật.
 
 > **Cập nhật 16/10/2026:** Theo yêu cầu người dùng, mã nguồn app mobile và API thực thi riêng của Người 3 đã được gỡ, gồm phần chưa commit. Nội dung mobile bên dưới là tài liệu lịch sử/yêu cầu, không mô tả chức năng hiện có. Schema và migration được giữ để bảo toàn lịch sử dữ liệu.
