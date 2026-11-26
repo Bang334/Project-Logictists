@@ -25,6 +25,9 @@ import {
   DemoCaseSummaryUI,
   DemoOptimizationResponseUI,
   RunDemoOptimizationPayloadUI,
+  LoadRestrictionZone,
+  CreateLoadRestrictionZonePayload,
+  UpdateLoadRestrictionZonePayload,
 } from '../types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000';
@@ -297,4 +300,17 @@ export const settingsApi = {
     }),
   getAuditLogs: (params?: { branchId?: string; page?: number; pageSize?: number }) =>
     apiClient.get<SettingAuditLogsResponse>('/settings/audit-logs', { params }),
+};
+
+export const zonesApi = {
+  list: (branchId?: string) =>
+    apiClient.get<LoadRestrictionZone[]>('/zones', {
+      params: branchId ? { branchId } : undefined,
+    }),
+  create: (data: CreateLoadRestrictionZonePayload) =>
+    apiClient.post<LoadRestrictionZone>('/zones', data),
+  update: (id: string, data: UpdateLoadRestrictionZonePayload) =>
+    apiClient.patch<LoadRestrictionZone>(`/zones/${id}`, data),
+  remove: (id: string) =>
+    apiClient.delete<{ deleted: boolean; id: string }>(`/zones/${id}`),
 };

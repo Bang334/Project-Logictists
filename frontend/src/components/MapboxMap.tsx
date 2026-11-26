@@ -8,6 +8,9 @@ import {
   RouteProfile,
 } from '../utils/geoSimulation';
 import { MapSimulationOverlay } from './MapSimulationOverlay';
+import type { LoadRestrictionZone } from '../types';
+
+const EMPTY_RESTRICTED_ZONES: LoadRestrictionZone[] = [];
 
 export interface MapMarker {
   id: string;
@@ -64,6 +67,7 @@ interface MapboxMapProps {
   onSimulationStop?: () => void;
   simulationControlsRef?: React.Ref<MapSimulationControls>;
   onSimulationPlayingChange?: (playing: boolean) => void;
+  restrictedZones?: LoadRestrictionZone[];
 }
 
 const TRUCK_SVG_HTML = `
@@ -177,6 +181,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   onSimulationStop,
   simulationControlsRef,
   onSimulationPlayingChange,
+  restrictedZones = EMPTY_RESTRICTED_ZONES,
 }) => {
   const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const mapContainer = useRef<HTMLDivElement>(null);
@@ -551,6 +556,44 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
             }
           : { type: 'FeatureCollection', features: [] };
 
+      // 0. Lớp vùng cấm tải theo giờ (hiển thị dưới các tuyến đường)
+      const activeZones = (restrictedZones || []).filter((z) => z.active && Array.isArray(z.polygon));
+      const zoneGeoJson = {
+        type: 'FeatureCollection',
+        features: activeZones.map((zone) => ({
+          type: 'Feature',
+          properties: { id: zone.id, name: zone.name, maxPayloadKg: zone.maxPayloadKg },
+          geometry: { type: 'Polygon', coordinates: zone.polygon },
+        })),
+      };
+      if (map.getSource('restricted-zones')) {
+        (map.getSource('restricted-zones') as mapboxgl.GeoJSONSource).setData(zoneGeoJson as any);
+      } else if (activeZones.length > 0) {
+        map.addSource('restricted-zones', {
+          type: 'geojson',
+          data: zoneGeoJson as any,
+        });
+        map.addLayer({
+          id: 'restricted-zones-fill',
+          type: 'fill',
+          source: 'restricted-zones',
+          paint: {
+            'fill-color': '#ef4444',
+            'fill-opacity': 0.12,
+          },
+        });
+        map.addLayer({
+          id: 'restricted-zones-outline',
+          type: 'line',
+          source: 'restricted-zones',
+          paint: {
+            'line-color': '#dc2626',
+            'line-width': 2,
+            'line-dasharray': [4, 3],
+          },
+        });
+      }
+
       // 1. Tuyến đường nền (Đoạn chưa chạy tới: màu xám nhạt nếu đang mô phỏng, hoặc màu xanh nếu tĩnh)
       if (map.getSource('route')) {
         (map.getSource('route') as mapboxgl.GeoJSONSource).setData(geojsonData as any);
@@ -683,6 +726,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     onMarkerClick,
     groupCoincidentStops,
     enableSimulation,
+    restrictedZones,
   ]);
 
   // Cập nhật vị trí xe và các đoạn đường theo tiến độ mô phỏng.

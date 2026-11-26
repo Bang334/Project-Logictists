@@ -3,6 +3,7 @@
 from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from ..models import advance_past_curfews
 from .cost_evaluator import calculate_route_cost
 from .models import (
     CargoItem,
@@ -171,11 +172,20 @@ def schedule_and_evaluate_route(
         if first.stop_type == "PICKUP"
         else first_order.delivery_window_start_sec
     )
-    # The vehicle may leave the depot just in time for the first window, but
-    # never before the production availability window starts.
+    first_curfews = (
+        first_order.pickup_curfew_windows
+        if first.stop_type == "PICKUP"
+        else first_order.delivery_curfew_windows
+    )
+    first_effective_start = advance_past_curfews(
+        float(first_window_start),
+        first_order.service_seconds(first.stop_type),
+        vehicle.payload_limit_kg,
+        first_curfews,
+    )
     current_time = max(
         float(vehicle.available_start_sec),
-        first_window_start - first_transit,
+        first_effective_start - first_transit,
     )
     previous_idx = depot_idx
     onboard_weight = 0.0
@@ -244,7 +254,17 @@ def schedule_and_evaluate_route(
             if order.split_group_id:
                 delivered_split_groups.add(order.split_group_id)
 
-        arrival = max(raw_arrival, float(window_start))
+        curfews = (
+            order.pickup_curfew_windows
+            if stop.stop_type == "PICKUP"
+            else order.delivery_curfew_windows
+        )
+        arrival = advance_past_curfews(
+            max(raw_arrival, float(window_start)),
+            order.service_seconds(stop.stop_type),
+            vehicle.payload_limit_kg,
+            curfews,
+        )
         if arrival > window_end + 0.01:
             return RouteEvaluation(
                 False,

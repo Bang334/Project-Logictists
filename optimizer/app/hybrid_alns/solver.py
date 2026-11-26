@@ -19,6 +19,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from ..models import advance_past_curfews
 from .models import (
     CostPolicy,
     DriverOption,
@@ -551,6 +552,16 @@ class HybridALNSSolver:
             if idx_s == 0:
                 curr_t = max(float(vehicle.available_start_sec), stop_win_starts[0] - tr)
             arr_s = max(curr_t + tr, stop_win_starts[idx_s])
+            s_order = self.order_by_id.get(current[idx_s].order_id or "")
+            if s_order is not None:
+                s_curfews = (
+                    s_order.pickup_curfew_windows
+                    if current[idx_s].stop_type == "PICKUP"
+                    else s_order.delivery_curfew_windows
+                )
+                arr_s = advance_past_curfews(
+                    arr_s, stop_svcs[idx_s], vehicle.payload_limit_kg, s_curfews
+                )
             if arr_s > stop_win_ends[idx_s] + 0.01:
                 break
             dep_s = int(round(arr_s)) + stop_svcs[idx_s]
@@ -642,6 +653,9 @@ class HybridALNSSolver:
             if t_prev_p < 0:
                 return False
             arr_p = max(float(prefix_dep[pickup_pos - 1]) + t_prev_p, p_win_start)
+        arr_p = advance_past_curfews(
+            arr_p, pickup_svc, vehicle.payload_limit_kg, order.pickup_curfew_windows
+        )
         if arr_p > p_win_end + 0.01:
             return False
         dep_p = int(round(arr_p)) + pickup_svc
@@ -654,6 +668,9 @@ class HybridALNSSolver:
             if t_pd < 0:
                 return False
             arr_d = max(float(dep_p) + t_pd, d_win_start)
+            arr_d = advance_past_curfews(
+                arr_d, delivery_svc, vehicle.payload_limit_kg, order.delivery_curfew_windows
+            )
             if arr_d > d_win_end + 0.01:
                 return False
             dep_d = int(round(arr_d)) + delivery_svc
@@ -677,6 +694,9 @@ class HybridALNSSolver:
             if t_pred_d < 0:
                 return False
             arr_d_lb = max(min_pred_dep + t_pred_d, d_win_start)
+            arr_d_lb = advance_past_curfews(
+                arr_d_lb, delivery_svc, vehicle.payload_limit_kg, order.delivery_curfew_windows
+            )
             if arr_d_lb > d_win_end + 0.01:
                 return False
             dep_d_lb = int(round(arr_d_lb)) + delivery_svc

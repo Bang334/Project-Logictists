@@ -197,6 +197,7 @@ model Branch {
   payrollPeriods                PayrollPeriod[]
   managedLocations              Location[]              @relation("ManagingBranchLocations")
   systemSetting                 SystemSetting?
+  loadRestrictionZones          LoadRestrictionZone[]
 }
 
 model Vehicle {
@@ -1785,4 +1786,21 @@ model SystemSetting {
   updatedAt                   DateTime                 @updatedAt @db.Timestamptz(3)
 
   @@map("system_settings")
+}
+
+model LoadRestrictionZone {
+  id            String   @id @default(uuid())
+  branchId      String
+  branch        Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  name          String
+  description   String?
+  active        Boolean  @default(true)
+  maxPayloadKg  Float
+  polygon       Json
+  curfewWindows Json
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([branchId, active])
+  @@map("load_restriction_zones")
 }

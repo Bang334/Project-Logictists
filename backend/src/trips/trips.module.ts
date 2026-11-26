@@ -5,6 +5,7 @@ import { TripsService } from './trips.service';
 import { TripsController } from './trips.controller';
 import { MapboxModule } from '../mapbox/mapbox.module';
 import { SettingsModule } from '../settings/settings.module';
+import { ZonesModule } from '../zones/zones.module';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { OptimizationJobsService, OPTIMIZATION_QUEUE } from './optimization-jobs.service';
@@ -33,6 +34,7 @@ function redisConnection(urlValue: string | undefined) {
   imports: [
     MapboxModule,
     SettingsModule,
+    ZonesModule,
     BullModule.registerQueueAsync({
       name: OPTIMIZATION_QUEUE,
       imports: [ConfigModule],

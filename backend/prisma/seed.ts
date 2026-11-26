@@ -608,8 +608,7 @@ async function main() {
       pickup: ['Kho linh kiện Đông Anh, Hà Nội', 21.1392, 105.8491],
       delivery: ['Cửa hàng Tràng Tiền, Hoàn Kiếm, Hà Nội', 21.0245, 105.8556],
       items: [
-        { sku: 'PCB-A', description: 'Thùng bo mạch điều khiển', packageType: 'CARTON', quantity: 8, weightKg: 240, lengthCm: 40, widthCm: 30, heightCm: 30 },
-        { sku: 'MOTOR-B', description: 'Kiện mô-tơ quạt', packageType: 'CRATE', quantity: 4, weightKg: 320, lengthCm: 60, widthCm: 40, heightCm: 45 },
+        { sku: 'PAL-MOTOR-HN1', description: 'Pallet cụm mô-tơ công nghiệp (đế nặng)', packageType: 'PALLET', quantity: 3, weightKg: 1740, lengthCm: 200, widthCm: 102, heightCm: 90 },
       ],
     },
     {
@@ -617,8 +616,7 @@ async function main() {
       pickup: ['Kho lạnh Gia Lâm, Hà Nội', 21.0498, 105.9412],
       delivery: ['Siêu thị Nguyễn Trãi, Thanh Xuân, Hà Nội', 20.9964, 105.8071],
       items: [
-        { sku: 'MILK-BOX', description: 'Thùng sữa hộp', packageType: 'CARTON', quantity: 12, weightKg: 300, lengthCm: 35, widthCm: 25, heightCm: 22 },
-        { sku: 'YOGURT-BOX', description: 'Thùng sữa chua', packageType: 'CARTON', quantity: 5, weightKg: 150, lengthCm: 50, widthCm: 40, heightCm: 25 },
+        { sku: 'PAL-MILK-BASE', description: 'Pallet sữa nước đóng lốc (đế nặng)', packageType: 'PALLET', quantity: 3, weightKg: 1740, lengthCm: 200, widthCm: 102, heightCm: 90 },
       ],
     },
     {
@@ -626,53 +624,51 @@ async function main() {
       pickup: ['Kho Ngọc Hồi, Thanh Trì, Hà Nội', 20.9349, 105.8428],
       delivery: ['Siêu thị Mỹ Đình, Nam Từ Liêm, Hà Nội', 21.0118, 105.7706],
       items: [
-        { sku: 'COOKER', description: 'Kiện nồi cơm điện', packageType: 'CARTON', quantity: 4, weightKg: 180, lengthCm: 70, widthCm: 50, heightCm: 55 },
-        { sku: 'PAN-SET', description: 'Thùng bộ nồi chảo', packageType: 'CARTON', quantity: 6, weightKg: 150, lengthCm: 45, widthCm: 35, heightCm: 30 },
+        { sku: 'STOVE-LONG', description: 'Kiện bếp từ đôi dài (đế rộng)', packageType: 'CRATE', quantity: 2, weightKg: 840, lengthCm: 198, widthCm: 92, heightCm: 92 },
+        { sku: 'COOKER', description: 'Thùng nồi cơm điện (tầng 2)', packageType: 'CARTON', quantity: 2, weightKg: 180, lengthCm: 188, widthCm: 88, heightCm: 82 },
       ],
     },
     {
       orderNumber: 'DEMO-HN-004', customerId: custPanasonic.id,
-      pickup: ['KCN Tiên Sơn, Bắc Ninh', 21.1214, 106.0114],
+      pickup: ['Kho linh kiện Đông Anh, Hà Nội', 21.1392, 105.8491],
       delivery: ['Kho Sài Đồng, Long Biên, Hà Nội', 21.0364, 105.9254],
       items: [
-        { sku: 'LAMP', description: 'Thùng đèn chiếu sáng', packageType: 'CARTON', quantity: 10, weightKg: 220, lengthCm: 40, widthCm: 30, heightCm: 35 },
-        { sku: 'FAN-PART', description: 'Kiện phụ tùng quạt', packageType: 'CRATE', quantity: 5, weightKg: 280, lengthCm: 60, widthCm: 45, heightCm: 40 },
+        { sku: 'INV-PALLET', description: 'Kiện biến tần công nghiệp (tầng 2)', packageType: 'CRATE', quantity: 2, weightKg: 340, lengthCm: 192, widthCm: 96, heightCm: 65 },
+        { sku: 'LAMP', description: 'Thùng đèn LED nhẹ (nhiều kiện tầng 3)', packageType: 'CARTON', quantity: 4, weightKg: 72, lengthCm: 90, widthCm: 90, heightCm: 44 },
       ],
     },
     {
       orderNumber: 'DEMO-HN-005', customerId: custVinamilk.id,
-      pickup: ['Kho Hà Đông, Hà Nội', 20.9714, 105.7788],
+      pickup: ['Kho Ngọc Hồi, Thanh Trì, Hà Nội', 20.9349, 105.8428],
       delivery: ['Điểm bán Xuân La, Tây Hồ, Hà Nội', 21.0692, 105.8029],
       items: [
-        { sku: 'JUICE', description: 'Thùng nước trái cây', packageType: 'CARTON', quantity: 8, weightKg: 240, lengthCm: 50, widthCm: 40, heightCm: 35 },
-        { sku: 'DISPLAY', description: 'Kiện kệ trưng bày', packageType: 'CRATE', quantity: 4, weightKg: 160, lengthCm: 80, widthCm: 50, heightCm: 60 },
+        { sku: 'DISPLAY-LONG', description: 'Kiện kệ trưng bày siêu thị (đế dài)', packageType: 'CRATE', quantity: 2, weightKg: 840, lengthCm: 198, widthCm: 92, heightCm: 92 },
+        { sku: 'JUICE', description: 'Thùng nước trái cây hộp (tầng 2)', packageType: 'CARTON', quantity: 4, weightKg: 200, lengthCm: 92, widthCm: 88, heightCm: 82 },
       ],
     },
     {
       orderNumber: 'DEMO-HN-006', customerId: custSunhouse.id,
-      pickup: ['Kho Đức Giang, Long Biên, Hà Nội', 21.0648, 105.9125],
+      pickup: ['Kho lạnh Gia Lâm, Hà Nội', 21.0498, 105.9412],
       delivery: ['Trung tâm điện máy Cầu Giấy, Hà Nội', 21.0368, 105.7908],
       items: [
-        { sku: 'KETTLE', description: 'Kiện ấm siêu tốc', packageType: 'CARTON', quantity: 6, weightKg: 180, lengthCm: 65, widthCm: 45, heightCm: 42 },
-        { sku: 'BLENDER', description: 'Thùng máy xay', packageType: 'CARTON', quantity: 6, weightKg: 150, lengthCm: 40, widthCm: 30, heightCm: 38 },
+        { sku: 'HOOD-CRATE', description: 'Kiện máy hút mùi (tầng 2)', packageType: 'CRATE', quantity: 2, weightKg: 340, lengthCm: 192, widthCm: 96, heightCm: 65 },
+        { sku: 'BLENDER', description: 'Thùng máy xay sinh tố nhẹ (nhiều kiện tầng 3)', packageType: 'CARTON', quantity: 4, weightKg: 72, lengthCm: 90, widthCm: 90, heightCm: 44 },
       ],
     },
     {
       orderNumber: 'DEMO-HN-007', customerId: custPanasonic.id,
-      pickup: ['KCN Thăng Long, Đông Anh, Hà Nội', 21.1363, 105.7818],
+      pickup: ['Kho linh kiện Đông Anh, Hà Nội', 21.1392, 105.8491],
       delivery: ['Kho Linh Đàm, Hoàng Mai, Hà Nội', 20.9649, 105.8268],
       items: [
-        { sku: 'AC-PALLET', description: 'Pallet linh kiện điều hòa', packageType: 'PALLET', quantity: 2, weightKg: 900, lengthCm: 120, widthCm: 80, heightCm: 120 },
-        { sku: 'CABLE', description: 'Kiện dây cáp', packageType: 'CRATE', quantity: 6, weightKg: 240, lengthCm: 60, widthCm: 40, heightCm: 35 },
+        { sku: 'AC-PALLET', description: 'Pallet cục nóng điều hòa (đế nặng)', packageType: 'PALLET', quantity: 3, weightKg: 1650, lengthCm: 195, widthCm: 100, heightCm: 88 },
       ],
     },
     {
       orderNumber: 'DEMO-HN-008', customerId: custSunhouse.id,
-      pickup: ['Kho Thạch Bàn, Long Biên, Hà Nội', 21.0207, 105.9298],
+      pickup: ['Kho lạnh Gia Lâm, Hà Nội', 21.0498, 105.9412],
       delivery: ['Điểm nhận Phạm Văn Đồng, Bắc Từ Liêm, Hà Nội', 21.0701, 105.7868],
       items: [
-        { sku: 'SMALL-APPLIANCE', description: 'Thùng gia dụng nhỏ', packageType: 'CARTON', quantity: 8, weightKg: 280, lengthCm: 45, widthCm: 35, heightCm: 38 },
-        { sku: 'RACK', description: 'Kiện giá kệ kim loại', packageType: 'CRATE', quantity: 3, weightKg: 360, lengthCm: 90, widthCm: 60, heightCm: 70 },
+        { sku: 'RACK', description: 'Kiện giá kệ thép lắp ghép (đế nặng)', packageType: 'CRATE', quantity: 3, weightKg: 1650, lengthCm: 195, widthCm: 100, heightCm: 88 },
       ],
     },
     {
@@ -680,7 +676,8 @@ async function main() {
       pickup: ['KCN Phố Nối A, Yên Mỹ, Hưng Yên', 20.9542, 106.0581],
       delivery: ['Trung tâm Phân phối Hải Phòng, Hồng Bàng, Hải Phòng', 20.862328, 106.679927],
       items: [
-        { sku: 'ELEC-PANEL', description: 'Tủ điện công nghiệp trung thế', packageType: 'CRATE', quantity: 2, weightKg: 500, lengthCm: 110, widthCm: 75, heightCm: 130 },
+        { sku: 'ELEC-PANEL', description: 'Tủ điện công nghiệp trung thế', packageType: 'CRATE', quantity: 2, weightKg: 960, lengthCm: 160, widthCm: 95, heightCm: 95 },
+        { sku: 'BREAKER-BOX', description: 'Thùng aptomat & thiết bị đóng cắt', packageType: 'CARTON', quantity: 4, weightKg: 160, lengthCm: 75, widthCm: 85, heightCm: 55 },
       ],
     },
     {
@@ -688,8 +685,8 @@ async function main() {
       pickup: ['KCN Khai Quang, TP. Vĩnh Yên, Vĩnh Phúc', 21.3092, 105.6124],
       delivery: ['Tổng kho Phủ Lý, Hà Nam', 20.5385, 105.9182],
       items: [
-        { sku: 'HEATER-BATCH', description: 'Lô bình nước nóng công nghiệp', packageType: 'CARTON', quantity: 4, weightKg: 360, lengthCm: 75, widthCm: 55, heightCm: 60 },
-        { sku: 'SOLAR-KIT', description: 'Bộ năng lượng mặt trời', packageType: 'CRATE', quantity: 2, weightKg: 220, lengthCm: 100, widthCm: 60, heightCm: 45 },
+        { sku: 'HEATER-BATCH', description: 'Lô bình nước nóng công nghiệp', packageType: 'CRATE', quantity: 3, weightKg: 780, lengthCm: 135, widthCm: 88, heightCm: 85 },
+        { sku: 'SOLAR-KIT', description: 'Bộ khung năng lượng mặt trời', packageType: 'CRATE', quantity: 2, weightKg: 180, lengthCm: 125, widthCm: 80, heightCm: 55 },
       ],
     },
     {
@@ -697,7 +694,35 @@ async function main() {
       pickup: ['KCN Quang Châu, Việt Yên, Bắc Giang', 21.2285, 106.0954],
       delivery: ['Trung tâm Phân phối Thường Tín, Hà Nội', 20.8712, 105.8624],
       items: [
-        { sku: 'MILK-POWDER', description: 'Pallet sữa bột lon xuất khẩu', packageType: 'PALLET', quantity: 2, weightKg: 640, lengthCm: 110, widthCm: 80, heightCm: 115 },
+        { sku: 'MILK-POWDER', description: 'Pallet sữa bột lon xuất khẩu', packageType: 'PALLET', quantity: 2, weightKg: 840, lengthCm: 150, widthCm: 95, heightCm: 88 },
+        { sku: 'CONDENSED-BOX', description: 'Thùng sữa đặc có đường', packageType: 'CARTON', quantity: 4, weightKg: 160, lengthCm: 70, widthCm: 85, heightCm: 55 },
+      ],
+    },
+    {
+      orderNumber: 'DEMO-HN-012', customerId: custVinamilk.id,
+      pickup: ['Kho lạnh Gia Lâm, Hà Nội', 21.0498, 105.9412],
+      delivery: ['Trung tâm Phân phối Vinamilk, 458 Minh Khai, Hai Bà Trưng, Hà Nội', 20.9992, 105.8669],
+      items: [
+        { sku: 'PAL-UHT-HN12', description: 'Pallet sữa tươi tiệt trùng (tầng 2)', packageType: 'PALLET', quantity: 2, weightKg: 340, lengthCm: 190, widthCm: 95, heightCm: 64 },
+        { sku: 'CHEESE-BOX', description: 'Thùng phô mai hộp nhẹ (nhiều kiện tầng 3)', packageType: 'CARTON', quantity: 4, weightKg: 72, lengthCm: 90, widthCm: 90, heightCm: 43 },
+      ],
+    },
+    {
+      orderNumber: 'DEMO-HN-013', customerId: custPanasonic.id,
+      pickup: ['Kho linh kiện Đông Anh, Hà Nội', 21.1392, 105.8491],
+      delivery: ['Trung tâm Dịch vụ Panasonic, 88 Trần Thái Tông, Dịch Vọng Hậu, Cầu Giấy, Hà Nội', 21.0319, 105.7885],
+      items: [
+        { sku: 'WASHER-BASE', description: 'Kiện máy giặt cửa ngang (tầng 2)', packageType: 'CRATE', quantity: 2, weightKg: 340, lengthCm: 190, widthCm: 95, heightCm: 64 },
+        { sku: 'IRON-TOP', description: 'Thùng bàn là hơi nước nhẹ (nhiều kiện tầng 3)', packageType: 'CARTON', quantity: 4, weightKg: 72, lengthCm: 90, widthCm: 90, heightCm: 43 },
+      ],
+    },
+    {
+      orderNumber: 'DEMO-HN-014', customerId: custSunhouse.id,
+      pickup: ['Kho lạnh Gia Lâm, Hà Nội', 21.0498, 105.9412],
+      delivery: ['Siêu thị MediaMart, 335 Phạm Văn Đồng, Bắc Từ Liêm, Hà Nội', 21.0645, 105.7848],
+      items: [
+        { sku: 'PURIFIER-BASE', description: 'Kiện máy lọc nước tủ đứng', packageType: 'CRATE', quantity: 2, weightKg: 720, lengthCm: 145, widthCm: 95, heightCm: 85 },
+        { sku: 'AIRFRYER-BOX', description: 'Thùng nồi chiên không dầu (tầng 2)', packageType: 'CARTON', quantity: 2, weightKg: 180, lengthCm: 135, widthCm: 88, heightCm: 64 },
       ],
     },
   ] as const;
@@ -711,7 +736,13 @@ async function main() {
     const totalPackages = demo.items.reduce((sum, item) => sum + item.quantity, 0);
     const demoOrder = await prisma.order.upsert({
       where: { orderNumber: demo.orderNumber },
-      update: { branchId: branchHN.id },
+      update: {
+        branchId: branchHN.id,
+        customerId: demo.customerId,
+        totalWeightKg,
+        totalVolumeM3: Math.round(totalVolumeM3 * 1000) / 1000,
+        totalPackages,
+      },
       create: {
         orderNumber: demo.orderNumber,
         customerId: demo.customerId,
@@ -755,7 +786,65 @@ async function main() {
       },
     });
 
-    // Giữ nguyên ID stop hiện có nhưng đồng bộ lại dữ liệu demo khi địa chỉ/tọa độ được sửa.
+    // Đồng bộ lại items nếu đơn đang ở trạng thái CONFIRMED và chưa có allocation giữ hàng.
+    const existingAllocCount = await prisma.allocation.count({
+      where: { orderItem: { orderId: demoOrder.id } },
+    });
+    if (existingAllocCount === 0 && demoOrder.status === OrderStatus.CONFIRMED) {
+      await prisma.package.deleteMany({ where: { orderItem: { orderId: demoOrder.id } } });
+      await prisma.orderItem.deleteMany({ where: { orderId: demoOrder.id } });
+      for (const item of demo.items) {
+        const createdItem = await prisma.orderItem.create({
+          data: {
+            orderId: demoOrder.id,
+            ...item,
+            volumeM3:
+              (item.lengthCm * item.widthCm * item.heightCm * item.quantity) / 1_000_000,
+          },
+        });
+        const unitWeightG = Math.max(
+          1000,
+          Math.round((item.weightKg / item.quantity) * 1000),
+        );
+        const maxTopLoadG = Math.round(unitWeightG * 0.5);
+        await prisma.package.createMany({
+          data: Array.from({ length: item.quantity }, (_, qIdx) => ({
+            orderItemId: createdItem.id,
+            packageCode: `${demo.orderNumber}-${item.sku}-${qIdx + 1}`,
+            lengthMm: Math.round(item.lengthCm * 10),
+            widthMm: Math.round(item.widthCm * 10),
+            heightMm: Math.round(item.heightCm * 10),
+            weightG: BigInt(unitWeightG),
+            cargoKind: 'STANDARD',
+            allowUpperTier: true,
+            noTopLoadRequested: false,
+            maxTopLoadG,
+            measurementSource: 'SEED_DEMO',
+            status: 'READY',
+          })),
+        });
+      }
+    }
+
+    const orderNumIndex = Number(demo.orderNumber.split('-').pop() || '0');
+    const todayIctMidnight = new Date('2026-11-25T17:00:00.000Z');
+    let pStartH = 6;
+    let pEndH = 11.5;
+    let dStartH = 11.5;
+    let dEndH = 20;
+    if (orderNumIndex === 7 || orderNumIndex === 8 || orderNumIndex === 12 || orderNumIndex === 13) {
+      pStartH = 6; pEndH = 12.5; dStartH = 12.5; dEndH = 21;
+    } else if (orderNumIndex === 3 || orderNumIndex === 5) {
+      pStartH = 6; pEndH = 11; dStartH = 11; dEndH = 19;
+    } else if (orderNumIndex === 9 || orderNumIndex === 10 || orderNumIndex === 11 || orderNumIndex === 14) {
+      pStartH = 24 + 6; pEndH = 24 + 14; dStartH = 24 + 10; dEndH = 24 + 21;
+    }
+    const pickupStart = new Date(todayIctMidnight.getTime() + pStartH * 3600 * 1000);
+    const pickupEnd = new Date(todayIctMidnight.getTime() + pEndH * 3600 * 1000);
+    const deliveryStart = new Date(todayIctMidnight.getTime() + dStartH * 3600 * 1000);
+    const deliveryEnd = new Date(todayIctMidnight.getTime() + dEndH * 3600 * 1000);
+
+    // Giữ nguyên ID stop hiện có nhưng đồng bộ lại dữ liệu demo khi địa chỉ/tọa độ/khung giờ được sửa.
     await Promise.all([
       prisma.orderStop.updateMany({
         where: { orderId: demoOrder.id, type: StopType.PICKUP },
@@ -763,6 +852,9 @@ async function main() {
           address: demo.pickup[0],
           latitude: demo.pickup[1],
           longitude: demo.pickup[2],
+          windowStart: pickupStart,
+          windowEnd: pickupEnd,
+          serviceDurationMinutes: 10,
         },
       }),
       prisma.orderStop.updateMany({
@@ -771,6 +863,9 @@ async function main() {
           address: demo.delivery[0],
           latitude: demo.delivery[1],
           longitude: demo.delivery[2],
+          windowStart: deliveryStart,
+          windowEnd: deliveryEnd,
+          serviceDurationMinutes: 10,
         },
       }),
     ]);

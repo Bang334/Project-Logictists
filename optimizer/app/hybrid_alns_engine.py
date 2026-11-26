@@ -43,6 +43,7 @@ from .hybrid_alns.stop_moves import (
 from .models import (
     FleetOptimizationRequest,
     FleetOptimizationResponse,
+    advance_past_curfews,
     UnassignedOrder,
     OrderPair,
     OptimizedRoute,
@@ -201,13 +202,25 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 if is_pickup
                 else order.delivery_window_end_sec
             )
+            svc = order.service_seconds(stop.stop_type)
+            curfews = (
+                order.pickup_curfew_windows
+                if is_pickup
+                else order.delivery_curfew_windows
+            )
             if current_time < window_start:
                 current_time = float(window_start)
+            current_time = advance_past_curfews(
+                current_time,
+                svc,
+                vehicle.payload_limit_kg,
+                curfews,
+            )
             if current_time > window_end or current_time > avail_end:
                 return False
 
             arrival = round(current_time)
-            departure = arrival + order.service_seconds(stop.stop_type)
+            departure = arrival + svc
             if departure > avail_end:
                 return False
             current_time = float(departure)
@@ -256,8 +269,20 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 if is_pickup
                 else order.delivery_window_end_sec
             )
+            service_duration = order.service_seconds(stop.stop_type)
+            curfews = (
+                order.pickup_curfew_windows
+                if is_pickup
+                else order.delivery_curfew_windows
+            )
             if current_time < window_start:
                 current_time = float(window_start)
+            current_time = advance_past_curfews(
+                current_time,
+                service_duration,
+                vehicle.payload_limit_kg,
+                curfews,
+            )
             if current_time > window_end or current_time > avail_end:
                 return None
 
@@ -265,7 +290,6 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             leg_elapsed_seconds = max(0, arrival - round(leg_start))
             travel_seconds = min(leg_elapsed_seconds, max(0, round(travel_time)))
             waiting_seconds = leg_elapsed_seconds - travel_seconds
-            service_duration = order.service_seconds(stop.stop_type)
             departure = arrival + service_duration
             if departure > avail_end:
                 return None
@@ -4182,6 +4206,8 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                         if order.delivery_service_time_sec is not None
                         else None
                     ),
+                    pickup_curfew_windows=list(order.pickup_curfew_windows),
+                    delivery_curfew_windows=list(order.delivery_curfew_windows),
                 )
             )
             node_id_to_index[pickup_key] = len(self.vehicles) + 2 * order_index

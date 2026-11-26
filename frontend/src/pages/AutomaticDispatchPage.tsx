@@ -55,7 +55,7 @@ import {
   ExperimentOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
-import { branchesApi, driversApi, mapboxApi, ordersApi, settingsApi, tripsApi, vehiclesApi } from '../api/client';
+import { branchesApi, driversApi, mapboxApi, ordersApi, settingsApi, tripsApi, vehiclesApi, zonesApi } from '../api/client';
 import { getRealtimeSocket } from '../api/realtime';
 import MapboxMap, { MAP_ROUTE_COLORS, MapMarker, type MapSimulationControls, type SimulationPositionSource } from '../components/MapboxMap';
 import FloorPackingVisualizer from '../components/FloorPackingVisualizer';
@@ -164,6 +164,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   const [pageMode, setPageMode] = useState<'BRANCH' | 'DEMO'>('BRANCH');
   const [selectedDemoCaseId, setSelectedDemoCaseId] = useState<string>(demoCases[0].id);
   const [effectiveSettings, setEffectiveSettings] = useState<EffectiveSettings | null>(null);
+  const [restrictedZones, setRestrictedZones] = useState<import('../types').LoadRestrictionZone[]>([]);
   const [demoCandidatesMap, setDemoCandidatesMap] = useState<Record<number, FleetOptimizationResultUI> | null>(null);
   const [runningDemo, setRunningDemo] = useState<boolean>(false);
   const [customDemoJson, setCustomDemoJson] = useState<any | null>(null);
@@ -317,6 +318,25 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       })
       .catch(() => {
         if (active) setEffectiveSettings(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedBranchId, scopeVersion]);
+
+  useEffect(() => {
+    if (!selectedBranchId || !zonesApi?.list) {
+      setRestrictedZones([]);
+      return;
+    }
+    let active = true;
+    zonesApi
+      .list(selectedBranchId)
+      .then((res) => {
+        if (active) setRestrictedZones((res.data || []).filter((z) => z.active));
+      })
+      .catch(() => {
+        if (active) setRestrictedZones([]);
       });
     return () => {
       active = false;
@@ -3552,6 +3572,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                   onMarkerClick={selectMapMarker}
                   groupCoincidentStops={Boolean(currentActiveRoute)}
                   completedStopSequence={showSimulation ? activeStepIndex : 0}
+                  restrictedZones={pageMode === 'BRANCH' ? restrictedZones : []}
                 />
               </Card>
             </Col>

@@ -29,6 +29,7 @@ import {
   SettingsGroupKey,
 } from '../types/settings';
 import { SettingsAuditLogCard } from '../components/settings/SettingsAuditLogCard';
+import { LoadRestrictionZonesCard } from '../components/settings/LoadRestrictionZonesCard';
 import {
   SettingsDraftState,
   SettingsGroupsForm,
@@ -520,6 +521,14 @@ const SettingsPage: React.FC = () => {
             }}
             onToggleOverride={handleToggleOverride}
           />
+
+          {selectedBranchId && selectedBranchId !== 'COMPANY' && (
+            <LoadRestrictionZonesCard
+              branchId={selectedBranchId}
+              branchName={branches.find((b) => b.id === selectedBranchId)?.name}
+              canManage={canManage}
+            />
+          )}
 
           <SettingsAuditLogCard
             items={auditItems}

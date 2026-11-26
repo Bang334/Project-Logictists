@@ -1,5 +1,5 @@
 from math import isfinite
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -255,6 +255,40 @@ class SpatialValidationResult(StrictContractModel):
     demo_stacking: Optional[DemoStackingPolicy] = None
 
 
+class CurfewWindow(StrictContractModel):
+    max_payload_kg: float = Field(gt=0)
+    start_sec: int = Field(ge=0)
+    end_sec: int = Field(gt=0)
+
+
+def advance_past_curfews(
+    arrival_sec: float,
+    service_sec: int,
+    vehicle_payload_kg: float,
+    curfews: Sequence[object],
+) -> float:
+    """Shift arrival past any curfew window overlapping [t, t + service_sec) for heavy vehicles."""
+    if not curfews:
+        return arrival_sec
+    t = arrival_sec
+    svc = max(0, int(service_sec))
+    changed = True
+    while changed:
+        changed = False
+        for cw in curfews:
+            if vehicle_payload_kg <= float(cw.max_payload_kg) + 1e-6:
+                continue
+            overlaps = (
+                (t < cw.end_sec and (t + svc) > cw.start_sec)
+                if svc > 0
+                else (cw.start_sec <= t < cw.end_sec)
+            )
+            if overlaps:
+                t = float(cw.end_sec)
+                changed = True
+    return t
+
+
 class OrderPair(StrictContractModel):
     ordered_at_sec: int = 0
     order_value_vnd: int = Field(default=0, ge=0)
@@ -275,6 +309,8 @@ class OrderPair(StrictContractModel):
     service_time_sec: int = Field(default=1200, ge=0)
     pickup_service_time_sec: Optional[int] = Field(default=None, ge=0)
     delivery_service_time_sec: Optional[int] = Field(default=None, ge=0)
+    pickup_curfew_windows: List[CurfewWindow] = Field(default_factory=list)
+    delivery_curfew_windows: List[CurfewWindow] = Field(default_factory=list)
     time_window_basis: Literal["SERVICE_START"] = "SERVICE_START"
     package_contract_version: Optional[Literal["1"]] = None
 

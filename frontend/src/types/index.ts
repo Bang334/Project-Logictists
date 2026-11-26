@@ -621,3 +621,35 @@ export interface DemoOptimizationResponseUI extends AutomaticOptimizationRespons
   isDemo?: boolean;
 }
 
+export interface CurfewWindowConfig {
+  startTime: string;
+  endTime: string;
+}
+
+export interface LoadRestrictionZone {
+  id: string;
+  branchId: string;
+  name: string;
+  description?: string | null;
+  active: boolean;
+  maxPayloadKg: number;
+  polygon: number[][][];
+  curfewWindows: CurfewWindowConfig[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateLoadRestrictionZonePayload {
+  branchId: string;
+  name: string;
+  description?: string;
+  active?: boolean;
+  maxPayloadKg: number;
+  polygon: number[][][];
+  curfewWindows: CurfewWindowConfig[];
+}
+
+export type UpdateLoadRestrictionZonePayload = Partial<
+  Omit<CreateLoadRestrictionZonePayload, 'branchId'>
+>;
+

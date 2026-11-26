@@ -35,6 +35,7 @@ from .models import (
     SpatialValidationResult,
     StopAction,
     UnassignedOrder,
+    advance_past_curfews,
     can_driver_drive_vehicle,
 )
 from .planning_objective import calendar_salary_for_span, operational_late_penalty_for_stops
@@ -295,7 +296,19 @@ class ALNSFleetOptimizer:
                 if stop.stop_type == "PICKUP"
                 else order.delivery_window_end_sec
             )
+            service_duration = order.service_seconds(stop.stop_type)
+            curfews = (
+                order.pickup_curfew_windows
+                if stop.stop_type == "PICKUP"
+                else order.delivery_curfew_windows
+            )
             current_time = max(current_time, float(window_start))
+            current_time = advance_past_curfews(
+                current_time,
+                service_duration,
+                vehicle.payload_limit_kg,
+                curfews,
+            )
             if current_time > window_end or current_time > vehicle.available_end_sec:
                 return None
 
@@ -310,7 +323,6 @@ class ALNSFleetOptimizer:
                 max(0, round(travel_time)),
             )
             waiting_seconds = leg_elapsed_seconds - travel_seconds
-            service_duration = order.service_seconds(stop.stop_type)
             departure = arrival + service_duration
             if departure > vehicle.available_end_sec:
                 return None

@@ -16,6 +16,7 @@ import { UsersModule } from './users/users.module';
 import { CommonModule } from './common/common.module';
 import { LocationsModule } from './locations/locations.module';
 import { SettingsModule } from './settings/settings.module';
+import { ZonesModule } from './zones/zones.module';
 
 @Module({
   imports: [
@@ -83,6 +84,7 @@ import { SettingsModule } from './settings/settings.module';
     UsersModule,
     BranchesModule,
     SettingsModule,
+    ZonesModule,
     VehiclesModule,
     DriversModule,
     CustomersModule,

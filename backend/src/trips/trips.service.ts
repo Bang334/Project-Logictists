@@ -3,6 +3,8 @@ import { isFloorRotationLocked } from '../orders/package-orientations';
 import { assertNoDeliveryOrderHold, assertNoDeliveryResourceHold, DeliveryWindowConstraint, resolveDeliveryWindowConstraints } from './delivery-planning.rules';
 import { Principal, tripFilter, requireBranch, assertPermission } from '../auth/access';
 import { ResourceAccess } from '../auth/resource-access.service';
+import { ZonesService } from '../zones/zones.service';
+import { expandZoneCurfewsRelativeToEpoch, ZoneCurfewRecord } from '../zones/geo.utils';
 import {
   BadRequestException,
   ConflictException,
@@ -174,6 +176,7 @@ export class TripsService {
     private access: ResourceAccess,
     @Optional() private settingsService?: SettingsService,
     @Optional() private jobControl?: OptimizationJobControlService,
+    @Optional() private zonesService?: ZonesService,
   ) {}
 
   private async resolveBranchStackingPolicy(
@@ -1463,9 +1466,16 @@ export class TripsService {
       orderedOrders.map(order => order.orderedAt),
       vehicle.homeBranch.timezone,
     );
+    const activeZones = this.zonesService
+      ? await this.zonesService.findActiveByBranch(vehicle.homeBranchId)
+      : [];
     const optimizerOrders = this.buildOptimizerOrders(
       orderedOrders,
       planningEpoch,
+      new Map(),
+      INITIAL_PLANNING_DAYS * 86400,
+      activeZones,
+      vehicle.homeBranch.timezone,
     );
     const matrixCoordinates: [number, number][] = [
       [planningStart.longitude, planningStart.latitude],
@@ -1763,7 +1773,17 @@ export class TripsService {
           ...latestChangeRequests.map((row) => ({ ...row, strict: false })),
         ],
       });
-      const optimizerOrders = this.buildOptimizerOrders(orders, planningEpoch, windowConstraints, horizonSeconds);
+      const activeZones = this.zonesService
+        ? await this.zonesService.findActiveByBranch(branchId)
+        : [];
+      const optimizerOrders = this.buildOptimizerOrders(
+        orders,
+        planningEpoch,
+        windowConstraints,
+        horizonSeconds,
+        activeZones,
+        branch.timezone,
+      );
       const snapshot = {
         vehicles: serviceDays.flatMap((day) =>
           baseVehicles.filter(vehicle => freeInDay(vehicle.source_vehicle_id, day, 'vehicleId')).slice(0, baseDrivers.filter(driver => freeInDay(driver.source_driver_id, day, 'driverId')).length).map((vehicle) => ({
@@ -3488,9 +3508,12 @@ export class TripsService {
     planningEpoch: Date,
     confirmedWindows = new Map<string, DeliveryWindowConstraint>(),
     horizonSeconds = INITIAL_PLANNING_DAYS * 86400,
+    restrictionZones: readonly ZoneCurfewRecord[] = [],
+    timeZone = 'Asia/Ho_Chi_Minh',
   ) {
     // A negative offset preserves the waiting time before this planning day.
     const orderedSeconds = (value: Date) => Math.floor((value.getTime() - planningEpoch.getTime()) / 1000);
+    const totalDays = Math.max(1, Math.ceil(horizonSeconds / 86400));
 
     return orders.map((order) => {
       assertDispatchableOrder(order);
@@ -3545,6 +3568,30 @@ export class TripsService {
         delivery_window_end_sec: deliveryEnd,
         pickup_service_time_sec: pickup.serviceDurationMinutes * 60,
         delivery_service_time_sec: delivery.serviceDurationMinutes * 60,
+        ...(restrictionZones.length > 0
+          ? (() => {
+              const pCurfews = expandZoneCurfewsRelativeToEpoch(
+                restrictionZones,
+                pickup.latitude,
+                pickup.longitude,
+                planningEpoch,
+                totalDays,
+                timeZone,
+              );
+              const dCurfews = expandZoneCurfewsRelativeToEpoch(
+                restrictionZones,
+                delivery.latitude,
+                delivery.longitude,
+                planningEpoch,
+                totalDays,
+                timeZone,
+              );
+              return {
+                ...(pCurfews.length > 0 ? { pickup_curfew_windows: pCurfews } : {}),
+                ...(dCurfews.length > 0 ? { delivery_curfew_windows: dCurfews } : {}),
+              };
+            })()
+          : {}),
         time_window_basis: 'SERVICE_START' as const,
         package_contract_version: '1' as const,
         ordered_at_sec: orderedSeconds(order.orderedAt),

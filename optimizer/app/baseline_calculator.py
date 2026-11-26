@@ -17,6 +17,7 @@ from .models import (
     ScheduledStop,
     SpatialValidationResult,
     StopAction,
+    advance_past_curfews,
     can_driver_drive_vehicle,
 )
 from .packing_rules import resolve_can_rotate
@@ -129,9 +130,16 @@ class BaselineCostCalculator:
             physical_arrival = current_time + travel_seconds
             if action.stop_type == "PICKUP":
                 window_start, window_end = order.pickup_window_start_sec, order.pickup_window_end_sec
+                curfews = order.pickup_curfew_windows
             else:
                 window_start, window_end = order.delivery_window_start_sec, order.delivery_window_end_sec
-            arrival = max(physical_arrival, window_start)
+                curfews = order.delivery_curfew_windows
+            arrival = advance_past_curfews(
+                max(physical_arrival, float(window_start)),
+                order.service_seconds(action.stop_type),
+                vehicle.payload_limit_kg,
+                curfews,
+            )
             if arrival > window_end:
                 violations.append(f"TIME_WINDOW:{order.order_number} vượt khung phục vụ tại điểm {action.stop_type}")
             if arrival > vehicle.available_end_sec:

@@ -49,6 +49,8 @@ class OrderPair:
     split_group_id: Optional[str] = None
     pickup_service_time_sec: Optional[int] = None
     delivery_service_time_sec: Optional[int] = None
+    pickup_curfew_windows: List[object] = field(default_factory=list)
+    delivery_curfew_windows: List[object] = field(default_factory=list)
 
     def service_seconds(self, stop_type: str) -> int:
         duration = (
