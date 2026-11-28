@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from .interprovincial import is_driver_compatible_with_vehicle, is_rest_policy_enabled
 from .models import (
     DriverOption,
     FleetOptimizationRequest,
@@ -33,6 +34,14 @@ class DriverMatcher:
         """Assigns the lowest-wage legal drivers to all optimized routes using Min-Cost Bipartite Matching."""
         if not routes or not self.request.drivers:
             return routes
+
+        rest_policy = getattr(self.request.policy, "driving_rest_policy", None)
+        min_inter_trip_rest = (
+            int(getattr(rest_policy, "min_inter_trip_rest_sec", 0) or 0)
+            if is_rest_policy_enabled(rest_policy)
+            else 0
+        )
+        driver_intervals_by_phys: Dict[str, List[Tuple[int, int]]] = {}
 
         # Group routes and drivers by service_day_index
         day_indices = sorted({r.service_day_index for r in routes})
@@ -59,10 +68,23 @@ class DriverMatcher:
                 veh = self.vehicle_by_id.get(route.route_id or route.vehicle_id)
                 veh_type = (veh.vehicle_type or veh.model or "") if veh else ""
                 payload = veh.payload_limit_kg if veh else 0.0
+                r_start = int(getattr(route, "start_time_sec", 0) or 0)
+                r_end = int(getattr(route, "end_time_sec", 0) or 0)
 
                 for d_idx, driver in enumerate(day_drivers):
-                    # Check legal license
-                    if not can_driver_drive_vehicle(driver.license_class, payload, veh_type):
+                    if veh is not None:
+                        if not is_driver_compatible_with_vehicle(driver, veh):
+                            continue
+                    elif not can_driver_drive_vehicle(driver.license_class, payload, veh_type):
+                        continue
+
+                    phys_drv = driver.source_driver_id or driver.id
+                    has_cross_day_conflict = any(
+                        r_start < p_end + min_inter_trip_rest
+                        and p_start < r_end + min_inter_trip_rest
+                        for p_start, p_end in driver_intervals_by_phys.get(phys_drv, ())
+                    )
+                    if has_cross_day_conflict:
                         continue
 
                     # Calculate total wage for this route
@@ -87,6 +109,13 @@ class DriverMatcher:
             for r_i, d_j in zip(row_ind, col_ind):
                 assigned_driver = day_drivers[d_j]
                 route = day_routes[r_i]
+                phys_drv = assigned_driver.source_driver_id or assigned_driver.id
+                driver_intervals_by_phys.setdefault(phys_drv, []).append(
+                    (
+                        int(getattr(route, "start_time_sec", 0) or 0),
+                        int(getattr(route, "end_time_sec", 0) or 0),
+                    )
+                )
 
                 route.driver_id = assigned_driver.source_driver_id or assigned_driver.id
                 route.driver_name = assigned_driver.full_name

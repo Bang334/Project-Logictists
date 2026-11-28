@@ -4,6 +4,12 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
+from .interprovincial import (
+    align_arrival_with_warehouse_hours,
+    is_driver_compatible_with_vehicle,
+    is_order_compatible_with_vehicle_and_warehouses,
+    stop_effective_service_seconds,
+)
 from .models import (
     CargoItem,
     FleetOptimizationRequest,
@@ -12,6 +18,7 @@ from .models import (
     OrderPair,
     StopAction,
     VehicleFloor,
+    advance_past_curfews,
 )
 from .spatial_validator import SpatialValidator
 from .packing_rules import resolve_can_rotate
@@ -35,22 +42,69 @@ def _can_serve_order_with_zero_travel_lower_bound(
     """
     vehicle: FleetVehicle = request.vehicles[vehicle_index]
     order: OrderPair = request.orders[order_index]
+    if not is_order_compatible_with_vehicle_and_warehouses(order, vehicle):
+        return False
+
+    p_svc, p_key = stop_effective_service_seconds(order, "PICKUP", None)
     pickup_arrival = max(
         float(vehicle.available_start_sec),
         float(order.pickup_window_start_sec),
     )
+    pickup_arrival = advance_past_curfews(
+        pickup_arrival, p_svc, vehicle.payload_limit_kg, order.pickup_curfew_windows
+    )
+    pickup_arrival = align_arrival_with_warehouse_hours(
+        pickup_arrival, p_svc, order.pickup_location.operating_windows
+    )
     if pickup_arrival > order.pickup_window_end_sec:
         return False
 
+    d_svc, _ = stop_effective_service_seconds(order, "DELIVERY", p_key)
     delivery_arrival = max(
-        pickup_arrival + order.service_seconds("PICKUP"),
+        pickup_arrival + p_svc,
         float(order.delivery_window_start_sec),
+    )
+    delivery_arrival = advance_past_curfews(
+        delivery_arrival, d_svc, vehicle.payload_limit_kg, order.delivery_curfew_windows
+    )
+    delivery_arrival = align_arrival_with_warehouse_hours(
+        delivery_arrival, d_svc, order.delivery_location.operating_windows
     )
     if delivery_arrival > order.delivery_window_end_sec:
         return False
 
-    route_end = delivery_arrival + order.service_seconds("DELIVERY")
+    route_end = delivery_arrival + d_svc
     return route_end <= vehicle.available_end_sec
+
+
+def _drivers_can_cover_vehicles(
+    vehicles: List[FleetVehicle], drivers: List
+) -> bool:
+    if len(drivers) < len(vehicles):
+        return False
+    adj: List[List[int]] = [
+        [
+            d_idx
+            for d_idx, d in enumerate(drivers)
+            if is_driver_compatible_with_vehicle(d, v)
+        ]
+        for v in vehicles
+    ]
+    if any(not choices for choices in adj):
+        return False
+    match_d: Dict[int, int] = {}
+
+    def _dfs(v_idx: int, seen: Set[int]) -> bool:
+        for d_idx in adj[v_idx]:
+            if d_idx in seen:
+                continue
+            seen.add(d_idx)
+            if d_idx not in match_d or _dfs(match_d[d_idx], seen):
+                match_d[d_idx] = v_idx
+                return True
+        return False
+
+    return all(_dfs(v_idx, set()) for v_idx in range(len(vehicles)))
 
 
 def prune_unserviceable_virtual_resources(
@@ -86,23 +140,24 @@ def request_with_vehicle_slots(
     """Keep the matching shift days and the corresponding provider matrix nodes."""
     if not retained_vehicle_indices:
         return None
-    retained_days = {
-        request.vehicles[index].service_day_index
-        for index in retained_vehicle_indices
-    }
+    retained_vehicles = [request.vehicles[index] for index in retained_vehicle_indices]
+    retained_days = {vehicle.service_day_index for vehicle in retained_vehicles}
     retained_drivers = [
         driver
         for driver in request.drivers
         if driver.service_day_index in retained_days
     ]
-    if len(retained_drivers) < len(retained_vehicle_indices):
-        # Driver matching is checked precisely by FleetRoutingSolver. Avoid a
-        # preprocessed request that would violate the public request contract.
+    if not _drivers_can_cover_vehicles(retained_vehicles, retained_drivers):
+        # Avoid creating a sliced snapshot where compatible drivers are missing.
         return None
 
     old_vehicle_count = len(request.vehicles)
-    retained_node_indices: List[int] = retained_vehicle_indices + list(
-        range(old_vehicle_count, old_vehicle_count + 2 * len(request.orders))
+    base_expected = old_vehicle_count + 2 * len(request.orders)
+    extra_tail = list(range(base_expected, len(request.distance_matrix_meters)))
+    retained_node_indices: List[int] = (
+        retained_vehicle_indices
+        + list(range(old_vehicle_count, base_expected))
+        + extra_tail
     )
 
     def slice_matrix(matrix: List[List[float]]) -> List[List[float]]:
@@ -113,13 +168,15 @@ def request_with_vehicle_slots(
 
     payload = request.model_dump()
     payload.update(
-        vehicles=[
-            request.vehicles[index].model_dump()
-            for index in retained_vehicle_indices
-        ],
+        vehicles=[vehicle.model_dump() for vehicle in retained_vehicles],
         drivers=[driver.model_dump() for driver in retained_drivers],
         distance_matrix_meters=slice_matrix(request.distance_matrix_meters),
         duration_matrix_seconds=slice_matrix(request.duration_matrix_seconds),
+        toll_matrix_vnd=(
+            slice_matrix(request.toll_matrix_vnd)
+            if request.toll_matrix_vnd is not None
+            else None
+        ),
     )
     return FleetOptimizationRequest(**payload)
 
@@ -439,11 +496,10 @@ def split_orders_within_deadline(
         if is_deadline_hit_for_order:
             unchecked_order_count += 1
             is_deadline_hit_for_order = False
-        allowed_ids = set(order.allowed_source_vehicle_ids or [])
         candidate_vehicles = [
             v
             for v in all_physical_vehicles
-            if not allowed_ids or (v.source_vehicle_id or v.id) in allowed_ids
+            if is_order_compatible_with_vehicle_and_warehouses(order, v)
         ]
         force_split = bool(
             force_split_order_ids
@@ -518,19 +574,17 @@ def split_orders_within_deadline(
                 split_group_id=split_group_id,
                 allowed_source_vehicle_ids=compatible_source_ids,
                 order_number=f"{order.order_number} ({part_idx}/{len(used_bins)})",
-                pickup_location=LocationPoint(
-                    id=f"{order.pickup_location.id}::split:{part_idx}",
-                    source_location_id=base_pickup_id,
-                    name=order.pickup_location.name,
-                    latitude=order.pickup_location.latitude,
-                    longitude=order.pickup_location.longitude,
+                pickup_location=order.pickup_location.model_copy(
+                    update={
+                        "id": f"{order.pickup_location.id}::split:{part_idx}",
+                        "source_location_id": base_pickup_id,
+                    }
                 ).model_dump(),
-                delivery_location=LocationPoint(
-                    id=f"{order.delivery_location.id}::split:{part_idx}",
-                    source_location_id=base_delivery_id,
-                    name=order.delivery_location.name,
-                    latitude=order.delivery_location.latitude,
-                    longitude=order.delivery_location.longitude,
+                delivery_location=order.delivery_location.model_copy(
+                    update={
+                        "id": f"{order.delivery_location.id}::split:{part_idx}",
+                        "source_location_id": base_delivery_id,
+                    }
                 ).model_dump(),
                 items=[item.model_dump() for item in bin_items],
                 order_value_vnd=round(order.order_value_vnd * share),
@@ -545,10 +599,12 @@ def split_orders_within_deadline(
         return OrderSplitOutcome(request, 0, unchecked_order_count)
 
     vehicle_count = len(request.vehicles)
+    base_expected = vehicle_count + 2 * len(request.orders)
     expanded_node_indices: List[int] = list(range(vehicle_count))
     for origin_idx in order_origin_indices:
         expanded_node_indices.append(vehicle_count + 2 * origin_idx)
         expanded_node_indices.append(vehicle_count + 2 * origin_idx + 1)
+    expanded_node_indices.extend(range(base_expected, len(request.distance_matrix_meters)))
 
     def expand_matrix(matrix: List[List[float]]) -> List[List[float]]:
         return [
@@ -561,6 +617,11 @@ def split_orders_within_deadline(
         orders=[o.model_dump() for o in new_orders],
         distance_matrix_meters=expand_matrix(request.distance_matrix_meters),
         duration_matrix_seconds=expand_matrix(request.duration_matrix_seconds),
+        toll_matrix_vnd=(
+            expand_matrix(request.toll_matrix_vnd)
+            if request.toll_matrix_vnd is not None
+            else None
+        ),
     )
     return OrderSplitOutcome(
         FleetOptimizationRequest(**payload), split_count, unchecked_order_count

@@ -3,6 +3,14 @@
 from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from ..interprovincial import (
+    _item_has_compat_rule,
+    is_driver_compatible_with_vehicle,
+    is_order_compatible_with_vehicle_and_warehouses,
+    items_have_compatibility_conflict,
+    resolve_vehicle_end_node_index,
+    schedule_route_timeline,
+)
 from ..models import advance_past_curfews
 from .cost_evaluator import calculate_route_cost
 from .models import (
@@ -151,79 +159,47 @@ def schedule_and_evaluate_route(
     """Schedule a fixed stop sequence with waiting and enforce hard constraints."""
     if not stops:
         return RouteEvaluation(feasible=True, stops=[])
-    if driver.service_day_index != vehicle.service_day_index:
+    if not is_driver_compatible_with_vehicle(driver, vehicle):
         return RouteEvaluation(
             False,
             clone_stops(stops),
-            "Tài xế và xe không cùng ngày phục vụ",
+            "Tài xế không tương thích với xe, ngày phục vụ hoặc kho/tỉnh xuất phát",
         )
 
     scheduled = clone_stops(stops)
     depot_idx = _matrix_index(node_id_to_index, vehicle.depot.id)
 
-    first = scheduled[0]
-    first_order = order_by_id.get(first.order_id or "")
-    if first_order is None:
-        return RouteEvaluation(False, scheduled, f"Đơn {first.order_id} không tồn tại")
-    first_idx = _matrix_index(node_id_to_index, first.location_id)
-    first_transit = float(duration_matrix[depot_idx][first_idx])
-    first_window_start = (
-        first_order.pickup_window_start_sec
-        if first.stop_type == "PICKUP"
-        else first_order.delivery_window_start_sec
-    )
-    first_curfews = (
-        first_order.pickup_curfew_windows
-        if first.stop_type == "PICKUP"
-        else first_order.delivery_curfew_windows
-    )
-    first_effective_start = advance_past_curfews(
-        float(first_window_start),
-        first_order.service_seconds(first.stop_type),
-        vehicle.payload_limit_kg,
-        first_curfews,
-    )
-    current_time = max(
-        float(vehicle.available_start_sec),
-        first_effective_start - first_transit,
-    )
-    previous_idx = depot_idx
     onboard_weight = 0.0
     onboard_items = set()
+    onboard_cargo_objs: Dict[str, CargoItem] = {}
     picked_orders = set()
     delivered_split_groups = set()
+    physical_vehicle_id = vehicle.source_vehicle_id or vehicle.id
+    stop_weights: List[float] = []
 
-    for sequence, stop in enumerate(scheduled, start=1):
+    for stop in scheduled:
         order = order_by_id.get(stop.order_id or "")
         if order is None:
             return RouteEvaluation(False, scheduled, f"Đơn {stop.order_id} không tồn tại")
         if stop.stop_type not in {"PICKUP", "DELIVERY"}:
             return RouteEvaluation(False, scheduled, f"Loại stop {stop.stop_type} không hợp lệ")
 
-        physical_vehicle_id = vehicle.source_vehicle_id or vehicle.id
-        if order.allowed_source_vehicle_ids and not (
-            physical_vehicle_id in order.allowed_source_vehicle_ids
-            or vehicle.id in order.allowed_source_vehicle_ids
-        ):
+        if not is_order_compatible_with_vehicle_and_warehouses(order, vehicle):
             return RouteEvaluation(
                 False,
                 scheduled,
-                f"Đơn {order.order_number} không cho phép xe {vehicle.plate_number}",
+                f"Đơn {order.order_number} không tương thích với xe {vehicle.plate_number} hoặc hạ tầng kho",
             )
 
-        current_idx = _matrix_index(node_id_to_index, stop.location_id)
-        transit = float(duration_matrix[previous_idx][current_idx])
-        if transit < 0:
-            return RouteEvaluation(False, scheduled, "Ma trận thời gian chứa giá trị âm")
-
-        raw_arrival = current_time + transit
+        _matrix_index(node_id_to_index, stop.location_id)
+        expected_items = {item.id for item in order.items}
         if stop.stop_type == "PICKUP":
             if order.split_group_id and order.split_group_id in delivered_split_groups:
-                return RouteEvaluation(False, scheduled,
-                    "Không lấy thêm phần của cùng yêu cầu sau khi đã bắt đầu giao")
-            window_start = order.pickup_window_start_sec
-            window_end = order.pickup_window_end_sec
-            expected_items = {item.id for item in order.items}
+                return RouteEvaluation(
+                    False,
+                    scheduled,
+                    "Không lấy thêm phần của cùng yêu cầu sau khi đã bắt đầu giao",
+                )
             if set(stop.items_loaded) != expected_items or stop.items_unloaded:
                 return RouteEvaluation(
                     False,
@@ -231,16 +207,28 @@ def schedule_and_evaluate_route(
                     f"Pickup của đơn {order.order_number} không khớp danh sách kiện",
                 )
             if order.id in picked_orders:
-                return RouteEvaluation(False, scheduled, f"Đơn {order.order_number} được pickup nhiều lần")
+                return RouteEvaluation(
+                    False, scheduled, f"Đơn {order.order_number} được pickup nhiều lần"
+                )
+            if onboard_cargo_objs and items_have_compatibility_conflict(
+                list(onboard_cargo_objs.values()), order.items
+            ):
+                return RouteEvaluation(
+                    False,
+                    scheduled,
+                    f"Đơn {order.order_number} xung đột nhóm hàng hoặc nhiệt độ với hàng đang trên xe",
+                )
             picked_orders.add(order.id)
             onboard_weight += order.total_weight_kg
             onboard_items.update(expected_items)
+            for item in order.items:
+                if _item_has_compat_rule(item):
+                    onboard_cargo_objs[item.id] = item
         else:
-            window_start = order.delivery_window_start_sec
-            window_end = order.delivery_window_end_sec
-            expected_items = {item.id for item in order.items}
             if order.id not in picked_orders:
-                return RouteEvaluation(False, scheduled, f"Giao đơn {order.order_number} trước khi pickup")
+                return RouteEvaluation(
+                    False, scheduled, f"Giao đơn {order.order_number} trước khi pickup"
+                )
             if set(stop.items_unloaded) != expected_items or stop.items_loaded:
                 return RouteEvaluation(
                     False,
@@ -248,64 +236,53 @@ def schedule_and_evaluate_route(
                     f"Delivery của đơn {order.order_number} không khớp danh sách kiện",
                 )
             if not expected_items.issubset(onboard_items):
-                return RouteEvaluation(False, scheduled, f"Thiếu kiện khi giao đơn {order.order_number}")
+                return RouteEvaluation(
+                    False, scheduled, f"Thiếu kiện khi giao đơn {order.order_number}"
+                )
             onboard_weight -= order.total_weight_kg
             onboard_items.difference_update(expected_items)
+            for item in order.items:
+                onboard_cargo_objs.pop(item.id, None)
             if order.split_group_id:
                 delivered_split_groups.add(order.split_group_id)
 
-        curfews = (
-            order.pickup_curfew_windows
-            if stop.stop_type == "PICKUP"
-            else order.delivery_curfew_windows
-        )
-        arrival = advance_past_curfews(
-            max(raw_arrival, float(window_start)),
-            order.service_seconds(stop.stop_type),
-            vehicle.payload_limit_kg,
-            curfews,
-        )
-        if arrival > window_end + 0.01:
-            return RouteEvaluation(
-                False,
-                scheduled,
-                f"{stop.stop_type} đơn {order.order_number} trễ time window "
-                f"({arrival:.0f} > {window_end})",
-            )
         if onboard_weight < -0.01 or onboard_weight > vehicle.payload_limit_kg + 0.01:
             return RouteEvaluation(
                 False,
                 scheduled,
                 f"Tải {onboard_weight:.2f} kg ngoài giới hạn xe {vehicle.plate_number}",
             )
-
-        stop.sequence = sequence
-        stop.arrival_time_sec = int(round(arrival))
-        stop.departure_time_sec = stop.arrival_time_sec + order.service_seconds(stop.stop_type)
-        if stop.departure_time_sec > vehicle.available_end_sec:
-            return RouteEvaluation(
-                False,
-                scheduled,
-                f"Xe {vehicle.plate_number} vượt thời gian sẵn sàng",
-            )
-        stop.current_weight_kg = max(0.0, onboard_weight)
-        current_time = float(stop.departure_time_sec)
-        previous_idx = current_idx
+        stop_weights.append(max(0.0, onboard_weight))
 
     if onboard_items or abs(onboard_weight) > 0.01:
         return RouteEvaluation(False, scheduled, "Kết thúc tuyến vẫn còn hàng trên xe")
 
-    end_depot = vehicle.end_depot or vehicle.depot
-    end_depot_idx = _matrix_index(node_id_to_index, end_depot.id)
-    return_transit = float(duration_matrix[previous_idx][end_depot_idx])
-    if return_transit < 0:
-        return RouteEvaluation(False, scheduled, "Ma trận thời gian chứa giá trị âm")
-    if current_time + return_transit > vehicle.available_end_sec:
-        return RouteEvaluation(
-            False,
-            scheduled,
-            f"Xe {vehicle.plate_number} không kịp về điểm kết thúc trong ca",
-        )
+    end_depot = getattr(vehicle, "end_depot", None)
+    if end_depot is not None:
+        end_depot_idx: Optional[int] = _matrix_index(node_id_to_index, end_depot.id)
+    elif not getattr(vehicle, "return_to_depot", True):
+        end_depot_idx = None
+    else:
+        end_depot_idx = depot_idx
+
+    timeline = schedule_route_timeline(
+        vehicle=vehicle,
+        vehicle_index=depot_idx,
+        stops=scheduled,
+        order_by_id=order_by_id,
+        distance_matrix=distance_matrix,
+        duration_matrix=duration_matrix,
+        stop_node_resolver=lambda s: node_id_to_index.get(s.location_id),
+        end_node_index=end_depot_idx,
+        rest_policy=getattr(policy, "driving_rest_policy", None),
+        apply_jit_start=True,
+    )
+    if not timeline.feasible:
+        return RouteEvaluation(False, scheduled, timeline.reason)
+
+    scheduled = list(timeline.scheduled_stops)
+    for st, weight in zip(scheduled, stop_weights):
+        st.current_weight_kg = weight
 
     if use_fast_packing:
         packing_ok, packing_reason = _validate_route_packing_cached(
@@ -319,6 +296,9 @@ def schedule_and_evaluate_route(
         if not packing_ok:
             return RouteEvaluation(False, scheduled, packing_reason)
 
+    duration_override = round(
+        max(0, timeline.route_end_sec - timeline.route_start_sec) / 60.0, 1
+    )
     cost, distance_km, duration_minutes = calculate_route_cost(
         vehicle,
         driver,
@@ -328,6 +308,9 @@ def schedule_and_evaluate_route(
         distance_matrix,
         duration_matrix,
         node_id_to_index,
+        route_duration_minutes_override=duration_override,
+        end_node_index_override=end_depot_idx,
+        rest_breaks=timeline.rest_breaks,
     )
     return RouteEvaluation(
         feasible=True,

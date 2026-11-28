@@ -1,5 +1,10 @@
-from typing import Dict, List, Optional, Protocol, Tuple
+from typing import Dict, List, Optional, Protocol, Sequence, Tuple
 
+from .interprovincial import (
+    calculate_route_overnight_allowance_vnd,
+    calculate_route_toll_vnd,
+    resolve_vehicle_end_node_index,
+)
 from .models import (
     CostPolicy,
     DriverOption,
@@ -94,19 +99,15 @@ def calculate_driver_cost(
     )
 
 
-def calculate_route_economic_metrics(
+def _resolve_node_lookup_context(
     request: FleetOptimizationRequest,
     nodes: List[dict],
-    order_by_id: Dict[str, OrderPair],
     vehicle: FleetVehicle,
-    stops: List[ScheduledStop],
-    *,
-    start_node_index: Optional[int] = None,
-    return_to_depot: bool = True,
-) -> Tuple[int, int, int, float, float]:
-    """Calculate the same traceable leg costs for every candidate method."""
+) -> Tuple[Dict[str, int], Dict[str, int], int]:
     node_index_by_id = {node["id"]: index for index, node in enumerate(nodes)}
-    pickup_index_by_order = {order.id: len(request.vehicles) + 2 * i for i, order in enumerate(request.orders)}
+    pickup_index_by_order = {
+        order.id: len(request.vehicles) + 2 * i for i, order in enumerate(request.orders)
+    }
     vehicle_index = next(
         (
             index
@@ -119,6 +120,35 @@ def calculate_route_economic_metrics(
             if (candidate.source_vehicle_id or candidate.id)
             == (vehicle.source_vehicle_id or vehicle.id)
         ),
+    )
+    return node_index_by_id, pickup_index_by_order, vehicle_index
+
+
+def _resolve_stop_node_index(
+    stop: ScheduledStop,
+    pickup_index_by_order: Dict[str, int],
+    node_index_by_id: Dict[str, int],
+) -> Optional[int]:
+    pickup = pickup_index_by_order.get(stop.allocation_id or stop.order_id or "")
+    if pickup is None:
+        return node_index_by_id.get(stop.location_id)
+    return pickup if stop.stop_type == "PICKUP" else pickup + 1
+
+
+def calculate_route_economic_metrics(
+    request: FleetOptimizationRequest,
+    nodes: List[dict],
+    order_by_id: Dict[str, OrderPair],
+    vehicle: FleetVehicle,
+    stops: List[ScheduledStop],
+    *,
+    start_node_index: Optional[int] = None,
+    return_to_depot: bool = True,
+    end_node_index: Optional[int] = None,
+) -> Tuple[int, int, int, float, float]:
+    """Calculate the same traceable leg costs for every candidate method."""
+    node_index_by_id, pickup_index_by_order, vehicle_index = _resolve_node_lookup_context(
+        request, nodes, vehicle
     )
     previous_node = vehicle_index if start_node_index is None else start_node_index
     onboard_weight_kg = 0.0
@@ -152,7 +182,19 @@ def calculate_route_economic_metrics(
         onboard_weight_kg = stop.current_weight_kg
         previous_node = node_index
 
-    return_distance_meters = request.distance_matrix_meters[previous_node][vehicle_index] if return_to_depot else 0
+    if not return_to_depot:
+        resolved_end_node: Optional[int] = None
+    elif end_node_index is not None:
+        resolved_end_node = end_node_index
+    else:
+        resolved_end_node = resolve_vehicle_end_node_index(
+            request.vehicles, request.orders, vehicle_index, vehicle
+        )
+    return_distance_meters = (
+        request.distance_matrix_meters[previous_node][resolved_end_node]
+        if resolved_end_node is not None
+        else 0
+    )
     return_base_liters = (
         return_distance_meters
         / 100_000
@@ -221,7 +263,20 @@ def build_route_cost_breakdown(
     *,
     start_node_index: Optional[int] = None,
     return_to_depot: bool = True,
+    end_node_index: Optional[int] = None,
+    rest_breaks: Sequence = (),
 ) -> RouteCostBreakdown:
+    node_index_by_id, pickup_index_by_order, vehicle_index = _resolve_node_lookup_context(
+        request, nodes, vehicle
+    )
+    if not return_to_depot:
+        resolved_end_node: Optional[int] = None
+    elif end_node_index is not None:
+        resolved_end_node = end_node_index
+    else:
+        resolved_end_node = resolve_vehicle_end_node_index(
+            request.vehicles, request.orders, vehicle_index, vehicle
+        )
     (
         base_fuel_cost,
         load_fuel_surcharge,
@@ -230,7 +285,9 @@ def build_route_cost_breakdown(
         cargo_time_ton_hours,
     ) = calculate_route_economic_metrics(
         request, nodes, order_by_id, vehicle, stops,
-        start_node_index=start_node_index, return_to_depot=return_to_depot,
+        start_node_index=start_node_index,
+        return_to_depot=return_to_depot,
+        end_node_index=resolved_end_node,
     )
     _, fixed_salary_allocation, trip_pay = calculate_driver_cost(
         request, driver, duration_minutes, distance_km
@@ -245,6 +302,18 @@ def build_route_cost_breakdown(
         if stop.stop_type == "DELIVERY"
         and (stop.allocation_id or stop.order_id) in order_by_id
     )
+    toll_cost_vnd = calculate_route_toll_vnd(
+        getattr(request, "toll_matrix_vnd", None),
+        vehicle_index,
+        vehicle,
+        stops,
+        lambda s: _resolve_stop_node_index(s, pickup_index_by_order, node_index_by_id),
+        start_node_index=start_node_index,
+        end_node_index=resolved_end_node,
+    )
+    overnight_allowance_vnd = calculate_route_overnight_allowance_vnd(
+        rest_breaks, getattr(request.policy, "driving_rest_policy", None)
+    )
     fuel_cost = base_fuel_cost + load_fuel_surcharge
     total_cost = (
         fuel_cost
@@ -253,6 +322,8 @@ def build_route_cost_breakdown(
         + trip_pay
         + cargo_holding_cost
         + late_delivery_penalty
+        + toll_cost_vnd
+        + overnight_allowance_vnd
     )
     return RouteCostBreakdown(
         base_fuel_cost_vnd=base_fuel_cost,
@@ -265,5 +336,7 @@ def build_route_cost_breakdown(
         vehicle_fixed_cost_vnd=vehicle.fixed_operating_cost_vnd,
         driver_fixed_salary_allocation_vnd=fixed_salary_allocation,
         driver_trip_pay_vnd=trip_pay,
+        toll_cost_vnd=toll_cost_vnd,
+        overnight_allowance_vnd=overnight_allowance_vnd,
         total_cost_vnd=total_cost,
     )

@@ -11,6 +11,12 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
+from .interprovincial import (
+    check_cross_day_resource_conflicts,
+    estimate_driving_rest_lower_bound_sec,
+    is_order_compatible_with_vehicle_and_warehouses,
+    stop_effective_service_seconds,
+)
 from .models import (
     BenchmarkMetric,
     FleetOptimizationBatchResponse,
@@ -81,21 +87,24 @@ def _estimate_hybrid_lower_bound_days(request: FleetOptimizationRequest) -> int:
     )
     nv = len(request.vehicles)
     dur = request.duration_matrix_seconds
+    rest_policy = getattr(request.policy, "driving_rest_policy", None)
     min_work_sec = 0.0
     earliest_span_needed = 1
     for i, order in enumerate(request.orders):
         p_idx = nv + 2 * i
         d_idx = p_idx + 1
-        p_srv = order.pickup_service_time_sec if order.pickup_service_time_sec is not None else order.service_time_sec
-        d_srv = order.delivery_service_time_sec if order.delivery_service_time_sec is not None else order.service_time_sec
+        p_srv, p_key = stop_effective_service_seconds(order, "PICKUP", None)
+        d_srv, _ = stop_effective_service_seconds(order, "DELIVERY", p_key)
         leg_sec = dur[p_idx][d_idx] if p_idx < len(dur) and d_idx < len(dur[p_idx]) else 0.0
-        min_work_sec += max(0.0, p_srv + d_srv + leg_sec)
+        rest_lb = estimate_driving_rest_lower_bound_sec(leg_sec, rest_policy)
+        min_work_sec += max(0.0, p_srv + d_srv + leg_sec + rest_lb)
         for day in days:
             d_vs = vehicles_by_day[day]
             if any(
-                (t_p := max(v.available_start_sec, order.pickup_window_start_sec))
+                is_order_compatible_with_vehicle_and_warehouses(order, v)
+                and (t_p := max(v.available_start_sec, order.pickup_window_start_sec))
                 <= min(v.available_end_sec, order.pickup_window_end_sec)
-                and (t_d := max(t_p + p_srv + leg_sec, order.delivery_window_start_sec))
+                and (t_d := max(t_p + p_srv + leg_sec + rest_lb, order.delivery_window_start_sec))
                 <= order.delivery_window_end_sec
                 and t_d + d_srv <= v.available_end_sec
                 for v in d_vs
@@ -196,6 +205,9 @@ def _collect_worker_audited_plans(
         obj = apply_planning_objective(objective_request, primary_plan)
         return primary_plan, obj, []
 
+    rest_policy = getattr(objective_request.policy, "driving_rest_policy", None)
+    rest_gap = max(0, int(getattr(rest_policy, "min_inter_trip_rest_sec", 0) or 0))
+    veh_map = {v.id: v for v in objective_request.vehicles}
     complete_pool = [
         plan
         for plan in pool
@@ -204,6 +216,8 @@ def _collect_worker_audited_plans(
             set(expected_items),
             max_routes_per_day=max_routes_per_day,
             expected_items=expected_items,
+            vehicle_by_id=veh_map,
+            min_inter_trip_rest_sec=rest_gap,
         )
     ]
     ranked_pool = complete_pool or pool
@@ -238,12 +252,16 @@ def _solve_hybrid_worker_bundle(
     seed: int,
     time_budget: float,
     warm_plan: Optional[dict] = None,
+    parent_deadline_epoch: Optional[float] = None,
 ) -> Tuple[int, Optional[dict], Optional[dict], List[dict], Optional[str]]:
     """Run Hybrid ALNS worker and return winner plus distinct audited alternative routes."""
     try:
         request = FleetOptimizationRequest(**request_dict)
         objective_request = FleetOptimizationRequest(**objective_request_dict)
         worker_deadline = time.perf_counter() + max(0.5, float(time_budget))
+        if parent_deadline_epoch is not None:
+            remaining_wall = max(0.5, float(parent_deadline_epoch) - time.time())
+            worker_deadline = min(worker_deadline, time.perf_counter() + remaining_wall)
         expected_items = {order.id: {item.id for item in order.items} for order in request.orders}
         initial_plan = FleetOptimizationResponse.model_validate(warm_plan) if warm_plan is not None else None
         distinct_days = sorted({v.service_day_index for v in request.vehicles})
@@ -292,6 +310,18 @@ def _solve_hybrid_worker_bundle(
                     set(expected_items),
                     request.policy.max_routes_per_day,
                     expected_items,
+                    vehicle_by_id={v.id: v for v in request.vehicles},
+                    min_inter_trip_rest_sec=max(
+                        0,
+                        int(
+                            getattr(
+                                getattr(request.policy, "driving_rest_policy", None),
+                                "min_inter_trip_rest_sec",
+                                0,
+                            )
+                            or 0
+                        ),
+                    ),
                 ):
                     chosen_probe, obj, extra_probe = _collect_worker_audited_plans(
                         probe_plan,
@@ -311,11 +341,30 @@ def _solve_hybrid_worker_bundle(
 
         # Nếu bất kỳ seed nào nhận được warm_plan đã hoàn tất trong K ngày (< tổng số ngày mở),
         # giữ bước tinh chỉnh tập trung trên đúng K ngày đó để mọi seed tối ưu công bằng.
+        req_veh_map = {v.id: v for v in request.vehicles}
+        req_rest_gap = max(
+            0,
+            int(
+                getattr(
+                    getattr(request.policy, "driving_rest_policy", None),
+                    "min_inter_trip_rest_sec",
+                    0,
+                )
+                or 0
+            ),
+        )
         if (
             initial_plan is not None
             and initial_plan.routes
             and len(distinct_days) > 1
-            and is_fully_served(initial_plan, set(expected_items), request.policy.max_routes_per_day, expected_items)
+            and is_fully_served(
+                initial_plan,
+                set(expected_items),
+                request.policy.max_routes_per_day,
+                expected_items,
+                vehicle_by_id=req_veh_map,
+                min_inter_trip_rest_sec=req_rest_gap,
+            )
         ):
             warm_days = max(r.service_day_index + 1 for r in initial_plan.routes)
             if 1 <= warm_days < len(distinct_days):
@@ -345,7 +394,12 @@ def _solve_hybrid_worker_bundle(
             random_seed=seed,
             initial_plan=initial_plan,
             initial_plan_is_verified=initial_plan is not None and is_fully_served(
-                initial_plan, set(expected_items), solver_request.policy.max_routes_per_day, expected_items,
+                initial_plan,
+                set(expected_items),
+                solver_request.policy.max_routes_per_day,
+                expected_items,
+                vehicle_by_id=req_veh_map,
+                min_inter_trip_rest_sec=req_rest_gap,
             ),
             ortools_seed_pool=ortools_seed_pool,
             should_split_orders=False,
@@ -353,12 +407,16 @@ def _solve_hybrid_worker_bundle(
         )
         headroom = max(0.0, float(request.max_time_seconds) - float(time_budget))
         max_ceiling = time.perf_counter() + max(0.5, float(request.max_time_seconds)) - 1.0
+        if parent_deadline_epoch is not None:
+            max_ceiling = min(max_ceiling, worker_deadline)
         audit_grace = (
             min(10.0 if len(request.orders) >= 50 else 6.0, headroom * 0.5)
             if warm_plan is None and not request.early_stop_patience and time_budget >= 40.0 and headroom >= 12.0
             else 0.0
         )
         hybrid_hard_deadline = min(max_ceiling, worker_deadline + audit_grace)
+        if parent_deadline_epoch is not None:
+            hybrid_hard_deadline = min(hybrid_hard_deadline, worker_deadline)
         plan = hybrid.solve(hard_deadline=hybrid_hard_deadline)
         if not plan.routes and compact_fallback_plan is not None:
             plan = compact_fallback_plan
@@ -404,6 +462,7 @@ def _run_hybrid_pool_worker(
     seed: int,
     time_budget: float,
     warm_plan: Optional[dict] = None,
+    parent_deadline_epoch: Optional[float] = None,
 ) -> Tuple[int, Optional[dict], Optional[dict], List[dict], Optional[str]]:
     """Pool worker wrapper carrying deduplicated audited alternative routes across IPC."""
     return _solve_hybrid_worker_bundle(
@@ -412,6 +471,7 @@ def _run_hybrid_pool_worker(
         seed,
         time_budget,
         warm_plan,
+        parent_deadline_epoch=parent_deadline_epoch,
     )
 
 
@@ -423,6 +483,7 @@ def _solve_ils_worker_bundle(
     objective_request_dict: dict,
     seed: int,
     time_budget: float,
+    parent_deadline_epoch: Optional[float] = None,
 ) -> Tuple[int, Optional[dict], Optional[dict], List[dict], Optional[str]]:
     """Run ILS worker and return winner plus distinct audited alternative routes."""
     try:
@@ -430,6 +491,10 @@ def _solve_ils_worker_bundle(
             request = FleetOptimizationRequest(**request_dict)
             objective_request = FleetOptimizationRequest(**objective_request_dict)
             effective_budget = max(0.5, float(time_budget))
+            if parent_deadline_epoch is not None:
+                effective_budget = min(
+                    effective_budget, max(0.5, float(parent_deadline_epoch) - time.time())
+                )
             worker_deadline = time.perf_counter() + effective_budget
             optimizer = PackingAwareILSOptimizer(
                 request,
@@ -478,6 +543,7 @@ def _run_ils_pool_worker(
     objective_request_dict: dict,
     seed: int,
     time_budget: float,
+    parent_deadline_epoch: Optional[float] = None,
 ) -> Tuple[int, Optional[dict], Optional[dict], List[dict], Optional[str]]:
     """Pool ILS worker wrapper carrying deduplicated audited alternative routes across IPC."""
     return _solve_ils_worker_bundle(
@@ -485,6 +551,7 @@ def _run_ils_pool_worker(
         objective_request_dict,
         seed,
         time_budget,
+        parent_deadline_epoch=parent_deadline_epoch,
     )
 
 
@@ -634,6 +701,9 @@ def is_fully_served(
     all_order_ids: Set[str],
     max_routes_per_day: Optional[int] = None,
     expected_items: Optional[Dict[str, Set[str]]] = None,
+    *,
+    vehicle_by_id: Optional[Dict[str, Any]] = None,
+    min_inter_trip_rest_sec: int = 0,
 ) -> bool:
     """Check whether a plan delivers 100% of requested orders without violations."""
     if plan.status != "SUCCESS":
@@ -708,20 +778,16 @@ def is_fully_served(
     if served_order_ids != all_order_ids:
         return False
 
-    # Bất biến TMS: Trong cùng 1 ngày, mỗi xe (biển số) và mỗi tài xế chỉ được chạy tối đa 1 tuyến
-    day_plates: Set[Tuple[int, str]] = set()
-    day_drivers: Set[Tuple[int, str]] = set()
-    for route in plan.routes:
-        if route.plate_number:
-            plate_key = (route.service_day_index, route.plate_number)
-            if plate_key in day_plates:
-                return False
-            day_plates.add(plate_key)
-        if route.driver_id:
-            driver_key = (route.service_day_index, route.driver_id)
-            if driver_key in day_drivers:
-                return False
-            day_drivers.add(driver_key)
+    # Bất biến TMS: Chống trùng xe/tài xế trong ngày và chồng lịch xuyên ngày / thiếu giờ nghỉ giữa 2 chuyến
+    # Chỉ kích hoạt khi có ngữ cảnh fleet (vehicle_by_id) hoặc chính sách nghỉ giữa chuyến,
+    # giữ tương thích cho các unit test mock cũ dùng giờ tương đối theo ngày.
+    if vehicle_by_id is not None or min_inter_trip_rest_sec > 0:
+        if check_cross_day_resource_conflicts(
+            plan.routes,
+            vehicle_by_id or {},
+            min_inter_trip_rest_sec=min_inter_trip_rest_sec,
+        ):
+            return False
 
     if max_routes_per_day is not None:
         routes_per_day: Dict[int, int] = {}
@@ -745,6 +811,9 @@ def select_ranked_candidates(
     max_routes_per_day: Optional[int] = None,
     expected_items: Optional[Dict[str, Set[str]]] = None,
     compare_horizons: bool = False,
+    *,
+    vehicle_by_id: Optional[Dict[str, Any]] = None,
+    min_inter_trip_rest_sec: int = 0,
 ) -> Tuple[List[FleetOptimizationCandidate], int, List[str]]:
     """Pure selection and ranking function to allow isolated unit testing.
 
@@ -755,7 +824,14 @@ def select_ranked_candidates(
     fully_served_runs = [
         (strategy, plan, objective)
         for strategy, plan, objective in evaluated_runs
-        if is_fully_served(plan, all_order_ids, max_routes_per_day=max_routes_per_day, expected_items=expected_items)
+        if is_fully_served(
+            plan,
+            all_order_ids,
+            max_routes_per_day=max_routes_per_day,
+            expected_items=expected_items,
+            vehicle_by_id=vehicle_by_id,
+            min_inter_trip_rest_sec=min_inter_trip_rest_sec,
+        )
     ]
     fully_served_count = len(fully_served_runs)
 
@@ -919,19 +995,52 @@ class MultiStartFleetOptimizer:
         expected_items = {o.id: {i.id for i in o.items} for o in limited.orders}
         order_ids = set(expected_items)
         max_routes_per_day = limited.policy.max_routes_per_day
-        if is_fully_served(verified, order_ids, max_routes_per_day, expected_items):
+        limited_veh_map = {v.id: v for v in limited.vehicles}
+        limited_rest_gap = max(
+            0,
+            int(
+                getattr(
+                    getattr(limited.policy, "driving_rest_policy", None),
+                    "min_inter_trip_rest_sec",
+                    0,
+                )
+                or 0
+            ),
+        )
+        if is_fully_served(
+            verified,
+            order_ids,
+            max_routes_per_day,
+            expected_items,
+            vehicle_by_id=limited_veh_map,
+            min_inter_trip_rest_sec=limited_rest_gap,
+        ):
             improved = engine.refine_direct_span(verified, audited_trips, deadline)
             best_plan = (
                 improved
                 if improved is not verified
-                and is_fully_served(improved, order_ids, max_routes_per_day, expected_items)
+                and is_fully_served(
+                    improved,
+                    order_ids,
+                    max_routes_per_day,
+                    expected_items,
+                    vehicle_by_id=limited_veh_map,
+                    min_inter_trip_rest_sec=limited_rest_gap,
+                )
                 else verified
             )
             if len(limited.orders) >= 10 and (deadline - time.perf_counter()) >= 1.2:
                 polished = engine._polish_audited_response(best_plan, deadline)
                 if (
                     polished is not best_plan
-                    and is_fully_served(polished, order_ids, max_routes_per_day, expected_items)
+                    and is_fully_served(
+                        polished,
+                        order_ids,
+                        max_routes_per_day,
+                        expected_items,
+                        vehicle_by_id=limited_veh_map,
+                        min_inter_trip_rest_sec=limited_rest_gap,
+                    )
                 ):
                     return polished
             return best_plan
@@ -957,6 +1066,18 @@ class MultiStartFleetOptimizer:
         job_budget = self.request.max_time_seconds if adaptive_search else search_budget_seconds
         job_deadline = job_started_at + job_budget
         exhaustive_fallback_diagnostic: Optional[str] = None
+        self_veh_map = {v.id: v for v in self.request.vehicles}
+        self_rest_gap = max(
+            0,
+            int(
+                getattr(
+                    getattr(self.request.policy, "driving_rest_policy", None),
+                    "min_inter_trip_rest_sec",
+                    0,
+                )
+                or 0
+            ),
+        )
         if self.use_exhaustive_search:
             exhaustive_started_at = time.monotonic()
             exhaustive = FleetRoutingSolver(
@@ -972,6 +1093,8 @@ class MultiStartFleetOptimizer:
                     set(expected_items),
                     max_routes_per_day=self.request.policy.max_routes_per_day,
                     expected_items=expected_items,
+                    vehicle_by_id=self_veh_map,
+                    min_inter_trip_rest_sec=self_rest_gap,
                 )
             ]
             if exhaustive.plans:
@@ -1132,6 +1255,15 @@ class MultiStartFleetOptimizer:
                 if _run_ils_seed_worker is _REAL_ILS_WORKER
                 else _run_ils_seed_worker
             )
+            if adaptive_search:
+                pool_deadline = job_deadline
+            else:
+                spawn_audit_grace = 12.0 if len(self.request.orders) >= 50 else 8.0
+                max_ceiling = job_started_at + float(self.request.max_time_seconds)
+                pool_deadline = max(job_deadline, min(max_ceiling, job_deadline + spawn_audit_grace))
+            pool_wall_deadline = (
+                time.time() + max(0.5, pool_deadline - time.perf_counter() - 0.45)
+            )
             try:
                 futures = {}
                 for seed in hybrid_seeds:
@@ -1143,6 +1275,11 @@ class MultiStartFleetOptimizer:
                         max(min_bootstrap, min(search_budget_seconds, equal_seed_budget) * 0.85),
                     )
                     refine_budget = budget - bootstrap_budget if adaptive_search else 0
+                    extra_pool_args = (
+                        (pool_wall_deadline,)
+                        if hybrid_pool_callable is _run_hybrid_pool_worker
+                        else ()
+                    )
                     # Return an audited checkpoint before a longer refinement can
                     # exhaust its time. The parent keeps it across worker timeouts.
                     if refine_budget >= 2:
@@ -1150,11 +1287,13 @@ class MultiStartFleetOptimizer:
                             hybrid_pool_callable,
                             {**request_dict, "early_stop_patience": 0},
                             objective_request_dict, seed, bootstrap_budget, initial,
+                            *extra_pool_args,
                         )
                     else:
                         refine_budget = 0
                         future = executor.submit(
                             hybrid_pool_callable, request_dict, objective_request_dict, seed, budget, initial,
+                            *extra_pool_args,
                         )
                     futures[future] = ("hybrid", seed, refine_budget)
 
@@ -1167,17 +1306,17 @@ class MultiStartFleetOptimizer:
                     )
                     if total_waves > 1:
                         ils_budget = min(ils_budget, equal_seed_budget)
+                    extra_ils_args = (
+                        (pool_wall_deadline,)
+                        if ils_pool_callable is _run_ils_pool_worker
+                        else ()
+                    )
                     ils_future = executor.submit(
                         ils_pool_callable, request_dict, objective_request_dict, 0, ils_budget,
+                        *extra_ils_args,
                     )
                     futures[ils_future] = ("ils", 0, 0)
 
-                if adaptive_search:
-                    pool_deadline = job_deadline
-                else:
-                    spawn_audit_grace = 12.0 if len(self.request.orders) >= 50 else 8.0
-                    max_ceiling = job_started_at + float(self.request.max_time_seconds)
-                    pool_deadline = max(job_deadline, min(max_ceiling, job_deadline + spawn_audit_grace))
                 cancelled_run = False
                 while futures:
                     if self._is_cancelled():
@@ -1234,7 +1373,12 @@ class MultiStartFleetOptimizer:
                             )
                             candidate = (strategy, solver_plan, planning_obj.selection_score_vnd)
                             complete = is_fully_served(
-                                solver_plan, all_order_ids, self.request.policy.max_routes_per_day, expected_items,
+                                solver_plan,
+                                all_order_ids,
+                                self.request.policy.max_routes_per_day,
+                                expected_items,
+                                vehicle_by_id=self_veh_map,
+                                min_inter_trip_rest_sec=self_rest_gap,
                             )
                             rank = (
                                 not complete,
@@ -1258,9 +1402,15 @@ class MultiStartFleetOptimizer:
                         if family == "hybrid":
                             remaining_refine_budget = min(refine_budget, job_deadline - time.perf_counter())
                             if remaining_refine_budget >= 2:
+                                extra_refine_args = (
+                                    (pool_wall_deadline,)
+                                    if hybrid_pool_callable is _run_hybrid_pool_worker
+                                    else ()
+                                )
                                 refinement = executor.submit(
                                     hybrid_pool_callable, request_dict, objective_request_dict,
                                     seed, remaining_refine_budget, warm_plan,
+                                    *extra_refine_args,
                                 )
                                 futures[refinement] = ("hybrid", seed, 0)
 
@@ -1373,8 +1523,17 @@ class MultiStartFleetOptimizer:
         if self._is_cancelled():
             return self._cancelled_response(len(evaluated_runs))
         ortools_fallback_used = False
-        if not any(is_fully_served(plan, all_order_ids, self.request.policy.max_routes_per_day, expected_items)
-                   for _, plan, _ in evaluated_runs):
+        if not any(
+            is_fully_served(
+                plan,
+                all_order_ids,
+                self.request.policy.max_routes_per_day,
+                expected_items,
+                vehicle_by_id=self_veh_map,
+                min_inter_trip_rest_sec=self_rest_gap,
+            )
+            for _, plan, _ in evaluated_runs
+        ):
             remaining_fallback = job_deadline - time.perf_counter()
             fallback_strategy = (
                 self.strategies[0]
@@ -1435,6 +1594,8 @@ class MultiStartFleetOptimizer:
                     all_order_ids,
                     max_routes_per_day=self.request.policy.max_routes_per_day,
                     expected_items=expected_items,
+                    vehicle_by_id=self_veh_map,
+                    min_inter_trip_rest_sec=self_rest_gap,
                 )
             ]
             extra_routes: List[OptimizedRoute] = []
@@ -1567,6 +1728,8 @@ class MultiStartFleetOptimizer:
                         all_order_ids,
                         max_routes_per_day=self.request.policy.max_routes_per_day,
                         expected_items=expected_items,
+                        vehicle_by_id=self_veh_map,
+                        min_inter_trip_rest_sec=self_rest_gap,
                     ):
                         continue
                     c_score = int(c_obj.selection_score_vnd)
@@ -1611,6 +1774,8 @@ class MultiStartFleetOptimizer:
             max_routes_per_day=self.request.policy.max_routes_per_day,
             compare_horizons=compare_horizons,
             expected_items=expected_items,
+            vehicle_by_id=self_veh_map,
+            min_inter_trip_rest_sec=self_rest_gap,
         )
 
         if calculator is None and any(candidate.result.routes for candidate in candidates):

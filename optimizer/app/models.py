@@ -1,11 +1,22 @@
 from math import isfinite
 from typing import Dict, List, Literal, Optional, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 
 class StrictContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class WarehouseOperatingWindow(StrictContractModel):
+    start_sec: int = Field(ge=0, lt=86400)
+    end_sec: int = Field(gt=0, le=86400)
+
+    @model_validator(mode="after")
+    def validate_operating_window(self):
+        if self.end_sec <= self.start_sec:
+            raise ValueError("warehouse operating window must satisfy end_sec > start_sec")
+        return self
 
 
 class LocationPoint(StrictContractModel):
@@ -14,6 +25,16 @@ class LocationPoint(StrictContractModel):
     name: str
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
+    province_code: Optional[str] = None
+    province_name: Optional[str] = None
+    warehouse_role: Optional[Literal["HUB", "WAREHOUSE", "TRANSIT"]] = None
+    docking_time_sec: int = Field(default=0, ge=0)
+    max_vehicle_payload_kg: Optional[float] = Field(default=None, gt=0)
+    max_vehicle_length_cm: Optional[float] = Field(default=None, gt=0)
+    has_forklift: Optional[bool] = None
+    operating_windows: List[WarehouseOperatingWindow] = Field(default_factory=list)
+    handling_sec_per_ton: int = Field(default=0, ge=0)
+    handling_sec_per_package: int = Field(default=0, ge=0)
 
 
 class VehicleFloor(StrictContractModel):
@@ -33,8 +54,13 @@ class FleetVehicle(VehicleFloor):
     available_start_sec: int = Field(default=0, ge=0)
     available_end_sec: int = Field(default=30 * 86400, gt=0)
     depot: LocationPoint
+    return_to_depot: bool = True
+    end_depot: Optional[LocationPoint] = None
     model: Optional[str] = None
     vehicle_type: Optional[str] = None
+    temperature_mode: Literal["DRY", "CHILLED", "FROZEN", "ISOTHERMAL"] = "DRY"
+    has_tail_lift: bool = False
+    toll_factor: float = Field(default=1.0, gt=0)
     fuel_consumption_liters_per_100_km: float = Field(
         ge=0, description="Baseline fuel consumption without cargo"
     )
@@ -59,6 +85,9 @@ class DriverOption(StrictContractModel):
     fixed_salary_monthly_vnd: int = Field(ge=0)
     trip_base_pay_vnd: int = Field(ge=0)
     per_km_pay_vnd: int = Field(ge=0)
+    home_location_id: Optional[str] = None
+    home_province_code: Optional[str] = None
+    strict_home_location: bool = False
 
 
 def can_driver_drive_vehicle(
@@ -92,6 +121,42 @@ def can_driver_drive_vehicle(
     return False
 
 
+class DrivingRestPolicy(StrictContractModel):
+    """Configurable driving-hour and mandatory-rest limits for long-haul routes."""
+
+    policy_code: str = "VN_INTERPROVINCIAL_STANDARD"
+    effective_from: str = "2026-01-01"
+    jurisdiction: str = "VN"
+    enabled: bool = True
+    max_continuous_driving_sec: int = Field(default=4 * 3600, gt=0)
+    short_rest_duration_sec: int = Field(default=15 * 60, ge=0)
+    max_daily_driving_sec: int = Field(default=10 * 3600, gt=0)
+    daily_rest_duration_sec: int = Field(default=8 * 3600, ge=0)
+    max_weekly_driving_sec: Optional[int] = Field(default=None, gt=0)
+    min_inter_trip_rest_sec: int = Field(default=0, ge=0)
+    overnight_allowance_vnd: int = Field(default=0, ge=0)
+    rest_allowance_during_service: bool = True
+
+    @model_validator(mode="after")
+    def validate_rest_limits(self):
+        if self.max_daily_driving_sec < self.max_continuous_driving_sec:
+            raise ValueError("max_daily_driving_sec must be >= max_continuous_driving_sec")
+        if (
+            self.max_weekly_driving_sec is not None
+            and self.max_weekly_driving_sec < self.max_daily_driving_sec
+        ):
+            raise ValueError("max_weekly_driving_sec must be >= max_daily_driving_sec")
+        return self
+
+
+class RestBreakRecord(StrictContractModel):
+    leg_after_sequence: int = Field(ge=0)
+    reason: Literal["CONTINUOUS_DRIVING", "DAILY_LIMIT"]
+    start_time_sec: int = Field(ge=0)
+    end_time_sec: int = Field(ge=0)
+    duration_sec: int = Field(gt=0)
+
+
 class CostPolicy(StrictContractModel):
     fuel_price_per_liter_vnd: int = Field(gt=0)
     monthly_working_minutes: int = Field(gt=0)
@@ -103,6 +168,7 @@ class CostPolicy(StrictContractModel):
     ] = "NONE"
     late_delivery_penalty_value: float = Field(default=0, ge=0)
     max_routes_per_day: Optional[int] = Field(default=None, ge=1, le=500)
+    driving_rest_policy: Optional[DrivingRestPolicy] = None
 
     @model_validator(mode="after")
     def validate_late_delivery_penalty(self):
@@ -130,6 +196,10 @@ class CargoItem(StrictContractModel):
     allow_upper_tier: bool = True
     no_top_load_requested: bool = False
     max_top_load_g: Optional[int] = Field(default=None, gt=0)
+    required_temperature: Optional[Literal["DRY", "CHILLED", "FROZEN"]] = None
+    cargo_group: Optional[str] = None
+    incompatible_cargo_groups: List[str] = Field(default_factory=list)
+    requires_lift_equipment: bool = False
 
     @model_validator(mode="after")
     def validate_allowed_orientations(self):
@@ -231,6 +301,22 @@ class DemoStackingPolicy(StrictContractModel):
     lift_clearance_cm: float = Field(gt=0, allow_inf_nan=False)
     owner_mode: Literal["SAME_CUSTOMER", "ANY_CUSTOMER"] = "SAME_CUSTOMER"
     max_top_load_percent: int = Field(default=30, ge=1, le=100)
+    enforce_weight_balance: bool = False
+    max_lateral_imbalance_percent: Optional[float] = Field(default=None, gt=0, le=100)
+    max_longitudinal_imbalance_percent: Optional[float] = Field(default=None, gt=0, le=100)
+
+    @model_serializer(mode="wrap")
+    def _serialize_preserving_legacy_shape(self, handler):
+        data = handler(self)
+        if (
+            not self.enforce_weight_balance
+            and self.max_lateral_imbalance_percent is None
+            and self.max_longitudinal_imbalance_percent is None
+        ):
+            data.pop("enforce_weight_balance", None)
+            data.pop("max_lateral_imbalance_percent", None)
+            data.pop("max_longitudinal_imbalance_percent", None)
+        return data
 
 
 def default_stacking_policy() -> DemoStackingPolicy:
@@ -371,16 +457,60 @@ class FleetOptimizationRequest(StrictContractModel):
     hybrid_seed_count: int = Field(default=0, ge=0, le=20)
     distance_matrix_meters: List[List[float]]
     duration_matrix_seconds: List[List[float]]
+    toll_matrix_vnd: Optional[List[List[float]]] = None
 
     @model_validator(mode="after")
     def validate_matrix_shape(self):
         expected = len(self.vehicles) + 2 * len(self.orders)
-        for name, matrix in (
+        known_location_keys = set()
+        known_coords = set()
+        for vehicle in self.vehicles:
+            known_location_keys.add(vehicle.depot.id)
+            if vehicle.depot.source_location_id:
+                known_location_keys.add(vehicle.depot.source_location_id)
+            known_coords.add((round(vehicle.depot.latitude, 6), round(vehicle.depot.longitude, 6)))
+        for order in self.orders:
+            for loc in (order.pickup_location, order.delivery_location):
+                known_location_keys.add(loc.id)
+                if loc.source_location_id:
+                    known_location_keys.add(loc.source_location_id)
+                known_coords.add((round(loc.latitude, 6), round(loc.longitude, 6)))
+
+        extra_end_keys: List[str] = []
+        for vehicle in self.vehicles:
+            end_depot = vehicle.end_depot
+            if end_depot is None:
+                continue
+            key = end_depot.source_location_id or end_depot.id
+            coord = (round(end_depot.latitude, 6), round(end_depot.longitude, 6))
+            if (
+                end_depot.id not in known_location_keys
+                and key not in known_location_keys
+                and coord not in known_coords
+                and key not in extra_end_keys
+            ):
+                extra_end_keys.append(key)
+
+        expected_with_extra = expected + len(extra_end_keys)
+        allowed_sizes = {expected}
+        if extra_end_keys:
+            allowed_sizes = {expected_with_extra}
+        elif any(v.end_depot is not None for v in self.vehicles):
+            allowed_sizes = {expected, expected_with_extra}
+
+        matrices_to_validate: List[tuple[str, List[List[float]]]] = [
             ("distance_matrix_meters", self.distance_matrix_meters),
             ("duration_matrix_seconds", self.duration_matrix_seconds),
-        ):
-            if len(matrix) != expected or any(len(row) != expected for row in matrix):
-                raise ValueError(f"{name} must be a {expected}x{expected} matrix")
+        ]
+        if self.toll_matrix_vnd is not None:
+            matrices_to_validate.append(("toll_matrix_vnd", self.toll_matrix_vnd))
+
+        for name, matrix in matrices_to_validate:
+            if len(matrix) not in allowed_sizes or any(len(row) != len(matrix) for row in matrix):
+                target_size = expected_with_extra if extra_end_keys else expected
+                raise ValueError(f"{name} must be a {target_size}x{target_size} matrix")
+            if self.distance_matrix_meters and len(matrix) != len(self.distance_matrix_meters):
+                raise ValueError(f"{name} must match distance_matrix_meters shape")
             if any(not isfinite(value) or value < 0 for row in matrix for value in row):
                 raise ValueError(f"{name} must contain finite nonnegative values")
         for name, identifiers in (
@@ -425,6 +555,8 @@ class RouteCostBreakdown(StrictContractModel):
     vehicle_fixed_cost_vnd: int
     driver_fixed_salary_allocation_vnd: int
     driver_trip_pay_vnd: int
+    toll_cost_vnd: int = 0
+    overnight_allowance_vnd: int = 0
     total_cost_vnd: int
 
 
@@ -445,6 +577,9 @@ class OptimizedRoute(StrictContractModel):
     total_duration_minutes: float
     return_travel_time_sec: int = Field(default=0, ge=0)
     return_waiting_time_sec: int = Field(default=0, ge=0)
+    mandatory_rest_sec: int = Field(default=0, ge=0)
+    rest_breaks: List[RestBreakRecord] = Field(default_factory=list)
+    province_hops: List[str] = Field(default_factory=list)
     stops: List[ScheduledStop]
     spatial_validation: SpatialValidationResult
     cost: Optional[RouteCostBreakdown] = None

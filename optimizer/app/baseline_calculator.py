@@ -5,6 +5,19 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
+from .interprovincial import (
+    estimate_driving_rest_lower_bound_sec,
+    extract_province_hops,
+    is_driver_compatible_with_vehicle,
+    is_order_compatible_with_vehicle_and_warehouses,
+    is_rest_policy_enabled,
+    location_identity,
+    needs_interprovincial_timeline,
+    resolve_vehicle_end_location,
+    resolve_vehicle_end_node_index,
+    schedule_route_timeline,
+    stop_effective_service_seconds,
+)
 from .models import (
     BenchmarkComparisonResponse,
     BenchmarkMetric,
@@ -13,6 +26,7 @@ from .models import (
     FleetVehicle,
     OptimizedRoute,
     OrderPair,
+    RestBreakRecord,
     RouteCostBreakdown,
     ScheduledStop,
     SpatialValidationResult,
@@ -38,6 +52,11 @@ class _EvaluatedRoute:
     start_time_sec: int
     spatial_validation: Optional[SpatialValidationResult] = None
     violations: List[str] = field(default_factory=list)
+    return_travel_time_sec: int = 0
+    return_waiting_time_sec: int = 0
+    mandatory_rest_sec: int = 0
+    rest_breaks: List[RestBreakRecord] = field(default_factory=list)
+    province_hops: List[str] = field(default_factory=list)
 
 
 class _DirectRoutingTimeout(TimeoutError):
@@ -121,7 +140,12 @@ class BaselineCostCalculator:
         violations: List[str] = []
 
         order = self.orders[order_index]
+        if not is_order_compatible_with_vehicle_and_warehouses(order, vehicle):
+            violations.append(
+                f"COMPATIBILITY:{order.order_number} không tương thích xe hoặc kho"
+            )
         pickup_index = len(self.vehicles) + 2 * order_index
+        prev_loc_key: Optional[str] = None
         for action in actions:
             node_index = pickup_index if action.stop_type == "PICKUP" else pickup_index + 1
             travel_seconds = round(self.request.duration_matrix_seconds[current_node][node_index])
@@ -134,9 +158,15 @@ class BaselineCostCalculator:
             else:
                 window_start, window_end = order.delivery_window_start_sec, order.delivery_window_end_sec
                 curfews = order.delivery_curfew_windows
+            loc_key_self = location_identity(
+                order.pickup_location if action.stop_type == "PICKUP" else order.delivery_location
+            )
+            service_time_sec, prev_loc_key = stop_effective_service_seconds(
+                order, action.stop_type, prev_loc_key or loc_key_self
+            )
             arrival = advance_past_curfews(
                 max(physical_arrival, float(window_start)),
-                order.service_seconds(action.stop_type),
+                service_time_sec,
                 vehicle.payload_limit_kg,
                 curfews,
             )
@@ -162,7 +192,6 @@ class BaselineCostCalculator:
                 )
 
             rounded_arrival = round(arrival)
-            service_time_sec = order.service_seconds(action.stop_type)
             departure = rounded_arrival + service_time_sec
             scheduled.append(
                 ScheduledStop(
@@ -189,11 +218,53 @@ class BaselineCostCalculator:
             current_time = departure
             current_node = node_index
 
+        end_node_idx: Optional[int] = None
+        return_travel = 0
+        return_waiting = 0
+        mandatory_rest_sec = 0
+        rest_breaks: List[RestBreakRecord] = []
         if return_to_depot:
-            total_distance += self.request.distance_matrix_meters[current_node][vehicle_index]
-            current_time += round(self.request.duration_matrix_seconds[current_node][vehicle_index])
+            end_node_idx = resolve_vehicle_end_node_index(
+                self.vehicles, self.orders, vehicle_index, vehicle
+            )
+            if end_node_idx is not None:
+                total_distance += self.request.distance_matrix_meters[current_node][end_node_idx]
+                return_travel = round(self.request.duration_matrix_seconds[current_node][end_node_idx])
+                current_time += return_travel
         if current_time > vehicle.available_end_sec and not violations:
             violations.append(f"VEHICLE_AVAILABILITY:{vehicle.plate_number} kết thúc chuyến sau giờ khả dụng")
+
+        if not violations:
+            rest_policy = getattr(self.request.policy, "driving_rest_policy", None)
+            if needs_interprovincial_timeline(self.request, vehicle):
+                timeline = schedule_route_timeline(
+                    vehicle=vehicle,
+                    vehicle_index=vehicle_index if start_node_index is None else start_node_index,
+                    stops=scheduled,
+                    order_by_id=self.order_by_id,
+                    distance_matrix=self.request.distance_matrix_meters,
+                    duration_matrix=self.request.duration_matrix_seconds,
+                    stop_node_resolver=lambda s: (
+                        pickup_index if s.stop_type == "PICKUP" else pickup_index + 1
+                    ),
+                    end_node_index=end_node_idx if return_to_depot else None,
+                    rest_policy=rest_policy,
+                    apply_jit_start=False,
+                    initial_start_sec=start_time,
+                )
+                if not timeline.feasible:
+                    violations.append(f"VEHICLE_AVAILABILITY:{timeline.reason}")
+                else:
+                    for idx_s, t_stop in enumerate(timeline.scheduled_stops):
+                        scheduled[idx_s] = t_stop.model_copy(
+                            update={"current_weight_kg": scheduled[idx_s].current_weight_kg}
+                        )
+                    current_time = timeline.route_end_sec
+                    total_distance = timeline.total_distance_meters
+                    return_travel = timeline.return_travel_time_sec
+                    return_waiting = timeline.return_waiting_time_sec
+                    mandatory_rest_sec = timeline.mandatory_rest_sec
+                    rest_breaks = timeline.rest_breaks
 
         # Fast checks: Nếu đã vi phạm tải trọng, trạng thái dỡ hoặc thời gian, bỏ qua xếp dỡ hình học nặng
         if not violations:
@@ -270,6 +341,14 @@ class BaselineCostCalculator:
                 scheduled = sync_route_stacking_unloads(scheduled, spatial)
             if not spatial.is_valid:
                 violations.append(f"SPATIAL:{spatial.error_message or spatial.violation_code or 'Bố trí xếp/dỡ không hợp lệ'}")
+        resolved_end_loc = (
+            resolve_vehicle_end_location(vehicle, scheduled, self.order_by_id)
+            if return_to_depot
+            else order.delivery_location
+        )
+        province_hops = extract_province_hops(
+            vehicle, scheduled, self.order_by_id, resolved_end_loc
+        )
         return _EvaluatedRoute(
             vehicle=vehicle,
             stops=scheduled,
@@ -278,13 +357,18 @@ class BaselineCostCalculator:
             start_time_sec=start_time,
             spatial_validation=spatial,
             violations=violations,
+            return_travel_time_sec=return_travel,
+            return_waiting_time_sec=return_waiting,
+            mandatory_rest_sec=mandatory_rest_sec,
+            rest_breaks=rest_breaks,
+            province_hops=province_hops,
         )
 
     @staticmethod
     def _is_driver_compatible(driver: DriverOption, vehicle: FleetVehicle) -> bool:
-        vehicle_type = vehicle.vehicle_type or vehicle.model or ""
-        return can_driver_drive_vehicle(
-            driver.license_class, vehicle.payload_limit_kg, vehicle_type
+        return is_driver_compatible_with_vehicle(
+            driver,
+            vehicle.model_copy(update={"service_day_index": driver.service_day_index}),
         )
 
     def _route_cost(
@@ -302,6 +386,7 @@ class BaselineCostCalculator:
             route.duration_seconds / 60,
             start_node_index=start_node_index,
             return_to_depot=return_to_depot,
+            rest_breaks=route.rest_breaks,
         )
 
     def _unavailable_direct(self, reason: str) -> BenchmarkMetric:
@@ -465,6 +550,8 @@ class BaselineCostCalculator:
 
         # Every pickup must be followed immediately by its own delivery. Between
         # orders, the empty vehicle drives directly to the next pickup.
+        rest_policy = getattr(self.request.policy, "driving_rest_policy", None)
+        rest_enabled = is_rest_policy_enabled(rest_policy)
         slot_count = len(paired_slots)
         matrix_nodes = [matrix_idx for matrix_idx, _, _ in paired_slots]
         service_seconds = [0] * slot_count
@@ -472,40 +559,92 @@ class BaselineCostCalculator:
         for order_index, (order, actions) in enumerate(zip(self.orders, order_actions)):
             pickup_index = len(self.vehicles) + 2 * order_index
             matrix_nodes.extend((pickup_index, pickup_index + 1))
-            service_seconds.extend(order.service_seconds(action.stop_type) for action in actions)
+            p_svc, p_key = stop_effective_service_seconds(order, actions[0].stop_type, None)
+            d_svc, _ = stop_effective_service_seconds(order, actions[1].stop_type, p_key)
+            service_seconds.append(p_svc)
+            service_seconds.append(d_svc)
+        order_node_end = len(matrix_nodes)
+
+        def _order_transit(origin_node: int, dest_node: int) -> int:
+            drive = round(self.request.duration_matrix_seconds[matrix_nodes[origin_node]][matrix_nodes[dest_node]])
+            return drive + (estimate_driving_rest_lower_bound_sec(drive, rest_policy) if rest_enabled else 0)
+
         minimum_work = sum(
-            service_seconds[node] + service_seconds[node + 1]
-            + round(self.request.duration_matrix_seconds[matrix_nodes[node]][matrix_nodes[node + 1]])
-            for node in range(slot_count, len(matrix_nodes), 2)
+            service_seconds[node] + service_seconds[node + 1] + _order_transit(node, node + 1)
+            for node in range(slot_count, order_node_end, 2)
         )
         if minimum_work > sum(vehicle.available_end_sec - vehicle.available_start_sec for _, vehicle, _ in paired_slots):
             return None
-        depot_nodes = list(range(slot_count))
-        manager = pywrapcp.RoutingIndexManager(len(matrix_nodes), slot_count, depot_nodes, depot_nodes)
+
+        start_nodes = list(range(slot_count))
+        end_nodes: List[int] = []
+        dummy_end_solver_node: Optional[int] = None
+        for slot, (matrix_idx, vehicle, _) in enumerate(paired_slots):
+            end_matrix_idx = resolve_vehicle_end_node_index(
+                self.vehicles, self.orders, matrix_idx, vehicle
+            )
+            if end_matrix_idx is None:
+                if dummy_end_solver_node is None:
+                    dummy_end_solver_node = len(matrix_nodes)
+                    matrix_nodes.append(-1)
+                    service_seconds.append(0)
+                end_nodes.append(dummy_end_solver_node)
+            elif end_matrix_idx == matrix_idx:
+                end_nodes.append(slot)
+            else:
+                solver_end = len(matrix_nodes)
+                matrix_nodes.append(end_matrix_idx)
+                service_seconds.append(0)
+                end_nodes.append(solver_end)
+
+        manager = pywrapcp.RoutingIndexManager(len(matrix_nodes), slot_count, start_nodes, end_nodes)
         routing = pywrapcp.RoutingModel(manager)
         durations = self.request.duration_matrix_seconds
         distances = self.request.distance_matrix_meters
 
         def travel(from_index: int, to_index: int) -> int:
             origin, destination = manager.IndexToNode(from_index), manager.IndexToNode(to_index)
-            return service_seconds[origin] + round(durations[matrix_nodes[origin]][matrix_nodes[destination]])
+            if dummy_end_solver_node is not None and (destination == dummy_end_solver_node or origin == dummy_end_solver_node):
+                return 0
+            drive = round(durations[matrix_nodes[origin]][matrix_nodes[destination]])
+            rest_lb = estimate_driving_rest_lower_bound_sec(drive, rest_policy) if rest_enabled else 0
+            return service_seconds[origin] + drive + rest_lb
 
         horizon = max(vehicle.available_end_sec for _, vehicle, _ in paired_slots)
         time_index = routing.RegisterTransitCallback(travel)
         routing.AddDimension(time_index, horizon, horizon, False, "DirectShift")
         schedule = routing.GetDimensionOrDie("DirectShift")
 
+        toll_matrix = getattr(self.request, "toll_matrix_vnd", None)
         for slot, (_, vehicle, driver) in enumerate(paired_slots):
             fuel_per_km = vehicle.fuel_consumption_liters_per_100_km * self.request.policy.fuel_price_per_liter_vnd / 100
             per_km = fuel_per_km + driver.per_km_pay_vnd
             trip_cost = vehicle.fixed_operating_cost_vnd + driver.trip_base_pay_vnd
+            toll_factor = float(getattr(vehicle, "toll_factor", 1.0) or 1.0)
 
-            def cost(from_index: int, to_index: int, rate: float = per_km, fixed: int = trip_cost) -> int:
+            def cost(
+                from_index: int,
+                to_index: int,
+                rate: float = per_km,
+                fixed: int = trip_cost,
+                t_factor: float = toll_factor,
+            ) -> int:
                 origin, destination = manager.IndexToNode(from_index), manager.IndexToNode(to_index)
-                meters = distances[matrix_nodes[origin]][matrix_nodes[destination]]
+                if dummy_end_solver_node is not None and (destination == dummy_end_solver_node or origin == dummy_end_solver_node):
+                    return 0
+                m_from = matrix_nodes[origin]
+                m_to = matrix_nodes[destination]
+                meters = distances[m_from][m_to]
                 # Retain distance as a tie-breaker when different legs round to the same VND.
                 arc_cost = round(meters * (rate + 1))
-                return arc_cost + (fixed * 1000 if origin >= slot_count and (origin - slot_count) % 2 == 0 else 0)
+                if (
+                    toll_matrix is not None
+                    and m_from < len(toll_matrix)
+                    and m_to < len(toll_matrix[m_from])
+                ):
+                    arc_cost += round(float(toll_matrix[m_from][m_to]) * t_factor * 1000)
+                is_pickup = slot_count <= origin < order_node_end and (origin - slot_count) % 2 == 0
+                return arc_cost + (fixed * 1000 if is_pickup else 0)
 
             routing.SetArcCostEvaluatorOfVehicle(routing.RegisterTransitCallback(cost), slot)
             day_penalty_vnd = max(
@@ -531,12 +670,15 @@ class BaselineCostCalculator:
             pickup_service = service_seconds[pickup_node]
             delivery_service = service_seconds[pickup_node + 1]
             loaded_travel = round(durations[matrix_nodes[pickup_node]][matrix_nodes[pickup_node + 1]])
+            loaded_rest = estimate_driving_rest_lower_bound_sec(loaded_travel, rest_policy) if rest_enabled else 0
             for slot, (_, vehicle, _) in enumerate(paired_slots):
-                vehicle_id = vehicle.source_vehicle_id or vehicle.id
-                if order.allowed_source_vehicle_ids and vehicle_id not in order.allowed_source_vehicle_ids:
+                if not is_order_compatible_with_vehicle_and_warehouses(order, vehicle):
                     continue
                 earliest_pickup = max(order.pickup_window_start_sec, vehicle.available_start_sec)
-                earliest_delivery = max(order.delivery_window_start_sec, earliest_pickup + pickup_service + loaded_travel)
+                earliest_delivery = max(
+                    order.delivery_window_start_sec,
+                    earliest_pickup + pickup_service + loaded_travel + loaded_rest,
+                )
                 if (earliest_pickup > order.pickup_window_end_sec
                     or earliest_delivery > order.delivery_window_end_sec
                     or earliest_delivery + delivery_service > vehicle.available_end_sec):
@@ -583,9 +725,13 @@ class BaselineCostCalculator:
                 delivery_index = solution.Value(routing.NextVar(index))
                 index = solution.Value(routing.NextVar(delivery_index))
                 last_trip = routing.IsEnd(index)
+                should_return = last_trip and (
+                    getattr(vehicle, "return_to_depot", True)
+                    or vehicle.end_depot is not None
+                )
                 trip = self._evaluate_actions(vehicle, matrix_idx, order_actions[order_index], order_index=order_index,
                                               start_node_index=start_node, start_time_sec=departure,
-                                              return_to_depot=last_trip, spatial_time_limit_seconds=1.5)
+                                              return_to_depot=should_return, spatial_time_limit_seconds=1.5)
                 spatial = trip.spatial_validation
                 if trip.violations or spatial is None or not spatial.is_valid:
                     if not trip.violations or not all(reason.startswith("SPATIAL:") for reason in trip.violations):
@@ -597,13 +743,22 @@ class BaselineCostCalculator:
                     start_node = matrix_nodes[pickup_node + 1]
                     continue
                 end_time = departure + round(trip.duration_seconds)
+                end_loc = (
+                    resolve_vehicle_end_location(vehicle, trip.stops, self.order_by_id)
+                    if last_trip
+                    else order.delivery_location
+                )
                 routes.append(OptimizedRoute(
                     route_id=f"direct:{vehicle.id}:{order.id}",
                     vehicle_id=vehicle.source_vehicle_id or vehicle.id,
                     service_day_index=vehicle.service_day_index,
                     start_time_sec=departure,
                     end_time_sec=end_time,
-                    return_travel_time_sec=end_time - trip.stops[-1].departure_time_sec,
+                    return_travel_time_sec=trip.return_travel_time_sec,
+                    return_waiting_time_sec=trip.return_waiting_time_sec,
+                    mandatory_rest_sec=trip.mandatory_rest_sec,
+                    rest_breaks=trip.rest_breaks,
+                    province_hops=trip.province_hops,
                     plate_number=vehicle.plate_number,
                     vehicle_length_cm=vehicle.length_cm,
                     vehicle_width_cm=vehicle.width_cm,
@@ -614,10 +769,10 @@ class BaselineCostCalculator:
                     total_distance_km=trip.distance_meters / 1000,
                     total_duration_minutes=trip.duration_seconds / 60,
                     depot=start_point,
-                    end_location=vehicle.depot if last_trip else order.delivery_location,
+                    end_location=end_loc,
                     stops=trip.stops,
                     spatial_validation=spatial,
-                    cost=self._route_cost(trip, driver, start_node, last_trip),
+                    cost=self._route_cost(trip, driver, start_node, should_return),
                 ))
                 departure = end_time
                 start_point = order.delivery_location

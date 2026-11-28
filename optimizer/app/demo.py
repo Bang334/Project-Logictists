@@ -24,6 +24,7 @@ from .multi_start import MultiStartFleetOptimizer
 router = APIRouter(prefix="/demo", tags=["Demo Benchmarks"])
 
 CASES_DIR = Path(__file__).resolve().parent.parent / "benchmarks" / "demo"
+INTERPROVINCIAL_CASES_DIR = CASES_DIR / "interprovincial"
 
 
 class DemoCaseSummary(BaseModel):
@@ -61,31 +62,40 @@ class DemoRunRequest(BaseModel):
     policy_overrides: Optional[Dict[str, Any]] = None
 
 
-def _load_catalog() -> dict:
-    catalog_path = CASES_DIR / "catalog.json"
+def _load_catalog(cases_dir: Path = CASES_DIR) -> dict:
+    catalog_path = cases_dir / "catalog.json"
     if not catalog_path.is_file():
         return {}
     return json.loads(catalog_path.read_text(encoding="utf-8"))
 
 
-def _load_case_dict(case_id: str) -> dict:
+def _resolve_case_path(case_id: str) -> Optional[Path]:
     if not case_id or not case_id.replace("_", "").isalnum():
-        raise HTTPException(status_code=404, detail="Không tìm thấy kịch bản demo")
-    catalog = _load_catalog()
-    if case_id not in catalog:
-        raise HTTPException(status_code=404, detail="Không tìm thấy kịch bản demo")
-    path = CASES_DIR / f"{case_id}.json"
-    if not path.is_file():
+        return None
+    for cases_dir in (CASES_DIR, INTERPROVINCIAL_CASES_DIR):
+        catalog = _load_catalog(cases_dir)
+        if case_id in catalog:
+            path = cases_dir / f"{case_id}.json"
+            if path.is_file():
+                return path
+    return None
+
+
+def _load_case_dict(case_id: str) -> dict:
+    path = _resolve_case_path(case_id)
+    if path is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy kịch bản demo")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-@router.get("/cases", response_model=List[DemoCaseSummary])
-def list_demo_cases() -> List[DemoCaseSummary]:
-    summaries = []
-    catalog = _load_catalog()
+def _summarize_catalog_cases(cases_dir: Path) -> List[DemoCaseSummary]:
+    summaries: List[DemoCaseSummary] = []
+    catalog = _load_catalog(cases_dir)
     for case_id, profile in catalog.items():
-        data = _load_case_dict(case_id)
+        path = cases_dir / f"{case_id}.json"
+        if not path.is_file():
+            continue
+        data = json.loads(path.read_text(encoding="utf-8"))
         items = [item for order in data["orders"] for item in order["items"]]
         summaries.append(DemoCaseSummary(
             id=case_id,
@@ -109,6 +119,17 @@ def list_demo_cases() -> List[DemoCaseSummary]:
             supports_stacking=data.get("demo_stacking") is not None,
         ))
     return summaries
+
+
+@router.get("/cases", response_model=List[DemoCaseSummary])
+def list_demo_cases() -> List[DemoCaseSummary]:
+    return _summarize_catalog_cases(CASES_DIR)
+
+
+@router.get("/interprovincial/cases", response_model=List[DemoCaseSummary])
+def list_interprovincial_demo_cases() -> List[DemoCaseSummary]:
+    """Liệt kê các kịch bản mẫu vận chuyển liên tỉnh giữa các kho hàng."""
+    return _summarize_catalog_cases(INTERPROVINCIAL_CASES_DIR)
 
 
 @router.get("/cases/{case_id}")
@@ -185,25 +206,30 @@ def run_demo_case(payload: DemoRunRequest) -> FleetOptimizationBatchResponse:
     optimizer = MultiStartFleetOptimizer(solver_request)
     batch = optimizer.solve(max_candidates=3)
 
-    # Đính kèm thông tin depot và baseline route_geometry cho từng route
+    # Đính kèm thông tin depot, end_location và baseline route_geometry cho từng route
     vehicle_map = {v.id: v for v in request.vehicles}
     for candidate in batch.candidates:
         if not candidate.result or not candidate.result.routes:
             continue
         for route in candidate.result.routes:
             v = vehicle_map.get(route.vehicle_id) or vehicle_map.get(route.route_id)
-            if v and v.depot:
+            if v and v.depot and route.depot is None:
                 route.depot = v.depot
 
-            # Nếu chưa có route_geometry, tạo GeoJSON LineString nối depot và các stops
+            # Nếu chưa có route_geometry, tạo GeoJSON LineString nối depot -> stops -> end_location
             if not route.route_geometry:
                 coords = []
                 if route.depot:
                     coords.append([route.depot.longitude, route.depot.latitude])
                 for stop in (route.stops or []):
                     coords.append([stop.longitude, stop.latitude])
-                if route.depot and len(coords) > 0:
-                    coords.append([route.depot.longitude, route.depot.latitude])
+                end_loc = route.end_location or (
+                    v.end_depot if v and v.end_depot is not None else (route.depot if (not v or v.return_to_depot) else None)
+                )
+                if end_loc and len(coords) > 0:
+                    last_coord = coords[-1]
+                    if last_coord != [end_loc.longitude, end_loc.latitude]:
+                        coords.append([end_loc.longitude, end_loc.latitude])
 
                 if len(coords) >= 2:
                     route.route_geometry = {

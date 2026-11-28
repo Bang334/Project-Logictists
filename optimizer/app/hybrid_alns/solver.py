@@ -19,6 +19,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from ..interprovincial import is_order_compatible_with_vehicle_and_warehouses
 from ..models import advance_past_curfews
 from .models import (
     CostPolicy,
@@ -172,9 +173,13 @@ class HybridALNSSolver:
             return cached
         vehicle = self.vehicles[vehicle_index]
         driver = self.drivers[vehicle_index]
-        end_depot = vehicle.end_depot or vehicle.depot
         depot_index = self.node_id_to_index[vehicle.depot.id]
-        end_depot_index = self.node_id_to_index[end_depot.id]
+        end_depot = getattr(vehicle, "end_depot", None)
+        end_depot_index = (
+            self.node_id_to_index[end_depot.id]
+            if end_depot is not None
+            else (depot_index if getattr(vehicle, "return_to_depot", True) else None)
+        )
         service_indices = sorted(
             {
                 self.node_id_to_index[location.id]
@@ -182,23 +187,41 @@ class HybridALNSSolver:
                 for location in (order.pickup_location, order.delivery_location)
             }
         )
+        toll_matrix = getattr(self.policy, "toll_matrix_vnd", None)
         profile = (
             vehicle.service_day_index,
             vehicle.available_start_sec,
             vehicle.available_end_sec,
             driver.service_day_index,
+            getattr(driver, "home_location_id", None),
+            getattr(driver, "home_province_code", None),
+            bool(getattr(driver, "strict_home_location", False)),
             vehicle.length_cm,
             vehicle.width_cm,
             vehicle.height_cm,
             vehicle.payload_limit_kg,
             vehicle.door_position,
+            bool(getattr(vehicle, "return_to_depot", True)),
+            getattr(vehicle, "temperature_mode", "AMBIENT"),
+            bool(getattr(vehicle, "has_tail_lift", False)),
+            float(getattr(vehicle, "toll_factor", 1.0)),
             vehicle.fuel_consumption_liters_per_100_km,
             vehicle.load_fuel_surcharge_percent_at_full_payload,
             vehicle.fixed_operating_cost_vnd,
             tuple(self.distance_matrix[depot_index][index] for index in service_indices),
             tuple(self.duration_matrix[depot_index][index] for index in service_indices),
-            tuple(self.distance_matrix[index][end_depot_index] for index in service_indices),
-            tuple(self.duration_matrix[index][end_depot_index] for index in service_indices),
+            tuple(self.distance_matrix[index][end_depot_index] for index in service_indices)
+            if end_depot_index is not None
+            else (),
+            tuple(self.duration_matrix[index][end_depot_index] for index in service_indices)
+            if end_depot_index is not None
+            else (),
+            tuple(toll_matrix[depot_index][index] for index in service_indices)
+            if toll_matrix is not None and depot_index < len(toll_matrix)
+            else (),
+            tuple(toll_matrix[index][end_depot_index] for index in service_indices)
+            if toll_matrix is not None and end_depot_index is not None and end_depot_index < len(toll_matrix)
+            else (),
             driver.fixed_salary_monthly_vnd,
             driver.trip_base_pay_vnd,
             driver.per_km_pay_vnd,
@@ -418,20 +441,24 @@ class HybridALNSSolver:
         for index in empty_indices:
             vehicle = self.vehicles[index]
             driver = self.drivers[index]
-            end_depot = vehicle.end_depot or vehicle.depot
+            end_depot = getattr(vehicle, "end_depot", None)
             profile = (
                 vehicle.service_day_index,
                 vehicle.available_start_sec,
                 vehicle.available_end_sec,
                 driver.service_day_index,
+                getattr(driver, "home_location_id", None),
+                getattr(driver, "home_province_code", None),
+                bool(getattr(driver, "strict_home_location", False)),
                 vehicle.payload_limit_kg,
                 vehicle.length_cm,
                 vehicle.width_cm,
                 vehicle.height_cm,
+                bool(getattr(vehicle, "return_to_depot", True)),
                 round(vehicle.depot.latitude, 6),
                 round(vehicle.depot.longitude, 6),
-                round(end_depot.latitude, 6),
-                round(end_depot.longitude, 6),
+                round(end_depot.latitude, 6) if end_depot is not None else None,
+                round(end_depot.longitude, 6) if end_depot is not None else None,
                 vehicle.fuel_consumption_liters_per_100_km,
                 vehicle.load_fuel_surcharge_percent_at_full_payload,
                 vehicle.fixed_operating_cost_vnd,
@@ -500,7 +527,7 @@ class HybridALNSSolver:
         self, vehicle: FleetVehicle, current: List[ScheduledStop]
     ) -> Optional[Tuple[
         int,
-        int,
+        Optional[int],
         List[int],
         List[float],
         List[float],
@@ -511,10 +538,17 @@ class HybridALNSSolver:
     ]]:
         """Precompute exact O(len(current)) payload, window and prefix departure data."""
         depot_idx = self.node_id_to_index.get(vehicle.depot.id)
-        end_depot = vehicle.end_depot or vehicle.depot
-        end_depot_idx = self.node_id_to_index.get(end_depot.id)
-        if depot_idx is None or end_depot_idx is None:
+        if depot_idx is None:
             return None
+        end_depot = getattr(vehicle, "end_depot", None)
+        if end_depot is not None:
+            end_depot_idx: Optional[int] = self.node_id_to_index.get(end_depot.id)
+            if end_depot_idx is None:
+                return None
+        elif not getattr(vehicle, "return_to_depot", True):
+            end_depot_idx = None
+        else:
+            end_depot_idx = depot_idx
         stop_nodes: List[int] = []
         stop_win_starts: List[float] = []
         stop_win_ends: List[float] = []
@@ -596,7 +630,7 @@ class HybridALNSSolver:
         delivery_svc: int,
         ctx: Tuple[
             int,
-            int,
+            Optional[int],
             List[int],
             List[float],
             List[float],
@@ -680,7 +714,7 @@ class HybridALNSSolver:
                 t_dn = float(dur[delivery_node_idx][stop_nodes[pickup_pos]])
                 if t_dn < 0 or float(dep_d) + t_dn > stop_win_ends[pickup_pos] + 0.01:
                     return False
-            else:
+            elif end_depot_idx is not None:
                 t_de = float(dur[delivery_node_idx][end_depot_idx])
                 if t_de < 0 or float(dep_d) + t_de > vehicle.available_end_sec:
                     return False
@@ -707,7 +741,7 @@ class HybridALNSSolver:
                 t_dn = float(dur[delivery_node_idx][stop_nodes[after_idx]])
                 if t_dn < 0 or float(dep_d_lb) + t_dn > stop_win_ends[after_idx] + 0.01:
                     return False
-            else:
+            elif end_depot_idx is not None:
                 t_de = float(dur[delivery_node_idx][end_depot_idx])
                 if t_de < 0 or float(dep_d_lb) + t_de > vehicle.available_end_sec:
                     return False
@@ -754,10 +788,8 @@ class HybridALNSSolver:
             vehicle = self.vehicles[vehicle_index]
             if order.total_weight_kg > vehicle.payload_limit_kg + 0.01:
                 continue
-            if order.allowed_source_vehicle_ids:
-                src_id = vehicle.source_vehicle_id or vehicle.id
-                if src_id not in order.allowed_source_vehicle_ids and vehicle.id not in order.allowed_source_vehicle_ids:
-                    continue
+            if not is_order_compatible_with_vehicle_and_warehouses(order, vehicle):
+                continue
             if (
                 order.pickup_window_end_sec < vehicle.available_start_sec
                 or order.delivery_window_start_sec > vehicle.available_end_sec
@@ -2142,7 +2174,18 @@ class HybridALNSSolver:
             [[self.node_id_to_index[stop.location_id] for stop in route] for route in routes],
             [[(stop.order_id or "", stop.stop_type) for stop in route] for route in routes],
             [self.node_id_to_index[vehicle.depot.id] for vehicle in self.vehicles],
-            [self.node_id_to_index[(vehicle.end_depot or vehicle.depot).id] for vehicle in self.vehicles],
+            [
+                (
+                    self.node_id_to_index[vehicle.end_depot.id]
+                    if getattr(vehicle, "end_depot", None) is not None
+                    else (
+                        self.node_id_to_index[vehicle.depot.id]
+                        if getattr(vehicle, "return_to_depot", True)
+                        else None
+                    )
+                )
+                for vehicle in self.vehicles
+            ],
             self.distance_matrix, deadline,
         )
         for _, vehicle_index, source, target in moves:
@@ -2788,8 +2831,9 @@ class HybridALNSSolver:
             (
                 round(vehicle.depot.latitude, 6),
                 round(vehicle.depot.longitude, 6),
-                round((vehicle.end_depot or vehicle.depot).latitude, 6),
-                round((vehicle.end_depot or vehicle.depot).longitude, 6),
+                bool(getattr(vehicle, "return_to_depot", True)),
+                round(vehicle.end_depot.latitude, 6) if vehicle.end_depot is not None else None,
+                round(vehicle.end_depot.longitude, 6) if vehicle.end_depot is not None else None,
             )
             for vehicle in self.vehicles
         }
@@ -2800,6 +2844,9 @@ class HybridALNSSolver:
                 vehicle.height_cm,
                 vehicle.payload_limit_kg,
                 vehicle.fixed_operating_cost_vnd,
+                getattr(vehicle, "temperature_mode", "AMBIENT"),
+                bool(getattr(vehicle, "has_tail_lift", False)),
+                float(getattr(vehicle, "toll_factor", 1.0)),
             )
             for vehicle in self.vehicles
         }
@@ -3951,8 +3998,9 @@ def solve_hybrid_alns(
             (
                 round(vehicle.depot.latitude, 6),
                 round(vehicle.depot.longitude, 6),
-                round((vehicle.end_depot or vehicle.depot).latitude, 6),
-                round((vehicle.end_depot or vehicle.depot).longitude, 6),
+                bool(getattr(vehicle, "return_to_depot", True)),
+                round(vehicle.end_depot.latitude, 6) if vehicle.end_depot is not None else None,
+                round(vehicle.end_depot.longitude, 6) if vehicle.end_depot is not None else None,
             )
             for vehicle in vehicles
         }
@@ -3963,6 +4011,9 @@ def solve_hybrid_alns(
                 vehicle.height_cm,
                 vehicle.payload_limit_kg,
                 vehicle.fixed_operating_cost_vnd,
+                getattr(vehicle, "temperature_mode", "AMBIENT"),
+                bool(getattr(vehicle, "has_tail_lift", False)),
+                float(getattr(vehicle, "toll_factor", 1.0)),
             )
             for vehicle in vehicles
         }
@@ -4021,8 +4072,9 @@ def solve_hybrid_alns(
         (
             round(vehicle.depot.latitude, 6),
             round(vehicle.depot.longitude, 6),
-            round((vehicle.end_depot or vehicle.depot).latitude, 6),
-            round((vehicle.end_depot or vehicle.depot).longitude, 6),
+            bool(getattr(vehicle, "return_to_depot", True)),
+            round(vehicle.end_depot.latitude, 6) if vehicle.end_depot is not None else None,
+            round(vehicle.end_depot.longitude, 6) if vehicle.end_depot is not None else None,
         )
         for vehicle in vehicles
     }

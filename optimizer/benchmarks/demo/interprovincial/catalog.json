@@ -1,0 +1,14 @@
+{
+  "interprovincial_north_central_multi_wh": {
+    "name": "Liên tỉnh Bắc–Trung · Đa kho (HN–HP–NA–ĐN · Nghỉ lái bắt buộc)",
+    "category": "SCENARIO",
+    "category_name": "Vận tải Liên tỉnh Kho-tới-Kho & 3D",
+    "description": "2 xe liên tỉnh, 2 tài xế định biên theo kho/tỉnh, 6 chuyến hàng giữa 7 kho thuộc 4 tỉnh (Hà Nội 2 kho, Hải Phòng 1 kho, Nghệ An 2 kho, Đà Nẵng 2 kho). Áp dụng docking kho tự động gộp, quy tắc nghỉ lái bắt buộc (4h/15p và 10h/8h), tuyến mở (return_to_depot=false) và kết thúc khác kho xuất phát (HN -> ĐN)."
+  },
+  "interprovincial_south_corridor_hubs": {
+    "name": "Liên tỉnh Miền Nam · Đa kho (TP.HCM–Bình Dương–Đồng Nai–Cần Thơ)",
+    "category": "SCENARIO",
+    "category_name": "Vận tải Liên tỉnh Kho-tới-Kho & 3D",
+    "description": "2 xe gom và trung chuyển liên tỉnh, 6 kho thuộc 4 tỉnh/thành (TP.HCM 2 kho, Bình Dương 2 kho, Đồng Nai 1 kho, Cần Thơ 1 kho). Gồm tuyến trục mở hướng Cần Thơ (return_to_depot=false) và xe trung chuyển vòng lặp Bình Dương – Đồng Nai – TP.HCM."
+  }
+}

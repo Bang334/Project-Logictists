@@ -611,6 +611,49 @@ def _validate_single_stop_cycle(
     return result
 
 
+def _enforce_weight_balance_policy(
+    policy: Optional[DemoStackingPolicy],
+    result: SpatialValidationResult,
+) -> SpatialValidationResult:
+    if (
+        not result.is_valid
+        or policy is None
+        or not bool(getattr(policy, "enforce_weight_balance", False))
+    ):
+        return result
+    max_lat_limit = getattr(policy, "max_lateral_imbalance_percent", None)
+    max_lon_limit = getattr(policy, "max_longitudinal_imbalance_percent", None)
+    for state in result.step_states:
+        wb = getattr(state, "weight_balance", None)
+        if wb is None or float(getattr(wb, "total_weight_kg", 0.0) or 0.0) <= 1e-6:
+            continue
+        lat_pct = float(getattr(wb, "lateral_imbalance_percent", 0.0) or 0.0)
+        lon_pct = float(getattr(wb, "longitudinal_imbalance_percent", 0.0) or 0.0)
+        violated = False
+        if max_lat_limit is not None and lat_pct > float(max_lat_limit) + 1e-6:
+            violated = True
+        if max_lon_limit is not None and lon_pct > float(max_lon_limit) + 1e-6:
+            violated = True
+        if (
+            max_lat_limit is None
+            and max_lon_limit is None
+            and getattr(wb, "status", "EMPTY") == "IMBALANCED"
+        ):
+            violated = True
+        if violated:
+            return result.model_copy(
+                update={
+                    "is_valid": False,
+                    "violation_code": "WEIGHT_BALANCE_EXCEEDED",
+                    "error_message": (
+                        f"Phân bổ tải trọng tại điểm dừng {state.step_index} bị lệch tâm "
+                        f"(ngang {lat_pct:.1f}%, dọc {lon_pct:.1f}%)."
+                    ),
+                }
+            )
+    return result
+
+
 def validate_stop_actions(
     policy: Optional[DemoStackingPolicy],
     vehicle: Any,
@@ -619,7 +662,7 @@ def validate_stop_actions(
     max_search_nodes: Optional[int] = None,
     max_time_seconds: Optional[float] = None,
 ) -> SpatialValidationResult:
-    """Validate StopAction sequence honoring optional demo_stacking policy."""
+    """Validate StopAction sequence honoring optional demo_stacking and weight balance policy."""
     floor = vehicle if isinstance(vehicle, VehicleFloor) else VehicleFloor(
         id=vehicle.id,
         plate_number=vehicle.plate_number,
@@ -632,24 +675,30 @@ def validate_stop_actions(
     )
     cache = get_active_spatial_cache()
     if cache is None:
-        return _validate_single_stop_cycle(
+        return _enforce_weight_balance_policy(
             policy,
-            floor,
-            actions,
-            max_search_nodes=max_search_nodes,
-            max_time_seconds=max_time_seconds,
-            cache=None,
+            _validate_single_stop_cycle(
+                policy,
+                floor,
+                actions,
+                max_search_nodes=max_search_nodes,
+                max_time_seconds=max_time_seconds,
+                cache=None,
+            ),
         )
 
     cycles = split_independent_stop_cycles(actions)
     if len(cycles) <= 1:
-        return _validate_single_stop_cycle(
+        return _enforce_weight_balance_policy(
             policy,
-            floor,
-            actions,
-            max_search_nodes=max_search_nodes,
-            max_time_seconds=max_time_seconds,
-            cache=cache,
+            _validate_single_stop_cycle(
+                policy,
+                floor,
+                actions,
+                max_search_nodes=max_search_nodes,
+                max_time_seconds=max_time_seconds,
+                cache=cache,
+            ),
         )
 
     deadline = (
@@ -716,15 +765,18 @@ def validate_stop_actions(
         step_states.extend(adjusted_states)
         step_offset += len(cycle)
 
-    return SpatialValidationResult(
-        is_valid=True,
-        max_weight_kg=round(max_weight, 3),
-        max_area_cm2=max_area,
-        max_lateral_imbalance_percent=(
-            round(max_lat_imb, 1) if max_lat_imb is not None else None
+    return _enforce_weight_balance_policy(
+        policy,
+        SpatialValidationResult(
+            is_valid=True,
+            max_weight_kg=round(max_weight, 3),
+            max_area_cm2=max_area,
+            max_lateral_imbalance_percent=(
+                round(max_lat_imb, 1) if max_lat_imb is not None else None
+            ),
+            step_states=step_states,
+            demo_stacking=resolved_policy,
         ),
-        step_states=step_states,
-        demo_stacking=resolved_policy,
     )
 
 

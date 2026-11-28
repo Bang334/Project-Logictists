@@ -10,6 +10,10 @@ from typing import Callable, Dict, FrozenSet, List, Optional, Sequence, Set, Tup
 from ortools.sat.python import cp_model
 
 from .driver_matcher import DriverMatcher
+from .interprovincial import (
+    is_driver_compatible_with_vehicle,
+    is_order_compatible_with_vehicle_and_warehouses,
+)
 from .models import (
     DriverOption,
     FleetOptimizationRequest,
@@ -101,9 +105,11 @@ _route_pool_signature = route_pool_signature
 
 def _physical_vehicle_overlap_free(
     routes: Sequence[OptimizedRoute],
+    min_inter_trip_rest_sec: int = 0,
 ) -> bool:
-    """Verify physical trucks do not run twice in a day or overlap across days."""
+    """Verify physical trucks do not run twice in a day, overlap across days, or violate inter-trip rest."""
     intervals_by_vehicle: Dict[str, List[Tuple[int, int, int, str]]] = defaultdict(list)
+    rest_gap = max(0, int(min_inter_trip_rest_sec or 0))
     for route in routes:
         phys_id = route.vehicle_id or route.plate_number
         if not phys_id:
@@ -115,9 +121,9 @@ def _physical_vehicle_overlap_free(
         for prev_day, prev_start, prev_end, prev_plate in intervals_by_vehicle[phys_id]:
             if day_idx == prev_day:
                 return False
-            if start_s < prev_end and prev_start < end_s:
+            if start_s < prev_end + rest_gap and prev_start < end_s + rest_gap:
                 return False
-            if plate and prev_plate and plate == prev_plate and start_s < prev_end and prev_start < end_s:
+            if plate and prev_plate and plate == prev_plate and start_s < prev_end + rest_gap and prev_start < end_s + rest_gap:
                 return False
         intervals_by_vehicle[phys_id].append((day_idx, start_s, end_s, plate))
     return True
@@ -144,6 +150,8 @@ def _build_interchangeable_vehicle_groups(
             day_plate_counts[(v.service_day_index, v.plate_number)] += 1
         day_phys_counts[(v.service_day_index, phys_id)] += 1
 
+    rest_policy = getattr(request.policy, "driving_rest_policy", None)
+    rest_gap = max(0, int(getattr(rest_policy, "min_inter_trip_rest_sec", 0) or 0))
     cross_day_overlap_phys: Set[str] = set()
     for phys_id, slots in phys_intervals.items():
         if len(slots) <= 1:
@@ -152,12 +160,13 @@ def _build_interchangeable_vehicle_groups(
             d1, s1, e1 = slots[i]
             for j in range(i + 1, len(slots)):
                 d2, s2, e2 = slots[j]
-                if d1 != d2 and s1 < e2 and s2 < e1:
+                if d1 != d2 and s1 < e2 + rest_gap and s2 < e1 + rest_gap:
                     cross_day_overlap_phys.add(phys_id)
                     break
             if phys_id in cross_day_overlap_phys:
                 break
 
+    toll_m = getattr(request, "toll_matrix_vnd", None)
     raw_groups: Dict[Tuple, List[int]] = defaultdict(list)
     for v_idx, v in enumerate(request.vehicles):
         phys_id = v.source_vehicle_id or v.id
@@ -179,15 +188,25 @@ def _build_interchangeable_vehicle_groups(
             float(v.door_width_cm) if v.door_width_cm is not None else None,
             v.vehicle_type or "",
             v.model or "",
+            getattr(v, "temperature_mode", "AMBIENT"),
+            bool(getattr(v, "has_tail_lift", False)),
+            float(getattr(v, "toll_factor", 1.0)),
             int(v.fixed_operating_cost_vnd),
             float(v.fuel_consumption_liters_per_100_km),
             float(v.load_fuel_surcharge_percent_at_full_payload),
             round(float(v.depot.latitude), 6),
             round(float(v.depot.longitude), 6),
+            bool(getattr(v, "return_to_depot", True)),
+            round(float(v.end_depot.latitude), 6) if v.end_depot is not None else None,
+            round(float(v.end_depot.longitude), 6) if v.end_depot is not None else None,
+            getattr(v.depot, "province_code", None),
+            v.depot.source_location_id or v.depot.id,
             tuple(dist_m[v_idx][nv:]),
             tuple(row[v_idx] for row in dist_m[nv:]),
             tuple(dur_s[v_idx][nv:]),
             tuple(row[v_idx] for row in dur_s[nv:]),
+            tuple(toll_m[v_idx][nv:]) if toll_m is not None and len(toll_m) > v_idx else (),
+            tuple(row[v_idx] for row in toll_m[nv:]) if toll_m is not None else (),
         )
         raw_groups[profile].append(v_idx)
 
@@ -223,12 +242,8 @@ def _is_entry_flexible_in_group(
         order = order_by_id.get(oid)
         if order is None:
             return False
-        allowed = order.allowed_source_vehicle_ids
-        if not allowed:
-            continue
-        allowed_set = set(allowed)
         if not all(
-            (v.id in allowed_set) or ((v.source_vehicle_id or v.id) in allowed_set)
+            is_order_compatible_with_vehicle_and_warehouses(order, v)
             for v in group_vehicles
         ):
             return False
@@ -248,6 +263,8 @@ def _materialize_selected_routes(
     used_day_plates: Set[Tuple[int, str]] = set()
     used_day_phys: Set[Tuple[int, str]] = set()
     intervals_by_phys: Dict[str, List[Tuple[int, int]]] = defaultdict(list)
+    rest_policy = getattr(request.policy, "driving_rest_policy", None)
+    rest_gap = max(0, int(getattr(rest_policy, "min_inter_trip_rest_sec", 0) or 0))
     materialized: List[Optional[OptimizedRoute]] = [None] * len(selected_entries)
 
     def _claim(slot_id: str, day_idx: int, plate: str, phys_id: str, start_s: int, end_s: int) -> bool:
@@ -259,7 +276,7 @@ def _materialize_selected_routes(
             return False
         if phys_id:
             for prev_start, prev_end in intervals_by_phys[phys_id]:
-                if start_s < prev_end and prev_start < end_s:
+                if start_s < prev_end + rest_gap and prev_start < end_s + rest_gap:
                     return False
         used_slots.add(slot_id)
         if plate:
@@ -327,11 +344,14 @@ def _materialize_selected_routes(
             cloned.plate_number = cand_veh.plate_number
             if cloned.depot is not None:
                 cloned.depot = cand_veh.depot.model_copy()
-            if cloned.end_location is not None and (
-                (orig_veh is not None and cloned.end_location.id == orig_veh.depot.id)
-                or cloned.end_location.id == entry.slot_id
-            ):
-                cloned.end_location = cand_veh.depot.model_copy()
+            if cloned.end_location is not None:
+                if cand_veh.end_depot is not None:
+                    cloned.end_location = cand_veh.end_depot.model_copy()
+                elif (
+                    (orig_veh is not None and cloned.end_location.id == orig_veh.depot.id)
+                    or cloned.end_location.id == entry.slot_id
+                ):
+                    cloned.end_location = cand_veh.depot.model_copy()
             assigned_route = cloned
             break
         if assigned_route is None:
@@ -348,6 +368,8 @@ def _eligible_driver_overlap_free(
     """Verify physical drivers do not overlap across day boundaries."""
     driver_by_id: Dict[str, DriverOption] = {d.id: d for d in request.drivers}
     intervals_by_driver: Dict[str, List[Tuple[int, int]]] = defaultdict(list)
+    rest_policy = getattr(request.policy, "driving_rest_policy", None)
+    rest_gap = max(0, int(getattr(rest_policy, "min_inter_trip_rest_sec", 0) or 0))
     for route in routes:
         if not route.driver_id:
             continue
@@ -356,7 +378,7 @@ def _eligible_driver_overlap_free(
         start_s = int(route.start_time_sec)
         end_s = int(route.end_time_sec)
         for prev_start, prev_end in intervals_by_driver[phys_id]:
-            if start_s < prev_end and prev_start < end_s:
+            if start_s < prev_end + rest_gap and prev_start < end_s + rest_gap:
                 return False
         intervals_by_driver[phys_id].append((start_s, end_s))
     return True
@@ -431,7 +453,11 @@ def _ingest_pool_route(
         eligible_drivers = [
             drv
             for drv in drivers_by_day.get(int(route.service_day_index), [])
-            if can_driver_drive_vehicle(drv.license_class, payload_limit_kg, vehicle_type)
+            if (
+                is_driver_compatible_with_vehicle(drv, veh)
+                if veh is not None
+                else can_driver_drive_vehicle(drv.license_class, payload_limit_kg, vehicle_type)
+            )
         ]
         if eligible_drivers:
             est_trip_pay = min(
@@ -634,10 +660,16 @@ def solve_cross_seed_set_partitioning(
             i: frozenset(
                 d_idx
                 for d_idx, drv in enumerate(day_drivers)
-                if can_driver_drive_vehicle(
-                    drv.license_class,
-                    pool_entries[i].payload_limit_kg,
-                    pool_entries[i].vehicle_type,
+                if (
+                    is_driver_compatible_with_vehicle(
+                        drv, vehicle_by_id[pool_entries[i].slot_id]
+                    )
+                    if pool_entries[i].slot_id in vehicle_by_id
+                    else can_driver_drive_vehicle(
+                        drv.license_class,
+                        pool_entries[i].payload_limit_kg,
+                        pool_entries[i].vehicle_type,
+                    )
                 )
             )
             for i in indices
@@ -753,7 +785,20 @@ def solve_cross_seed_set_partitioning(
         if any(r.spatial_validation is None or not r.spatial_validation.is_valid for r in selected_routes):
             return None
 
-        if not _physical_vehicle_overlap_free(selected_routes):
+        if not _physical_vehicle_overlap_free(
+            selected_routes,
+            min_inter_trip_rest_sec=max(
+                0,
+                int(
+                    getattr(
+                        getattr(request.policy, "driving_rest_policy", None),
+                        "min_inter_trip_rest_sec",
+                        0,
+                    )
+                    or 0
+                ),
+            ),
+        ):
             model.Add(sum(x[idx] for idx in selected_pos) <= len(selected_pos) - 1)
             continue
 

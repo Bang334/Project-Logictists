@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
+from ..interprovincial import location_identity, resolve_vehicle_end_node_index
 from ..models import OrderPair, ScheduledStop
 from ..stacking import effective_floor_capacity_cm2
 
@@ -31,10 +32,17 @@ def _order_depot_travel_score(
 ) -> Tuple[float, float, float]:
     p_node, d_node = engine.order_node_indices[order.id]
     dist_m = engine.request.distance_matrix_meters
+    end_idx = resolve_vehicle_end_node_index(
+        engine.vehicles,
+        engine.orders,
+        depot_v_idx,
+        engine.vehicles[depot_v_idx],
+        getattr(engine, "_node_id_to_index", None),
+    )
     return (
         float(dist_m[depot_v_idx][p_node]),
         float(dist_m[p_node][d_node]),
-        float(dist_m[d_node][depot_v_idx]),
+        0.0 if end_idx is None else float(dist_m[d_node][end_idx]),
     )
 
 
@@ -45,12 +53,16 @@ def _overlap_distance_m(
     d_a: int,
     p_b: int,
     d_b: int,
+    end_idx: Optional[int] = -1,
 ) -> float:
+    resolved_end = depot_idx if end_idx == -1 else end_idx
+    tail_a = 0.0 if resolved_end is None else dist_m[d_a][resolved_end]
+    tail_b = 0.0 if resolved_end is None else dist_m[d_b][resolved_end]
     return min(
-        dist_m[depot_idx][p_a] + dist_m[p_a][p_b] + dist_m[p_b][d_a] + dist_m[d_a][d_b] + dist_m[d_b][depot_idx],
-        dist_m[depot_idx][p_a] + dist_m[p_a][p_b] + dist_m[p_b][d_b] + dist_m[d_b][d_a] + dist_m[d_a][depot_idx],
-        dist_m[depot_idx][p_b] + dist_m[p_b][p_a] + dist_m[p_a][d_b] + dist_m[d_b][d_a] + dist_m[d_a][depot_idx],
-        dist_m[depot_idx][p_b] + dist_m[p_b][p_a] + dist_m[p_a][d_a] + dist_m[d_a][d_b] + dist_m[d_b][depot_idx],
+        dist_m[depot_idx][p_a] + dist_m[p_a][p_b] + dist_m[p_b][d_a] + dist_m[d_a][d_b] + tail_b,
+        dist_m[depot_idx][p_a] + dist_m[p_a][p_b] + dist_m[p_b][d_b] + dist_m[d_b][d_a] + tail_a,
+        dist_m[depot_idx][p_b] + dist_m[p_b][p_a] + dist_m[p_a][d_b] + dist_m[d_b][d_a] + tail_a,
+        dist_m[depot_idx][p_b] + dist_m[p_b][p_a] + dist_m[p_a][d_a] + dist_m[d_a][d_b] + tail_b,
     )
 
 
@@ -142,7 +154,16 @@ def build_savings_routes(
             ),
         ):
             v = engine.vehicles[idx]
-            pkey = (v.depot.id, v.payload_limit_kg, v.length_cm, v.width_cm, v.height_cm)
+            end_depot = getattr(v, "end_depot", None)
+            pkey = (
+                v.depot.id,
+                bool(getattr(v, "return_to_depot", True)),
+                end_depot.id if end_depot is not None else None,
+                v.payload_limit_kg,
+                v.length_cm,
+                v.width_cm,
+                v.height_cm,
+            )
             if pkey not in seen_proto:
                 seen_proto.add(pkey)
                 protos.append(idx)
@@ -273,8 +294,15 @@ def build_savings_routes(
                     earl_pb = max(ord_b.pickup_window_start_sec, veh_b.available_start_sec)
                     if earl_pa <= ord_b.delivery_window_end_sec and earl_pb <= ord_a.delivery_window_end_sec:
                         _, _, db_to_dep = _order_depot_travel_score(engine, ord_b, dep_b)
+                        end_a = resolve_vehicle_end_node_index(
+                            engine.vehicles,
+                            engine.orders,
+                            dep_a,
+                            veh_a,
+                            getattr(engine, "_node_id_to_index", None),
+                        )
                         sep_dist = dep_to_pa + pa_to_da + da_to_dep + dep_to_pb + pb_to_db + db_to_dep
-                        ovl_dist = _overlap_distance_m(dist_m, dep_a, p_a, d_a, p_b, d_b)
+                        ovl_dist = _overlap_distance_m(dist_m, dep_a, p_a, d_a, p_b, d_b, end_idx=end_a)
                         s_ovl = sep_dist - lambda_ovl * ovl_dist
                         if s_ovl > 0:
                             local_ovl.append((s_ovl * (1.18 if prefer_overlap else 0.92), "ovl", oid_a, oid_b))
@@ -457,10 +485,15 @@ def build_savings_routes(
                     continue
                 phys_id = v.source_vehicle_id or v.id
                 reuse_priority = 0 if (phys_id in used_physical_vehicles or target_day == first_day) else 1
-                dist_km = depot_dist_cache.get(v.depot.id)
+                dist_key = (
+                    v.depot.id,
+                    getattr(v, "return_to_depot", True),
+                    location_identity(v.end_depot) if v.end_depot is not None else None,
+                )
+                dist_km = depot_dist_cache.get(dist_key)
                 if dist_km is None:
                     dist_km = engine._calc_route_distance_km(v_idx, ch.stops)
-                    depot_dist_cache[v.depot.id] = dist_km
+                    depot_dist_cache[dist_key] = dist_km
                 est_cost = (
                     v.fixed_operating_cost_vnd
                     + (v.fuel_consumption_liters_per_100_km / 100.0) * dist_km * engine.policy.fuel_price_per_liter_vnd

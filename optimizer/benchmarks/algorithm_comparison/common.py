@@ -79,6 +79,30 @@ def convert_request_to_hybrid(
 
     for v_idx, vehicle in enumerate(request.vehicles):
         depot_key = f"depot_{vehicle.id}"
+        hybrid_end_depot = None
+        if vehicle.end_depot is not None:
+            end_key = f"end_depot_{vehicle.id}"
+            from app.interprovincial import resolve_vehicle_end_node_index
+            end_idx = resolve_vehicle_end_node_index(request.vehicles, request.orders, v_idx, vehicle)
+            if end_idx is not None:
+                node_id_to_index[end_key] = end_idx
+            hybrid_end_depot = HybridLocation(
+                id=end_key,
+                source_location_id=vehicle.end_depot.source_location_id,
+                name=vehicle.end_depot.name or "End Depot",
+                latitude=float(vehicle.end_depot.latitude),
+                longitude=float(vehicle.end_depot.longitude),
+                province_code=vehicle.end_depot.province_code,
+                province_name=vehicle.end_depot.province_name,
+                warehouse_role=vehicle.end_depot.warehouse_role,
+                docking_time_sec=int(vehicle.end_depot.docking_time_sec or 0),
+                max_vehicle_payload_kg=vehicle.end_depot.max_vehicle_payload_kg,
+                max_vehicle_length_cm=vehicle.end_depot.max_vehicle_length_cm,
+                has_forklift=vehicle.end_depot.has_forklift,
+                operating_windows=list(vehicle.end_depot.operating_windows or ()),
+                handling_sec_per_ton=int(vehicle.end_depot.handling_sec_per_ton or 0),
+                handling_sec_per_package=int(vehicle.end_depot.handling_sec_per_package or 0),
+            )
         vehicles.append(
             HybridVehicle(
                 id=vehicle.id,
@@ -89,10 +113,23 @@ def convert_request_to_hybrid(
                 payload_limit_kg=float(vehicle.payload_limit_kg),
                 depot=HybridLocation(
                     id=depot_key,
+                    source_location_id=vehicle.depot.source_location_id,
                     name=vehicle.depot.name or "Depot",
                     latitude=float(vehicle.depot.latitude),
                     longitude=float(vehicle.depot.longitude),
+                    province_code=vehicle.depot.province_code,
+                    province_name=vehicle.depot.province_name,
+                    warehouse_role=vehicle.depot.warehouse_role,
+                    docking_time_sec=int(vehicle.depot.docking_time_sec or 0),
+                    max_vehicle_payload_kg=vehicle.depot.max_vehicle_payload_kg,
+                    max_vehicle_length_cm=vehicle.depot.max_vehicle_length_cm,
+                    has_forklift=vehicle.depot.has_forklift,
+                    operating_windows=list(vehicle.depot.operating_windows or ()),
+                    handling_sec_per_ton=int(vehicle.depot.handling_sec_per_ton or 0),
+                    handling_sec_per_package=int(vehicle.depot.handling_sec_per_package or 0),
                 ),
+                end_depot=hybrid_end_depot,
+                return_to_depot=bool(vehicle.return_to_depot),
                 door_position=vehicle.door_position,
                 fuel_consumption_liters_per_100_km=float(
                     vehicle.fuel_consumption_liters_per_100_km
@@ -105,9 +142,15 @@ def convert_request_to_hybrid(
                 service_day_index=vehicle.service_day_index,
                 available_start_sec=vehicle.available_start_sec,
                 available_end_sec=vehicle.available_end_sec,
+                vehicle_type=vehicle.vehicle_type,
+                model=vehicle.model,
+                temperature_mode=vehicle.temperature_mode,
+                has_tail_lift=bool(vehicle.has_tail_lift),
+                toll_factor=float(vehicle.toll_factor),
             )
         )
         # Pair with a distinct valid driver for vehicle service day and license (1-to-1 per day)
+        from app.interprovincial import is_driver_compatible_with_vehicle
         used_driver_ids_on_day = {
             drv.id for drv in drivers if drv.service_day_index == vehicle.service_day_index
         }
@@ -115,14 +158,12 @@ def convert_request_to_hybrid(
             (
                 d for d in request.drivers
                 if d.id not in used_driver_ids_on_day
-                and d.service_day_index == vehicle.service_day_index
-                and can_driver_drive_vehicle(d.license_class, vehicle.payload_limit_kg, vehicle.vehicle_type or vehicle.model or "")
+                and is_driver_compatible_with_vehicle(d, vehicle)
             ),
             next(
                 (
                     d for d in request.drivers
-                    if d.service_day_index == vehicle.service_day_index
-                    and can_driver_drive_vehicle(d.license_class, vehicle.payload_limit_kg, vehicle.vehicle_type or vehicle.model or "")
+                    if is_driver_compatible_with_vehicle(d, vehicle)
                 ),
                 request.drivers[v_idx] if v_idx < len(request.drivers) else request.drivers[0],
             ),
@@ -137,6 +178,9 @@ def convert_request_to_hybrid(
                 per_km_pay_vnd=int(driver.per_km_pay_vnd),
                 source_driver_id=driver.source_driver_id,
                 service_day_index=driver.service_day_index,
+                home_location_id=driver.home_location_id,
+                home_province_code=driver.home_province_code,
+                strict_home_location=bool(driver.strict_home_location),
             )
         )
         node_id_to_index[depot_key] = v_idx
@@ -151,15 +195,37 @@ def convert_request_to_hybrid(
                 order_number=order.order_number,
                 pickup_location=HybridLocation(
                     id=p_key,
+                    source_location_id=order.pickup_location.source_location_id or order.pickup_location.id,
                     name=order.pickup_location.name or "Pickup",
                     latitude=float(order.pickup_location.latitude),
                     longitude=float(order.pickup_location.longitude),
+                    province_code=order.pickup_location.province_code,
+                    province_name=order.pickup_location.province_name,
+                    warehouse_role=order.pickup_location.warehouse_role,
+                    docking_time_sec=int(order.pickup_location.docking_time_sec or 0),
+                    max_vehicle_payload_kg=order.pickup_location.max_vehicle_payload_kg,
+                    max_vehicle_length_cm=order.pickup_location.max_vehicle_length_cm,
+                    has_forklift=order.pickup_location.has_forklift,
+                    operating_windows=list(order.pickup_location.operating_windows or ()),
+                    handling_sec_per_ton=int(order.pickup_location.handling_sec_per_ton or 0),
+                    handling_sec_per_package=int(order.pickup_location.handling_sec_per_package or 0),
                 ),
                 delivery_location=HybridLocation(
                     id=d_key,
+                    source_location_id=order.delivery_location.source_location_id or order.delivery_location.id,
                     name=order.delivery_location.name or "Delivery",
                     latitude=float(order.delivery_location.latitude),
                     longitude=float(order.delivery_location.longitude),
+                    province_code=order.delivery_location.province_code,
+                    province_name=order.delivery_location.province_name,
+                    warehouse_role=order.delivery_location.warehouse_role,
+                    docking_time_sec=int(order.delivery_location.docking_time_sec or 0),
+                    max_vehicle_payload_kg=order.delivery_location.max_vehicle_payload_kg,
+                    max_vehicle_length_cm=order.delivery_location.max_vehicle_length_cm,
+                    has_forklift=order.delivery_location.has_forklift,
+                    operating_windows=list(order.delivery_location.operating_windows or ()),
+                    handling_sec_per_ton=int(order.delivery_location.handling_sec_per_ton or 0),
+                    handling_sec_per_package=int(order.delivery_location.handling_sec_per_package or 0),
                 ),
                 items=[
                     HybridCargo(
@@ -180,6 +246,10 @@ def convert_request_to_hybrid(
                         allow_upper_tier=bool(getattr(item, "allow_upper_tier", True)),
                         no_top_load_requested=bool(getattr(item, "no_top_load_requested", False)),
                         max_top_load_g=getattr(item, "max_top_load_g", None),
+                        required_temperature=getattr(item, "required_temperature", None),
+                        cargo_group=getattr(item, "cargo_group", None),
+                        incompatible_cargo_groups=list(getattr(item, "incompatible_cargo_groups", ()) or ()),
+                        requires_lift_equipment=bool(getattr(item, "requires_lift_equipment", False)),
                     )
                     for item in order.items
                 ],
@@ -211,6 +281,8 @@ def convert_request_to_hybrid(
         late_delivery_penalty_mode=request.policy.late_delivery_penalty_mode,
         late_delivery_penalty_value=float(request.policy.late_delivery_penalty_value),
         demo_stacking=getattr(request, "demo_stacking", None),
+        driving_rest_policy=getattr(request.policy, "driving_rest_policy", None),
+        toll_matrix_vnd=getattr(request, "toll_matrix_vnd", None),
     )
 
     return (

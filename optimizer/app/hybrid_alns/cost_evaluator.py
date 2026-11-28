@@ -1,6 +1,11 @@
 """Standardized Cost Evaluator for Hybrid ALNS ported from algo_lab."""
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
+from ..interprovincial import (
+    calculate_route_overnight_allowance_vnd,
+    calculate_route_toll_vnd,
+    resolve_vehicle_end_node_index,
+)
 from ..route_costing import calculate_late_delivery_penalty
 from .models import (
     CostPolicy,
@@ -23,6 +28,10 @@ def calculate_route_cost(
     distance_matrix: List[List[float]],
     duration_matrix: List[List[float]],
     node_id_to_index: Dict[str, int],
+    *,
+    route_duration_minutes_override: Optional[float] = None,
+    end_node_index_override: Optional[int] = None,
+    rest_breaks: Sequence = (),
 ) -> Tuple[RouteCostBreakdown, float, float]:
     """Evaluates the full cost breakdown, total distance (km), and duration (minutes)."""
     if not stops:
@@ -63,10 +72,22 @@ def calculate_route_cost(
         onboard_weight_kg = stop.current_weight_kg
         prev_node_idx = curr_node_idx
 
-    end_depot = vehicle.end_depot or vehicle.depot
-    end_depot_node_idx = node_id_to_index.get(end_depot.id, depot_node_idx)
-    return_dist = distance_matrix[prev_node_idx][end_depot_node_idx]
-    return_dur = duration_matrix[prev_node_idx][end_depot_node_idx]
+    end_depot = getattr(vehicle, "end_depot", None)
+    if end_node_index_override is not None:
+        end_depot_node_idx: Optional[int] = end_node_index_override
+    elif end_depot is not None:
+        end_depot_node_idx = node_id_to_index.get(end_depot.id, depot_node_idx)
+    elif not getattr(vehicle, "return_to_depot", True):
+        end_depot_node_idx = None
+    else:
+        end_depot_node_idx = depot_node_idx
+
+    if end_depot_node_idx is None:
+        return_dist = 0.0
+        return_dur = 0.0
+    else:
+        return_dist = distance_matrix[prev_node_idx][end_depot_node_idx]
+        return_dur = duration_matrix[prev_node_idx][end_depot_node_idx]
     total_distance_meters += return_dist
     total_travel_seconds += return_dur
 
@@ -90,14 +111,17 @@ def calculate_route_cost(
     fuel_cost = base_fuel_cost + load_fuel_surcharge
 
     total_distance_km = round(total_distance_meters / 1000.0, 2)
-    first_idx = node_id_to_index.get(stops[0].location_id, depot_node_idx)
-    first_leg_dur = duration_matrix[depot_node_idx][first_idx]
-    route_start_sec = max(
-        float(vehicle.available_start_sec),
-        stops[0].arrival_time_sec - first_leg_dur,
-    )
-    route_end_sec = max(route_start_sec, stops[-1].departure_time_sec + return_dur)
-    total_duration_minutes = round((route_end_sec - route_start_sec) / 60.0, 1)
+    if route_duration_minutes_override is not None:
+        total_duration_minutes = route_duration_minutes_override
+    else:
+        first_idx = node_id_to_index.get(stops[0].location_id, depot_node_idx)
+        first_leg_dur = duration_matrix[depot_node_idx][first_idx]
+        route_start_sec = max(
+            float(vehicle.available_start_sec),
+            stops[0].arrival_time_sec - first_leg_dur,
+        )
+        route_end_sec = max(route_start_sec, stops[-1].departure_time_sec + return_dur)
+        total_duration_minutes = round((route_end_sec - route_start_sec) / 60.0, 1)
 
     salary_allocation = round(
         driver.fixed_salary_monthly_vnd
@@ -130,12 +154,26 @@ def calculate_route_cost(
             order = order_by_id[stop.order_id]
             late_penalty += calculate_late_delivery_penalty(order, stop.arrival_time_sec, policy)
 
+    toll_cost_vnd = calculate_route_toll_vnd(
+        getattr(policy, "toll_matrix_vnd", None),
+        depot_node_idx,
+        vehicle,
+        stops,
+        lambda s: node_id_to_index.get(s.location_id),
+        end_node_index=end_depot_node_idx,
+    )
+    overnight_allowance_vnd = calculate_route_overnight_allowance_vnd(
+        rest_breaks, getattr(policy, "driving_rest_policy", None)
+    )
+
     total_cost = (
         fuel_cost
         + vehicle.fixed_operating_cost_vnd
         + driver_total_pay
         + cargo_holding_cost
         + late_penalty
+        + toll_cost_vnd
+        + overnight_allowance_vnd
     )
 
     breakdown = RouteCostBreakdown(
@@ -148,6 +186,8 @@ def calculate_route_cost(
         driver_total_pay_vnd=driver_total_pay,
         cargo_holding_cost_vnd=cargo_holding_cost,
         late_delivery_penalty_vnd=late_penalty,
+        toll_cost_vnd=toll_cost_vnd,
+        overnight_allowance_vnd=overnight_allowance_vnd,
         total_cost_vnd=total_cost,
     )
 

@@ -3,6 +3,7 @@
 import time
 from typing import Dict, List, Optional
 
+from ..interprovincial import is_driver_compatible_with_vehicle
 from .cost_evaluator import calculate_route_cost
 from .models import (
     CostPolicy,
@@ -58,10 +59,13 @@ def solve_greedy(
 
         for v_idx in vehicle_order:
             vehicle = vehicles[v_idx]
+            if not is_driver_compatible_with_vehicle(drivers[v_idx], vehicle):
+                continue
             if deadline is not None and time.perf_counter() >= deadline:
                 break
             current_stops = vehicle_routes[v_idx]
             if len(current_stops) == 0:
+                end_depot = getattr(vehicle, "end_depot", None)
                 v_type = (
                     vehicle.service_day_index,
                     vehicle.available_start_sec,
@@ -71,6 +75,13 @@ def solve_greedy(
                     vehicle.width_cm,
                     vehicle.height_cm,
                     vehicle.depot.id,
+                    bool(getattr(vehicle, "return_to_depot", True)),
+                    end_depot.id if end_depot is not None else None,
+                    getattr(vehicle, "temperature_mode", "DRY"),
+                    bool(getattr(vehicle, "has_tail_lift", False)),
+                    float(getattr(vehicle, "toll_factor", 1.0) or 1.0),
+                    getattr(drivers[v_idx], "home_location_id", None),
+                    getattr(drivers[v_idx], "home_province_code", None),
                 )
                 if v_type in checked_empty_types:
                     continue

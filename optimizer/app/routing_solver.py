@@ -1,10 +1,25 @@
 import itertools
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Set, Tuple, Optional
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
+from .interprovincial import (
+    ScheduledTimelineResult,
+    estimate_driving_rest_lower_bound_sec,
+    extract_province_hops,
+    is_driver_compatible_with_vehicle,
+    is_order_compatible_with_vehicle_and_warehouses,
+    is_rest_policy_enabled,
+    location_identity,
+    needs_interprovincial_timeline,
+    resolve_vehicle_end_location,
+    resolve_vehicle_end_node_index,
+    route_stops_have_cargo_conflict,
+    schedule_route_timeline,
+    stop_effective_service_seconds,
+)
 from .models import (
     CostPolicy,
     DriverOption,
@@ -123,15 +138,10 @@ class FleetRoutingSolver:
 
         def assign(vehicle_index: int, seen_drivers: Set[int]) -> bool:
             vehicle = self.request.vehicles[vehicle_index]
-            vehicle_type = vehicle.vehicle_type or vehicle.model or ""
             for driver_index, driver in enumerate(self.request.drivers):
-                if driver_index in seen_drivers or not can_driver_drive_vehicle(
-                    driver.license_class,
-                    vehicle.payload_limit_kg,
-                    vehicle_type,
+                if driver_index in seen_drivers or not is_driver_compatible_with_vehicle(
+                    driver, vehicle
                 ):
-                    continue
-                if driver.service_day_index != vehicle.service_day_index:
                     continue
                 seen_drivers.add(driver_index)
                 previous_vehicle = driver_to_vehicle.get(driver_index)
@@ -170,11 +180,7 @@ class FleetRoutingSolver:
 
     @staticmethod
     def _order_allows_vehicle(order: OrderPair, vehicle: FleetVehicle) -> bool:
-        if not order.allowed_source_vehicle_ids:
-            return True
-        return (vehicle.source_vehicle_id or vehicle.id) in set(
-            order.allowed_source_vehicle_ids
-        )
+        return is_order_compatible_with_vehicle_and_warehouses(order, vehicle)
 
     def _unassigned_all(
         self, reason_code: str, reason_message: str
@@ -208,9 +214,15 @@ class FleetRoutingSolver:
                     "type": "DEPOT",
                     "order": None,
                     "service_time_sec": 0,
+                    "location_key": location_identity(vehicle.depot),
+                    "docking_time_sec": 0,
                 }
             )
         for order in self.request.orders:
+            pickup_key = location_identity(order.pickup_location)
+            delivery_key = location_identity(order.delivery_location)
+            pickup_svc, _ = stop_effective_service_seconds(order, "PICKUP", pickup_key)
+            delivery_svc, _ = stop_effective_service_seconds(order, "DELIVERY", delivery_key)
             nodes.extend(
                 [
                     {
@@ -220,7 +232,11 @@ class FleetRoutingSolver:
                         "lon": order.pickup_location.longitude,
                         "type": "PICKUP",
                         "order": order,
-                        "service_time_sec": order.service_seconds("PICKUP"),
+                        "service_time_sec": pickup_svc,
+                        "location_key": pickup_key,
+                        "docking_time_sec": int(
+                            getattr(order.pickup_location, "docking_time_sec", 0) or 0
+                        ),
                     },
                     {
                         "id": order.delivery_location.id,
@@ -229,9 +245,29 @@ class FleetRoutingSolver:
                         "lon": order.delivery_location.longitude,
                         "type": "DELIVERY",
                         "order": order,
-                        "service_time_sec": order.service_seconds("DELIVERY"),
+                        "service_time_sec": delivery_svc,
+                        "location_key": delivery_key,
+                        "docking_time_sec": int(
+                            getattr(order.delivery_location, "docking_time_sec", 0) or 0
+                        ),
                     },
                 ]
+            )
+        # Preserve extra end-depot rows if provided in matrix tail.
+        matrix_size = len(self.request.distance_matrix_meters)
+        while len(nodes) < matrix_size:
+            nodes.append(
+                {
+                    "id": f"extra_end_{len(nodes)}",
+                    "name": "End Depot",
+                    "lat": 0.0,
+                    "lon": 0.0,
+                    "type": "END_DEPOT",
+                    "order": None,
+                    "service_time_sec": 0,
+                    "location_key": f"extra_end_{len(nodes)}",
+                    "docking_time_sec": 0,
+                }
             )
         return nodes
 
@@ -731,17 +767,43 @@ class FleetRoutingSolver:
     ) -> Tuple[pywrapcp.RoutingIndexManager, pywrapcp.RoutingModel, pywrapcp.RoutingDimension]:
         vehicle_count = self.vehicle_count
         starts = list(range(vehicle_count))
-        ends = list(range(vehicle_count))
-        manager = pywrapcp.RoutingIndexManager(len(self.nodes), vehicle_count, starts, ends)
+        raw_ends = [
+            resolve_vehicle_end_node_index(
+                self.request.vehicles, self.request.orders, v_idx, vehicle
+            )
+            for v_idx, vehicle in enumerate(self.request.vehicles)
+        ]
+        if any(end is None for end in raw_ends):
+            dummy_end_node: Optional[int] = len(self.nodes)
+            ends = [dummy_end_node if end is None else end for end in raw_ends]
+            routing_node_count = len(self.nodes) + 1
+        else:
+            dummy_end_node = None
+            ends = [int(end) for end in raw_ends if end is not None]
+            routing_node_count = len(self.nodes)
+        self._dummy_end_node = dummy_end_node
+
+        manager = pywrapcp.RoutingIndexManager(routing_node_count, vehicle_count, starts, ends)
         routing = pywrapcp.RoutingModel(manager)
 
+        def matrix_dist(from_node: int, to_node: int) -> float:
+            if dummy_end_node is not None and (from_node == dummy_end_node or to_node == dummy_end_node):
+                return 0.0
+            return self.request.distance_matrix_meters[from_node][to_node]
+
+        def matrix_dur(from_node: int, to_node: int) -> float:
+            if dummy_end_node is not None and (from_node == dummy_end_node or to_node == dummy_end_node):
+                return 0.0
+            return self.request.duration_matrix_seconds[from_node][to_node]
+
         def distance_callback(from_index: int, to_index: int) -> int:
-            return int(round(self.request.distance_matrix_meters[
-                manager.IndexToNode(from_index)
-            ][manager.IndexToNode(to_index)]))
+            return int(round(matrix_dist(
+                manager.IndexToNode(from_index),
+                manager.IndexToNode(to_index),
+            )))
 
         distance_callback_index = routing.RegisterTransitCallback(distance_callback)
-        routing.AddDimension(distance_callback_index, 0, 2_000_000, True, "Distance")
+        routing.AddDimension(distance_callback_index, 0, 20_000_000, True, "Distance")
         distance_dimension = routing.GetDimensionOrDie("Distance")
 
         average_driver_per_km_vnd = sum(
@@ -757,6 +819,7 @@ class FleetRoutingSolver:
             for driver in self.request.drivers
         ) / len(self.request.drivers)
 
+        toll_matrix = getattr(self.request, "toll_matrix_vnd", None)
         for vehicle_index, vehicle in enumerate(self.request.vehicles):
             fuel_vnd_per_meter = (
                 vehicle.fuel_consumption_liters_per_100_km
@@ -765,20 +828,29 @@ class FleetRoutingSolver:
             )
             driver_vnd_per_meter = average_driver_per_km_vnd / 1000
             financial_vnd_per_meter = fuel_vnd_per_meter + driver_vnd_per_meter
+            toll_factor = float(getattr(vehicle, "toll_factor", 1.0) or 1.0)
 
             def vehicle_cost(
                 from_index: int,
                 to_index: int,
                 rate=financial_vnd_per_meter,
+                t_factor=toll_factor,
             ) -> int:
                 from_node = manager.IndexToNode(from_index)
                 to_node = manager.IndexToNode(to_index)
-                distance = self.request.distance_matrix_meters[from_node][to_node]
+                distance = matrix_dist(from_node, to_node)
                 base_cost = (
                     distance
                     if rate <= 0
                     else distance * rate * OBJECTIVE_COST_SCALE
                 )
+                if (
+                    toll_matrix is not None
+                    and (dummy_end_node is None or (from_node != dummy_end_node and to_node != dummy_end_node))
+                    and from_node < len(toll_matrix)
+                    and to_node < len(toll_matrix[from_node])
+                ):
+                    base_cost += float(toll_matrix[from_node][to_node]) * t_factor * OBJECTIVE_COST_SCALE
                 return max(0, int(round(base_cost)))
 
             cost_callback = routing.RegisterTransitCallback(vehicle_cost)
@@ -813,13 +885,29 @@ class FleetRoutingSolver:
                 vehicle_index,
             )
 
+        order_node_end = vehicle_count + 2 * len(self.request.orders)
+        rest_policy = getattr(self.request.policy, "driving_rest_policy", None)
+
         def time_callback(from_index: int, to_index: int) -> int:
             from_node = manager.IndexToNode(from_index)
             to_node = manager.IndexToNode(to_index)
-            return int(round(
-                self.request.duration_matrix_seconds[from_node][to_node]
-                + self.nodes[from_node]["service_time_sec"]
-            ))
+            if dummy_end_node is not None and (from_node == dummy_end_node or to_node == dummy_end_node):
+                return 0
+            transit = matrix_dur(from_node, to_node)
+            service_from = self.nodes[from_node]["service_time_sec"] if from_node < len(self.nodes) else 0
+            docking = 0
+            if vehicle_count <= to_node < order_node_end:
+                to_dock = self.nodes[to_node].get("docking_time_sec", 0)
+                if to_dock > 0:
+                    from_loc_key = (
+                        self.nodes[from_node].get("location_key")
+                        if vehicle_count <= from_node < order_node_end
+                        else None
+                    )
+                    if from_loc_key != self.nodes[to_node].get("location_key"):
+                        docking = to_dock
+            rest_lb = estimate_driving_rest_lower_bound_sec(transit, rest_policy)
+            return int(round(transit + service_from + docking + rest_lb))
 
         time_callback_index = routing.RegisterTransitCallback(time_callback)
         max_time_horizon = max(30 * 86400, max(v.available_end_sec for v in self.request.vehicles))
@@ -839,7 +927,10 @@ class FleetRoutingSolver:
             time_dimension.SetSpanCostCoefficientForAllVehicles(driver_time_cost_coefficient)
 
         def demand_callback(from_index: int) -> int:
-            node = self.nodes[manager.IndexToNode(from_index)]
+            from_node = manager.IndexToNode(from_index)
+            if from_node >= len(self.nodes):
+                return 0
+            node = self.nodes[from_node]
             if node["order"] is None:
                 return 0
             demand = sum(item.weight_kg for item in node["order"].items)
@@ -879,7 +970,10 @@ class FleetRoutingSolver:
         # Kiểm soát diện tích sàn xe thực tế, ngăn xe bị quá tải mặt sàn
         area_scale = 100
         def area_callback(from_index: int) -> int:
-            node = self.nodes[manager.IndexToNode(from_index)]
+            from_node = manager.IndexToNode(from_index)
+            if from_node >= len(self.nodes):
+                return 0
+            node = self.nodes[from_node]
             if node["order"] is None:
                 return 0
             area = sum(item.length_cm * item.width_cm for item in node["order"].items)
@@ -932,7 +1026,7 @@ class FleetRoutingSolver:
                     if vehicle_index not in allowed_vehicle_indices:
                         routing.solver().Add(routing.VehicleVar(pickup_index) != vehicle_index)
                         routing.solver().Add(routing.VehicleVar(delivery_index) != vehicle_index)
-            elif order.allowed_source_vehicle_ids:
+            else:
                 routing.solver().Add(routing.ActiveVar(pickup_index) == 0)
                 routing.solver().Add(routing.ActiveVar(delivery_index) == 0)
             # Scalar domain constraints also work with the 9.15 Python binding.
@@ -1120,6 +1214,35 @@ class FleetRoutingSolver:
             current_weight_kg=round(max(0.0, current_weight_kg), 3),
         )
 
+    def _needs_interprovincial_reschedule(self, vehicle: FleetVehicle) -> bool:
+        return needs_interprovincial_timeline(self.request, vehicle)
+
+    def _schedule_interprovincial_timeline(
+        self,
+        vehicle: FleetVehicle,
+        vehicle_index: int,
+        stops: Sequence[ScheduledStop],
+    ) -> Optional[ScheduledTimelineResult]:
+        def _stop_node(stop: ScheduledStop) -> Optional[int]:
+            oid = stop.allocation_id or stop.order_id or ""
+            return self._order_stop_node_indices.get((oid, stop.stop_type))
+
+        timeline = schedule_route_timeline(
+            vehicle=vehicle,
+            vehicle_index=vehicle_index,
+            stops=stops,
+            order_by_id=self.order_by_id,
+            distance_matrix=self.request.distance_matrix_meters,
+            duration_matrix=self.request.duration_matrix_seconds,
+            stop_node_resolver=_stop_node,
+            end_node_index=resolve_vehicle_end_node_index(
+                self.request.vehicles, self.request.orders, vehicle_index, vehicle
+            ),
+            rest_policy=getattr(self.request.policy, "driving_rest_policy", None),
+            apply_jit_start=True,
+        )
+        return timeline if timeline.feasible else None
+
     def _drafts_from_assignment(
         self,
         manager: pywrapcp.RoutingIndexManager,
@@ -1129,12 +1252,14 @@ class FleetRoutingSolver:
     ) -> List[RouteDraft]:
         """Read routes and OR-Tools' own time schedule from the best assignment."""
         drafts: List[RouteDraft] = []
+        dummy_end_node = getattr(self, "_dummy_end_node", None)
         for vehicle_index in range(self.vehicle_count):
             index = routing.Start(vehicle_index)
             route_start_seconds = solution.Value(time_dimension.CumulVar(index))
             route_distance_meters = 0.0
             return_travel_time_sec = 0
             return_waiting_time_sec = 0
+            ended_at_dummy = False
             scheduled_stops: List[ScheduledStop] = []
             stop_actions: List[StopAction] = []
             route_order_ids: Set[str] = set()
@@ -1147,19 +1272,30 @@ class FleetRoutingSolver:
                 to_node = manager.IndexToNode(next_index)
                 current_cumul = solution.Value(time_dimension.CumulVar(current_index))
                 next_cumul = solution.Value(time_dimension.CumulVar(next_index))
-                travel_time_sec = int(round(
-                    self.request.duration_matrix_seconds[from_node][to_node]
-                ))
-                waiting_time_sec = max(
-                    0,
-                    next_cumul
-                    - current_cumul
-                    - self.nodes[from_node]["service_time_sec"]
-                    - travel_time_sec,
+                is_dummy_end = dummy_end_node is not None and to_node == dummy_end_node
+                travel_time_sec = (
+                    0
+                    if is_dummy_end
+                    else int(round(self.request.duration_matrix_seconds[from_node][to_node]))
                 )
-                route_distance_meters += self.request.distance_matrix_meters[from_node][to_node]
+                service_from = (
+                    self.nodes[from_node]["service_time_sec"]
+                    if from_node < len(self.nodes)
+                    else 0
+                )
+                waiting_time_sec = (
+                    0
+                    if is_dummy_end
+                    else max(
+                        0,
+                        next_cumul - current_cumul - service_from - travel_time_sec,
+                    )
+                )
+                if not is_dummy_end:
+                    route_distance_meters += self.request.distance_matrix_meters[from_node][to_node]
                 index = next_index
                 if routing.IsEnd(next_index):
+                    ended_at_dummy = is_dummy_end
                     return_travel_time_sec = travel_time_sec
                     return_waiting_time_sec = waiting_time_sec
                     continue
@@ -1184,13 +1320,16 @@ class FleetRoutingSolver:
 
             if not scheduled_stops:
                 continue
+            draft_end_time = (
+                scheduled_stops[-1].departure_time_sec
+                if ended_at_dummy
+                else solution.Value(time_dimension.CumulVar(routing.End(vehicle_index)))
+            )
             drafts.append(
                 RouteDraft(
                     vehicle_index=vehicle_index,
                     start_time_sec=route_start_seconds,
-                    end_time_sec=solution.Value(
-                        time_dimension.CumulVar(routing.End(vehicle_index))
-                    ),
+                    end_time_sec=draft_end_time,
                     distance_meters=route_distance_meters,
                     return_travel_time_sec=return_travel_time_sec,
                     return_waiting_time_sec=return_waiting_time_sec,
@@ -1261,8 +1400,24 @@ class FleetRoutingSolver:
                     max(0.05, vehicle_budget * 0.8),
                 ),
             )
-            if not spatial.is_valid:
-                # Phối hợp định tuyến & bố trí hàng: tìm kiếm hoán vị chuỗi stop không bị chắn lối ra cửa (T24/T26)
+            cargo_conflict = route_stops_have_cargo_conflict(scheduled_stops, self.order_by_id)
+            timeline_result: Optional[ScheduledTimelineResult] = None
+            timeline_failed = cargo_conflict
+            if not cargo_conflict and spatial.is_valid and self._needs_interprovincial_reschedule(vehicle):
+                timeline_result = self._schedule_interprovincial_timeline(
+                    vehicle, vehicle_index, scheduled_stops
+                )
+                if timeline_result is None:
+                    timeline_failed = True
+                else:
+                    scheduled_stops = timeline_result.scheduled_stops
+                    route_start_seconds = timeline_result.route_start_sec
+                    route_distance_meters = timeline_result.total_distance_meters
+                    return_travel_time_sec = timeline_result.return_travel_time_sec
+                    return_waiting_time_sec = timeline_result.return_waiting_time_sec
+
+            if not spatial.is_valid or timeline_failed:
+                # Phối hợp định tuyến & bố trí hàng: tìm kiếm hoán vị chuỗi stop hoặc đáp ứng rest/docking hợp lệ (T24/T26)
                 orders_on_route = [self.order_by_id[oid] for oid in route_order_ids if oid in self.order_by_id]
                 reseq = self._resequence_stops_for_spatial_feasibility(
                     vehicle,
@@ -1272,11 +1427,10 @@ class FleetRoutingSolver:
                 )
                 if reseq is not None:
                     scheduled_stops, stop_actions, route_distance_meters, route_end_seconds, spatial = reseq
-                    return_travel_time_sec = max(
-                        0,
-                        round(route_end_seconds) - scheduled_stops[-1].departure_time_sec,
-                    )
-                    return_waiting_time_sec = 0
+                    timeline_result = None
+                    route_start_seconds = None
+                    return_travel_time_sec = None
+                    return_waiting_time_sec = None
                 elif len(orders_on_route) > 1:
                     # Fallback thông minh: Thử loại bớt 1 đơn để xe vẫn phục vụ được các đơn còn lại
                     sub_reseq = None
@@ -1294,11 +1448,10 @@ class FleetRoutingSolver:
                             break
                     if sub_reseq is not None:
                         scheduled_stops, stop_actions, route_distance_meters, route_end_seconds, spatial = sub_reseq
-                        return_travel_time_sec = max(
-                            0,
-                            round(route_end_seconds) - scheduled_stops[-1].departure_time_sec,
-                        )
-                        return_waiting_time_sec = 0
+                        timeline_result = None
+                        route_start_seconds = None
+                        return_travel_time_sec = None
+                        return_waiting_time_sec = None
                         rejected_reasons[dropped_order_id] = (
                             "SPATIAL_ROUTE_CONFLICT",
                             "Đơn xung đột bố trí với tuyến ban đầu; sẽ thử tái phân công sang tuyến khác.",
@@ -1309,34 +1462,47 @@ class FleetRoutingSolver:
                             if self._stop_allocation_id(stop)
                         }
                     else:
+                        reason = (
+                            (
+                                "TIME_WINDOW_OR_REST_INFEASIBLE",
+                                "Không đáp ứng khung giờ, thời gian vào dock hoặc quy tắc nghỉ lái bắt buộc.",
+                            )
+                            if spatial.is_valid and timeline_failed
+                            else self._spatial_rejection(spatial)
+                        )
                         for order_id in route_order_ids:
-                            rejected_reasons[order_id] = self._spatial_rejection(spatial)
+                            rejected_reasons[order_id] = reason
                         continue
                 else:
+                    reason = (
+                        (
+                            "TIME_WINDOW_OR_REST_INFEASIBLE",
+                            "Không đáp ứng khung giờ, thời gian vào dock hoặc quy tắc nghỉ lái bắt buộc.",
+                        )
+                        if spatial.is_valid and timeline_failed
+                        else self._spatial_rejection(spatial)
+                    )
                     for order_id in route_order_ids:
-                        rejected_reasons[order_id] = self._spatial_rejection(spatial)
+                        rejected_reasons[order_id] = reason
                     continue
             else:
-                route_end_seconds = draft.end_time_sec
+                route_end_seconds = (
+                    timeline_result.route_end_sec
+                    if timeline_result is not None
+                    else draft.end_time_sec
+                )
             route_end_seconds = round(route_end_seconds)
-            route_duration_seconds = route_end_seconds - route_start_seconds
             routes.append(
-                OptimizedRoute(
-                    route_id=vehicle.id,
-                    vehicle_id=vehicle.source_vehicle_id or vehicle.id,
-                    service_day_index=vehicle.service_day_index,
-                    start_time_sec=route_start_seconds,
-                    end_time_sec=route_end_seconds,
-                    plate_number=vehicle.plate_number,
-                    vehicle_length_cm=vehicle.length_cm,
-                    vehicle_width_cm=vehicle.width_cm,
-                    vehicle_height_cm=vehicle.height_cm,
-                    total_distance_km=round(route_distance_meters / 1000, 2),
-                    total_duration_minutes=round(route_duration_seconds / 60, 1),
+                self._build_candidate_route(
+                    vehicle,
+                    scheduled_stops,
+                    route_distance_meters,
+                    route_end_seconds,
+                    spatial,
+                    route_start_seconds=route_start_seconds,
                     return_travel_time_sec=return_travel_time_sec,
                     return_waiting_time_sec=return_waiting_time_sec,
-                    stops=sync_route_stacking_unloads(scheduled_stops, spatial) if self.request.demo_stacking is not None else scheduled_stops,
-                    spatial_validation=spatial,
+                    timeline=timeline_result,
                 )
             )
             assigned_order_ids.update(route_order_ids)
@@ -1672,27 +1838,12 @@ class FleetRoutingSolver:
                 duration_seconds,
                 spatial,
             ) = best_candidate
-            recovered_route = OptimizedRoute(
-                route_id=vehicle.id,
-                vehicle_id=vehicle.source_vehicle_id or vehicle.id,
-                service_day_index=vehicle.service_day_index,
-                start_time_sec=vehicle.available_start_sec,
-                end_time_sec=round(duration_seconds),
-                plate_number=vehicle.plate_number,
-                vehicle_length_cm=vehicle.length_cm,
-                vehicle_width_cm=vehicle.width_cm,
-                vehicle_height_cm=vehicle.height_cm,
-                total_distance_km=round(distance_meters / 1000, 2),
-                total_duration_minutes=round(
-                    (duration_seconds - vehicle.available_start_sec) / 60, 1
-                ),
-                return_travel_time_sec=max(
-                    0,
-                    round(duration_seconds) - scheduled[-1].departure_time_sec,
-                ),
-                return_waiting_time_sec=0,
-                stops=sync_route_stacking_unloads(scheduled, spatial) if self.request.demo_stacking is not None else scheduled,
-                spatial_validation=spatial,
+            recovered_route = self._build_candidate_route(
+                vehicle,
+                scheduled,
+                distance_meters,
+                duration_seconds,
+                spatial,
             )
             if route_index is None:
                 routes.append(recovered_route)
@@ -1720,35 +1871,95 @@ class FleetRoutingSolver:
             if route.cost is not None
         )
 
-    @staticmethod
     def _build_candidate_route(
+        self,
         vehicle: FleetVehicle,
         scheduled: List[ScheduledStop],
         distance_meters: float,
         route_end_seconds: float,
         spatial: SpatialValidationResult,
+        *,
+        route_start_seconds: Optional[int] = None,
+        return_travel_time_sec: Optional[int] = None,
+        return_waiting_time_sec: Optional[int] = None,
+        timeline: Optional[ScheduledTimelineResult] = None,
     ) -> OptimizedRoute:
+        if timeline is None and self._needs_interprovincial_reschedule(vehicle) and scheduled:
+            vehicle_index = next(
+                (idx for idx, candidate_v in enumerate(self.request.vehicles) if candidate_v.id == vehicle.id),
+                None,
+            )
+            if vehicle_index is not None:
+                timeline = self._schedule_interprovincial_timeline(
+                    vehicle, vehicle_index, scheduled
+                )
+
+        if timeline is not None:
+            scheduled = timeline.scheduled_stops
+            distance_meters = timeline.total_distance_meters
+            route_end_seconds = timeline.route_end_sec
+            resolved_start = timeline.route_start_sec
+            resolved_return_travel = timeline.return_travel_time_sec
+            resolved_return_waiting = timeline.return_waiting_time_sec
+            mandatory_rest_sec = timeline.mandatory_rest_sec
+            rest_breaks = timeline.rest_breaks
+            end_location = resolve_vehicle_end_location(vehicle, scheduled, self.order_by_id)
+            province_hops = timeline.province_hops
+        else:
+            resolved_start = (
+                vehicle.available_start_sec
+                if route_start_seconds is None
+                else route_start_seconds
+            )
+            should_return = getattr(vehicle, "return_to_depot", True) or vehicle.end_depot is not None
+            resolved_return_travel = (
+                return_travel_time_sec
+                if return_travel_time_sec is not None
+                else (
+                    max(0, round(route_end_seconds) - scheduled[-1].departure_time_sec)
+                    if (should_return and scheduled)
+                    else 0
+                )
+            )
+            resolved_return_waiting = (
+                0 if return_waiting_time_sec is None else return_waiting_time_sec
+            )
+            mandatory_rest_sec = 0
+            rest_breaks = []
+            end_location = resolve_vehicle_end_location(vehicle, scheduled, self.order_by_id)
+            province_hops = extract_province_hops(
+                vehicle, scheduled, self.order_by_id, end_location
+            )
+
+        rounded_end = round(route_end_seconds)
+        use_stacking = (
+            self.request.demo_stacking is not None
+            or getattr(spatial, "demo_stacking", None) is not None
+        )
+        synced_stops = sync_route_stacking_unloads(scheduled, spatial) if use_stacking else scheduled
         return OptimizedRoute(
             route_id=vehicle.id,
             vehicle_id=vehicle.source_vehicle_id or vehicle.id,
             service_day_index=vehicle.service_day_index,
-            start_time_sec=vehicle.available_start_sec,
-            end_time_sec=round(route_end_seconds),
+            start_time_sec=resolved_start,
+            end_time_sec=rounded_end,
             plate_number=vehicle.plate_number,
             vehicle_length_cm=vehicle.length_cm,
             vehicle_width_cm=vehicle.width_cm,
             vehicle_height_cm=vehicle.height_cm,
             total_distance_km=round(distance_meters / 1000, 2),
             total_duration_minutes=round(
-                (route_end_seconds - vehicle.available_start_sec) / 60,
+                (rounded_end - resolved_start) / 60,
                 1,
             ),
-            return_travel_time_sec=max(
-                0,
-                round(route_end_seconds) - scheduled[-1].departure_time_sec,
-            ),
-            return_waiting_time_sec=0,
-            stops=sync_route_stacking_unloads(scheduled, spatial) if spatial.demo_stacking is not None else scheduled,
+            return_travel_time_sec=resolved_return_travel,
+            return_waiting_time_sec=resolved_return_waiting,
+            mandatory_rest_sec=mandatory_rest_sec,
+            rest_breaks=rest_breaks,
+            province_hops=province_hops,
+            depot=vehicle.depot,
+            end_location=end_location,
+            stops=synced_stops,
             spatial_validation=spatial,
         )
 
@@ -1988,6 +2199,9 @@ class FleetRoutingSolver:
             return
         drivers = self.request.drivers
         vehicle_by_id = {vehicle.id: vehicle for vehicle in self.request.vehicles}
+        rest_policy = getattr(self.request.policy, "driving_rest_policy", None)
+        rest_gap = max(0, int(getattr(rest_policy, "min_inter_trip_rest_sec", 0) or 0))
+        used_intervals_by_phys_driver: Dict[str, List[Tuple[int, int]]] = {}
 
         def driver_cost(route: OptimizedRoute, driver: DriverOption) -> Tuple[int, int, int]:
             return calculate_driver_cost(
@@ -2004,8 +2218,6 @@ class FleetRoutingSolver:
             day_drivers = [
                 driver for driver in drivers if driver.service_day_index == service_day_index
             ]
-            best_assignment = None
-            best_cost = None
 
             import numpy as np
             from scipy.optimize import linear_sum_assignment
@@ -2023,12 +2235,16 @@ class FleetRoutingSolver:
 
             for r_idx, route in enumerate(day_routes):
                 vehicle = vehicle_by_id[route.route_id or route.vehicle_id]
-                vehicle_type = vehicle.vehicle_type or vehicle.model or ""
-                payload = vehicle.payload_limit_kg
+                r_start = int(route.start_time_sec)
+                r_end = int(route.end_time_sec)
 
                 for d_idx, driver in enumerate(day_drivers):
-                    if not can_driver_drive_vehicle(
-                        driver.license_class, payload, vehicle_type
+                    if not is_driver_compatible_with_vehicle(driver, vehicle):
+                        continue
+                    phys_driver = driver.source_driver_id or driver.id
+                    if any(
+                        r_start < prev_end + rest_gap and prev_start < r_end + rest_gap
+                        for prev_start, prev_end in used_intervals_by_phys_driver.get(phys_driver, ())
                     ):
                         continue
                     wage_cost = driver_cost(route, driver)[0]
@@ -2045,8 +2261,12 @@ class FleetRoutingSolver:
             best_assignment = [day_drivers[d_j] for _, d_j in sorted(zip(row_ind, col_ind), key=lambda p: p[0])]
 
             for route, driver in zip(day_routes, best_assignment):
+                phys_driver = driver.source_driver_id or driver.id
+                used_intervals_by_phys_driver.setdefault(phys_driver, []).append(
+                    (int(route.start_time_sec), int(route.end_time_sec))
+                )
                 vehicle = vehicle_by_id[route.route_id or route.vehicle_id]
-                route.driver_id = driver.source_driver_id or driver.id
+                route.driver_id = phys_driver
                 route.driver_name = driver.full_name
                 route.driver_license_class = driver.license_class
                 route.cost = build_route_cost_breakdown(
@@ -2058,6 +2278,7 @@ class FleetRoutingSolver:
                     route.stops,
                     route.total_distance_km,
                     route.total_duration_minutes,
+                    rest_breaks=getattr(route, "rest_breaks", ()),
                 )
 
     def _calculate_route_economic_metrics(
@@ -2250,13 +2471,10 @@ class FleetRoutingSolver:
         sequence: List[Tuple[str, str, OrderPair]],
     ) -> Optional[Tuple[List[ScheduledStop], float, float, float]]:
         """Build and economically score a spatial fallback within vehicle availability."""
-        scheduled: List[ScheduledStop] = []
+        placeholder_stops: List[ScheduledStop] = []
         current_weight = 0.0
         current_area = 0.0
         max_vehicle_area = effective_floor_capacity_cm2(vehicle, self.request.demo_stacking)
-        current_time = float(vehicle.available_start_sec)
-        previous_index = vehicle_index
-        total_distance = 0.0
         item_weight_by_id = {
             item.id: item.weight_kg
             for order in self.request.orders
@@ -2268,31 +2486,7 @@ class FleetRoutingSolver:
             for item in order.items
         }
 
-        for action, (order_id, stop_type, order) in zip(actions, sequence, strict=True):
-            # Two orders at one address still have distinct matrix nodes and windows.
-            node_index = self._order_stop_node_indices[order_id, stop_type]
-
-            leg_start = round(current_time)
-            total_distance += self.request.distance_matrix_meters[previous_index][node_index]
-            matrix_travel_time = self.request.duration_matrix_seconds[previous_index][node_index]
-            current_time += matrix_travel_time
-            window_start = (
-                order.pickup_window_start_sec
-                if action.stop_type == "PICKUP"
-                else order.delivery_window_start_sec
-            )
-            window_end = (
-                order.pickup_window_end_sec
-                if action.stop_type == "PICKUP"
-                else order.delivery_window_end_sec
-            )
-            current_time = max(current_time, float(window_start))
-            arrival = current_time
-            if arrival > window_end:
-                return None
-            if arrival > vehicle.available_end_sec:
-                return None
-
+        for action, (_order_id, _stop_type, order) in zip(actions, sequence, strict=True):
             current_weight += sum(item.weight_kg for item in action.items_to_load)
             current_weight -= sum(
                 item_weight_by_id.get(item_id, 0.0)
@@ -2309,17 +2503,7 @@ class FleetRoutingSolver:
             if current_area > max_vehicle_area:
                 return None
 
-            departure = arrival + order.service_seconds(action.stop_type)
-            rounded_arrival = round(arrival)
-            travel_time_sec = min(
-                max(0, rounded_arrival - leg_start),
-                max(0, round(matrix_travel_time)),
-            )
-            waiting_time_sec = max(
-                0,
-                rounded_arrival - leg_start - travel_time_sec,
-            )
-            scheduled.append(
+            placeholder_stops.append(
                 ScheduledStop(
                     sequence=action.sequence,
                     location_id=action.stop_id,
@@ -2335,23 +2519,49 @@ class FleetRoutingSolver:
                     or action.stop_id,
                     latitude=action.latitude,
                     longitude=action.longitude,
-                    arrival_time_sec=rounded_arrival,
-                    departure_time_sec=rounded_arrival + order.service_seconds(action.stop_type),
-                    travel_time_sec=travel_time_sec,
-                    waiting_time_sec=waiting_time_sec,
+                    arrival_time_sec=vehicle.available_start_sec,
+                    departure_time_sec=vehicle.available_start_sec,
+                    travel_time_sec=0,
+                    waiting_time_sec=0,
                     service_time_sec=order.service_seconds(action.stop_type),
                     items_loaded=[item.id for item in action.items_to_load],
                     items_unloaded=action.items_to_unload,
                     current_weight_kg=round(max(0.0, current_weight), 3),
                 )
             )
-            current_time = departure
-            previous_index = node_index
 
-        total_distance += self.request.distance_matrix_meters[previous_index][vehicle_index]
-        current_time += self.request.duration_matrix_seconds[previous_index][vehicle_index]
-        if current_time > vehicle.available_end_sec:
+        if route_stops_have_cargo_conflict(placeholder_stops, self.order_by_id):
             return None
+
+        needs_interprov = self._needs_interprovincial_reschedule(vehicle)
+        rest_policy = (
+            getattr(self.request.policy, "driving_rest_policy", None)
+            if needs_interprov
+            else None
+        )
+        timeline = schedule_route_timeline(
+            vehicle=vehicle,
+            vehicle_index=vehicle_index,
+            stops=placeholder_stops,
+            order_by_id=self.order_by_id,
+            distance_matrix=self.request.distance_matrix_meters,
+            duration_matrix=self.request.duration_matrix_seconds,
+            stop_node_resolver=lambda s: self._order_stop_node_indices.get(
+                (s.allocation_id or s.order_id or "", s.stop_type)
+            ),
+            end_node_index=resolve_vehicle_end_node_index(
+                self.request.vehicles, self.request.orders, vehicle_index, vehicle
+            ),
+            rest_policy=rest_policy,
+            apply_jit_start=needs_interprov,
+            initial_start_sec=None if needs_interprov else vehicle.available_start_sec,
+        )
+        if not timeline.feasible:
+            return None
+
+        scheduled = timeline.scheduled_stops
+        total_distance = timeline.total_distance_meters
+        end_time_sec = float(timeline.route_end_sec)
         (
             base_fuel_cost,
             load_fuel_surcharge,
@@ -2359,9 +2569,14 @@ class FleetRoutingSolver:
             _,
             _,
         ) = self._calculate_route_economic_metrics(vehicle, scheduled)
+        driver_duration_min = (
+            (end_time_sec - float(timeline.route_start_sec)) / 60
+            if needs_interprov
+            else end_time_sec / 60
+        )
         average_driver_time_cost = sum(
             driver.fixed_salary_monthly_vnd
-            * (current_time / 60)
+            * driver_duration_min
             / self.request.policy.monthly_working_minutes
             for driver in self.request.drivers
         ) / len(self.request.drivers)
@@ -2376,7 +2591,7 @@ class FleetRoutingSolver:
             + average_driver_time_cost
             + average_driver_distance_cost
         )
-        return scheduled, total_distance, economic_score, current_time
+        return scheduled, total_distance, economic_score, end_time_sec
 
 
 class OrToolsRoutingSolver:

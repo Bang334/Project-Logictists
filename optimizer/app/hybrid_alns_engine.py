@@ -18,6 +18,15 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from .alns_engine import ALNSFleetOptimizer
 from .driver_matcher import DriverMatcher
 from .ils_engine import PackingAwareILSOptimizer
+from .interprovincial import (
+    calculate_route_overnight_allowance_vnd,
+    calculate_route_toll_vnd,
+    is_driver_compatible_with_vehicle,
+    resolve_vehicle_end_location,
+    resolve_vehicle_end_node_index,
+    route_stops_have_cargo_conflict,
+    schedule_route_timeline,
+)
 from .hybrid_alns.models import (
     CargoItem as HybridCargoItem,
     CostPolicy as HybridPolicy,
@@ -162,168 +171,33 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
         cached = self._compatible_driver_cache.get(vid)
         if cached is not None:
             return cached
-        ok = super()._vehicle_has_compatible_driver(vehicle)
+        ok = any(
+            is_driver_compatible_with_vehicle(
+                driver,
+                vehicle,
+                license_checker=can_driver_drive_vehicle,
+            )
+            for driver in self.drivers
+        )
         self._compatible_driver_cache[vid] = ok
         return ok
 
     def _can_schedule_stops(self, v_idx: int, stops: List[ScheduledStop]) -> bool:
-        """Fast boolean feasibility check without allocating Pydantic stop copies."""
-        vehicle = self.vehicles[v_idx]
-        current_time = float(vehicle.available_start_sec)
-        previous_index = v_idx
-        delivered_split_groups: Set[str] = set()
-        dur_matrix = self.request.duration_matrix_seconds
-        avail_end = vehicle.available_end_sec
-
-        for stop in stops:
-            allocation_id = stop.allocation_id or stop.order_id or ""
-            indices = self.order_node_indices.get(allocation_id)
-            order = self.order_by_id.get(allocation_id)
-            if indices is None or order is None:
-                return False
-            is_pickup = stop.stop_type == "PICKUP"
-            node_index = indices[0] if is_pickup else indices[1]
-            split_group = order.split_group_id
-            if split_group:
-                if is_pickup and split_group in delivered_split_groups:
-                    return False
-                if not is_pickup:
-                    delivered_split_groups.add(split_group)
-
-            travel_time = float(dur_matrix[previous_index][node_index])
-            current_time += travel_time
-            window_start = (
-                order.pickup_window_start_sec
-                if is_pickup
-                else order.delivery_window_start_sec
-            )
-            window_end = (
-                order.pickup_window_end_sec
-                if is_pickup
-                else order.delivery_window_end_sec
-            )
-            svc = order.service_seconds(stop.stop_type)
-            curfews = (
-                order.pickup_curfew_windows
-                if is_pickup
-                else order.delivery_curfew_windows
-            )
-            if current_time < window_start:
-                current_time = float(window_start)
-            current_time = advance_past_curfews(
-                current_time,
-                svc,
-                vehicle.payload_limit_kg,
-                curfews,
-            )
-            if current_time > window_end or current_time > avail_end:
-                return False
-
-            arrival = round(current_time)
-            departure = arrival + svc
-            if departure > avail_end:
-                return False
-            current_time = float(departure)
-            previous_index = node_index
-
-        return_travel = round(dur_matrix[previous_index][v_idx])
-        return round(current_time) + return_travel <= avail_end
+        """Fast feasibility check matching production rest, docking and end-depot rules."""
+        return self._schedule_stops_detailed(v_idx, stops, apply_jit_start=False) is not None
 
     def _schedule_stops(
         self, v_idx: int, stops: List[ScheduledStop]
     ) -> Optional[Tuple[List[ScheduledStop], int, int]]:
-        """Defer Pydantic model_copy until the full route timeline is proven valid."""
-        vehicle = self.vehicles[v_idx]
-        current_time = float(vehicle.available_start_sec)
-        previous_index = v_idx
-        delivered_split_groups: Set[str] = set()
-        dur_matrix = self.request.duration_matrix_seconds
-        avail_end = vehicle.available_end_sec
-        timeline: List[Tuple[int, ScheduledStop, int, int, int, int, int]] = []
-
-        for sequence, stop in enumerate(stops, start=1):
-            allocation_id = stop.allocation_id or stop.order_id or ""
-            indices = self.order_node_indices.get(allocation_id)
-            order = self.order_by_id.get(allocation_id)
-            if indices is None or order is None:
-                return None
-            is_pickup = stop.stop_type == "PICKUP"
-            node_index = indices[0] if is_pickup else indices[1]
-            split_group = order.split_group_id
-            if split_group:
-                if is_pickup and split_group in delivered_split_groups:
-                    return None
-                if not is_pickup:
-                    delivered_split_groups.add(split_group)
-
-            travel_time = float(dur_matrix[previous_index][node_index])
-            leg_start = current_time
-            current_time += travel_time
-            window_start = (
-                order.pickup_window_start_sec
-                if is_pickup
-                else order.delivery_window_start_sec
-            )
-            window_end = (
-                order.pickup_window_end_sec
-                if is_pickup
-                else order.delivery_window_end_sec
-            )
-            service_duration = order.service_seconds(stop.stop_type)
-            curfews = (
-                order.pickup_curfew_windows
-                if is_pickup
-                else order.delivery_curfew_windows
-            )
-            if current_time < window_start:
-                current_time = float(window_start)
-            current_time = advance_past_curfews(
-                current_time,
-                service_duration,
-                vehicle.payload_limit_kg,
-                curfews,
-            )
-            if current_time > window_end or current_time > avail_end:
-                return None
-
-            arrival = round(current_time)
-            leg_elapsed_seconds = max(0, arrival - round(leg_start))
-            travel_seconds = min(leg_elapsed_seconds, max(0, round(travel_time)))
-            waiting_seconds = leg_elapsed_seconds - travel_seconds
-            departure = arrival + service_duration
-            if departure > avail_end:
-                return None
-
-            timeline.append((
-                sequence,
-                stop,
-                arrival,
-                departure,
-                travel_seconds,
-                waiting_seconds,
-                service_duration,
-            ))
-            current_time = float(departure)
-            previous_index = node_index
-
-        return_travel = round(dur_matrix[previous_index][v_idx])
-        route_end = round(current_time) + return_travel
-        if route_end > avail_end:
+        """Schedule stops enforcing time windows, curfews, rest breaks and end-depot policy."""
+        timeline = self._schedule_stops_detailed(v_idx, stops, apply_jit_start=False)
+        if timeline is None:
             return None
-        scheduled = [
-            stop.model_copy(
-                update={
-                    "sequence": sequence,
-                    "arrival_time_sec": arrival,
-                    "departure_time_sec": departure,
-                    "travel_time_sec": travel_seconds,
-                    "waiting_time_sec": waiting_seconds,
-                    "service_time_sec": service_duration,
-                }
-            )
-            for sequence, stop, arrival, departure, travel_seconds, waiting_seconds, service_duration in timeline
-        ]
-        return scheduled, route_end, return_travel
+        return (
+            timeline.scheduled_stops,
+            timeline.route_end_sec,
+            timeline.return_travel_time_sec,
+        )
 
     def _can_insert_order(
         self,
@@ -360,6 +234,9 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     return False, []
             elif st.stop_type == "DELIVERY":
                 w -= weights.get(oid, 0.0)
+
+        if route_stops_have_cargo_conflict(probe_stops, self.order_by_id):
+            return False, []
 
         if not self._can_schedule_stops(v_idx, probe_stops):
             return False, []
@@ -568,6 +445,9 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     vehicle.width_cm,
                     vehicle.height_cm,
                     vehicle.depot.id,
+                    getattr(vehicle, "temperature_mode", "AMBIENT"),
+                    bool(getattr(vehicle, "has_tail_lift", False)),
+                    float(getattr(vehicle, "toll_factor", 1.0)),
                 )
                 if profile in checked_empty_profiles:
                     continue
@@ -1664,10 +1544,12 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             cache_key = (index, sig)
             cached_route = route_cache.get(cache_key)
             if cached_route is None:
-                scheduled = self._schedule_stops(index, stops)
-                if scheduled is None:
+                timeline = self._schedule_stops_detailed(index, stops, apply_jit_start=False)
+                if timeline is None:
                     return invalid_key
-                scheduled_stops, route_end, return_travel = scheduled
+                scheduled_stops = timeline.scheduled_stops
+                route_end = timeline.route_end_sec
+                return_travel = timeline.return_travel_time_sec
                 vehicle = self.vehicles[index]
                 weight = 0.0
                 for stop in scheduled_stops:
@@ -1682,6 +1564,21 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 late = sum(calculate_late_delivery_penalty(
                     self.order_by_id[stop.allocation_id or stop.order_id], stop.arrival_time_sec, self.policy,
                 ) for stop in scheduled_stops if stop.stop_type == "DELIVERY")
+                end_node_idx = resolve_vehicle_end_node_index(
+                    self.vehicles, self.orders, index, vehicle
+                )
+                toll_cost_vnd = calculate_route_toll_vnd(
+                    getattr(self.request, "toll_matrix_vnd", None),
+                    index,
+                    vehicle,
+                    scheduled_stops,
+                    self._stop_node_index,
+                    end_node_index=end_node_idx,
+                )
+                overnight_allowance_vnd = calculate_route_overnight_allowance_vnd(
+                    timeline.rest_breaks,
+                    getattr(self.policy, "driving_rest_policy", None),
+                )
                 start, scheduled_stops = self._adjust_first_stop_waiting_for_jit_start(
                     vehicle, scheduled_stops
                 )
@@ -1699,7 +1596,17 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                         late_delivery_penalty_vnd=late, cargo_distance_ton_km=ton_km,
                         cargo_time_ton_hours=ton_hours, vehicle_fixed_cost_vnd=vehicle.fixed_operating_cost_vnd,
                         driver_fixed_salary_allocation_vnd=0, driver_trip_pay_vnd=0,
-                        total_cost_vnd=base+surcharge+holding+late+vehicle.fixed_operating_cost_vnd,
+                        toll_cost_vnd=toll_cost_vnd,
+                        overnight_allowance_vnd=overnight_allowance_vnd,
+                        total_cost_vnd=(
+                            base
+                            + surcharge
+                            + holding
+                            + late
+                            + vehicle.fixed_operating_cost_vnd
+                            + toll_cost_vnd
+                            + overnight_allowance_vnd
+                        ),
                     ),
                 )
                 route_cache[cache_key] = cached_route
@@ -2007,6 +1914,12 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 node_routes.append(nodes)
             actions = [[(stop.allocation_id or stop.order_id or "", stop.stop_type)
                 for stop in route] for route in routes]
+            route_end_nodes = [
+                resolve_vehicle_end_node_index(
+                    self.vehicles, self.orders, idx, self.vehicles[idx]
+                )
+                for idx in range(len(routes))
+            ]
             short_sequences = []
             if try_short_sequences:
                 try_short_sequences = False
@@ -2028,8 +1941,12 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                             end = stop + 1
                             if end - start < 2:
                                 continue
-                            last = nodes[end] if end < len(nodes) else index
-                            detour = length + distances[previous][last] - distances[first][last]
+                            last = nodes[end] if end < len(nodes) else route_end_nodes[index]
+                            detour = length + (
+                                distances[previous][last] - distances[first][last]
+                                if last is not None
+                                else 0.0
+                            )
                             segments.append((detour, index, start, end, first, last))
                 for _, index, start, end, first, last in sorted(segments, reverse=True):
                     if time.perf_counter() >= sequence_deadline:
@@ -2040,6 +1957,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                             node_routes[index][start:end], actions[index][start:end], first,
                             distances, min(sequence_deadline, time.perf_counter() + 0.20),
                             end_node=last,
+                            open_end=(last is None),
                         )
                         if not is_single_stop_relocation(positions)
                     )
@@ -2048,15 +1966,15 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             stop_moves = ranked_stop_moves(
                 node_routes,
                 actions,
-                list(range(len(routes))), list(range(len(routes))),
+                list(range(len(routes))), route_end_nodes,
                 self.request.distance_matrix_meters, now + generation_budget * 0.25,
             )
             pair_moves = ranked_order_moves(
-                node_routes, actions, list(range(len(routes))), list(range(len(routes))),
+                node_routes, actions, list(range(len(routes))), route_end_nodes,
                 self.request.distance_matrix_meters, now + generation_budget * 0.80,
             )
             subtrip_moves = ranked_subtrip_moves(
-                node_routes, actions, list(range(len(routes))), list(range(len(routes))),
+                node_routes, actions, list(range(len(routes))), route_end_nodes,
                 self.request.distance_matrix_meters, now + generation_budget,
             )
             # Prioritize removing trips, then short-route proposals and local moves.
@@ -2392,16 +2310,14 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
         """Build a maximum legal one-to-one resource matching for hybrid search."""
         candidates: Dict[int, List[int]] = {}
         for vehicle_index, vehicle in enumerate(self.vehicles):
-            vehicle_type = vehicle.vehicle_type or vehicle.model or ""
             candidates[vehicle_index] = sorted(
                 (
                     driver_index
                     for driver_index, driver in enumerate(self.drivers)
-                    if driver.service_day_index == vehicle.service_day_index
-                    and can_driver_drive_vehicle(
-                        driver.license_class,
-                        vehicle.payload_limit_kg,
-                        vehicle_type,
+                    if is_driver_compatible_with_vehicle(
+                        driver,
+                        vehicle,
+                        license_checker=can_driver_drive_vehicle,
                     )
                 ),
                 key=lambda driver_index: (
@@ -4083,6 +3999,31 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             vehicle = self.vehicles[original_vehicle_index]
             driver = self.drivers[driver_index]
             depot_key = f"depot_{vehicle.id}"
+            hybrid_end_depot = None
+            if vehicle.end_depot is not None:
+                end_depot_key = f"end_depot_{vehicle.id}"
+                end_idx = resolve_vehicle_end_node_index(
+                    self.vehicles, self.orders, original_vehicle_index, vehicle
+                )
+                if end_idx is not None:
+                    node_id_to_index[end_depot_key] = end_idx
+                hybrid_end_depot = HybridLocation(
+                    id=end_depot_key,
+                    source_location_id=vehicle.end_depot.source_location_id,
+                    name=vehicle.end_depot.name or "End Depot",
+                    latitude=float(vehicle.end_depot.latitude),
+                    longitude=float(vehicle.end_depot.longitude),
+                    province_code=vehicle.end_depot.province_code,
+                    province_name=vehicle.end_depot.province_name,
+                    warehouse_role=vehicle.end_depot.warehouse_role,
+                    docking_time_sec=int(vehicle.end_depot.docking_time_sec or 0),
+                    max_vehicle_payload_kg=vehicle.end_depot.max_vehicle_payload_kg,
+                    max_vehicle_length_cm=vehicle.end_depot.max_vehicle_length_cm,
+                    has_forklift=bool(vehicle.end_depot.has_forklift),
+                    operating_windows=list(vehicle.end_depot.operating_windows),
+                    handling_sec_per_ton=int(vehicle.end_depot.handling_sec_per_ton or 0),
+                    handling_sec_per_package=int(vehicle.end_depot.handling_sec_per_package or 0),
+                )
             vehicles.append(
                 HybridVehicle(
                     id=vehicle.id,
@@ -4093,10 +4034,23 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     payload_limit_kg=float(vehicle.payload_limit_kg),
                     depot=HybridLocation(
                         id=depot_key,
+                        source_location_id=vehicle.depot.source_location_id,
                         name=vehicle.depot.name or "Depot",
                         latitude=float(vehicle.depot.latitude),
                         longitude=float(vehicle.depot.longitude),
+                        province_code=vehicle.depot.province_code,
+                        province_name=vehicle.depot.province_name,
+                        warehouse_role=vehicle.depot.warehouse_role,
+                        docking_time_sec=int(vehicle.depot.docking_time_sec or 0),
+                        max_vehicle_payload_kg=vehicle.depot.max_vehicle_payload_kg,
+                        max_vehicle_length_cm=vehicle.depot.max_vehicle_length_cm,
+                        has_forklift=bool(vehicle.depot.has_forklift),
+                        operating_windows=list(vehicle.depot.operating_windows),
+                        handling_sec_per_ton=int(vehicle.depot.handling_sec_per_ton or 0),
+                        handling_sec_per_package=int(vehicle.depot.handling_sec_per_package or 0),
                     ),
+                    end_depot=hybrid_end_depot,
+                    return_to_depot=bool(vehicle.return_to_depot),
                     door_position=vehicle.door_position,
                     fuel_consumption_liters_per_100_km=float(
                         vehicle.fuel_consumption_liters_per_100_km
@@ -4111,6 +4065,11 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     service_day_index=vehicle.service_day_index,
                     available_start_sec=vehicle.available_start_sec,
                     available_end_sec=vehicle.available_end_sec,
+                    vehicle_type=vehicle.vehicle_type,
+                    model=vehicle.model,
+                    temperature_mode=getattr(vehicle, "temperature_mode", "AMBIENT"),
+                    has_tail_lift=bool(getattr(vehicle, "has_tail_lift", False)),
+                    toll_factor=float(getattr(vehicle, "toll_factor", 1.0)),
                 )
             )
             drivers.append(
@@ -4125,6 +4084,9 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     per_km_pay_vnd=int(driver.per_km_pay_vnd),
                     source_driver_id=driver.source_driver_id,
                     service_day_index=driver.service_day_index,
+                    home_location_id=driver.home_location_id,
+                    home_province_code=driver.home_province_code,
+                    strict_home_location=bool(driver.strict_home_location),
                 )
             )
             original_vehicle_indices.append(original_vehicle_index)
@@ -4144,15 +4106,37 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     order_number=order.order_number,
                     pickup_location=HybridLocation(
                         id=pickup_key,
+                        source_location_id=order.pickup_location.source_location_id or order.pickup_location.id,
                         name=order.pickup_location.name or "Pickup",
                         latitude=float(order.pickup_location.latitude),
                         longitude=float(order.pickup_location.longitude),
+                        province_code=order.pickup_location.province_code,
+                        province_name=order.pickup_location.province_name,
+                        warehouse_role=order.pickup_location.warehouse_role,
+                        docking_time_sec=int(order.pickup_location.docking_time_sec or 0),
+                        max_vehicle_payload_kg=order.pickup_location.max_vehicle_payload_kg,
+                        max_vehicle_length_cm=order.pickup_location.max_vehicle_length_cm,
+                        has_forklift=bool(order.pickup_location.has_forklift),
+                        operating_windows=list(order.pickup_location.operating_windows),
+                        handling_sec_per_ton=int(order.pickup_location.handling_sec_per_ton or 0),
+                        handling_sec_per_package=int(order.pickup_location.handling_sec_per_package or 0),
                     ),
                     delivery_location=HybridLocation(
                         id=delivery_key,
+                        source_location_id=order.delivery_location.source_location_id or order.delivery_location.id,
                         name=order.delivery_location.name or "Delivery",
                         latitude=float(order.delivery_location.latitude),
                         longitude=float(order.delivery_location.longitude),
+                        province_code=order.delivery_location.province_code,
+                        province_name=order.delivery_location.province_name,
+                        warehouse_role=order.delivery_location.warehouse_role,
+                        docking_time_sec=int(order.delivery_location.docking_time_sec or 0),
+                        max_vehicle_payload_kg=order.delivery_location.max_vehicle_payload_kg,
+                        max_vehicle_length_cm=order.delivery_location.max_vehicle_length_cm,
+                        has_forklift=bool(order.delivery_location.has_forklift),
+                        operating_windows=list(order.delivery_location.operating_windows),
+                        handling_sec_per_ton=int(order.delivery_location.handling_sec_per_ton or 0),
+                        handling_sec_per_package=int(order.delivery_location.handling_sec_per_package or 0),
                     ),
                     items=[
                         HybridCargoItem(
@@ -4175,6 +4159,14 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                             allow_upper_tier=item.allow_upper_tier,
                             no_top_load_requested=item.no_top_load_requested,
                             max_top_load_g=item.max_top_load_g,
+                            required_temperature=getattr(item, "required_temperature", "ANY"),
+                            cargo_group=getattr(item, "cargo_group", None),
+                            incompatible_cargo_groups=list(
+                                getattr(item, "incompatible_cargo_groups", ()) or ()
+                            ),
+                            requires_lift_equipment=bool(
+                                getattr(item, "requires_lift_equipment", False)
+                            ),
                         )
                         for item in order.items
                     ],
@@ -4232,6 +4224,8 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 self.policy.late_delivery_penalty_value
             ),
             demo_stacking=self.request.demo_stacking,
+            driving_rest_policy=self.policy.driving_rest_policy,
+            toll_matrix_vnd=getattr(self.request, "toll_matrix_vnd", None),
         )
         self._hybrid_model_context = (orders, policy, node_id_to_index)
         construction_deadline = search_deadline

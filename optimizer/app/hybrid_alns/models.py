@@ -10,6 +10,17 @@ class LocationPoint:
     name: str = ""
     latitude: float = 0.0
     longitude: float = 0.0
+    source_location_id: Optional[str] = None
+    province_code: Optional[str] = None
+    province_name: Optional[str] = None
+    warehouse_role: Optional[str] = None
+    docking_time_sec: int = 0
+    max_vehicle_payload_kg: Optional[float] = None
+    max_vehicle_length_cm: Optional[float] = None
+    has_forklift: Optional[bool] = None
+    operating_windows: List[object] = field(default_factory=list)
+    handling_sec_per_ton: int = 0
+    handling_sec_per_package: int = 0
 
 
 @dataclass
@@ -28,6 +39,10 @@ class CargoItem:
     allow_upper_tier: bool = True
     no_top_load_requested: bool = False
     max_top_load_g: Optional[int] = None
+    required_temperature: Optional[str] = None
+    cargo_group: Optional[str] = None
+    incompatible_cargo_groups: List[str] = field(default_factory=list)
+    requires_lift_equipment: bool = False
 
 
 @dataclass
@@ -90,6 +105,12 @@ class FleetVehicle:
     service_day_index: int = 0
     available_start_sec: int = 0
     available_end_sec: int = 30 * 86400
+    return_to_depot: bool = True
+    vehicle_type: Optional[str] = None
+    model: Optional[str] = None
+    temperature_mode: str = "DRY"
+    has_tail_lift: bool = False
+    toll_factor: float = 1.0
 
 
 @dataclass
@@ -102,6 +123,9 @@ class DriverOption:
     per_km_pay_vnd: int = 1200
     source_driver_id: Optional[str] = None
     service_day_index: int = 0
+    home_location_id: Optional[str] = None
+    home_province_code: Optional[str] = None
+    strict_home_location: bool = False
 
 
 @dataclass
@@ -114,6 +138,8 @@ class CostPolicy:
     late_delivery_penalty_mode: str = "FIXED_PER_DAY"
     late_delivery_penalty_value: float = 500000.0
     demo_stacking: Optional[object] = None
+    driving_rest_policy: Optional[object] = None
+    toll_matrix_vnd: Optional[List[List[float]]] = None
 
 
 @dataclass
@@ -142,6 +168,9 @@ class ScheduledStop:
     items_loaded: List[str] = field(default_factory=list)
     items_unloaded: List[str] = field(default_factory=list)
     placed_items: List[PlacedItem] = field(default_factory=list)
+    travel_time_sec: int = 0
+    waiting_time_sec: int = 0
+    service_time_sec: int = 0
 
 
 @dataclass
@@ -155,6 +184,8 @@ class RouteCostBreakdown:
     driver_total_pay_vnd: int = 0
     cargo_holding_cost_vnd: int = 0
     late_delivery_penalty_vnd: int = 0
+    toll_cost_vnd: int = 0
+    overnight_allowance_vnd: int = 0
     total_cost_vnd: int = 0
 
 

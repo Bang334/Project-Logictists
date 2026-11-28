@@ -2,7 +2,7 @@
 import time
 from functools import cache
 from heapq import heappush, heapreplace
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 StopMove = Tuple[float, int, int, int]
 OrderMove = Tuple[int, float, int, int, int, int, int, int]
@@ -30,6 +30,16 @@ def is_single_stop_relocation(sequence: Sequence[int]) -> bool:
     )
 
 
+def _edge_distance(
+    distances: Sequence[Sequence[float]],
+    origin: Optional[int],
+    destination: Optional[int],
+) -> float:
+    if origin is None or destination is None:
+        return 0.0
+    return float(distances[origin][destination])
+
+
 def ranked_short_route_sequences(
     nodes: Sequence[int],
     actions: Sequence[Tuple[str, str]],
@@ -38,6 +48,7 @@ def ranked_short_route_sequences(
     deadline: float,
     *,
     end_node: int | None = None,
+    open_end: bool = False,
 ) -> List[Tuple[float, Tuple[int, ...]]]:
     """Reorder a window of an audited route while its outside prefix/suffix stay fixed."""
     if not 2 <= len(nodes) <= MAX_RESEQUENCE_STOPS or len(nodes) != len(actions):
@@ -49,8 +60,8 @@ def ranked_short_route_sequences(
     predecessors = [0] * len(nodes)
     for order in pickups.keys() & deliveries.keys():
         predecessors[deliveries[order]] = 1 << pickups[order]
-    end = depot if end_node is None else end_node
-    path_nodes = [depot, *nodes, end]
+    end: Optional[int] = None if open_end else (depot if end_node is None else end_node)
+    path_nodes = [depot, *nodes, *([end] if end is not None else [])]
     incumbent = sum(distances[a][b] for a, b in zip(path_nodes, path_nodes[1:]))
     all_pending = (1 << len(nodes)) - 1
 
@@ -73,7 +84,7 @@ def ranked_short_route_sequences(
         if time.perf_counter() >= deadline:
             raise _ResequenceDeadlineReached
         if not pending:
-            return distances[previous][end]
+            return _edge_distance(distances, previous, end)
         row = distances[previous]
         best_cost = float("inf")
         for node, next_pending in next_visits(pending):
@@ -99,7 +110,7 @@ def ranked_short_route_sequences(
         if cost + remaining >= cutoff:
             return
         if not pending:
-            total = cost + distances[previous][end]
+            total = cost + _edge_distance(distances, previous, end)
             if total < cutoff and all(previous_path != path for _, previous_path in best):
                 entry = (-total, path)
                 if len(best) == 12:
@@ -125,7 +136,7 @@ def ranked_short_route_sequences(
         path.append(i)
         previous, pending = nodes[i], pending ^ bit
     # Sum the reconstructed path in travel order, as for the incumbent.
-    path_nodes = [depot, *(nodes[i] for i in path), end]
+    path_nodes = [depot, *(nodes[i] for i in path), *([end] if end is not None else [])]
     path_cost = sum(distances[a][b] for a, b in zip(path_nodes, path_nodes[1:]))
     if path_cost < incumbent:
         best.append((-path_cost, tuple(path)))
@@ -138,7 +149,7 @@ def ranked_subtrip_moves(
     node_routes: Sequence[Sequence[int]],
     actions: Sequence[Sequence[Tuple[str, str]]],
     depots: Sequence[int],
-    ends: Sequence[int],
+    ends: Sequence[Optional[int]],
     distances: Sequence[Sequence[float]],
     deadline: float,
 ) -> List[SubtripMove]:
@@ -180,15 +191,15 @@ def ranked_subtrip_moves(
                 if empties_source:
                     removal = (
                         -distances[depots[source]][sub_first]
-                        - distances[sub_last][ends[source]]
+                        - _edge_distance(distances, sub_last, ends[source])
                     )
                 else:
                     prev_s = nodes[start - 1] if start > 0 else depots[source]
                     next_s = nodes[end] if end < n else ends[source]
                     removal = (
-                        distances[prev_s][next_s]
+                        _edge_distance(distances, prev_s, next_s)
                         - distances[prev_s][sub_first]
-                        - distances[sub_last][next_s]
+                        - _edge_distance(distances, sub_last, next_s)
                     )
                 reduced = list(nodes[:start]) + list(nodes[end:])
                 for target, target_nodes in enumerate(node_routes):
@@ -205,8 +216,8 @@ def ranked_subtrip_moves(
                         next_t = base[pos] if pos < len(base) else ends[target]
                         insert_delta = (
                             distances[prev_t][sub_first]
-                            + distances[sub_last][next_t]
-                            - (distances[prev_t][next_t] if base else 0.0)
+                            + _edge_distance(distances, sub_last, next_t)
+                            - (_edge_distance(distances, prev_t, next_t) if base else 0.0)
                         )
                         moves.append(
                             (trip_delta, removal + insert_delta, source, start, end, target, pos)
@@ -218,7 +229,7 @@ def ranked_order_moves(
     node_routes: Sequence[Sequence[int]],
     actions: Sequence[Sequence[Tuple[str, str]]],
     depots: Sequence[int],
-    ends: Sequence[int],
+    ends: Sequence[Optional[int]],
     distances: Sequence[Sequence[float]],
     deadline: float,
 ) -> List[OrderMove]:
@@ -235,13 +246,13 @@ def ranked_order_moves(
             return 0.0
         return (distances[depots[vehicle]][nodes[0]]
             + sum(distances[a][b] for a, b in zip(nodes, nodes[1:]))
-            + distances[nodes[-1]][ends[vehicle]])
+            + _edge_distance(distances, nodes[-1], ends[vehicle]))
 
     def insertion(nodes: Sequence[int], vehicle: int, node: int, position: int) -> float:
         previous = nodes[position-1] if position else depots[vehicle]
         following = nodes[position] if position < len(nodes) else ends[vehicle]
-        return (distances[previous][node] + distances[node][following]
-            - (distances[previous][following] if nodes else 0.0))
+        return (distances[previous][node] + _edge_distance(distances, node, following)
+            - (_edge_distance(distances, previous, following) if nodes else 0.0))
 
     for source, nodes in enumerate(node_routes):
         positions = {action: index for index, action in enumerate(actions[source])}
@@ -277,7 +288,7 @@ def ranked_stop_moves(
     node_routes: Sequence[Sequence[int]],
     actions: Sequence[Sequence[Tuple[str, str]]],
     depots: Sequence[int],
-    ends: Sequence[int],
+    ends: Sequence[Optional[int]],
     distances: Sequence[Sequence[float]],
     deadline: float,
 ) -> List[StopMove]:
@@ -303,8 +314,8 @@ def ranked_stop_moves(
             reduced = list(nodes[:source]) + list(nodes[source+1:])
             previous = nodes[source-1] if source else depots[vehicle_index]
             following = nodes[source+1] if source+1 < len(nodes) else ends[vehicle_index]
-            removed = (distances[previous][following] - distances[previous][nodes[source]]
-                - distances[nodes[source]][following])
+            removed = (_edge_distance(distances, previous, following) - distances[previous][nodes[source]]
+                - _edge_distance(distances, nodes[source], following))
             for target in range(len(nodes)):
                 if source == target or (kind == "PICKUP" and target > counterpart) or (
                     kind == "DELIVERY" and target <= counterpart
@@ -313,6 +324,6 @@ def ranked_stop_moves(
                 previous = reduced[target-1] if target else depots[vehicle_index]
                 following = reduced[target] if target < len(reduced) else ends[vehicle_index]
                 delta = (removed + distances[previous][nodes[source]]
-                    + distances[nodes[source]][following] - distances[previous][following])
+                    + _edge_distance(distances, nodes[source], following) - _edge_distance(distances, previous, following))
                 moves.append((delta, vehicle_index, source, target))
     return sorted(moves)
