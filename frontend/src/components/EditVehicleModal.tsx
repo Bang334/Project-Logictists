@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Modal,
+  Checkbox,
   Form,
   Input,
   Select,
@@ -191,6 +192,8 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
         vehicleTypeId: vehicle.vehicleTypeId,
         homeBranchId: vehicle.homeBranchId,
         homeDepotLocationId: vehicle.homeDepotLocationId || vehicle.homeDepotLocation?.id,
+        returnToDepot: vehicle.returnToDepot ?? true,
+        endDepotLocationId: vehicle.endDepotLocationId ?? undefined,
         status: vehicle.status,
       });
     }
@@ -206,6 +209,8 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
         vehicleTypeId: values.vehicleTypeId,
         homeBranchId: values.homeBranchId,
         homeDepotLocationId: values.homeDepotLocationId,
+        returnToDepot: values.returnToDepot,
+        endDepotLocationId: values.endDepotLocationId ?? null,
         status: values.status,
       });
       message.success(`Đã cập nhật thông tin xe tải [${values.plateNumber}] thành công!`);
@@ -313,7 +318,7 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
                 placeholder="Chọn cấu hình loại xe"
                 options={vehicleTypes.map((type) => ({
                   value: type.id,
-                  label: `${type.name} — ${type.payloadCapacityKg.toLocaleString()} kg / ${type.volumeCapacityM3} m³`,
+                  label: `${type.name} — ${type.payloadCapacityKg.toLocaleString()} kg / ${type.volumeCapacityM3} m³${type.temperatureMode === 'CHILLED' ? ' · Xe lạnh' : type.temperatureMode === 'FROZEN' ? ' · Xe đông lạnh' : ''}`,
                 }))}
               />
             </Form.Item>
@@ -371,6 +376,16 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
           </Col>
         </Row>
 
+        <Form.Item name="endDepotLocationId" label="Kho kết thúc chuyến"
+          extra="Khi chọn kho kết thúc, xe sẽ tới kho này sau điểm giao cuối.">
+          <Select allowClear options={depots.map(depot => ({
+            value: depot.id, label: `${depot.name} (${depot.code})`,
+          }))} />
+        </Form.Item>
+        <Form.Item name="returnToDepot" valuePropName="checked">
+          <Checkbox>Về kho xuất phát nếu chưa chọn kho kết thúc</Checkbox>
+        </Form.Item>
+
         <SectionHeader icon={<DashboardOutlined />} title="Trạng Thái Hoạt Động Của Xe" />
 
         <Form.Item
@@ -391,6 +406,9 @@ export const EditVehicleModal: React.FC<EditVehicleModalProps> = ({
             <Tag color="purple">+{selectedVehicleType.loadFuelSurchargePercentAtFullPayload}% khi đầy tải</Tag>
             <Tag color="orange">{Number(selectedVehicleType.fixedOperatingCostPerTrip).toLocaleString('vi-VN')} VNĐ/chuyến</Tag>
             <Tag color="gold">1 cửa sau</Tag>
+            {selectedVehicleType.hasTailLift && <Tag>Có bửng nâng</Tag>}
+            {selectedVehicleType.temperatureMode === 'HAZMAT' && <Tag>Xe chở hàng nguy hiểm</Tag>}
+            {selectedVehicleType.tollFactor != null && <Tag>Hệ số phí đường {selectedVehicleType.tollFactor}</Tag>}
           </Space>
         )}
       </Form>

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeAll, beforeEach, afterEach } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App as AntdApp, ConfigProvider } from 'antd';
 import { WarehousesTab } from '../components/WarehousesTab';
 import { locationsApi } from '../api/client';
@@ -145,5 +145,45 @@ describe('WarehousesTab', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /Thử lại/i })).toBeInTheDocument();
     });
+  });
+
+  it('loads and updates the configured transfer handling fee', async () => {
+    const profile = { opensAt: '22:00', closesAt: '04:00', handlingMinutes: 25, feeVndPerHandoff: 0 };
+    const warehouse = {
+      id: 'wh-transfer',
+      code: 'WH-DAD-02',
+      name: 'Kho thí điểm',
+      address: 'Đà Nẵng',
+      latitude: 16,
+      longitude: 108,
+      active: true,
+      type: 'CENTRAL_WAREHOUSE' as const,
+      managingBranchId: 'branch-dad',
+      custodyPackageCount: 0,
+      custodyTotalWeightKg: 0,
+      custodyPackages: [],
+      transferReceivingProfile: profile,
+    };
+    vi.mocked(locationsApi.getWarehouses).mockResolvedValue({ data: [warehouse] } as never);
+    vi.mocked(locationsApi.updateWarehouse).mockResolvedValue({ data: warehouse } as never);
+
+    render(
+      <ConfigProvider>
+        <AntdApp>
+          <WarehousesTab branches={[]} selectedBranchId="ALL" canManage />
+        </AntdApp>
+      </ConfigProvider>,
+    );
+
+    expect(await screen.findByText(/Tiếp nhận trung chuyển 22:00–04:00/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Sửa'));
+    const fee = await screen.findByLabelText(/Phí sang tải/);
+    fireEvent.change(fee, { target: { value: '125000' } });
+    fireEvent.click(screen.getByText('Lưu cập nhật'));
+
+    await waitFor(() => expect(locationsApi.updateWarehouse).toHaveBeenCalledWith(
+      warehouse.id,
+      expect.objectContaining({ transferReceivingProfile: { ...profile, feeVndPerHandoff: 125000 } }),
+    ));
   });
 });

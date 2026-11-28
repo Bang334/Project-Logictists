@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import sys
 import threading
 
@@ -13,13 +14,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import Field
 from typing import Dict, List
 
+from .interprovincial import (
+    DriverRestState,
+    _apply_stop_rest_credit,
+    is_item_hazmat,
+    is_location_accessible_for_vehicle,
+    is_temperature_compatible,
+    items_have_compatibility_conflict,
+    simulate_driving_leg,
+    vehicle_allows_hazmat,
+)
+
 from .models import (
     DemoStackingPolicy,
+    DrivingRestPolicy,
     FleetOptimizationRequest,
     FleetOptimizationBatchResponse,
     FleetOptimizationResponse,
     InProgressEvaluationRequest,
     InProgressEvaluationResponse,
+    LocationPoint,
     OptimizationRequest,
     OptimizationResponse,
     VehicleFloor,
@@ -55,9 +69,51 @@ app.include_router(demo_router)
 class ValidatePlanRequest(StrictContractModel):
     vehicle: VehicleFloor
     stops: List[StopAction]
+    locations_by_stop_id: Dict[str, LocationPoint] = Field(default_factory=dict)
     demo_stacking: DemoStackingPolicy | None = Field(
         default_factory=default_stacking_policy
     )
+
+
+class ManualScheduleStop(StrictContractModel):
+    earliest_sec: int = Field(ge=0)
+    service_sec: int = Field(ge=0)
+
+
+class ManualScheduleRequest(StrictContractModel):
+    travel_sec: List[float] = Field(min_length=2)
+    stops: List[ManualScheduleStop]
+    latest_end_sec: float = Field(gt=0)
+    initial_weekly_driving_sec: int = Field(default=0, ge=0)
+    driving_rest_policy: DrivingRestPolicy
+
+
+@app.post("/schedule-manual")
+def schedule_manual(request: ManualScheduleRequest):
+    if len(request.travel_sec) != len(request.stops) + 2 or any(
+        not math.isfinite(seconds) or seconds < 0 for seconds in request.travel_sec
+    ):
+        raise HTTPException(422, "Thiếu thời gian di chuyển hợp lệ")
+    state = DriverRestState(total_driving_sec=request.initial_weekly_driving_sec)
+    departure = 0.0
+    stops = []
+    policy = request.driving_rest_policy
+    for index, travel in enumerate(request.travel_sec):
+        arrival, _, _, state, error = simulate_driving_leg(
+            departure, travel, state, policy, index,
+        )
+        if error:
+            raise HTTPException(422, "Lịch chuyến vượt giới hạn giờ lái của tài xế")
+        departure = arrival
+        if 0 < index <= len(request.stops):
+            stop = request.stops[index - 1]
+            service_start = max(arrival, stop.earliest_sec)
+            departure = service_start + stop.service_sec
+            _apply_stop_rest_credit(state, round(service_start - arrival), stop.service_sec, policy)
+            stops.append({"arrival_sec": arrival, "departure_sec": departure})
+    if departure > request.latest_end_sec:
+        raise HTTPException(422, "Khung giờ chuyến không đủ sau khi tính thời gian nghỉ bắt buộc")
+    return {"stops": stops}
 
 
 @app.get("/health")
@@ -74,7 +130,44 @@ def validate_spatial(request: ValidatePlanRequest):
     Thẩm định tính khả thi hình học và xếp dỡ động cho một chuỗi điểm dừng (Stops).
     Kiểm tra triệt để các kịch bản T21-T27: cấm chồng, kiểm tra lối dỡ ra cửa, tái sử dụng không gian.
     """
-    validator = SpatialValidator(request.vehicle)
+    aboard = {}
+    vehicle = request.vehicle
+    allows_hazmat = vehicle_allows_hazmat(vehicle)
+    for stop in sorted(request.stops, key=lambda action: action.sequence):
+        handled = [
+            *stop.items_to_load,
+            *(aboard[item_id] for item_id in stop.items_to_unload if item_id in aboard),
+        ]
+        if not is_location_accessible_for_vehicle(
+            request.locations_by_stop_id.get(stop.stop_id),
+            vehicle,
+            requires_lift=any(item.requires_lift_equipment for item in handled),
+            requires_hazmat=any(is_item_hazmat(item) for item in handled),
+        ):
+            return SpatialValidationResult(
+                is_valid=False,
+                violation_code="STOP_ACCESS_INCOMPATIBLE",
+                error_message=f"Xe hoặc thiết bị xếp dỡ không phù hợp tại điểm {stop.sequence}",
+            )
+        for item_id in stop.items_to_unload:
+            aboard.pop(item_id, None)
+        incoming = stop.items_to_load
+        if any(
+            (is_item_hazmat(item) and not allows_hazmat)
+            or not is_temperature_compatible(
+                item.required_temperature, vehicle.temperature_mode, allows_hazmat=allows_hazmat
+            )
+            for item in incoming
+        ) or items_have_compatibility_conflict(
+            incoming, [*aboard.values(), *incoming]
+        ):
+            return SpatialValidationResult(
+                is_valid=False,
+                violation_code="CARGO_INCOMPATIBLE",
+                error_message=f"Hàng không tương thích với xe hoặc hàng đang chở tại điểm {stop.sequence}",
+            )
+        aboard.update((item.id, item) for item in incoming)
+    validator = SpatialValidator(vehicle)
     if request.demo_stacking is None:
         return validator.validate_plan(request.stops)
     stacks = DemoStacks(request.demo_stacking, [request.vehicle])

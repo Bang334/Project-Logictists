@@ -1,12 +1,30 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { LocationType, PackageStatus, StopType } from '@prisma/client';
+import { LocationType, PackageStatus, Prisma, StopType } from '@prisma/client';
 import { branchFilter, Principal, requireBranch } from '../auth/access';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateWarehouseDto, UpdateWarehouseDto } from './dto/warehouse.dto';
+import { CreateWarehouseDto, TransferReceivingProfileDto, UpdateWarehouseDto } from './dto/warehouse.dto';
+
+function transferReceivingData(profile: TransferReceivingProfileDto | null | undefined) {
+  if (profile === undefined) return undefined;
+  if (profile === null) return Prisma.DbNull;
+  if (profile.opensAt === profile.closesAt) {
+    throw new BadRequestException({
+      code: 'INVALID_TRANSFER_RECEIVING_HOURS',
+      message: 'Giờ mở và giờ đóng tiếp nhận trung chuyển phải khác nhau.',
+    });
+  }
+  return {
+    opensAt: profile.opensAt,
+    closesAt: profile.closesAt,
+    handlingMinutes: profile.handlingMinutes,
+    feeVndPerHandoff: profile.feeVndPerHandoff,
+  };
+}
 
 @Injectable()
 export class WarehousesService {
@@ -67,6 +85,7 @@ export class WarehousesService {
         longitude: loc.longitude,
         active: loc.active,
         type: loc.type,
+        transferReceivingProfile: loc.transferReceivingProfile,
         managingBranchId: loc.managingBranchId,
         managingBranch: loc.managingBranch,
         custodyPackageCount: custodyPackages.length,
@@ -132,6 +151,7 @@ export class WarehousesService {
         longitude: dto.longitude,
         managingBranchId: branch.id,
         active: dto.active ?? true,
+        transferReceivingProfile: transferReceivingData(dto.transferReceivingProfile),
       },
       include: {
         managingBranch: { select: { id: true, code: true, name: true } },
@@ -192,6 +212,7 @@ export class WarehousesService {
         longitude: dto.longitude,
         active: dto.active,
         managingBranchId: nextBranchId,
+        transferReceivingProfile: transferReceivingData(dto.transferReceivingProfile),
       },
       include: {
         managingBranch: { select: { id: true, code: true, name: true } },

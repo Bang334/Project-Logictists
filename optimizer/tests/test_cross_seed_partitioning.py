@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from app.cross_seed_partitioning import solve_cross_seed_set_partitioning
+from app.cross_seed_partitioning import (
+    _build_interchangeable_vehicle_groups,
+    solve_cross_seed_set_partitioning,
+)
 from app.models import (
     CargoItem,
     CostPolicy,
@@ -257,6 +260,20 @@ def test_cross_seed_combines_single_plan_with_audited_extra_routes():
     assert len(combined.routes) == 2
     assert combined.total_cost_vnd < 700_000
     assert combined.routes[0].driver_id != combined.routes[1].driver_id
+
+
+def test_hazmat_permission_prevents_cross_seed_vehicle_substitution():
+    request, vehicles, _, _ = _sample_problem()
+    first = vehicles[0]
+    second = first.model_copy(update={
+        "id": "second", "plate_number": "second", "source_vehicle_id": "second",
+    })
+    request = request.model_copy(update={"vehicles": [first, second]})
+    assert set(_build_interchangeable_vehicle_groups(request)[0]) == {first.id, second.id}
+
+    second = second.model_copy(update={"allows_hazmat": True})
+    request = request.model_copy(update={"vehicles": [first, second]})
+    assert not _build_interchangeable_vehicle_groups(request)[0]
 
 
 def test_cross_seed_reassigns_interchangeable_vehicle_profile_across_seeds():

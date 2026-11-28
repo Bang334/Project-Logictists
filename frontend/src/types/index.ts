@@ -80,6 +80,8 @@ export interface Vehicle {
   status: 'AVAILABLE' | 'MAINTENANCE' | 'ON_TRIP' | 'DECOMMISSIONED';
   homeDepotLocationId?: string;
   homeDepotLocation?: Location;
+  returnToDepot?: boolean;
+  endDepotLocationId?: string | null;
   currentLatitude?: number;
   currentLongitude?: number;
   lastLocationAt?: string;
@@ -99,6 +101,9 @@ export interface VehicleType {
   fixedOperatingCostPerTrip: string;
   requiredLicenseCategory?: string | null;
   handlingCapabilities?: unknown;
+  temperatureMode?: 'DRY' | 'CHILLED' | 'FROZEN' | 'ISOTHERMAL' | 'HAZMAT';
+  hasTailLift?: boolean;
+  tollFactor?: string | number;
   active: boolean;
 }
 
@@ -112,6 +117,9 @@ export interface Driver {
   licenseExpiry: string;
   homeBranchId: string;
   homeBranch?: Branch;
+  homeLocationId?: string | null;
+  homeProvinceCode?: string | null;
+  strictHomeLocation?: boolean;
   status: 'AVAILABLE' | 'ON_DUTY' | 'ON_LEAVE' | 'RESTING';
   fixedSalaryMonthly?: string;
   tripBasePay?: string;
@@ -153,6 +161,13 @@ export interface WarehouseCustodyPackage {
   deliveryStop: { id: string; address: string; latitude: number; longitude: number } | null;
 }
 
+export interface TransferReceivingProfile {
+  opensAt: string;
+  closesAt: string;
+  handlingMinutes: number;
+  feeVndPerHandoff: number;
+}
+
 export interface WarehouseSummary {
   id: string;
   code: string;
@@ -162,6 +177,7 @@ export interface WarehouseSummary {
   longitude: number;
   active: boolean;
   type: 'CENTRAL_WAREHOUSE';
+  transferReceivingProfile?: TransferReceivingProfile | null;
   managingBranchId: string | null;
   managingBranch?: { id: string; code: string; name: string } | null;
   custodyPackageCount: number;
@@ -422,6 +438,9 @@ export interface RouteCostBreakdownUI {
   driver_fixed_salary_allocation_vnd: number;
   driver_trip_pay_vnd: number;
   total_cost_vnd: number;
+  toll_cost_vnd?: number;
+  overnight_allowance_vnd?: number;
+  weight_balance_penalty_vnd?: number;
 }
 
 export interface OptimizedRouteUI {
@@ -441,6 +460,14 @@ export interface OptimizedRouteUI {
   total_duration_minutes: number;
   return_travel_time_sec?: number;
   return_waiting_time_sec?: number;
+  province_hops?: string[];
+  rest_breaks?: Array<{
+    leg_after_sequence: number;
+    reason: 'CONTINUOUS_DRIVING' | 'DAILY_LIMIT';
+    start_time_sec: number;
+    end_time_sec: number;
+    duration_sec: number;
+  }>;
   depot?: {
     id: string;
     name: string;

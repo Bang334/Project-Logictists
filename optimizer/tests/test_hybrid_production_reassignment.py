@@ -84,6 +84,47 @@ def test_initial_matching_can_still_augment_to_cover_every_vehicle(monkeypatch):
     assert all(request.drivers[d].license_class in eligible[request.vehicles[v].payload_limit_kg] for v, d in pairs)
 
 
+def test_driver_shortage_keeps_the_only_chilled_vehicle():
+    request = comparison_request()
+    request.vehicles = [
+        request.vehicles[0].model_copy(update={
+            "id": f"v-{i}", "temperature_mode": "CHILLED" if i == 4 else "DRY",
+        })
+        for i in range(5)
+    ]
+    request.drivers = [
+        request.drivers[0].model_copy(update={"id": f"driver-{i}"})
+        for i in range(2)
+    ]
+    request.orders[0].items[0].required_temperature = "CHILLED"
+    request.orders[1].items[0].required_temperature = "DRY"
+    for order in request.orders:
+        order.source_order_id = order.id
+        order.split_group_id = None
+        order.items[0].order_id = order.id
+    size = len(request.vehicles) + len(request.orders) * 2
+    request.distance_matrix_meters = [[0] * size for _ in range(size)]
+    request.duration_matrix_seconds = [[0] * size for _ in range(size)]
+    for vehicles in (request.vehicles, list(reversed(request.vehicles))):
+        engine = PackingAwareHybridALNSOptimizer(
+            request.model_copy(update={"vehicles": vehicles}),
+            time_budget_seconds=2,
+            include_benchmarks=False,
+        )
+        pairs = engine._matched_vehicle_driver_indices()
+        assert len(pairs) == 2
+        assert len({driver_index for _, driver_index in pairs}) == 2
+        assert "v-4" in {vehicles[vehicle_index].id for vehicle_index, _ in pairs}
+        result = engine.solve()
+        assert not result.unassigned_orders
+        assert len({route.driver_id for route in result.routes}) == len(result.routes) == 2
+        assert any(
+            route.vehicle_id == "v-4"
+            and any(stop.order_id == request.orders[0].id for stop in route.stops)
+            for route in result.routes
+        )
+
+
 def test_optimize_production_vehicles_returns_valid_search_state_when_improved():
     request = comparison_request()
     vehicle = request.vehicles[0]

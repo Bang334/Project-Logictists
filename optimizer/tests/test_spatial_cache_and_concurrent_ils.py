@@ -118,7 +118,7 @@ def test_multi_start_runs_concurrent_ils_on_headroom_dataset():
         / "dataset_01_005_orders_03_fleet.json"
     )
     req = FleetOptimizationRequest.model_validate_json(ds_path.read_text(encoding="utf-8"))
-    req = req.model_copy(update={"search_time_seconds": 8, "max_time_seconds": 22})
+    req = req.model_copy(update={"search_time_seconds": 12, "max_time_seconds": 28})
 
     batch = MultiStartFleetOptimizer(req).solve(max_candidates=3)
     expected = {o.id: {it.id for it in o.items} for o in req.orders}

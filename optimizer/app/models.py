@@ -48,6 +48,9 @@ class VehicleFloor(StrictContractModel):
     payload_limit_kg: float = Field(gt=0)
     door_position: Literal["REAR"] = "REAR"
     door_width_cm: Optional[float] = Field(default=None, gt=0)
+    temperature_mode: Literal["DRY", "CHILLED", "FROZEN", "ISOTHERMAL", "HAZMAT"] = "DRY"
+    allows_hazmat: bool = False
+    has_tail_lift: bool = False
 
 
 class FleetVehicle(VehicleFloor):
@@ -60,9 +63,6 @@ class FleetVehicle(VehicleFloor):
     end_depot: Optional[LocationPoint] = None
     model: Optional[str] = None
     vehicle_type: Optional[str] = None
-    temperature_mode: Literal["DRY", "CHILLED", "FROZEN", "ISOTHERMAL", "HAZMAT"] = "DRY"
-    allows_hazmat: bool = False
-    has_tail_lift: bool = False
     toll_factor: float = Field(default=1.0, gt=0)
     fuel_consumption_liters_per_100_km: float = Field(
         ge=0, description="Baseline fuel consumption without cargo"
@@ -433,6 +433,9 @@ class OptimizationRequest(StrictContractModel):
     job_id: str
     vehicle: VehicleFloor
     depot: LocationPoint
+    end_depot: Optional[LocationPoint] = None
+    return_to_depot: bool = True
+    driving_rest_policy: Optional[DrivingRestPolicy] = None
     orders: List[OrderPair] = Field(min_length=1)
     demo_stacking: Optional[DemoStackingPolicy] = Field(
         default_factory=default_stacking_policy

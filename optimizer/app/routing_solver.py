@@ -2662,6 +2662,8 @@ class OrToolsRoutingSolver:
         vehicle = FleetVehicle(
             **self.request.vehicle.model_dump(),
             depot=self.request.depot,
+            end_depot=self.request.end_depot,
+            return_to_depot=self.request.return_to_depot,
             fuel_consumption_liters_per_100_km=0,
             fixed_operating_cost_vnd=0,
         )
@@ -2681,6 +2683,7 @@ class OrToolsRoutingSolver:
             policy=CostPolicy(
                 fuel_price_per_liter_vnd=1,
                 monthly_working_minutes=1,
+                driving_rest_policy=self.request.driving_rest_policy,
             ),
             max_time_seconds=self.request.max_time_seconds, demo_stacking=self.request.demo_stacking,
             distance_matrix_meters=self.request.distance_matrix_meters,

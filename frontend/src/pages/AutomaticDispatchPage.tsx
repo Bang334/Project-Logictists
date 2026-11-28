@@ -1735,6 +1735,18 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                   {currency.format(route.cost?.total_cost_vnd || 0)}
                 </div>
               </div>
+              <Space direction="vertical" size={4} style={{ marginTop: 8 }}>
+                {route.end_location?.name && <Text>Điểm kết thúc · {route.end_location.name}</Text>}
+                {!!route.province_hops?.length && <Text>Tỉnh đi qua · {route.province_hops.join(' → ')}</Text>}
+                {route.cost?.toll_cost_vnd != null && <Text>Phí đường · {currency.format(route.cost.toll_cost_vnd)}</Text>}
+                {route.cost?.overnight_allowance_vnd != null && <Text>Phụ cấp qua đêm · {currency.format(route.cost.overnight_allowance_vnd)}</Text>}
+                {route.cost?.weight_balance_penalty_vnd != null && <Text>Phạt lệch tải · {currency.format(route.cost.weight_balance_penalty_vnd)}</Text>}
+                {optimization?.planningEpochIso && route.rest_breaks?.map((rest) => {
+                  const start = dayjs(optimization.planningEpochIso).add(rest.start_time_sec, 'second');
+                  const end = dayjs(optimization.planningEpochIso).add(rest.end_time_sec, 'second');
+                  return <Text key={rest.start_time_sec}>Nghỉ theo ca lái · {start.format('DD/MM HH:mm')}–{end.format('DD/MM HH:mm')}</Text>;
+                })}
+              </Space>
             </div>
 
             {/* KHỐI KẾ HOẠCH CA LÀM VIỆC CỦA TÀI XẾ (BR07) */}

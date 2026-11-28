@@ -1293,6 +1293,7 @@ model Location {
   handlingSecPerTon       Int                    @default(0)
   handlingSecPerPackage   Int                    @default(0)
   capabilities            Json?
+  transferReceivingProfile Json?
   totalHoldingSlots       Int                    @default(0)
   availableHoldingSlots   Int                    @default(0)
   active                  Boolean                @default(true)
@@ -1835,6 +1836,10 @@ model SystemSetting {
   dispatchPreparationMinutes  Int?
   unassignedOrderPenaltyVnd   BigInt?
   maxRoutesPerDay             Int?
+  enforceWeightBalance              Boolean?
+  weightBalancePenaltyVndPerPercent Int?
+  maxLateralImbalancePercent        Float?
+  maxLongitudinalImbalancePercent   Float?
   demoAllowOverride           Boolean?
 
   overrideCostPenalty         Boolean                  @default(false)

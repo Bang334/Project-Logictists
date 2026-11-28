@@ -87,12 +87,11 @@ import {
 } from './vehicle-planning-start';
 import {
   buildInterprovincialTollMatrix,
-  DEFAULT_VN_2024_DRIVING_REST_POLICY,
   expectedWarehouseStopServiceSec,
   extractLocationConstraintFields,
   findMatchingWarehouseLocation,
   LocationConstraintSource,
-  parseWorkPolicyToDrivingRest,
+  resolveVietnamDrivingRestPolicy,
   startOfWeekInTimeZone,
   TollCorridorRecord,
   WorkPolicyRow,
@@ -637,11 +636,15 @@ export class TripsService {
     const [routeResult, roadMatrix] = await Promise.all([
       this.mapboxService.getRoute(routeCoords), this.mapboxService.getRoadMatrix(routeCoords),
     ]);
-    const schedule = this.serviceSchedule(stopWithItemsList, roadMatrix.durationsSeconds, plannedStart, plannedEnd);
+    const schedule = await this.manualServiceSchedule(
+      stopWithItemsList, roadMatrix.durationsSeconds, plannedStart, plannedEnd, dto.driverId, vehicle.homeBranch?.timezone,
+    );
+    await this.assertManualCurfews(vehicle, stopWithItemsList, schedule, plannedStart, plannedEnd);
 
     const spatialValidation = await this.validateSpatialPlan(
       vehicle,
       stopWithItemsList,
+      schedule,
     );
     const requiredDurationMinutes =
       routeResult.durationMinutes +
@@ -1013,6 +1016,7 @@ export class TripsService {
           status: VehicleStatus.AVAILABLE,
         },
         include: {
+          homeBranch: true,
           homeDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT },
           vehicleTypeRecord: true,
         },
@@ -1073,8 +1077,11 @@ export class TripsService {
       [dto.endLocation.longitude, dto.endLocation.latitude],
     ];
     const [route, matrix] = await Promise.all([this.mapboxService.getRoute(routeCoordinates), this.mapboxService.getRoadMatrix(routeCoordinates)]);
-    const schedule = this.serviceSchedule(stopWithItems, matrix.durationsSeconds, plannedStart, plannedEnd);
-    const spatial = await this.validateSpatialPlan(vehicle, stopWithItems);
+    const schedule = await this.manualServiceSchedule(
+      stopWithItems, matrix.durationsSeconds, plannedStart, plannedEnd, dto.driverId, vehicle.homeBranch?.timezone, id,
+    );
+    await this.assertManualCurfews(vehicle, stopWithItems, schedule, plannedStart, plannedEnd);
+    const spatial = await this.validateSpatialPlan(vehicle, stopWithItems, schedule);
     const requiredDurationMinutes =
       route.durationMinutes +
       stopWithItems.reduce(
@@ -1593,6 +1600,7 @@ export class TripsService {
       include: {
         homeBranch: true,
         homeDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT },
+        endDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT },
         vehicleTypeRecord: true,
       },
     });
@@ -1600,6 +1608,7 @@ export class TripsService {
       throw new NotFoundException("Không tìm thấy xe");
     }
     const planningStart = resolveVehiclePlanningStart(vehicle);
+    const endDepot = vehicle.endDepotLocation?.active ? vehicle.endDepotLocation : null;
 
     const [orders, warehouses] = await Promise.all([
       this.prisma.order.findMany({
@@ -1663,6 +1672,7 @@ export class TripsService {
     const activeZones = this.zonesService
       ? await this.zonesService.findActiveByBranch(vehicle.homeBranchId)
       : [];
+    const drivingRestPolicy = await this.manualDrivingRestPolicy(planningEpoch);
     const optimizerOrders = this.buildOptimizerOrders(
       orderedOrders,
       planningEpoch,
@@ -1685,6 +1695,17 @@ export class TripsService {
         ] as [number, number],
       ]),
     ];
+    const orderLocations = optimizerOrders.flatMap(order => [order.pickup_location, order.delivery_location]);
+    if (endDepot && endDepot.id !== planningStart.locationId &&
+      !orderLocations.some(location =>
+        [location.id, location.source_location_id, location.warehouse_location_id].includes(endDepot.id)
+      ) && !matrixCoordinates.some(([longitude, latitude]) =>
+        longitude.toFixed(6) === endDepot.longitude.toFixed(6) &&
+        latitude.toFixed(6) === endDepot.latitude.toFixed(6)
+      )
+    ) {
+      matrixCoordinates.push([endDepot.longitude, endDepot.latitude]);
+    }
     const matrix = await this.mapboxService.getRoadMatrix(matrixCoordinates);
 
     const payload = {
@@ -1697,6 +1718,9 @@ export class TripsService {
         height_cm: vehicle.vehicleTypeRecord.heightCm,
         payload_limit_kg: vehicle.vehicleTypeRecord.payloadCapacityKg,
         door_position: "REAR",
+        temperature_mode: vehicle.vehicleTypeRecord.temperatureMode ?? 'DRY',
+        allows_hazmat: vehicleTypeAllowsHazmat(vehicle.vehicleTypeRecord),
+        has_tail_lift: vehicle.vehicleTypeRecord.hasTailLift ?? false,
       },
       depot: {
         id: `depot:${planningStart.locationId}`,
@@ -1707,6 +1731,17 @@ export class TripsService {
         ...planningStart.locationConstraints,
       },
       orders: optimizerOrders,
+      return_to_depot: vehicle.returnToDepot ?? true,
+      ...(endDepot ? { end_depot: {
+        id: `end_depot:${endDepot.id}`,
+        source_location_id: endDepot.id,
+        warehouse_location_id: endDepot.id,
+        name: endDepot.name,
+        latitude: endDepot.latitude,
+        longitude: endDepot.longitude,
+        ...extractLocationConstraintFields(endDepot),
+      } } : {}),
+      ...(drivingRestPolicy ? { driving_rest_policy: drivingRestPolicy } : {}),
       demo_stacking: (await this.resolveBranchStackingPolicy(branchId)).policy,
       max_time_seconds: 5,
       distance_matrix_meters: matrix.distancesMeters,
@@ -1838,7 +1873,6 @@ export class TripsService {
         ? this.prisma.workPolicy.findMany({
             where: { jurisdiction: 'VN' },
             orderBy: [{ effectiveFrom: 'desc' }, { revision: 'desc' }],
-            take: 10,
           })
         : Promise.resolve([] as WorkPolicyRow[]),
       this.prisma.tollCorridor?.findMany
@@ -2109,16 +2143,7 @@ export class TripsService {
           : {}),
       };
     });
-    const activeWorkPolicyRow = workPolicies.find(
-      (policy) =>
-        policy.effectiveFrom <= planningEpoch &&
-        (!policy.effectiveTo || policy.effectiveTo >= planningEpoch),
-    );
-    const drivingRestPolicy = activeWorkPolicyRow
-      ? parseWorkPolicyToDrivingRest(activeWorkPolicyRow)
-      : workPolicies.length === 0
-        ? DEFAULT_VN_2024_DRIVING_REST_POLICY
-        : null;
+    const drivingRestPolicy = resolveVietnamDrivingRestPolicy(workPolicies, planningEpoch);
     const deliveryHolds = await this.prisma.deliveryCapacityHold.findMany({ where: {
       status: 'HELD', ...(deliveryBatchId ? { batchId: { not: deliveryBatchId } } : {}),
       OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
@@ -2186,7 +2211,10 @@ export class TripsService {
       );
       const snapshot = {
         vehicles: serviceDays.flatMap((day) =>
-          baseVehicles.filter(vehicle => freeInDay(vehicle.source_vehicle_id, day, 'vehicleId')).slice(0, baseDrivers.filter(driver => freeInDay(driver.source_driver_id, day, 'driverId')).length).map((vehicle) => ({
+          baseVehicles.filter(vehicle =>
+            freeInDay(vehicle.source_vehicle_id, day, 'vehicleId') &&
+            baseDrivers.some(driver => freeInDay(driver.source_driver_id, day, 'driverId'))
+          ).map((vehicle) => ({
             ...vehicle,
             id: `${vehicle.source_vehicle_id}::day:${day.serviceDayIndex}`,
             service_day_index: day.serviceDayIndex,
@@ -2222,6 +2250,11 @@ export class TripsService {
           ...(effectiveSettings?.optimization.maxRoutesPerDay != null
             ? { max_routes_per_day: effectiveSettings.optimization.maxRoutesPerDay }
             : {}),
+          enforce_weight_balance: effectiveSettings?.optimization.enforceWeightBalance ?? false,
+          weight_balance_penalty_vnd_per_percent:
+            effectiveSettings?.optimization.weightBalancePenaltyVndPerPercent ?? 0,
+          max_lateral_imbalance_percent: effectiveSettings?.optimization.maxLateralImbalancePercent ?? null,
+          max_longitudinal_imbalance_percent: effectiveSettings?.optimization.maxLongitudinalImbalancePercent ?? null,
           ...(drivingRestPolicy ? { driving_rest_policy: drivingRestPolicy } : {}),
         },
         planning_epoch_iso: planningEpoch.toISOString(),
@@ -3105,6 +3138,112 @@ export class TripsService {
     return schedule;
   }
 
+  private async assertManualCurfews(
+    vehicle: VehicleRecordWithType & { homeBranch: { timezone: string } },
+    stops: DispatchStopWithItems[],
+    schedule: ReturnType<TripsService['serviceSchedule']>,
+    start: Date,
+    end: Date,
+  ) {
+    const zones = await this.zonesService?.findActiveByBranch(vehicle.homeBranchId) ?? [];
+    if (!zones.length) return;
+    const days = (end.getTime() - start.getTime()) / 86_400_000;
+    for (const [index, { orderStop }] of stops.entries()) {
+      const arrival = (schedule[index].plannedArrivalTime.getTime() - start.getTime()) / 1000;
+      const departure = (schedule[index].plannedDepartureTime.getTime() - start.getTime()) / 1000;
+      const windows = expandZoneCurfewsRelativeToEpoch(
+        zones, orderStop.latitude, orderStop.longitude, start, days, vehicle.homeBranch.timezone,
+      );
+      if (windows.some(window =>
+        vehicle.vehicleTypeRecord.payloadCapacityKg > window.max_payload_kg + 1e-6 &&
+        arrival < window.end_sec &&
+        (departure > arrival ? departure > window.start_sec : arrival >= window.start_sec)
+      )) {
+        throw new BadRequestException(`Điểm dừng ${index + 1} nằm trong giờ cấm tải của xe`);
+      }
+    }
+  }
+
+  private async manualDrivingRestPolicy(at: Date) {
+    const policies = await this.prisma.workPolicy?.findMany?.({
+      where: { jurisdiction: 'VN' },
+      orderBy: [{ effectiveFrom: 'desc' }, { revision: 'desc' }],
+    }) ?? [];
+    return resolveVietnamDrivingRestPolicy(policies, at);
+  }
+
+  private async manualServiceSchedule(
+    stops: DispatchStopWithItems[],
+    matrix: number[][],
+    start: Date,
+    end: Date,
+    driverId: string,
+    timezone = 'Asia/Ho_Chi_Minh',
+    excludeTripId?: string,
+  ) {
+    const schedule = this.serviceSchedule(stops, matrix, start, end);
+    const policy = await this.manualDrivingRestPolicy(start);
+    if (!policy?.enabled) return schedule;
+    const startMs = start.getTime();
+    const weekStartMs = startOfWeekInTimeZone(start, timezone).getTime();
+    const restMs = policy.min_inter_trip_rest_sec * 1000;
+    const prior = await this.prisma.driverAssignment?.findMany?.({
+      where: {
+        driverId,
+        startTime: { lt: start },
+        endTime: { gt: new Date(Math.min(weekStartMs, startMs - restMs)) },
+        ...(excludeTripId ? { tripId: { not: excludeTripId } } : {}),
+        trip: { status: { in: [...ACTIVE_TRIP_STATUSES, TripStatus.COMPLETED] } },
+      },
+      select: { startTime: true, endTime: true },
+    }) ?? [];
+    if (restMs > 0 && prior.some(assignment => assignment.endTime.getTime() > startMs - restMs)) {
+      throw new BadRequestException('Tài xế chưa đủ thời gian nghỉ giữa hai chuyến');
+    }
+    const weeklySeconds = prior.reduce((seconds, assignment) => seconds + Math.max(
+      0, Math.round((Math.min(startMs, assignment.endTime.getTime()) -
+        Math.max(weekStartMs, assignment.startTime.getTime())) / 1000),
+    ), 0);
+    const travel = Array.from({ length: stops.length + 2 }, (_, index) => matrix[index][index + 1]);
+    const totalDriving = travel.reduce((sum, seconds) => sum + Math.round(seconds), 0);
+    if (policy.max_weekly_driving_sec != null && weeklySeconds + totalDriving > policy.max_weekly_driving_sec) {
+      throw new BadRequestException('Lịch chuyến vượt giới hạn giờ lái trong tuần');
+    }
+    if (totalDriving <= policy.max_continuous_driving_sec) return schedule;
+
+    try {
+      const { data } = await axios.post<{ stops: { arrival_sec: number; departure_sec: number }[] }>(
+        `${this.optimizerUrl}/schedule-manual`,
+        {
+          travel_sec: travel,
+          stops: stops.map(({ orderStop, order }) => ({
+            earliest_sec: Math.max(0, Math.ceil((order.orderedAt.getTime() - startMs) / 1000)),
+            service_sec: orderStop.serviceDurationMinutes * 60,
+          })),
+          latest_end_sec: (end.getTime() - startMs) / 1000,
+          initial_weekly_driving_sec: weeklySeconds,
+          driving_rest_policy: policy,
+        },
+        { timeout: 10_000 },
+      );
+      if (data?.stops?.length !== stops.length || data.stops.some(stop =>
+        !Number.isFinite(stop.arrival_sec) || !Number.isFinite(stop.departure_sec)
+      )) {
+        throw new Error('Optimizer trả lịch chuyến sai hợp đồng');
+      }
+      return data.stops.map(stop => ({
+        plannedArrivalTime: new Date(startMs + stop.arrival_sec * 1000),
+        plannedDepartureTime: new Date(startMs + stop.departure_sec * 1000),
+      }));
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 422 &&
+        typeof error.response.data?.detail === 'string') {
+        throw new BadRequestException(error.response.data.detail);
+      }
+      throw new ServiceUnavailableException('Không kiểm tra được lịch nghỉ lái xe');
+    }
+  }
+
   private get optimizerUrl() {
     return process.env.OPTIMIZER_URL || 'http://localhost:8000';
   }
@@ -3175,8 +3314,9 @@ export class TripsService {
   }
 
   private async validateSpatialPlan(
-    vehicle: VehicleRecord & { vehicleTypeRecord: VehicleType },
+    vehicle: VehicleRecordWithType & { homeBranch: { timezone: string } },
     stopsWithItems: DispatchStopWithItems[],
+    schedule: ReturnType<TripsService['serviceSchedule']>,
   ) {
     const cargoByOrderId = new Map<string, ReturnType<typeof packagesToCargoUnits>>();
     for (const entry of stopsWithItems) {
@@ -3205,6 +3345,46 @@ export class TripsService {
     });
 
     const capabilities = vehicleCapabilities(vehicle);
+    const locationIds = [...new Set(stopsWithItems.flatMap(({ orderStop }) =>
+      orderStop.locationId ? [orderStop.locationId] : [],
+    ))];
+    const locations = this.prisma.location?.findMany
+      ? await this.prisma.location.findMany({ where: { OR: [
+          { id: { in: locationIds } },
+          { active: true, type: LocationType.CENTRAL_WAREHOUSE },
+        ] } })
+      : [];
+    const locationById = new Map(locations.map(location => [location.id, location]));
+    const warehouses = locations.filter(location => location.active && location.type === LocationType.CENTRAL_WAREHOUSE);
+    const clock = new Intl.DateTimeFormat('en-GB', {
+      timeZone: vehicle.homeBranch?.timezone ?? 'Asia/Ho_Chi_Minh',
+      hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    const locationsByStopId = Object.fromEntries(stopsWithItems.flatMap(({ orderStop }, index) => {
+      const location = (orderStop.locationId && locationById.get(orderStop.locationId))
+        || findMatchingWarehouseLocation(orderStop.latitude, orderStop.longitude, warehouses);
+      if (!location) return [];
+      const constraints = extractLocationConstraintFields(location);
+      if (constraints.operating_windows?.length) {
+        const arrival = schedule[index].plannedArrivalTime;
+        const departure = schedule[index].plannedDepartureTime;
+        const [hours, minutes, seconds] = clock.format(arrival).split(':').map(Number);
+        const openSecond = hours * 3600 + minutes * 60 + seconds;
+        const closeSecond = openSecond + (departure.getTime() - arrival.getTime()) / 1000;
+        if (!constraints.operating_windows.some(window =>
+          openSecond >= window.start_sec && openSecond < window.end_sec && closeSecond <= window.end_sec
+        )) {
+          throw new BadRequestException(`Điểm dừng ${index + 1} nằm ngoài giờ hoạt động của kho`);
+        }
+      }
+      return [[orderStop.id, {
+        id: location.id,
+        name: location.name,
+        latitude: location.latitude,
+        longitude: location.longitude,
+        ...constraints,
+      }]];
+    }));
     try {
       const response = await axios.post(
         `${this.optimizerUrl}/validate-spatial`,
@@ -3217,8 +3397,12 @@ export class TripsService {
             height_cm: capabilities.heightCm,
             payload_limit_kg: capabilities.payloadCapacityKg,
             door_position: 'REAR',
+            temperature_mode: capabilities.temperatureMode ?? 'DRY',
+            allows_hazmat: vehicleTypeAllowsHazmat(capabilities),
+            has_tail_lift: capabilities.hasTailLift ?? false,
           },
           stops,
+          locations_by_stop_id: locationsByStopId,
           demo_stacking: (await this.resolveBranchStackingPolicy(vehicle.homeBranchId)).policy,
         },
         { timeout: 10_000 },
@@ -3826,19 +4010,9 @@ export class TripsService {
       ? await tx.workPolicy.findMany({
           where: { jurisdiction: 'VN' },
           orderBy: [{ effectiveFrom: 'desc' }, { revision: 'desc' }],
-          take: 5,
         })
       : [];
-    const activePolicy = activeWorkPolicies.find(
-      (policy) =>
-        policy.effectiveFrom <= plannedTrip.plannedStartTime &&
-        (!policy.effectiveTo || policy.effectiveTo >= plannedTrip.plannedStartTime),
-    );
-    const parsedRestPolicy = activePolicy
-      ? parseWorkPolicyToDrivingRest(activePolicy)
-      : activeWorkPolicies.length === 0
-        ? DEFAULT_VN_2024_DRIVING_REST_POLICY
-        : null;
+    const parsedRestPolicy = resolveVietnamDrivingRestPolicy(activeWorkPolicies, plannedTrip.plannedStartTime);
     const minInterTripRestMs =
       parsedRestPolicy?.enabled && parsedRestPolicy.min_inter_trip_rest_sec > 0
         ? parsedRestPolicy.min_inter_trip_rest_sec * 1000

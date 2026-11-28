@@ -202,6 +202,10 @@ export class SettingsService {
             dispatchPreparationMinutes: nextOptimization.dispatchPreparationMinutes,
             unassignedOrderPenaltyVnd: BigInt(Math.round(nextOptimization.unassignedOrderPenaltyVnd)),
             maxRoutesPerDay: nextOptimization.maxRoutesPerDay,
+            enforceWeightBalance: nextOptimization.enforceWeightBalance,
+            weightBalancePenaltyVndPerPercent: nextOptimization.weightBalancePenaltyVndPerPercent,
+            maxLateralImbalancePercent: nextOptimization.maxLateralImbalancePercent,
+            maxLongitudinalImbalancePercent: nextOptimization.maxLongitudinalImbalancePercent,
             demoAllowOverride: nextOptimization.demoAllowOverride,
             fuelPricePerLiter: nextCostPenalty.fuelPricePerLiter,
             monthlyWorkingMinutes: nextCostPenalty.monthlyWorkingMinutes,
@@ -354,6 +358,10 @@ export class SettingsService {
             ? BigInt(Math.round(nextOptimization.unassignedOrderPenaltyVnd))
             : null,
           maxRoutesPerDay: nextOverrideOptimization ? nextOptimization.maxRoutesPerDay : null,
+          enforceWeightBalance: nextOverrideOptimization ? nextOptimization.enforceWeightBalance : null,
+          weightBalancePenaltyVndPerPercent: nextOverrideOptimization ? nextOptimization.weightBalancePenaltyVndPerPercent : null,
+          maxLateralImbalancePercent: nextOverrideOptimization ? nextOptimization.maxLateralImbalancePercent : null,
+          maxLongitudinalImbalancePercent: nextOverrideOptimization ? nextOptimization.maxLongitudinalImbalancePercent : null,
           hybridSeedCount: nextOverrideOptimization ? nextOptimization.hybridSeedCount : null,
           earlyStopPatience: nextOverrideOptimization ? nextOptimization.earlyStopPatience : null,
           dispatchPreparationMinutes: nextOverrideOptimization
@@ -538,6 +546,10 @@ export class SettingsService {
               dispatchPreparationMinutes: null,
               unassignedOrderPenaltyVnd: null,
               maxRoutesPerDay: null,
+              enforceWeightBalance: null,
+              weightBalancePenaltyVndPerPercent: null,
+              maxLateralImbalancePercent: null,
+              maxLongitudinalImbalancePercent: null,
               demoAllowOverride: null,
             }
           : {}),

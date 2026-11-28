@@ -1,16 +1,48 @@
 import { Type } from 'class-transformer';
 import {
   IsBoolean,
+  IsInt,
   IsLatitude,
   IsLongitude,
   IsNotEmpty,
+  IsObject,
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
+  Max,
   MaxLength,
+  Min,
+  ValidateNested,
 } from 'class-validator';
 
-export class CreateWarehouseDto {
+export class TransferReceivingProfileDto {
+  @Matches(/^(?:[01]\d|2[0-3]):[0-5]\d$/)
+  opensAt!: string;
+
+  @Matches(/^(?:[01]\d|2[0-3]):[0-5]\d$/)
+  closesAt!: string;
+
+  @IsInt()
+  @Min(1)
+  @Max(1440)
+  handlingMinutes!: number;
+
+  @IsInt()
+  @Min(0)
+  @Max(Number.MAX_SAFE_INTEGER)
+  feeVndPerHandoff!: number;
+}
+
+class WarehouseTransferSettingsDto {
+  @IsOptional()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => TransferReceivingProfileDto)
+  transferReceivingProfile?: TransferReceivingProfileDto | null;
+}
+
+export class CreateWarehouseDto extends WarehouseTransferSettingsDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(32)
@@ -42,7 +74,7 @@ export class CreateWarehouseDto {
   active?: boolean;
 }
 
-export class UpdateWarehouseDto {
+export class UpdateWarehouseDto extends WarehouseTransferSettingsDto {
   @IsOptional()
   @IsString()
   @IsNotEmpty()

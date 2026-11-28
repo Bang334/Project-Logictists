@@ -45,6 +45,22 @@ const PackageFields: React.FC<{ index: number; form: FormInstance<FormValues> }>
         <Form.Item name={[field.name, 'cargoKind']} label="Loại hàng">
           <Select placeholder="Chưa phân loại" options={Object.entries(cargoKindLabels).map(([value, label]) => ({ value, label }))} />
         </Form.Item>
+        <Form.Item name={[field.name, 'requiredTemperature']} label="Điều kiện nhiệt độ">
+          <Select allowClear placeholder="Không yêu cầu riêng" options={[
+            { value: 'DRY', label: 'Hàng khô' },
+            { value: 'CHILLED', label: 'Hàng lạnh' },
+            { value: 'FROZEN', label: 'Hàng đông lạnh' },
+          ]} />
+        </Form.Item>
+        <Form.Item name={[field.name, 'cargoGroup']} label="Nhóm tương thích của hàng">
+          <Input maxLength={64} placeholder="Nhập HAZMAT nếu là hàng nguy hiểm" />
+        </Form.Item>
+        <Form.Item name={[field.name, 'incompatibleCargoGroups']} label="Nhóm không được chở cùng">
+          <Select mode="tags" maxCount={32} tokenSeparators={[',']} />
+        </Form.Item>
+        <Form.Item name={[field.name, 'requiresLiftEquipment']} valuePropName="checked">
+          <Checkbox>Cần thiết bị nâng khi xếp và dỡ</Checkbox>
+        </Form.Item>
         <Form.Item
           name={[field.name, 'allowedOrientations']}
           valuePropName="checked"
@@ -136,7 +152,13 @@ const OrdersPage: React.FC = () => {
       const current = await ordersApi.getOne(order.id); setEditing(current); setDetail(null); setSaveError(''); command.current = undefined; form.resetFields();
       form.setFieldsValue({ branchId: current.branchId, customerId: current.customerId, notes: current.notes,
         stops: current.stops,
-        items: current.items.map(i => ({ id: i.id, description: i.description, packageType: i.packageType, sku: i.sku, packages: i.packages.length ? i.packages.map(p => ({ id: p.id, lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: p.weightG, cargoKind: p.cargoKind, allowUpperTier: p.allowUpperTier, noTopLoadRequested: p.noTopLoadRequested, maxTopLoadG: p.maxTopLoadG, allowedOrientations: p.allowedOrientations ?? undefined })) : [blankPackage()] })),
+        items: current.items.map(i => ({ id: i.id, description: i.description, packageType: i.packageType, sku: i.sku, packages: i.packages.length ? i.packages.map(p => ({
+          id: p.id, lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: p.weightG,
+          cargoKind: p.cargoKind, allowUpperTier: p.allowUpperTier, noTopLoadRequested: p.noTopLoadRequested,
+          maxTopLoadG: p.maxTopLoadG, allowedOrientations: p.allowedOrientations ?? undefined,
+          requiredTemperature: p.requiredTemperature ?? undefined, cargoGroup: p.cargoGroup,
+          incompatibleCargoGroups: p.incompatibleCargoGroups, requiresLiftEquipment: p.requiresLiftEquipment,
+        })) : [blankPackage()] })),
       }); setOpen(true);
     } catch (e) { message.error(apiErrorMessage(e)); }
   };
@@ -152,6 +174,10 @@ const OrdersPage: React.FC = () => {
         noTopLoadRequested: p.cargoKind === 'STANDARD' && !!p.noTopLoadRequested,
         maxTopLoadG: p.cargoKind === 'STANDARD' ? p.maxTopLoadG ?? null : null,
         allowedOrientations: isFloorRotationLocked(p.allowedOrientations) ? ['LWH'] : null,
+        requiredTemperature: p.requiredTemperature ?? null,
+        cargoGroup: p.cargoGroup?.trim() || null,
+        incompatibleCargoGroups: p.incompatibleCargoGroups ?? [],
+        requiresLiftEquipment: p.requiresLiftEquipment ?? false,
       })) })),
     };
     const payload = JSON.stringify({ id: editing?.id, version: editing?.version, ...input });

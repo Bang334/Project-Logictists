@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Modal,
+  Checkbox,
   Form,
   Input,
   InputNumber,
@@ -21,8 +22,8 @@ import {
   PhoneOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { driversApi } from '../api/client';
-import { Driver, Branch } from '../types';
+import { driversApi, locationsApi } from '../api/client';
+import { Driver, Branch, Location } from '../types';
 
 interface EditDriverModalProps {
   open: boolean;
@@ -165,6 +166,18 @@ export const EditDriverModal: React.FC<EditDriverModalProps> = ({
   const { message } = AntdApp.useApp();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+  const [homeLocations, setHomeLocations] = useState<Location[]>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    let current = true;
+    locationsApi.getAll().then(({ data }) => {
+      if (current) setHomeLocations(data);
+    }).catch(() => {
+      if (current) message.error('Không tải được danh sách địa điểm của tài xế');
+    });
+    return () => { current = false; };
+  }, [message, open]);
 
   useEffect(() => {
     if (open && driver) {
@@ -176,6 +189,9 @@ export const EditDriverModal: React.FC<EditDriverModalProps> = ({
         licenseClass: driver.licenseClass,
         licenseExpiry: driver.licenseExpiry ? dayjs(driver.licenseExpiry) : null,
         homeBranchId: driver.homeBranchId,
+        homeLocationId: driver.homeLocationId ?? undefined,
+        homeProvinceCode: driver.homeProvinceCode ?? undefined,
+        strictHomeLocation: driver.strictHomeLocation ?? false,
         status: driver.status,
         fixedSalaryMonthly: Number(driver.fixedSalaryMonthly) || 12000000,
         tripBasePay: Number(driver.tripBasePay) || 180000,
@@ -196,6 +212,9 @@ export const EditDriverModal: React.FC<EditDriverModalProps> = ({
         licenseClass: values.licenseClass,
         licenseExpiry: values.licenseExpiry ? values.licenseExpiry.toISOString() : undefined,
         homeBranchId: values.homeBranchId,
+        homeLocationId: values.homeLocationId ?? null,
+        homeProvinceCode: values.homeProvinceCode?.trim() || null,
+        strictHomeLocation: values.strictHomeLocation,
         status: values.status,
         fixedSalaryMonthly: values.fixedSalaryMonthly,
         tripBasePay: values.tripBasePay,
@@ -329,6 +348,18 @@ export const EditDriverModal: React.FC<EditDriverModalProps> = ({
             </Form.Item>
           </Col>
         </Row>
+
+        <Form.Item name="homeLocationId" label="Điểm làm việc của tài xế">
+          <Select allowClear showSearch optionFilterProp="label" options={homeLocations.map(location => ({
+            value: location.id, label: `${location.name} (${location.code})`,
+          }))} />
+        </Form.Item>
+        <Form.Item name="homeProvinceCode" label="Mã tỉnh của tài xế">
+          <Input maxLength={16} />
+        </Form.Item>
+        <Form.Item name="strictHomeLocation" valuePropName="checked">
+          <Checkbox>Chỉ ghép tài xế với xe theo điểm hoặc tỉnh đã chọn</Checkbox>
+        </Form.Item>
 
         <SectionHeader icon={<IdcardOutlined />} title="Giấy Phép Lái Xe (GPLX)" />
 

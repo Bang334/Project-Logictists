@@ -1,6 +1,7 @@
 """Deterministic solver benchmark; generated matrices are synthetic, not road data."""
 
 import argparse
+import hashlib
 import json
 import math
 import multiprocessing
@@ -20,6 +21,7 @@ from app.models import (
     OrderPair,
 )
 from app.routing_solver import FleetRoutingSolver
+from app.multi_start import MultiStartFleetOptimizer
 
 
 def build_request(order_count: int, max_time_seconds: int) -> FleetOptimizationRequest:
@@ -102,10 +104,28 @@ def build_request(order_count: int, max_time_seconds: int) -> FleetOptimizationR
     )
 
 
-def run_one(order_count: int, max_time_seconds: int, queue) -> None:
+def run_one(order_count: int, max_time_seconds: int, mode: str, queue) -> None:
     started = time.perf_counter()
     request = build_request(order_count, max_time_seconds)
-    response = FleetRoutingSolver(request).solve()
+    payload_hash = hashlib.sha256(request.model_dump_json().encode("utf-8")).hexdigest()
+    selection_score = None
+    if mode == "hybrid-first":
+        batch = MultiStartFleetOptimizer(request).solve(max_candidates=1)
+        candidate = batch.candidates[0] if batch.candidates else None
+        if candidate is None:
+            queue.put({
+                "orders": order_count,
+                "vehicles": len(request.vehicles),
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+                "solver_status": batch.no_plan_status or "NO_CANDIDATE",
+                "time_budget_seconds": max_time_seconds,
+                "payload_sha256": payload_hash,
+            })
+            return
+        response = candidate.result
+        selection_score = candidate.solver_objective
+    else:
+        response = FleetRoutingSolver(request).solve()
     queue.put(
         {
             "orders": order_count,
@@ -113,6 +133,9 @@ def run_one(order_count: int, max_time_seconds: int, queue) -> None:
             "elapsed_seconds": round(time.perf_counter() - started, 3),
             "solver_status": response.status,
             "time_budget_seconds": max_time_seconds,
+            "payload_sha256": payload_hash,
+            "selection_score_vnd": selection_score,
+            "invalid_routes": sum(not route.spatial_validation.is_valid for route in response.routes),
             "routes": len(response.routes),
             "total_distance_km": response.total_distance_km,
             "total_cost_vnd": response.total_cost_vnd,
@@ -144,11 +167,12 @@ def main() -> None:
     parser.add_argument("--sizes", nargs="+", type=int, default=[50, 200, 500])
     parser.add_argument("--time-limit", type=int, default=5)
     parser.add_argument("--wall-timeout", type=int, default=30)
+    parser.add_argument("--mode", choices=["ortools", "hybrid-first"], default="ortools")
     args = parser.parse_args()
     results = []
     for size in args.sizes:
         queue = multiprocessing.Queue()
-        process = multiprocessing.Process(target=run_one, args=(size, args.time_limit, queue))
+        process = multiprocessing.Process(target=run_one, args=(size, args.time_limit, args.mode, queue))
         process.start()
         process.join(args.wall_timeout)
         if process.is_alive():
@@ -174,7 +198,7 @@ def main() -> None:
             results.append(queue.get())
     print(
         json.dumps(
-            {"environment": describe_environment(), "results": results},
+            {"mode": args.mode, "environment": describe_environment(), "results": results},
             ensure_ascii=False,
             indent=2,
         )

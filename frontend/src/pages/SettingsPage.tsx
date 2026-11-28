@@ -30,6 +30,7 @@ import {
 } from '../types/settings';
 import { SettingsAuditLogCard } from '../components/settings/SettingsAuditLogCard';
 import { LoadRestrictionZonesCard } from '../components/settings/LoadRestrictionZonesCard';
+import { TransportSettingsCard } from '../components/settings/TransportSettingsCard';
 import {
   SettingsDraftState,
   SettingsGroupsForm,
@@ -56,6 +57,11 @@ function validateDraft(
   draft: SettingsDraftState,
 ): string | null {
   const checkOptimization = scopeType === 'COMPANY' || draft.overrides.optimization;
+  if (checkOptimization && draft.optimization.enforceWeightBalance &&
+    draft.optimization.maxLateralImbalancePercent == null &&
+    draft.optimization.maxLongitudinalImbalancePercent == null) {
+    return 'Nhập ít nhất một ngưỡng lệch tải khi bật giới hạn bắt buộc.';
+  }
   if (
     checkOptimization &&
     draft.optimization.defaultSearchBudgetSeconds > draft.optimization.maxTimeSeconds
@@ -529,6 +535,8 @@ const SettingsPage: React.FC = () => {
               canManage={canManage}
             />
           )}
+
+          {scopeType === 'COMPANY' && <TransportSettingsCard canManage={canManage} />}
 
           <SettingsAuditLogCard
             items={auditItems}

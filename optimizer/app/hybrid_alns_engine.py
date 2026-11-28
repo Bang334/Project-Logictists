@@ -12,6 +12,7 @@ import copy
 import random
 import math
 import time
+from collections import Counter
 from itertools import permutations
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -22,6 +23,7 @@ from .interprovincial import (
     calculate_route_overnight_allowance_vnd,
     calculate_route_toll_vnd,
     is_driver_compatible_with_vehicle,
+    is_order_compatible_with_vehicle_and_warehouses,
     resolve_vehicle_end_location,
     resolve_vehicle_end_node_index,
     route_stops_have_cargo_conflict,
@@ -2376,10 +2378,31 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     return True
             return False
 
-        for vehicle_index in sorted(
-            candidates,
-            key=lambda index: (len(candidates[index]), index),
+        vehicle_order = sorted(candidates, key=lambda index: (len(candidates[index]), index))
+        if len(self.vehicles) > len(self.drivers) or any(
+            sum(v.service_day_index == day for v in self.vehicles)
+            > sum(d.service_day_index == day for d in self.drivers)
+            for day in {vehicle.service_day_index for vehicle in self.vehicles}
         ):
+            compatible_orders = {
+                index: [
+                    order.id
+                    for order in self.request.orders
+                    if is_order_compatible_with_vehicle_and_warehouses(order, vehicle)
+                ]
+                for index, vehicle in enumerate(self.vehicles)
+                if candidates[index]
+            }
+            option_counts = Counter(
+                order_id for order_ids in compatible_orders.values() for order_id in order_ids
+            )
+            vehicle_order.sort(
+                key=lambda index: -sum(
+                    1 / option_counts[order_id]
+                    for order_id in compatible_orders.get(index, [])
+                )
+            )
+        for vehicle_index in vehicle_order:
             assign(vehicle_index, set())
 
         return sorted(
@@ -4077,6 +4100,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     end_depot=hybrid_end_depot,
                     return_to_depot=bool(vehicle.return_to_depot),
                     door_position=vehicle.door_position,
+                    door_width_cm=vehicle.door_width_cm,
                     fuel_consumption_liters_per_100_km=float(
                         vehicle.fuel_consumption_liters_per_100_km
                     ),

@@ -67,24 +67,31 @@ suite('Delivery planning — PostgreSQL, real solver and transaction guards', ()
   }, 60000);
   afterAll(async () => { service.onModuleDestroy(); await db.$disconnect(); });
 
-  async function candidate(day = 0) {
+  async function candidate(day = 0, temperature?: 'CHILLED') {
+    if (temperature) {
+      const vehicle = await db.vehicle.findUniqueOrThrow({ where: { id: vehicleId } });
+      await db.vehicleType.update({
+        where: { id: vehicle.vehicleTypeId }, data: { temperatureMode: temperature },
+      });
+    }
     const order = await db.order.create({ data: { orderNumber: randomUUID(), customerId, branchId, packageDataStatus: 'COMPLETE', orderedAt: new Date('2031-01-01'),
       stops: { create: (['PICKUP','DELIVERY'] as const).map((type, index) => ({ type, sequence: index + 1, address: 'test', latitude: 10, longitude: 106, contactName: 'Test', contactPhone: '0900000000', serviceDurationMinutes: 1 })) },
-      items: { create: { description: 'Test', quantity: 1, weightKg: 1, volumeM3: 0.001, packages: { create: { packageCode: randomUUID(), lengthMm: 100, widthMm: 100, heightMm: 100, weightG: 1000n, status: 'READY', measurementSource: 'SEED_DEMO' } } } },
+      items: { create: { description: 'Test', quantity: 1, weightKg: 1, volumeM3: 0.001, packages: { create: { packageCode: randomUUID(), lengthMm: 100, widthMm: 100, heightMm: 100, weightG: 1000n, status: 'READY', measurementSource: 'SEED_DEMO', requiredTemperature: temperature } } } },
     }, include: { stops: true, items: { include: { packages: true } } } });
     const vehicle = await db.vehicle.findUniqueOrThrow({ where: { id: vehicleId }, include: { vehicleTypeRecord: true } });
     const driver = await db.driver.findUniqueOrThrow({ where: { id: driverId } });
     const job = await db.optimizationJob.create({ data: { branchId, createdById: owner.id, requestHash: 'test', requestSnapshot: {}, idempotencyKey: randomUUID(), status: 'SUCCEEDED' } });
     const payload = {
       job_id: job.id, vehicles: [{ id: vehicleId, source_vehicle_id: vehicleId, service_day_index: 0, plate_number: 'TEST', length_cm: 400, width_cm: 200, height_cm: 200, payload_limit_kg: 1000,
-        depot: { id: 'depot', name: 'test', latitude: 10, longitude: 106 }, fuel_consumption_liters_per_100_km: 10, fixed_operating_cost_vnd: 0, available_start_sec: 28800, available_end_sec: 61200 }],
+        depot: { id: 'depot', name: 'test', latitude: 10, longitude: 106 }, fuel_consumption_liters_per_100_km: 10, fixed_operating_cost_vnd: 0, available_start_sec: 28800, available_end_sec: 61200, temperature_mode: vehicle.vehicleTypeRecord.temperatureMode }],
       drivers: [{ id: driverId, source_driver_id: driverId, service_day_index: 0, full_name: 'Test', license_class: 'C', fixed_salary_monthly_vnd: 0, trip_base_pay_vnd: 0, per_km_pay_vnd: 0 }],
       orders: [{ id: order.id, order_number: order.orderNumber,
         pickup_location: { id: order.stops[0].id, name: 'test', latitude: 10, longitude: 106 }, delivery_location: { id: order.stops[1].id, name: 'test', latitude: 10, longitude: 106 },
-        items: [{ id: order.items[0].packages[0].id, order_id: order.id, length_cm: 10, width_cm: 10, height_cm: 10, weight_kg: 1 }],
+        items: [{ id: order.items[0].packages[0].id, order_id: order.id, length_cm: 10, width_cm: 10, height_cm: 10, weight_kg: 1, required_temperature: order.items[0].packages[0].requiredTemperature }],
         pickup_service_time_sec: 60, delivery_service_time_sec: 60, pickup_window_end_sec: 604800, delivery_window_end_sec: 604800,
       }], policy: { fuel_price_per_liter_vnd: 23000, monthly_working_minutes: 10560 },
       distance_matrix_meters: [[0,100,100],[100,0,100],[100,100,0]], duration_matrix_seconds: [[0,60,60],[60,0,60],[60,60,0]],
+      ...(temperature ? { toll_matrix_vnd: [[0,5000,5000],[5000,0,5000],[5000,5000,0]] } : {}),
     };
     const run = spawnSync(optimizerPython, ['-X','utf8','-c', 'import sys,json;from app.models import FleetOptimizationRequest;from app.hybrid_alns_engine import PackingAwareHybridALNSOptimizer;q=FleetOptimizationRequest.model_validate(json.load(sys.stdin));print(PackingAwareHybridALNSOptimizer(q,time_budget_seconds=2).solve().model_dump_json())'], {
       cwd: resolve('../optimizer'), input: JSON.stringify(payload), encoding: 'utf8', windowsHide: true,
@@ -185,7 +192,7 @@ suite('Delivery planning — PostgreSQL, real solver and transaction guards', ()
   }, 30000);
 
   it('xác nhận → tối ưu lại bằng solver thật → áp dụng giữ đúng khung và đổi hold thành reservation trong cùng transaction', async () => {
-    const dto = await candidate(3), batch = await service.propose(owner, dto);
+    const dto = await candidate(3, 'CHILLED'), batch = await service.propose(owner, dto);
     const offer = batch.appointments[0];
     await service.respond(customer, offer.id, { version: offer.version, idempotencyKey: randomUUID(), decision: DeliveryResponse.CONFIRMED });
     const finalJob = await service.optimize(owner, batch.id, { idempotencyKey: randomUUID() });
@@ -202,6 +209,7 @@ suite('Delivery planning — PostgreSQL, real solver and transaction guards', ()
     const result: unknown = JSON.parse(solved.stdout);
     assertFleetOptimizationResult(result);
     expect(result.status).toBe('SUCCESS');
+    expect(result.routes[0].cost?.toll_cost_vnd).toBeGreaterThan(0);
     const proposal = { ...source.proposal, result };
     await db.optimizationResult.create({ data: { optimizationJobId: finalJob.id, candidateNumber: 1, feasibilityStatus: 'FEASIBLE', objectiveBreakdown: {},
       resultSnapshot: { proposal, signature: signOptimizationProposal(proposal, secret) },
@@ -209,6 +217,12 @@ suite('Delivery planning — PostgreSQL, real solver and transaction guards', ()
     await db.optimizationJob.update({ where: { id: finalJob.id }, data: { status: 'SUCCEEDED' } });
     const applied = await jobs.apply(owner, finalJob.id, 1);
     expect(applied.trips).toHaveLength(1);
+    const reloadedTrip = await db.trip.findUniqueOrThrow({
+      where: { id: applied.trips[0].id },
+      include: { vehicle: { include: { vehicleTypeRecord: true } }, allocations: { include: { package: true } } },
+    });
+    expect(reloadedTrip.vehicle.vehicleTypeRecord.temperatureMode).toBe('CHILLED');
+    expect(reloadedTrip.allocations[0].package?.requiredTemperature).toBe('CHILLED');
     expect((await db.deliveryPlanningBatch.findUniqueOrThrow({ where: { id: batch.id } })).status).toBe('APPLIED');
     expect((await db.deliveryAppointment.findUniqueOrThrow({ where: { id: offer.id } })).status).toBe('SCHEDULED');
     expect(await db.deliveryCapacityHold.count({ where: { batchId: batch.id, status: 'HELD' } })).toBe(0);

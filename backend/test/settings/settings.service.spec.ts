@@ -283,6 +283,11 @@ describe('SettingsService & TMS DB Policy Integration', () => {
       ),
     ).rejects.toThrow(BadRequestException);
 
+    await expect(service.updateCompanySettings(
+      { expectedVersion: 1, optimization: { enforceWeightBalance: true } },
+      admin,
+    )).rejects.toThrow(BadRequestException);
+
     await expect(
       service.updateCompanySettings(
         {
@@ -476,6 +481,10 @@ describe('SettingsService & TMS DB Policy Integration', () => {
         maxOptimizationTimeSeconds: 90,
         unassignedOrderPenaltyVnd: BigInt(1_500_000_000),
         maxRoutesPerDay: 4,
+        enforceWeightBalance: true,
+        weightBalancePenaltyVndPerPercent: 500,
+        maxLateralImbalancePercent: 12,
+        maxLongitudinalImbalancePercent: 20,
       });
 
       const prisma = {
@@ -654,6 +663,10 @@ describe('SettingsService & TMS DB Policy Integration', () => {
       expect(sentPayload.search_time_seconds).toBe(18);
       expect(sentPayload.policy).toMatchObject({
         max_routes_per_day: 4,
+        enforce_weight_balance: true,
+        weight_balance_penalty_vnd_per_percent: 500,
+        max_lateral_imbalance_percent: 12,
+        max_longitudinal_imbalance_percent: 20,
         unassigned_order_penalty_vnd: 1_500_000_000,
       });
       expect(prisma.optimizationJob.update).toHaveBeenCalledWith(

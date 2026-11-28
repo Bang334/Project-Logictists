@@ -64,6 +64,10 @@ export function extractCompanySettingValues(companyRow: SystemSetting | null): {
         defaults.optimization.unassignedOrderPenaltyVnd,
       ),
       maxRoutesPerDay: companyRow.maxRoutesPerDay ?? defaults.optimization.maxRoutesPerDay,
+      enforceWeightBalance: companyRow.enforceWeightBalance ?? defaults.optimization.enforceWeightBalance,
+      weightBalancePenaltyVndPerPercent: companyRow.weightBalancePenaltyVndPerPercent ?? defaults.optimization.weightBalancePenaltyVndPerPercent,
+      maxLateralImbalancePercent: companyRow.maxLateralImbalancePercent ?? defaults.optimization.maxLateralImbalancePercent,
+      maxLongitudinalImbalancePercent: companyRow.maxLongitudinalImbalancePercent ?? defaults.optimization.maxLongitudinalImbalancePercent,
       demoAllowOverride: companyRow.demoAllowOverride ?? defaults.optimization.demoAllowOverride,
     },
     costPenalty: {
@@ -151,6 +155,12 @@ export function buildBranchScopedResponse(
         ),
         // Preserve explicit null (unlimited routes/day) when branch overrides optimization.
         maxRoutesPerDay: branchRow.maxRoutesPerDay ?? null,
+        enforceWeightBalance: branchRow.enforceWeightBalance ?? company.optimization.enforceWeightBalance,
+        weightBalancePenaltyVndPerPercent: branchRow.weightBalancePenaltyVndPerPercent ?? company.optimization.weightBalancePenaltyVndPerPercent,
+        maxLateralImbalancePercent: branchRow.enforceWeightBalance == null
+          ? company.optimization.maxLateralImbalancePercent : branchRow.maxLateralImbalancePercent ?? null,
+        maxLongitudinalImbalancePercent: branchRow.enforceWeightBalance == null
+          ? company.optimization.maxLongitudinalImbalancePercent : branchRow.maxLongitudinalImbalancePercent ?? null,
         demoAllowOverride: branchRow.demoAllowOverride ?? company.optimization.demoAllowOverride,
       }
     : { ...company.optimization };
@@ -240,6 +250,14 @@ export function assertSettingsInvariants(params: {
   costPenalty: CostPenaltySettings;
 }): void {
   const { optimization, costPenalty } = params;
+  if (optimization.enforceWeightBalance &&
+    optimization.maxLateralImbalancePercent == null &&
+    optimization.maxLongitudinalImbalancePercent == null) {
+    throw new BadRequestException({
+      code: 'MISSING_WEIGHT_BALANCE_LIMIT',
+      message: 'Nhập ít nhất một ngưỡng lệch tải khi bật giới hạn bắt buộc',
+    });
+  }
   if (optimization.defaultSearchBudgetSeconds > optimization.maxTimeSeconds) {
     throw new BadRequestException({
       code: 'INVALID_OPTIMIZATION_BUDGET',
@@ -334,6 +352,10 @@ export function buildCompanySeedCreateData(
     dispatchPreparationMinutes: d.optimization.dispatchPreparationMinutes,
     unassignedOrderPenaltyVnd: BigInt(Math.round(d.optimization.unassignedOrderPenaltyVnd)),
     maxRoutesPerDay: d.optimization.maxRoutesPerDay,
+    enforceWeightBalance: d.optimization.enforceWeightBalance,
+    weightBalancePenaltyVndPerPercent: d.optimization.weightBalancePenaltyVndPerPercent,
+    maxLateralImbalancePercent: d.optimization.maxLateralImbalancePercent,
+    maxLongitudinalImbalancePercent: d.optimization.maxLongitudinalImbalancePercent,
     demoAllowOverride: d.optimization.demoAllowOverride,
     overrideCostPenalty: false,
     fuelPricePerLiter: d.costPenalty.fuelPricePerLiter,

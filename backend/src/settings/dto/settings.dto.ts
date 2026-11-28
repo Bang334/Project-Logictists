@@ -91,6 +91,28 @@ export class OptimizationSettingsInputDto {
 
   @IsOptional()
   @IsBoolean()
+  enforceWeightBalance?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(2_147_483_647)
+  weightBalancePenaltyVndPerPercent?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0.01)
+  @Max(100)
+  maxLateralImbalancePercent?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0.01)
+  @Max(100)
+  maxLongitudinalImbalancePercent?: number | null;
+
+  @IsOptional()
+  @IsBoolean()
   demoAllowOverride?: boolean;
 }
 

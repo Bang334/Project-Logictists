@@ -36,6 +36,7 @@ from app.models import (
     RouteCostBreakdown,
     ScheduledStop,
     StopAction,
+    VehicleFloor,
     WarehouseOperatingWindow,
 )
 from app.multi_start import is_fully_served
@@ -45,6 +46,7 @@ from app.request_preprocessor import (
 )
 from app.routing_solver import FleetRoutingSolver
 from app.stacking import validate_stop_actions
+from app.main import ManualScheduleRequest, ManualScheduleStop, ValidatePlanRequest, schedule_manual, validate_spatial
 
 
 def _wh(
@@ -82,6 +84,38 @@ def _item(item_id: str, order_id: str, l: float = 120.0, w: float = 100.0, h: fl
         can_rotate=True,
         cargo_kind="STANDARD",
     )
+
+
+def test_manual_schedule_allocates_mandatory_break_before_service():
+    request = ManualScheduleRequest(
+        travel_sec=[0, 5 * 3600, 0],
+        stops=[ManualScheduleStop(earliest_sec=0, service_sec=60)],
+        latest_end_sec=6 * 3600,
+        driving_rest_policy=DrivingRestPolicy(),
+    )
+    assert schedule_manual(request)["stops"] == [
+        {"arrival_sec": 5 * 3600 + 15 * 60, "departure_sec": 5 * 3600 + 16 * 60},
+    ]
+
+
+def test_manual_validation_rejects_wrong_vehicle_and_unavailable_lift():
+    vehicle = VehicleFloor(
+        id="v1", plate_number="A", length_cm=400, width_cm=200,
+        height_cm=200, payload_limit_kg=3000,
+    )
+    cargo = _item("parcel", "order").model_copy(update={"required_temperature": "CHILLED"})
+    pickup = StopAction(
+        stop_id="p", sequence=1, stop_type="PICKUP", items_to_load=[cargo],
+    )
+    request = ValidatePlanRequest(vehicle=vehicle, stops=[pickup], demo_stacking=None)
+    assert validate_spatial(request).violation_code == "CARGO_INCOMPATIBLE"
+
+    request.vehicle = vehicle.model_copy(update={"temperature_mode": "CHILLED"})
+    pickup.items_to_load[0].requires_lift_equipment = True
+    request.locations_by_stop_id = {
+        "p": LocationPoint(id="wh", name="Kho", latitude=0, longitude=0, has_forklift=False),
+    }
+    assert validate_spatial(request).violation_code == "STOP_ACCESS_INCOMPATIBLE"
 
 
 def _base_policy(rest_policy: DrivingRestPolicy | None = None) -> CostPolicy:

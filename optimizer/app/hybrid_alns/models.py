@@ -115,6 +115,7 @@ class FleetVehicle:
     allows_hazmat: bool = False
     has_tail_lift: bool = False
     toll_factor: float = 1.0
+    door_width_cm: Optional[float] = None
 
 
 @dataclass

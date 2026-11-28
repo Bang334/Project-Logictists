@@ -56,6 +56,7 @@ def _validate_spatial_route(
         height_cm=vehicle.height_cm,
         payload_limit_kg=vehicle.payload_limit_kg,
         door_position="REAR",
+        door_width_cm=vehicle.door_width_cm,
     )
 
     actions: List[StopAction] = []

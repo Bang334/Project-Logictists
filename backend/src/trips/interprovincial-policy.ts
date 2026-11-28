@@ -297,6 +297,20 @@ export function parseWorkPolicyToDrivingRest(
   };
 }
 
+export function resolveVietnamDrivingRestPolicy(
+  policies: readonly WorkPolicyRow[],
+  at: Date,
+): DrivingRestPolicyPayload {
+  const day = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(at);
+  const active = policies.find(policy =>
+    policy.effectiveFrom.toISOString().slice(0, 10) <= day &&
+    (!policy.effectiveTo || policy.effectiveTo.toISOString().slice(0, 10) >= day),
+  );
+  return parseWorkPolicyToDrivingRest(active) ?? DEFAULT_VN_2024_DRIVING_REST_POLICY;
+}
+
 /**
  * Compute base (Group-1) BOT highway toll matrix for node coordinates.
  * Returns undefined when the snapshot does not span multiple distinct provinces.

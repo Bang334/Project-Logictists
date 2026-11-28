@@ -18,6 +18,10 @@ export interface OptimizationSettings {
   dispatchPreparationMinutes: number;
   unassignedOrderPenaltyVnd: number;
   maxRoutesPerDay: number | null;
+  enforceWeightBalance: boolean;
+  weightBalancePenaltyVndPerPercent: number;
+  maxLateralImbalancePercent: number | null;
+  maxLongitudinalImbalancePercent: number | null;
   demoAllowOverride: boolean;
 }
 
@@ -109,6 +113,10 @@ export const COMPANY_SETTING_DEFAULTS: {
     dispatchPreparationMinutes: 20,
     unassignedOrderPenaltyVnd: 1_000_000_000,
     maxRoutesPerDay: null,
+    enforceWeightBalance: false,
+    weightBalancePenaltyVndPerPercent: 0,
+    maxLateralImbalancePercent: null,
+    maxLongitudinalImbalancePercent: null,
     demoAllowOverride: true,
   },
   costPenalty: {

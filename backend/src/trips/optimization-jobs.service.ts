@@ -75,7 +75,15 @@ type ExportRoute = {
   driver_name?: unknown;
   total_distance_km?: unknown;
   total_duration_minutes?: unknown;
-  cost?: { total_cost_vnd?: unknown };
+  cost?: {
+    total_cost_vnd?: unknown;
+    toll_cost_vnd?: number;
+    overnight_allowance_vnd?: number;
+    weight_balance_penalty_vnd?: number;
+  };
+  end_location?: { name?: string } | null;
+  province_hops?: string[];
+  rest_breaks?: { start_time_sec: number; end_time_sec: number }[];
   stops?: Array<Record<string, unknown>>;
 };
 
@@ -523,11 +531,26 @@ export class OptimizationJobsService {
       { header: 'Quãng đường (km)', key: 'distance', width: 20 },
       { header: 'Thời gian (phút)', key: 'duration', width: 20 },
       { header: 'Thứ tự điểm dừng', key: 'stops', width: 60 },
+      { header: 'Điểm kết thúc', key: 'end', width: 28 },
+      { header: 'Tỉnh đi qua', key: 'provinces', width: 30 },
+      { header: 'Phí đường (VND)', key: 'toll', width: 20 },
+      { header: 'Phụ cấp qua đêm (VND)', key: 'overnight', width: 24 },
+      { header: 'Phạt lệch tải (VND)', key: 'balance', width: 22 },
+      { header: 'Giờ nghỉ bắt buộc', key: 'rest', width: 54 },
     ];
     for (const candidate of candidates) {
       const stored = candidate.resultSnapshot as unknown as StoredJobResult;
       const result = (stored.proposal as { result?: { routes?: ExportRoute[] } })
         ?.result;
+      const epoch = typeof stored.proposal?.planningEpochIso === 'string'
+        ? Date.parse(stored.proposal.planningEpochIso)
+        : Number.NaN;
+      const clock = new Intl.DateTimeFormat('vi-VN', {
+        timeZone: 'Asia/Ho_Chi_Minh', dateStyle: 'short', timeStyle: 'short',
+      });
+      const formatRestTime = (seconds: number) => Number.isFinite(epoch)
+        ? clock.format(new Date(epoch + seconds * 1000))
+        : `+${seconds}s`;
       for (const [routeIndex, route] of (result?.routes ?? []).entries()) {
         const stops = Array.isArray(route.stops) ? route.stops : [];
         details.addRow({
@@ -539,6 +562,14 @@ export class OptimizationJobsService {
           cost: Number(route.cost?.total_cost_vnd ?? 0),
           distance: Number(route.total_distance_km ?? 0),
           duration: Number(route.total_duration_minutes ?? 0),
+          end: route.end_location?.name,
+          provinces: route.province_hops?.join(' → '),
+          toll: route.cost?.toll_cost_vnd,
+          overnight: route.cost?.overnight_allowance_vnd,
+          balance: route.cost?.weight_balance_penalty_vnd,
+          rest: route.rest_breaks?.map(breakEntry =>
+            `${formatRestTime(breakEntry.start_time_sec)}–${formatRestTime(breakEntry.end_time_sec)}`,
+          ).join('\n'),
           stops: stops
             .map((stop: Record<string, unknown>) =>
               `${stop.stop_type === 'PICKUP' ? 'Lấy' : 'Giao'} ${String(stop.order_id ?? '')}`,
@@ -556,7 +587,9 @@ export class OptimizationJobsService {
     details.getColumn('cost').numFmt = '#,##0';
     details.getColumn('distance').numFmt = '#,##0.00';
     details.getColumn('duration').numFmt = '#,##0.0';
-    details.autoFilter = 'A1:I1';
+    for (const column of ['toll', 'overnight', 'balance']) details.getColumn(column).numFmt = '#,##0';
+    details.getColumn('rest').alignment = { wrapText: true, vertical: 'top' };
+    details.autoFilter = 'A1:O1';
 
     const note = comparison.addRow([]);
     note.getCell(1).value =

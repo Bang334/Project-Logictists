@@ -1,6 +1,10 @@
 import type { Order } from './index';
 export const cargoKindLabels = { UNCLASSIFIED: 'Chưa phân loại', STANDARD: 'Thông thường', FRAGILE: 'Dễ vỡ' } as const;
 export interface PackageHandling {
+  requiredTemperature?: 'DRY' | 'CHILLED' | 'FROZEN' | null;
+  cargoGroup?: string | null;
+  incompatibleCargoGroups?: string[];
+  requiresLiftEquipment?: boolean;
   cargoKind?: keyof typeof cargoKindLabels;
   allowUpperTier?: boolean;
   noTopLoadRequested?: boolean;

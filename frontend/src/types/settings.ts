@@ -25,6 +25,10 @@ export interface OptimizationSettings {
   dispatchPreparationMinutes: number;
   unassignedOrderPenaltyVnd: number;
   maxRoutesPerDay: number | null;
+  enforceWeightBalance?: boolean;
+  weightBalancePenaltyVndPerPercent?: number;
+  maxLateralImbalancePercent?: number | null;
+  maxLongitudinalImbalancePercent?: number | null;
   demoAllowOverride: boolean;
 }
 

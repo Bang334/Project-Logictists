@@ -27,7 +27,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons';
 import { apiErrorMessage, locationsApi } from '../api/client';
-import { Branch, WarehouseCustodyPackage, WarehouseSummary } from '../types';
+import { Branch, TransferReceivingProfile, WarehouseCustodyPackage, WarehouseSummary } from '../types';
 import { MapLocationPickerModal } from './MapLocationPickerModal';
 
 const { Text } = Typography;
@@ -36,6 +36,18 @@ interface WarehousesTabProps {
   branches: Branch[];
   selectedBranchId: string;
   canManage: boolean;
+}
+
+interface WarehouseFormValues {
+  code: string;
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  managingBranchId: string;
+  active: boolean;
+  receiveTransfers: boolean;
+  transferReceivingProfile: TransferReceivingProfile;
 }
 
 export const WarehousesTab: React.FC<WarehousesTabProps> = ({
@@ -51,15 +63,8 @@ export const WarehousesTab: React.FC<WarehousesTabProps> = ({
     useState<WarehouseSummary | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
-  const [form] = Form.useForm<{
-    code: string;
-    name: string;
-    address: string;
-    latitude: number;
-    longitude: number;
-    managingBranchId: string;
-    active: boolean;
-  }>();
+  const [form] = Form.useForm<WarehouseFormValues>();
+  const receiveTransfers = Form.useWatch('receiveTransfers', form);
 
   const fetchWarehouses = useCallback(async () => {
     try {
@@ -89,6 +94,7 @@ export const WarehousesTab: React.FC<WarehousesTabProps> = ({
           ? selectedBranchId
           : branches[0]?.id,
       active: true,
+      receiveTransfers: false,
     });
     setModalOpen(true);
   };
@@ -104,41 +110,24 @@ export const WarehousesTab: React.FC<WarehousesTabProps> = ({
       longitude: warehouse.longitude,
       managingBranchId: warehouse.managingBranchId ?? branches[0]?.id,
       active: warehouse.active,
+      receiveTransfers: Boolean(warehouse.transferReceivingProfile),
+      transferReceivingProfile: warehouse.transferReceivingProfile ?? undefined,
     });
     setModalOpen(true);
   };
 
-  const handleSave = async (values: {
-    code: string;
-    name: string;
-    address: string;
-    latitude: number;
-    longitude: number;
-    managingBranchId: string;
-    active: boolean;
-  }) => {
+  const handleSave = async ({ code, receiveTransfers, transferReceivingProfile, ...values }: WarehouseFormValues) => {
+    const data = {
+      ...values,
+      transferReceivingProfile: receiveTransfers ? transferReceivingProfile : null,
+    };
     try {
       setSubmitting(true);
       if (editingWarehouse) {
-        await locationsApi.updateWarehouse(editingWarehouse.id, {
-          name: values.name,
-          address: values.address,
-          latitude: values.latitude,
-          longitude: values.longitude,
-          managingBranchId: values.managingBranchId,
-          active: values.active,
-        });
+        await locationsApi.updateWarehouse(editingWarehouse.id, data);
         message.success(`Đã cập nhật kho ${values.name}`);
       } else {
-        await locationsApi.createWarehouse({
-          code: values.code,
-          name: values.name,
-          address: values.address,
-          latitude: values.latitude,
-          longitude: values.longitude,
-          managingBranchId: values.managingBranchId,
-          active: values.active,
-        });
+        await locationsApi.createWarehouse({ code, ...data });
         message.success(`Đã tạo kho lưu chuyển ${values.name}`);
       }
       setModalOpen(false);
@@ -325,6 +314,15 @@ export const WarehousesTab: React.FC<WarehousesTabProps> = ({
             render: (_, wh) => (
               <div>
                 <Text strong>{wh.name}</Text>
+                {wh.transferReceivingProfile && (
+                  <div>
+                    <Text type="secondary">
+                      Tiếp nhận trung chuyển {wh.transferReceivingProfile.opensAt}–{wh.transferReceivingProfile.closesAt}
+                      {' · '}{wh.transferReceivingProfile.handlingMinutes} phút
+                      {' · '}{wh.transferReceivingProfile.feeVndPerHandoff.toLocaleString('vi-VN')} ₫/lượt
+                    </Text>
+                  </div>
+                )}
                 <div style={{ fontSize: 12, color: '#475569' }}>{wh.address}</div>
                 <div style={{ fontSize: 11, color: '#64748b' }}>
                   <EnvironmentOutlined /> {wh.latitude.toFixed(5)},{' '}
@@ -466,6 +464,58 @@ export const WarehousesTab: React.FC<WarehousesTabProps> = ({
           <Form.Item name="active" label="Đang hoạt động" valuePropName="checked">
             <Switch />
           </Form.Item>
+          <Form.Item name="receiveTransfers" label="Cấu hình tiếp nhận trung chuyển" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          {receiveTransfers && (
+            <Row gutter={12}>
+              <Col span={12}>
+                <Form.Item
+                  name={['transferReceivingProfile', 'opensAt']}
+                  label="Giờ mở nhận hàng"
+                  rules={[{ required: true, message: 'Chọn giờ mở' }]}
+                >
+                  <Input type="time" />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item
+                  name={['transferReceivingProfile', 'closesAt']}
+                  label="Giờ đóng nhận hàng"
+                  extra="Theo giờ địa phương của kho. Giờ đóng trước giờ mở là sang ngày kế tiếp."
+                  dependencies={[[ 'transferReceivingProfile', 'opensAt' ]]}
+                  rules={[
+                    { required: true, message: 'Chọn giờ đóng' },
+                    ({ getFieldValue }) => ({
+                      validator: (_, value) => value && value === getFieldValue(['transferReceivingProfile', 'opensAt'])
+                        ? Promise.reject(new Error('Giờ đóng phải khác giờ mở'))
+                        : Promise.resolve(),
+                    }),
+                  ]}
+                >
+                  <Input type="time" />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item
+                  name={['transferReceivingProfile', 'handlingMinutes']}
+                  label="Thời gian sang tải (phút)"
+                  rules={[{ required: true, type: 'integer', min: 1, max: 1440, message: 'Nhập từ 1 đến 1440 phút' }]}
+                >
+                  <InputNumber min={1} max={1440} step={1} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item
+                  name={['transferReceivingProfile', 'feeVndPerHandoff']}
+                  label="Phí sang tải (₫/lượt)"
+                  rules={[{ required: true, type: 'integer', min: 0, max: Number.MAX_SAFE_INTEGER, message: 'Nhập số tiền nguyên hợp lệ' }]}
+                >
+                  <InputNumber min={0} max={Number.MAX_SAFE_INTEGER} step={1} style={{ width: '100%' }} />
+                </Form.Item>
+              </Col>
+            </Row>
+          )}
           <Space>
             <Button type="primary" htmlType="submit" loading={submitting}>
               {editingWarehouse ? 'Lưu cập nhật' : 'Tạo kho'}

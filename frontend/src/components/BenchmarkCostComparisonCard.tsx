@@ -423,6 +423,24 @@ export const BenchmarkCostComparisonCard: React.FC<Props> = ({
             : null,
       }),
     },
+    ...([
+      ['toll_cost_vnd', 'Phí đường liên tỉnh'],
+      ['overnight_allowance_vnd', 'Phụ cấp qua đêm'],
+      ['weight_balance_penalty_vnd', 'Phạt lệch tải'],
+    ] as const).map(([field, category]): BreakdownRow => ({
+      key: field,
+      category,
+      getCell: (column) => {
+        const routes = column.kind === 'direct' ? direct_dedicated.routes
+          : candidateResults?.[column.candidateNumber ?? 1]?.routes
+            ?? (column.isSelected ? or_tools.routes : undefined);
+        const amounts = routes?.flatMap(({ cost }) => {
+          const value = cost?.[field];
+          return typeof value === 'number' ? [value] : [];
+        }) ?? [];
+        return { amount: amounts.length ? amounts.reduce((total, value) => total + value, 0) : null };
+      },
+    })),
     ...(breakdownModel.hasCompanyObjective
       ? [
           {

@@ -345,7 +345,10 @@ describe('OptimizationJobsService', () => {
                   driver_name: 'Tài xế A',
                   total_distance_km: 120.5,
                   total_duration_minutes: 240,
-                  cost: { total_cost_vnd: 1_000_000 },
+                  cost: { total_cost_vnd: 1_000_000, toll_cost_vnd: 25_000 },
+                  end_location: { name: 'Kho trung tâm' },
+                  province_hops: ['79', '48'],
+                  rest_breaks: [{ start_time_sec: 100, end_time_sec: 200 }],
                   stops: [
                     { stop_type: 'PICKUP', order_id: 'ORD-001' },
                     { stop_type: 'DELIVERY', order_id: 'ORD-001' },
@@ -370,6 +373,9 @@ describe('OptimizationJobsService', () => {
     expect(workbook.getWorksheet('Chuỗi nghiệm cải thiện')?.getCell('D2').value).toBe(7_796_170);
     expect(workbook.getWorksheet('Chi tiết tuyến')?.getCell('D2').value).toBe('29C-001.23');
     expect(workbook.getWorksheet('Chi tiết tuyến')?.getCell('I2').value).toContain('ORD-001');
+    expect(workbook.getWorksheet('Chi tiết tuyến')?.getCell('J2').value).toBe('Kho trung tâm');
+    expect(workbook.getWorksheet('Chi tiết tuyến')?.getCell('L2').value).toBe(25_000);
+    expect(workbook.getWorksheet('Chi tiết tuyến')?.getCell('O2').value).toBe('+100s–+200s');
   });
 
   it('restores the latest restorable job for the scoped branch and skips failed/cancelled jobs', async () => {

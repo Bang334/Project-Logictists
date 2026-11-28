@@ -17,6 +17,7 @@ import {
   LoadProfileResult,
   Location,
   WarehouseSummary,
+  TransferReceivingProfile,
   OptimizationResultUI,
   OptimizationCandidateDetailUI,
   RunAutomaticOptimizationPayloadUI,
@@ -240,6 +241,7 @@ export const locationsApi = {
     longitude: number;
     managingBranchId: string;
     active?: boolean;
+    transferReceivingProfile?: TransferReceivingProfile | null;
   }) => apiClient.post<WarehouseSummary>('/locations/warehouses', data),
   updateWarehouse: (
     id: string,
@@ -250,6 +252,7 @@ export const locationsApi = {
       longitude?: number;
       managingBranchId?: string;
       active?: boolean;
+      transferReceivingProfile?: TransferReceivingProfile | null;
     },
   ) => apiClient.patch<WarehouseSummary>(`/locations/warehouses/${id}`, data),
 };

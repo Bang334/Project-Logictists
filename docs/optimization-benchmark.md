@@ -1,4 +1,46 @@
-# Optimization benchmark — 2026-10-03
+# Benchmark tối ưu lộ trình
+
+## Baseline Hybrid-first cục bộ ngày 28/11/2026
+
+Chạy một lượt trên Windows 11, Python 3.12.3, OR-Tools 9.15.6755, AMD Ryzen 5 5600H (6 nhân, 12 luồng). Bộ sinh đơn và ma trận tổng hợp giữ nguyên, dùng cấu hình xếp 3D mặc định. Cột thời gian gồm cả dựng đầu vào và kiểm tra phương án.
+
+```powershell
+cd optimizer
+.\.venv\Scripts\python.exe benchmark.py --mode hybrid-first --sizes 50 100 200 500 --time-limit 20 --wall-timeout 45
+```
+
+| Đơn | Thời gian thực | Đơn phục vụ | Tuyến | Km | Điểm xếp hạng (VND) | Tuyến lỗi xếp hàng |
+|---:|---:|---:|---:|---:|---:|---:|
+| 50 | 21,089 giây | 50/50 | 1 | 106,00 | 795.246 | 0 |
+| 100 | 20,605 giây | 100/100 | 4 | 225,90 | 2.059.516 | 0 |
+| 200 | 22,949 giây | 200/200 | 8 | 555,05 | 4.637.650 | 0 |
+| 500 | 22,065 giây | Hết thời gian, chưa có phương án trả về | — | — | — | — |
+
+SHA-256 của payload theo số đơn
+
+- 50 — `d39d58d5e60f550955916c3139110866e127b876e46885c0369cb10b052e5272`
+- 100 — `9f51f63fee0f2eb2d22086dc87bb32f9e70d97da46c7e970d0abbbf6d32de72b`
+- 200 — `f3f63f9a5fc8db4482e3856a8ea8e033b4493bbfd7699ab2e229e74d835951ac`
+- 500 — `bb653d5b1c5a54b68e3deb9a941c17b973afa0bb737ac42ea4e2f56e86d2444f`
+
+Mốc 500 đơn cần đo lặp với ngân sách phù hợp vận hành và trên snapshot đại diện trước khi quyết định phân cụm. Các số đo trên dùng ma trận tổng hợp.
+
+### Lượt đo lại với cùng đầu vào và ngân sách 20 giây
+
+Hash đầu vào ở cả bốn cỡ trùng với baseline ở trên. Thời gian thực bao gồm khởi tạo đầu vào và xử lý kết quả. Một phần lượt đo trùng với kiểm tra kiểu của backend và frontend.
+
+| Đơn | Thời gian thực | Trạng thái | Đơn phục vụ | Tuyến | Km | Chi phí và điểm chọn (VND) | Tuyến lỗi kiểm định 3D |
+|---:|---:|---|---:|---:|---:|---:|---:|
+| 50 | 18,174 s | SUCCESS | 50/50 | 2 | 109,95 | 1.014.737 | 0 |
+| 100 | 20,756 s | SUCCESS | 100/100 | 4 | 225,70 | 2.058.480 | 0 |
+| 200 | 22,490 s | SUCCESS | 200/200 | 8 | 560,20 | 4.663.453 | 0 |
+| 500 | 21,454 s | TIMEOUT | — | — | — | — | — |
+
+Ca 500 đơn hết thời gian ở cả hai lượt đo. Ca 100 và 200 đơn trả đủ phương án nhưng vượt 20 giây khi tính đầu cuối ở lượt này.
+
+Đo chẩn đoán ca 500 đơn bằng `cProfile` quanh `benchmark.run_one(500, 20, "hybrid-first", queue)` cho thấy thời gian tích lũy ở tạo nghiệm đầu là 8,94 giây, dựng phản hồi cuối 8,04 giây, kiểm định không gian 7,42 giây và tính đối chứng giao riêng 5,06 giây. Các hàm có quan hệ gọi lồng nhau nên các mốc này có thể trùng. Lượt gắn profiler mất 33,08 giây và trả `NO_COMPLETE_PLAN`, có chi phí đo riêng. Các mốc chỉ dùng để chọn điểm kiểm tra tiếp theo. Cần xác nhận trên dữ liệu vận hành trước khi chọn phương án chia cụm.
+
+## Baseline OR-Tools ngày 03/10/2026
 
 Lệnh đã chạy trên máy phát triển Windows/Python 3.8:
 

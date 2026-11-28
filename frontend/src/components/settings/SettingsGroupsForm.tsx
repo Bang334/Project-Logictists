@@ -420,6 +420,37 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
             />
           </Col>
 
+          <Col xs={24} md={8}>
+            <Text strong style={{ display: 'block', marginBottom: 6 }}>Phạt lệch tải (VNĐ mỗi %)</Text>
+            <InputNumber aria-label="Phạt lệch tải" min={0} max={2_147_483_647} precision={0}
+              style={{ width: '100%' }} disabled={!isOptimizationEditable}
+              value={displayedOptimization.weightBalancePenaltyVndPerPercent ?? 0}
+              onChange={(value) => onChangeDraft(prev => ({
+                ...prev, optimization: { ...prev.optimization, weightBalancePenaltyVndPerPercent: value ?? 0 },
+              }))}
+            />
+          </Col>
+          <Col xs={24} md={16}>
+            <Checkbox checked={displayedOptimization.enforceWeightBalance ?? false}
+              disabled={!isOptimizationEditable} onChange={(event) => onChangeDraft(prev => ({
+                ...prev, optimization: { ...prev.optimization, enforceWeightBalance: event.target.checked },
+              }))}
+            >Chặn phương án vượt ngưỡng lệch tải</Checkbox>
+            <Space wrap style={{ marginTop: 6 }}>
+              {([
+                ['maxLateralImbalancePercent', 'Lệch ngang tối đa'],
+                ['maxLongitudinalImbalancePercent', 'Lệch dọc tối đa'],
+              ] as const).map(([field, label]) => (
+                <InputNumber key={field} aria-label={label} placeholder={label} addonAfter="%"
+                  min={0.01} max={100} precision={2} value={displayedOptimization[field] ?? null}
+                  disabled={!isOptimizationEditable || !displayedOptimization.enforceWeightBalance}
+                  onChange={(value) => onChangeDraft(prev => ({
+                    ...prev, optimization: { ...prev.optimization, [field]: value },
+                  }))}
+                />
+              ))}
+            </Space>
+          </Col>
           <Col xs={24} md={12}>
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
               <Checkbox
