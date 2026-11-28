@@ -32,7 +32,9 @@ import {
   DriverStatus,
   Driver as DriverRecord,
   LoadValidationStatus,
+  LocationType,
   OrderStatus,
+  OrderStop as OrderStopRecord,
   PackageStatus,
   Prisma,
   ReservationStatus,
@@ -80,6 +82,16 @@ import {
   resolveVehiclePlanningStart,
   VEHICLE_HOME_DEPOT_SELECT,
 } from './vehicle-planning-start';
+import {
+  buildInterprovincialTollMatrix,
+  expectedWarehouseStopServiceSec,
+  extractLocationConstraintFields,
+  findMatchingWarehouseLocation,
+  LocationConstraintSource,
+  parseWorkPolicyToDrivingRest,
+  TollCorridorRecord,
+  WorkPolicyRow,
+} from './interprovincial-policy';
 import { OptimizationProgressReporter } from './optimization-progress';
 import {
   flattenVehicleType,
@@ -98,9 +110,17 @@ const LOCK_NAMESPACE_DRIVER = 4102;
 const LOCK_NAMESPACE_ORDER = 4103;
 const LOCK_NAMESPACE_TRIP_COMMAND = 4105;
 
-type OrderWithStopsAndItems = Prisma.OrderGetPayload<{
-  include: { stops: true; items: { include: { packages: true } } };
-}> & {
+type StopLocationRecord = OrderStopRecord & {
+  location?: LocationConstraintSource | null;
+};
+
+type OrderWithStopsAndItems = Omit<
+  Prisma.OrderGetPayload<{
+    include: { stops: true; items: { include: { packages: true } } };
+  }>,
+  'stops'
+> & {
+  stops: StopLocationRecord[];
   packages?: any[];
 };
 
@@ -1447,14 +1467,36 @@ export class TripsService {
     }
     const planningStart = resolveVehiclePlanningStart(vehicle);
 
-    const orders = await this.prisma.order.findMany({
-      where: { id: { in: body.orderIds }, orderType: 'B2B_TRANSPORT' },
-      include: {
-        stops: { orderBy: { sequence: 'asc' } },
-        items: { include: { packages: true } },
-        packages: true,
-      },
-    });
+    const [orders, warehouses] = await Promise.all([
+      this.prisma.order.findMany({
+        where: { id: { in: body.orderIds }, orderType: 'B2B_TRANSPORT' },
+        include: {
+          stops: { orderBy: { sequence: 'asc' }, include: { location: true } },
+          items: { include: { packages: true } },
+          packages: true,
+        },
+      }),
+      this.prisma.location?.findMany
+        ? this.prisma.location.findMany({
+            where: { active: true, type: LocationType.CENTRAL_WAREHOUSE },
+            select: {
+              id: true,
+              latitude: true,
+              longitude: true,
+              provinceCode: true,
+              provinceName: true,
+              warehouseRole: true,
+              dockingTimeSec: true,
+              maxVehiclePayloadKg: true,
+              maxVehicleLengthCm: true,
+              hasForklift: true,
+              operatingWindows: true,
+              handlingSecPerTon: true,
+              handlingSecPerPackage: true,
+            },
+          })
+        : Promise.resolve([]),
+    ]);
     if (orders.length !== body.orderIds.length) {
       throw new BadRequestException("Một số đơn hàng tối ưu không tồn tại");
     }
@@ -1476,6 +1518,7 @@ export class TripsService {
       INITIAL_PLANNING_DAYS * 86400,
       activeZones,
       vehicle.homeBranch.timezone,
+      warehouses,
     );
     const matrixCoordinates: [number, number][] = [
       [planningStart.longitude, planningStart.latitude],
@@ -1505,9 +1548,11 @@ export class TripsService {
       },
       depot: {
         id: `depot:${planningStart.locationId}`,
+        source_location_id: planningStart.locationId,
         name: planningStart.name,
         latitude: planningStart.latitude,
         longitude: planningStart.longitude,
+        ...planningStart.locationConstraints,
       },
       orders: optimizerOrders,
       demo_stacking: (await this.resolveBranchStackingPolicy(branchId)).policy,
@@ -1563,7 +1608,7 @@ export class TripsService {
       batch: { branchId }, OR: [{ status: 'CONFIRMED' }, { status: 'PENDING', expiresAt: { gt: new Date() } }],
     }, select: { orderId: true } });
 
-    const [branch, vehicles, drivers, candidateOrders] = await Promise.all([
+    const [branch, vehicles, drivers, candidateOrders, workPolicies, tollCorridors, activeWarehouses] = await Promise.all([
       this.prisma.branch.findFirst({ where: { id: branchId, active: true } }),
       this.prisma.vehicle.findMany({
         where: {
@@ -1574,6 +1619,7 @@ export class TripsService {
         include: {
           homeBranch: true,
           homeDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT },
+          endDepotLocation: { select: VEHICLE_HOME_DEPOT_SELECT },
           vehicleTypeRecord: true,
         },
         orderBy: { plateNumber: 'asc' },
@@ -1583,6 +1629,18 @@ export class TripsService {
           homeBranchId: branchId,
           status: 'AVAILABLE',
           licenseExpiry: { gt: new Date() },
+        },
+        include: {
+          homeLocation: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              provinceCode: true,
+              provinceName: true,
+              warehouseRole: true,
+            },
+          },
         },
         orderBy: { fullName: 'asc' },
       }),
@@ -1596,12 +1654,45 @@ export class TripsService {
             : { notIn: [...new Set([...otherOrderHolds.map(row => row.orderId), ...batchDeclinedIds])] },
         },
         include: {
-          stops: { orderBy: { sequence: 'asc' } },
+          stops: { orderBy: { sequence: 'asc' }, include: { location: true } },
           items: { include: { packages: true } },
           packages: true,
         },
         orderBy: { orderedAt: "asc" },
       }),
+      this.prisma.workPolicy?.findMany
+        ? this.prisma.workPolicy.findMany({
+            where: { jurisdiction: 'VN' },
+            orderBy: [{ effectiveFrom: 'desc' }, { revision: 'desc' }],
+            take: 10,
+          })
+        : Promise.resolve([] as WorkPolicyRow[]),
+      this.prisma.tollCorridor?.findMany
+        ? this.prisma.tollCorridor.findMany({
+            where: { active: true },
+            select: { fromProvinceCode: true, toProvinceCode: true, baseTollVnd: true, active: true },
+          })
+        : Promise.resolve([] as TollCorridorRecord[]),
+      this.prisma.location?.findMany
+        ? this.prisma.location.findMany({
+            where: { active: true, type: LocationType.CENTRAL_WAREHOUSE },
+            select: {
+              id: true,
+              latitude: true,
+              longitude: true,
+              provinceCode: true,
+              provinceName: true,
+              warehouseRole: true,
+              dockingTimeSec: true,
+              maxVehiclePayloadKg: true,
+              maxVehicleLengthCm: true,
+              hasForklift: true,
+              operatingWindows: true,
+              handlingSecPerTon: true,
+              handlingSecPerPackage: true,
+            },
+          })
+        : Promise.resolve([] as Array<LocationConstraintSource & { latitude: number; longitude: number }>),
     ]);
 
     const orders = candidateOrders.filter((order) =>
@@ -1675,39 +1766,76 @@ export class TripsService {
       );
     }
 
-    const baseVehicles = candidateVehicles.map((vehicle) => ({
-      id: vehicle.id,
-      source_vehicle_id: vehicle.id,
-      plate_number: vehicle.plateNumber,
-      model: vehicle.model,
-      vehicle_type: vehicle.vehicleTypeRecord.name,
-      length_cm: vehicle.vehicleTypeRecord.lengthCm,
-      width_cm: vehicle.vehicleTypeRecord.widthCm,
-      height_cm: vehicle.vehicleTypeRecord.heightCm,
-      payload_limit_kg: vehicle.vehicleTypeRecord.payloadCapacityKg,
-      door_position: 'REAR',
-      depot: {
-        id: `depot:${vehicle.planningStart.locationId}`,
-        name: vehicle.planningStart.name,
-        latitude: vehicle.planningStart.latitude,
-        longitude: vehicle.planningStart.longitude,
-      },
-      fuel_consumption_liters_per_100_km: Number(
-        vehicle.vehicleTypeRecord.fuelConsumptionLitersPer100Km,
-      ),
-      load_fuel_surcharge_percent_at_full_payload: Number(
-        vehicle.vehicleTypeRecord.loadFuelSurchargePercentAtFullPayload,
-      ),
-      fixed_operating_cost_vnd: Number(vehicle.vehicleTypeRecord.fixedOperatingCostPerTrip),
-    }));
-    const baseDrivers = drivers.map((driver) => ({
-      source_driver_id: driver.id,
-      full_name: driver.fullName,
-      license_class: driver.licenseClass,
-      fixed_salary_monthly_vnd: Number(driver.fixedSalaryMonthly),
-      trip_base_pay_vnd: Number(driver.tripBasePay),
-      per_km_pay_vnd: Number(driver.perKmPay),
-    }));
+    const baseVehicles = candidateVehicles.map((vehicle) => {
+      const endDepotLoc =
+        vehicle.endDepotLocation && vehicle.endDepotLocation.active
+          ? vehicle.endDepotLocation
+          : null;
+      return {
+        id: vehicle.id,
+        source_vehicle_id: vehicle.id,
+        plate_number: vehicle.plateNumber,
+        model: vehicle.model,
+        vehicle_type: vehicle.vehicleTypeRecord.name,
+        length_cm: vehicle.vehicleTypeRecord.lengthCm,
+        width_cm: vehicle.vehicleTypeRecord.widthCm,
+        height_cm: vehicle.vehicleTypeRecord.heightCm,
+        payload_limit_kg: vehicle.vehicleTypeRecord.payloadCapacityKg,
+        door_position: 'REAR',
+        temperature_mode: vehicle.vehicleTypeRecord.temperatureMode ?? 'DRY',
+        has_tail_lift: vehicle.vehicleTypeRecord.hasTailLift ?? false,
+        toll_factor: Number(vehicle.vehicleTypeRecord.tollFactor ?? 1),
+        return_to_depot: vehicle.returnToDepot ?? true,
+        ...(endDepotLoc
+          ? {
+              end_depot: {
+                id: `end_depot:${endDepotLoc.id}`,
+                source_location_id: endDepotLoc.id,
+                name: endDepotLoc.name,
+                latitude: endDepotLoc.latitude,
+                longitude: endDepotLoc.longitude,
+                ...extractLocationConstraintFields(endDepotLoc),
+              },
+            }
+          : {}),
+        depot: {
+          id: `depot:${vehicle.planningStart.locationId}`,
+          source_location_id: vehicle.planningStart.locationId,
+          name: vehicle.planningStart.name,
+          latitude: vehicle.planningStart.latitude,
+          longitude: vehicle.planningStart.longitude,
+          ...vehicle.planningStart.locationConstraints,
+        },
+        fuel_consumption_liters_per_100_km: Number(
+          vehicle.vehicleTypeRecord.fuelConsumptionLitersPer100Km,
+        ),
+        load_fuel_surcharge_percent_at_full_payload: Number(
+          vehicle.vehicleTypeRecord.loadFuelSurchargePercentAtFullPayload,
+        ),
+        fixed_operating_cost_vnd: Number(vehicle.vehicleTypeRecord.fixedOperatingCostPerTrip),
+      };
+    });
+    const baseDrivers = drivers.map((driver) => {
+      const homeProvince =
+        driver.homeProvinceCode ?? driver.homeLocation?.provinceCode ?? null;
+      return {
+        source_driver_id: driver.id,
+        full_name: driver.fullName,
+        license_class: driver.licenseClass,
+        fixed_salary_monthly_vnd: Number(driver.fixedSalaryMonthly),
+        trip_base_pay_vnd: Number(driver.tripBasePay),
+        per_km_pay_vnd: Number(driver.perKmPay),
+        ...(driver.homeLocationId ? { home_location_id: driver.homeLocationId } : {}),
+        ...(homeProvince ? { home_province_code: homeProvince } : {}),
+        ...(driver.strictHomeLocation ? { strict_home_location: true } : {}),
+      };
+    });
+    const activeWorkPolicyRow = workPolicies.find(
+      (policy) =>
+        policy.effectiveFrom <= planningEpoch &&
+        (!policy.effectiveTo || policy.effectiveTo >= planningEpoch),
+    );
+    const drivingRestPolicy = parseWorkPolicyToDrivingRest(activeWorkPolicyRow);
     const deliveryHolds = await this.prisma.deliveryCapacityHold.findMany({ where: {
       status: 'HELD', ...(deliveryBatchId ? { batchId: { not: deliveryBatchId } } : {}),
       OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
@@ -1783,6 +1911,7 @@ export class TripsService {
         horizonSeconds,
         activeZones,
         branch.timezone,
+        activeWarehouses,
       );
       const snapshot = {
         vehicles: serviceDays.flatMap((day) =>
@@ -1822,6 +1951,7 @@ export class TripsService {
           ...(effectiveSettings?.optimization.maxRoutesPerDay != null
             ? { max_routes_per_day: effectiveSettings.optimization.maxRoutesPerDay }
             : {}),
+          ...(drivingRestPolicy ? { driving_rest_policy: drivingRestPolicy } : {}),
         },
         planning_epoch_iso: planningEpoch.toISOString(),
         max_time_seconds: remainingSeconds,
@@ -1853,7 +1983,12 @@ export class TripsService {
       // Day slots at the same depot share one matrix node, including on retries.
       const depots: [number, number][] = [];
       const depotIndex = new Map<string, number>();
+      const knownLocationKeys = new Set<string>();
+      const nodeProvinceCodes: Array<string | null> = [];
       const indexes = snapshot.vehicles.map(({ depot }) => {
+        knownLocationKeys.add(depot.id);
+        if (depot.source_location_id) knownLocationKeys.add(depot.source_location_id);
+        nodeProvinceCodes.push(depot.province_code ?? null);
         const key = JSON.stringify([depot.longitude, depot.latitude]);
         const existing = depotIndex.get(key);
         if (existing !== undefined) return existing;
@@ -1865,8 +2000,34 @@ export class TripsService {
       const coordinates = [...depots];
       for (const order of snapshot.orders) {
         for (const point of [order.pickup_location, order.delivery_location]) {
+          knownLocationKeys.add(point.id);
+          if (point.source_location_id) knownLocationKeys.add(point.source_location_id);
+          nodeProvinceCodes.push(point.province_code ?? null);
           indexes.push(coordinates.length);
           coordinates.push([point.longitude, point.latitude]);
+        }
+      }
+      const knownRoundedCoords = new Set(
+        coordinates.map(([lng, lat]) => `${lat.toFixed(6)}:${lng.toFixed(6)}`),
+      );
+      const extraEndKeys = new Set<string>();
+      for (const vehicle of snapshot.vehicles) {
+        const endDepot = vehicle.end_depot;
+        if (!endDepot) continue;
+        const endKey = endDepot.source_location_id ?? endDepot.id;
+        const coordKey = `${endDepot.latitude.toFixed(6)}:${endDepot.longitude.toFixed(6)}`;
+        if (
+          !knownLocationKeys.has(endDepot.id) &&
+          !knownLocationKeys.has(endKey) &&
+          !knownRoundedCoords.has(coordKey) &&
+          !extraEndKeys.has(endKey)
+        ) {
+          extraEndKeys.add(endKey);
+          knownLocationKeys.add(endKey);
+          knownRoundedCoords.add(coordKey);
+          nodeProvinceCodes.push(endDepot.province_code ?? null);
+          indexes.push(coordinates.length);
+          coordinates.push([endDepot.longitude, endDepot.latitude]);
         }
       }
       const key = JSON.stringify(coordinates);
@@ -1881,6 +2042,11 @@ export class TripsService {
       const expand = (values: number[][]) => indexes.map(i => indexes.map(j => values[i][j]));
       const fullDistances = expand(matrix.distancesMeters);
       const fullDurations = expand(matrix.durationsSeconds);
+      const tollMatrixVnd = buildInterprovincialTollMatrix(
+        nodeProvinceCodes,
+        fullDistances,
+        tollCorridors,
+      );
 
       const payload = {
         job_id: persistedJobId ?? `request-${randomUUID()}`,
@@ -1897,6 +2063,7 @@ export class TripsService {
           : {}),
         distance_matrix_meters: fullDistances,
         duration_matrix_seconds: fullDurations,
+        ...(tollMatrixVnd ? { toll_matrix_vnd: tollMatrixVnd } : {}),
       };
 
       if (persistedJobId) {
@@ -2121,12 +2288,26 @@ export class TripsService {
           );
           if (!vehicle)
             throw new Error(`Optimizer trả route_id lạ: ${route.route_id}`);
+          const lastStop = route.stops[route.stops.length - 1];
+          const routeEnd =
+            route.end_location !== undefined
+              ? route.end_location
+              : vehicle.return_to_depot === false
+                ? null
+                : vehicle.depot;
+          const shouldAppendEnd =
+            Boolean(routeEnd) &&
+            (!lastStop ||
+              Math.abs(routeEnd!.latitude - lastStop.latitude) > 1e-6 ||
+              Math.abs(routeEnd!.longitude - lastStop.longitude) > 1e-6);
           const routeCoordinates: [number, number][] = [
             [vehicle.depot.longitude, vehicle.depot.latitude],
             ...route.stops.map(
               (stop) => [stop.longitude, stop.latitude] as [number, number],
             ),
-            [vehicle.depot.longitude, vehicle.depot.latitude],
+            ...(shouldAppendEnd
+              ? [[routeEnd!.longitude, routeEnd!.latitude] as [number, number]]
+              : []),
           ];
           const routeDetails = await getDeduplicatedRoute(routeCoordinates);
           route.depot = vehicle.depot;
@@ -2182,15 +2363,35 @@ export class TripsService {
     const driverIds = proposal.result.routes.map(route => route.driver_id).filter((id): id is string => Boolean(id));
     await this.acquireApplicationLocks(tx, vehicleIds, driverIds, orderIds, ownDeliveryBatchId);
     await tx.$queryRaw(Prisma.sql`SELECT id FROM orders WHERE id IN (${Prisma.join(orderIds)}) ORDER BY id FOR UPDATE`);
-    const [orders, vehicles, drivers] = await Promise.all([
+    const [orders, vehicles, drivers, warehouses] = await Promise.all([
       tx.order.findMany({ where: { id: { in: orderIds }, branchId: proposal.branchId }, include: {
-        stops: true, items: { include: { packages: true } }, packages: true,
+        stops: { include: { location: true } }, items: { include: { packages: true } }, packages: true,
       } }),
       tx.vehicle.findMany({ where: { id: { in: vehicleIds }, homeBranchId: proposal.branchId }, include: { vehicleTypeRecord: true } }),
       tx.driver.findMany({ where: { id: { in: driverIds }, homeBranchId: proposal.branchId } }),
+      tx.location?.findMany
+        ? tx.location.findMany({
+            where: { active: true, type: LocationType.CENTRAL_WAREHOUSE },
+            select: {
+              id: true,
+              latitude: true,
+              longitude: true,
+              provinceCode: true,
+              provinceName: true,
+              warehouseRole: true,
+              dockingTimeSec: true,
+              maxVehiclePayloadKg: true,
+              maxVehicleLengthCm: true,
+              hasForklift: true,
+              operatingWindows: true,
+              handlingSecPerTon: true,
+              handlingSecPerPackage: true,
+            },
+          })
+        : Promise.resolve([]),
     ]);
     this.assertProposalResourcesCurrent(proposal, orders, vehicles, drivers);
-    const planned = this.buildPlannedAutomaticTrips(proposal, orders, vehicles, drivers);
+    const planned = this.buildPlannedAutomaticTrips(proposal, orders, vehicles, drivers, warehouses);
     for (const trip of planned) {
       await this.access.tripInputs(user, proposal.branchId, { vehicleId: trip.vehicleId, driverId: trip.driverId, orderIds: trip.orderIds }, tx);
       await this.assertNoResourceOverlap(tx, trip, ownDeliveryBatchId);
@@ -2334,11 +2535,11 @@ export class TripsService {
           }, tx);
         }
 
-        const [orders, vehicles, drivers] = await Promise.all([
+        const [orders, vehicles, drivers, warehouses] = await Promise.all([
           tx.order.findMany({
             where: { id: { in: orderIds }, branchId },
             include: {
-              stops: true,
+              stops: { include: { location: true } },
               items: { include: { packages: true } },
               packages: true,
             },
@@ -2350,6 +2551,26 @@ export class TripsService {
           tx.driver.findMany({
             where: { id: { in: driverIds }, homeBranchId: branchId },
           }),
+          tx.location?.findMany
+            ? tx.location.findMany({
+                where: { active: true, type: LocationType.CENTRAL_WAREHOUSE },
+                select: {
+                  id: true,
+                  latitude: true,
+                  longitude: true,
+                  provinceCode: true,
+                  provinceName: true,
+                  warehouseRole: true,
+                  dockingTimeSec: true,
+                  maxVehiclePayloadKg: true,
+                  maxVehicleLengthCm: true,
+                  hasForklift: true,
+                  operatingWindows: true,
+                  handlingSecPerTon: true,
+                  handlingSecPerPackage: true,
+                },
+              })
+            : Promise.resolve([]),
         ]);
 
         this.assertProposalResourcesCurrent(
@@ -2363,6 +2584,7 @@ export class TripsService {
           orders,
           vehicles,
           drivers,
+          warehouses,
         );
 
         const packageIdByCargoUnit = await this.ensurePhysicalPackageMapping(
@@ -2752,6 +2974,7 @@ export class TripsService {
     orders: OrderWithStopsAndItems[],
     vehicles: VehicleRecordWithType[],
     drivers: DriverRecord[],
+    warehouses: readonly (LocationConstraintSource & { latitude: number; longitude: number })[] = [],
   ): PlannedAutomaticTrip[] {
     const orderById = new Map(orders.map((order) => [order.id, order]));
     const vehicleById = new Map(
@@ -2821,6 +3044,7 @@ export class TripsService {
       );
       const plannedStops: PlannedAutomaticTrip['stops'] = [];
       const routeCargoUnitIds = new Set<string>();
+      let previousStopLocationKey: string | null = null;
 
       for (let index = 0; index < sortedStops.length; index++) {
         const stop = sortedStops[index];
@@ -2869,7 +3093,36 @@ export class TripsService {
 
         assertDispatchableOrder(order);
         const arrival = planningEpoch.getTime() + stop.arrival_time_sec * 1000;
-        if (arrival < order.orderedAt.getTime() || stop.departure_time_sec - stop.arrival_time_sec !== orderStop.serviceDurationMinutes * 60) {
+        const stopLocation =
+          orderStop.location ??
+          (warehouses.length > 0
+            ? findMatchingWarehouseLocation(
+                orderStop.latitude,
+                orderStop.longitude,
+                warehouses,
+              )
+            : null);
+        const orderItemsCargo = packagesToCargoUnits(order.items, order.customerId);
+        const stopOrderWeightKg = orderItemsCargo.reduce(
+          (sum, unit) => sum + unit.weight_kg,
+          0,
+        );
+        const { expectedSec, locationKey } = expectedWarehouseStopServiceSec({
+          baseServiceSec: orderStop.serviceDurationMinutes * 60,
+          location: stopLocation,
+          previousLocationKey: previousStopLocationKey,
+          totalWeightKg: stopOrderWeightKg,
+          packageCount: orderItemsCargo.length,
+        });
+        previousStopLocationKey = locationKey;
+        const actualServiceSec = stop.departure_time_sec - stop.arrival_time_sec;
+        if (
+          arrival < order.orderedAt.getTime() ||
+          (actualServiceSec !== orderStop.serviceDurationMinutes * 60 &&
+            actualServiceSec !== expectedSec) ||
+          (stop.service_time_sec !== undefined &&
+            stop.service_time_sec !== actualServiceSec)
+        ) {
           throw new BadRequestException('Optimizer vi phạm ngày đặt/thời lượng phục vụ đã xác nhận');
         }
         const cargoUnitIds =
@@ -3156,18 +3409,43 @@ export class TripsService {
       );
     }
 
+    const activeWorkPolicies = tx.workPolicy?.findMany
+      ? await tx.workPolicy.findMany({
+          where: { jurisdiction: 'VN' },
+          orderBy: [{ effectiveFrom: 'desc' }, { revision: 'desc' }],
+          take: 5,
+        })
+      : [];
+    const activePolicy = activeWorkPolicies.find(
+      (policy) =>
+        policy.effectiveFrom <= plannedTrip.plannedStartTime &&
+        (!policy.effectiveTo || policy.effectiveTo >= plannedTrip.plannedStartTime),
+    );
+    const parsedRestPolicy = parseWorkPolicyToDrivingRest(activePolicy);
+    const minInterTripRestMs =
+      parsedRestPolicy?.enabled && parsedRestPolicy.min_inter_trip_rest_sec > 0
+        ? parsedRestPolicy.min_inter_trip_rest_sec * 1000
+        : 0;
+    const driverStartWithRest = new Date(
+      plannedTrip.plannedStartTime.getTime() - minInterTripRestMs,
+    );
+    const driverEndWithRest = new Date(
+      plannedTrip.plannedEndTime.getTime() + minInterTripRestMs,
+    );
     const driverOverlap = await tx.driverAssignment.findFirst({
       where: {
         driverId: plannedTrip.driverId,
         trip: { status: { in: ACTIVE_TRIP_STATUSES } },
-        startTime: { lt: plannedTrip.plannedEndTime },
-        endTime: { gt: plannedTrip.plannedStartTime },
+        startTime: { lt: driverEndWithRest },
+        endTime: { gt: driverStartWithRest },
       },
       include: { trip: { select: { tripNumber: true } } },
     });
     if (driverOverlap) {
       throw new ConflictException(
-        `Tài xế đã có lịch chạy chuyến ${driverOverlap.trip.tripNumber} trong thời gian này`,
+        minInterTripRestMs > 0
+          ? `Tài xế trùng lịch hoặc chưa đủ thời gian nghỉ bắt buộc giữa các chuyến với ${driverOverlap.trip.tripNumber}`
+          : `Tài xế đã có lịch chạy chuyến ${driverOverlap.trip.tripNumber} trong thời gian này`,
       );
     }
   }
@@ -3510,6 +3788,7 @@ export class TripsService {
     horizonSeconds = INITIAL_PLANNING_DAYS * 86400,
     restrictionZones: readonly ZoneCurfewRecord[] = [],
     timeZone = 'Asia/Ho_Chi_Minh',
+    warehouses: readonly (LocationConstraintSource & { latitude: number; longitude: number })[] = [],
   ) {
     // A negative offset preserves the waiting time before this planning day.
     const orderedSeconds = (value: Date) => Math.floor((value.getTime() - planningEpoch.getTime()) / 1000);
@@ -3538,6 +3817,16 @@ export class TripsService {
           `Đơn ${order.orderNumber} thiếu pickup hoặc delivery`,
         );
       }
+      const pickupLocationSource =
+        pickup.location ??
+        (warehouses.length > 0
+          ? findMatchingWarehouseLocation(pickup.latitude, pickup.longitude, warehouses)
+          : null);
+      const deliveryLocationSource =
+        delivery.location ??
+        (warehouses.length > 0
+          ? findMatchingWarehouseLocation(delivery.latitude, delivery.longitude, warehouses)
+          : null);
       let items;
       try {
         items = packagesToCargoUnits(order.items, order.customerId);
@@ -3549,17 +3838,19 @@ export class TripsService {
         order_number: order.orderNumber,
         pickup_location: {
           id: pickup.id,
-          source_location_id: pickup.id,
+          source_location_id: pickup.locationId ?? pickupLocationSource?.id ?? pickup.id,
           name: pickup.address,
           latitude: pickup.latitude,
           longitude: pickup.longitude,
+          ...extractLocationConstraintFields(pickupLocationSource),
         },
         delivery_location: {
           id: delivery.id,
-          source_location_id: delivery.id,
+          source_location_id: delivery.locationId ?? deliveryLocationSource?.id ?? delivery.id,
           name: delivery.address,
           latitude: delivery.latitude,
           longitude: delivery.longitude,
+          ...extractLocationConstraintFields(deliveryLocationSource),
         },
         items,
         pickup_window_start_sec: Math.max(0, Math.ceil((order.orderedAt.getTime() - planningEpoch.getTime()) / 1000)),

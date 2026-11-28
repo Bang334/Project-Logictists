@@ -1,10 +1,12 @@
 import {
+  IsBoolean,
   IsDateString,
   IsEnum,
   IsNumber,
   IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
   Min,
 } from 'class-validator';
 import { DriverStatus } from '@prisma/client';
@@ -37,6 +39,19 @@ export class UpdateDriverDto {
   @IsOptional()
   @IsUUID()
   homeBranchId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  homeLocationId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  homeProvinceCode?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  strictHomeLocation?: boolean;
 
   @IsOptional()
   @IsEnum(DriverStatus)

@@ -47,6 +47,10 @@ export function validateOrderInput(dto: CreateOrderDto, _confirmed: boolean) {
       if (p.cargoKind !== 'STANDARD' && (p.allowUpperTier || p.noTopLoadRequested || p.maxTopLoadG != null)) {
         orderFieldError(`items.${i}.packages.${j}.cargoKind`, 'Chỉ kiện thường mới có thể khai báo tùy chọn xếp chồng');
       }
+      const selfGroup = p.cargoGroup?.trim().toUpperCase();
+      if (selfGroup && p.incompatibleCargoGroups?.some(g => g.trim().toUpperCase() === selfGroup)) {
+        orderFieldError(`items.${i}.packages.${j}.incompatibleCargoGroups`, 'Nhóm hàng không thể tự xung đột với chính nó');
+      }
       try {
         parseAllowedOrientationsInput(p.allowedOrientations);
       } catch (err) {

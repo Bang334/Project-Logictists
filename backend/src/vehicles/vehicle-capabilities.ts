@@ -12,6 +12,9 @@ export type VehicleCapabilities = Pick<
   | 'fixedOperatingCostPerTrip'
   | 'requiredLicenseCategory'
   | 'handlingCapabilities'
+  | 'temperatureMode'
+  | 'hasTailLift'
+  | 'tollFactor'
 >;
 
 export type VehicleWithType = {
@@ -41,5 +44,8 @@ export function flattenVehicleType<T extends VehicleWithType>(vehicle: T) {
     loadFuelSurchargePercentAtFullPayload:
       type.loadFuelSurchargePercentAtFullPayload,
     fixedOperatingCostPerTrip: type.fixedOperatingCostPerTrip,
+    temperatureMode: type.temperatureMode ?? 'DRY',
+    hasTailLift: type.hasTailLift ?? false,
+    tollFactor: type.tollFactor ?? 1.0,
   };
 }

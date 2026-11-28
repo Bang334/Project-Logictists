@@ -5,7 +5,7 @@ import { assertPackageManifest } from '../orders/order-contract';
 
 export interface StopWithItems {
   orderStop: Pick<OrderStop, 'id' | 'orderId' | 'type' | 'address'> & Partial<OrderStop>;
-  order: Pick<Order, 'id' | 'orderNumber' | 'totalWeightKg' | 'totalVolumeM3'> & Partial<Order> & { items: Array<Pick<OrderItem, 'quantity' | 'weightKg' | 'volumeM3'> & Partial<OrderItem> & { packages?: Package[] }> };
+  order: Pick<Order, 'id' | 'orderNumber' | 'totalWeightKg' | 'totalVolumeM3'> & Partial<Order> & { items: Array<Pick<OrderItem, 'quantity' | 'weightKg' | 'volumeM3'> & Partial<OrderItem> & { packages?: Array<Partial<Package> & Pick<Package, 'lengthMm' | 'widthMm' | 'heightMm' | 'weightG'>> }> };
 }
 
 export interface LegLoadStatus {
@@ -66,7 +66,7 @@ export class TripsValidator {
    * Tuyệt đối không để vượt tải tại bất kỳ chặng nào giữa 2 điểm dừng.
    */
   static calculateAndValidateLoad(
-    vehicle: Vehicle & {
+    vehicle: Pick<Vehicle, 'plateNumber'> & Partial<Vehicle> & {
       vehicleTypeRecord: Pick<VehicleType, 'payloadCapacityKg' | 'volumeCapacityM3'>;
     },
     orderedStops: StopWithItems[],

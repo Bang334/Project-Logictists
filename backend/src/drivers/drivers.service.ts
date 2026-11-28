@@ -1,11 +1,21 @@
 import { Principal, branchFilter, assertPermission, tripFilter } from '../auth/access';
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { DriverStatus } from '@prisma/client';
+import { DriverStatus, LocationType } from '@prisma/client';
 import { UpdateDriverDto } from './dto/update-driver.dto';
+
+const DRIVER_HOME_LOCATION_SELECT = {
+  id: true,
+  code: true,
+  name: true,
+  provinceCode: true,
+  provinceName: true,
+  warehouseRole: true,
+} as const;
 
 @Injectable()
 export class DriversService {
@@ -21,6 +31,7 @@ export class DriversService {
         homeBranch: {
           select: { id: true, code: true, name: true },
         },
+        homeLocation: { select: DRIVER_HOME_LOCATION_SELECT },
       },
       orderBy: { fullName: 'asc' },
     });
@@ -31,6 +42,7 @@ export class DriversService {
       where: { id, homeBranchId: branchFilter(user, 'drivers.read') },
       include: {
         homeBranch: true,
+        homeLocation: { select: DRIVER_HOME_LOCATION_SELECT },
         assignments: {
           where: { trip: tripFilter(user) },
           take: 5,
@@ -52,6 +64,7 @@ export class DriversService {
       },
       include: {
         homeBranch: true,
+        homeLocation: { select: DRIVER_HOME_LOCATION_SELECT },
       },
     });
   }
@@ -70,6 +83,24 @@ export class DriversService {
     }
 
     assertPermission(user, 'drivers.manage');
+    let resolvedHomeProvince =
+      dto.homeProvinceCode !== undefined
+        ? dto.homeProvinceCode?.trim().toUpperCase() || null
+        : undefined;
+    if (dto.homeLocationId !== undefined && dto.homeLocationId !== null) {
+      const homeLoc = await this.prisma.location.findUnique({
+        where: { id: dto.homeLocationId },
+        select: { id: true, type: true, active: true, provinceCode: true },
+      });
+      if (!homeLoc || !homeLoc.active || homeLoc.type !== LocationType.CENTRAL_WAREHOUSE) {
+        throw new BadRequestException(
+          'Kho đỗ gốc của tài xế phải là kho trung tâm đang hoạt động',
+        );
+      }
+      if (resolvedHomeProvince === undefined && homeLoc.provinceCode) {
+        resolvedHomeProvince = homeLoc.provinceCode.trim().toUpperCase();
+      }
+    }
     return this.prisma.driver.update({
       where: { id },
       data: {
@@ -80,6 +111,11 @@ export class DriversService {
         ...(dto.licenseClass ? { licenseClass: dto.licenseClass.trim() } : {}),
         ...(dto.licenseExpiry ? { licenseExpiry: new Date(dto.licenseExpiry) } : {}),
         ...(dto.homeBranchId ? { homeBranchId: dto.homeBranchId } : {}),
+        ...(dto.homeLocationId !== undefined ? { homeLocationId: dto.homeLocationId } : {}),
+        ...(resolvedHomeProvince !== undefined ? { homeProvinceCode: resolvedHomeProvince } : {}),
+        ...(dto.strictHomeLocation !== undefined
+          ? { strictHomeLocation: dto.strictHomeLocation }
+          : {}),
         ...(dto.fixedSalaryMonthly !== undefined
           ? { fixedSalaryMonthly: dto.fixedSalaryMonthly }
           : {}),
@@ -95,6 +131,7 @@ export class DriversService {
         homeBranch: {
           select: { id: true, code: true, name: true },
         },
+        homeLocation: { select: DRIVER_HOME_LOCATION_SELECT },
       },
     });
   }

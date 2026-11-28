@@ -16,6 +16,9 @@ const HOME_DEPOT_SUMMARY_SELECT = {
   address: true,
   latitude: true,
   longitude: true,
+  provinceCode: true,
+  provinceName: true,
+  warehouseRole: true,
 } as const;
 
 @Injectable()
@@ -33,6 +36,7 @@ export class VehiclesService {
           select: { id: true, code: true, name: true },
         },
         homeDepotLocation: { select: HOME_DEPOT_SUMMARY_SELECT },
+        endDepotLocation: { select: HOME_DEPOT_SUMMARY_SELECT },
         vehicleTypeRecord: true,
       },
       orderBy: { plateNumber: 'asc' },
@@ -46,6 +50,7 @@ export class VehiclesService {
       include: {
         homeBranch: true,
         homeDepotLocation: { select: HOME_DEPOT_SUMMARY_SELECT },
+        endDepotLocation: { select: HOME_DEPOT_SUMMARY_SELECT },
         vehicleTypeRecord: true,
         trips: {
           where: tripFilter(user),
@@ -103,6 +108,23 @@ export class VehiclesService {
       }
     }
     const targetDepotId = await this.resolveTargetHomeDepot(vehicle.homeDepotLocationId, vehicle.homeBranchId, dto.homeBranchId ?? vehicle.homeBranchId, dto.homeDepotLocationId);
+    let targetEndDepotId = vehicle.endDepotLocationId ?? null;
+    if (dto.endDepotLocationId !== undefined) {
+      if (dto.endDepotLocationId === null) {
+        targetEndDepotId = null;
+      } else {
+        const endDepot = await this.prisma.location.findUnique({
+          where: { id: dto.endDepotLocationId },
+          select: { id: true, type: true, active: true },
+        });
+        if (!endDepot || !endDepot.active || endDepot.type !== LocationType.CENTRAL_WAREHOUSE) {
+          throw new BadRequestException(
+            'Kho kết thúc tuyến phải là kho trung tâm đang hoạt động',
+          );
+        }
+        targetEndDepotId = endDepot.id;
+      }
+    }
     const updated = await this.prisma.vehicle.update({
       where: { id },
       data: {
@@ -111,6 +133,8 @@ export class VehiclesService {
         ...(dto.vehicleTypeId ? { vehicleTypeId: dto.vehicleTypeId } : {}),
         ...(dto.homeBranchId ? { homeBranchId: dto.homeBranchId } : {}),
         homeDepotLocationId: targetDepotId,
+        ...(dto.returnToDepot !== undefined ? { returnToDepot: dto.returnToDepot } : {}),
+        ...(dto.endDepotLocationId !== undefined ? { endDepotLocationId: targetEndDepotId } : {}),
         ...(dto.status ? { status: dto.status } : {}),
       },
       include: {
@@ -118,6 +142,7 @@ export class VehiclesService {
           select: { id: true, code: true, name: true },
         },
         homeDepotLocation: { select: HOME_DEPOT_SUMMARY_SELECT },
+        endDepotLocation: { select: HOME_DEPOT_SUMMARY_SELECT },
         vehicleTypeRecord: true,
       },
     });

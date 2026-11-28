@@ -1,5 +1,9 @@
 import { BadRequestException } from '@nestjs/common';
 import { LocationType, Prisma } from '@prisma/client';
+import {
+  extractLocationConstraintFields,
+  InterprovincialLocationPayload,
+} from './interprovincial-policy';
 
 /**
  * Quyết định nghiệp vụ: khi lập lịch, xe luôn xuất phát từ kho đỗ được gán.
@@ -14,11 +18,32 @@ export const VEHICLE_HOME_DEPOT_SELECT = {
   latitude: true,
   longitude: true,
   active: true,
+  provinceCode: true,
+  provinceName: true,
+  warehouseRole: true,
+  dockingTimeSec: true,
+  maxVehiclePayloadKg: true,
+  maxVehicleLengthCm: true,
+  hasForklift: true,
+  operatingWindows: true,
+  handlingSecPerTon: true,
+  handlingSecPerPackage: true,
 } satisfies Prisma.LocationSelect;
 
-type HomeDepotLocation = Prisma.LocationGetPayload<{
+type FullHomeDepotLocation = Prisma.LocationGetPayload<{
   select: typeof VEHICLE_HOME_DEPOT_SELECT;
 }>;
+
+type HomeDepotLocation = Pick<
+  FullHomeDepotLocation,
+  'id' | 'code' | 'name' | 'type' | 'managingBranchId' | 'latitude' | 'longitude' | 'active'
+> &
+  Partial<
+    Omit<
+      FullHomeDepotLocation,
+      'id' | 'code' | 'name' | 'type' | 'managingBranchId' | 'latitude' | 'longitude' | 'active'
+    >
+  >;
 
 export type VehicleWithHomeDepot = {
   plateNumber: string;
@@ -33,6 +58,7 @@ export type VehiclePlanningStart = {
   name: string;
   latitude: number;
   longitude: number;
+  locationConstraints: InterprovincialLocationPayload;
 };
 
 export function resolveVehiclePlanningStart(
@@ -61,5 +87,6 @@ export function resolveVehiclePlanningStart(
     name: depot.name,
     latitude: depot.latitude,
     longitude: depot.longitude,
+    locationConstraints: extractLocationConstraintFields(depot),
   };
 }

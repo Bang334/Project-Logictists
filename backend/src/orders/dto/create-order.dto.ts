@@ -1,6 +1,6 @@
 import { Type } from 'class-transformer';
 import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsISO8601, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
-import { CargoKind } from '@prisma/client';
+import { CargoKind, CargoTemperature } from '@prisma/client';
 
 export class PackageInputDto {
   @IsOptional() @IsUUID() id?: string;
@@ -13,6 +13,10 @@ export class PackageInputDto {
   @IsOptional() @IsBoolean() noTopLoadRequested?: boolean;
   @IsOptional() @IsInt() @Min(1) @Max(2147483647) maxTopLoadG?: number | null;
   @IsOptional() @IsArray() @ArrayMinSize(1) @ArrayMaxSize(2) @IsIn(['LWH', 'WLH', 'DEFAULT'], { each: true }) allowedOrientations?: string[] | null;
+  @IsOptional() @IsEnum(CargoTemperature) requiredTemperature?: CargoTemperature | null;
+  @IsOptional() @IsString() @MaxLength(64) cargoGroup?: string | null;
+  @IsOptional() @IsArray() @ArrayMaxSize(32) @IsString({ each: true }) @MaxLength(64, { each: true }) incompatibleCargoGroups?: string[] | null;
+  @IsOptional() @IsBoolean() requiresLiftEquipment?: boolean;
 }
 export class CreateOrderItemDto {
   @IsOptional() @IsUUID() id?: string;
@@ -24,6 +28,7 @@ export class CreateOrderItemDto {
 }
 export class CreateOrderStopDto {
   @IsOptional() @IsUUID() id?: string;
+  @IsOptional() @IsUUID() locationId?: string | null;
   @IsIn(['PICKUP', 'DELIVERY']) type: 'PICKUP' | 'DELIVERY';
   @IsString() @IsNotEmpty() @MaxLength(1000) address: string;
   @IsNumber() @Min(-90) @Max(90) latitude: number;

@@ -12,6 +12,8 @@ describe('TripsValidator - TMS Invariants', () => {
     homeBranchId: 'branch-1',
     status: VehicleStatus.AVAILABLE,
     homeDepotLocationId: null,
+    returnToDepot: true,
+    endDepotLocationId: null,
     vehicleTypeId: 'type-1',
     vehicleTypeRecord: {
       payloadCapacityKg: 5000,

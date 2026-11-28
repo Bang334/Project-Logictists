@@ -52,11 +52,23 @@ export type OptimizedRouteResult = {
   total_duration_minutes: number;
   return_travel_time_sec?: number;
   return_waiting_time_sec?: number;
+  mandatory_rest_sec?: number;
+  rest_breaks?: Array<{
+    leg_after_sequence: number;
+    reason: 'CONTINUOUS_DRIVING' | 'DAILY_LIMIT';
+    start_time_sec: number;
+    end_time_sec: number;
+    duration_sec: number;
+  }>;
+  province_hops?: string[];
   depot?: {
     id: string;
     name: string;
     latitude: number;
     longitude: number;
+    province_code?: string | null;
+    province_name?: string | null;
+    warehouse_role?: string | null;
   };
   end_location?: OptimizedRouteResult['depot'] | null;
   stops: OptimizerStop[];
@@ -66,6 +78,9 @@ export type OptimizedRouteResult = {
       lift_clearance_cm: number;
       owner_mode?: 'SAME_CUSTOMER' | 'ANY_CUSTOMER';
       max_top_load_percent?: number;
+      enforce_weight_balance?: boolean;
+      max_lateral_imbalance_percent?: number | null;
+      max_longitudinal_imbalance_percent?: number | null;
     } | null;
     is_valid: boolean;
     violation_code?: string;
@@ -123,6 +138,8 @@ export type OptimizedRouteResult = {
     vehicle_fixed_cost_vnd: number;
     driver_fixed_salary_allocation_vnd: number;
     driver_trip_pay_vnd: number;
+    toll_cost_vnd?: number;
+    overnight_allowance_vnd?: number;
     total_cost_vnd: number;
   };
   route_geometry?: { type: string; coordinates: number[][] };
@@ -647,6 +664,46 @@ export function assertFleetOptimizationResult(
     }
     if (!isRecord(route.cost)) {
       throw new Error('Optimizer trả route thiếu bảng phân rã chi phí');
+    }
+    if (route.mandatory_rest_sec !== undefined) {
+      if (!Number.isInteger(route.mandatory_rest_sec) || Number(route.mandatory_rest_sec) < 0) {
+        throw new Error('Optimizer trả mandatory_rest_sec không hợp lệ');
+      }
+    }
+    if (route.rest_breaks !== undefined) {
+      if (!Array.isArray(route.rest_breaks)) {
+        throw new Error('Optimizer trả rest_breaks phải là mảng');
+      }
+      for (const br of route.rest_breaks) {
+        if (
+          !isRecord(br) ||
+          !Number.isInteger(br.leg_after_sequence) ||
+          Number(br.leg_after_sequence) < 0 ||
+          !['CONTINUOUS_DRIVING', 'DAILY_LIMIT'].includes(String(br.reason)) ||
+          !Number.isInteger(br.start_time_sec) ||
+          Number(br.start_time_sec) < 0 ||
+          !Number.isInteger(br.end_time_sec) ||
+          Number(br.end_time_sec) <= Number(br.start_time_sec) ||
+          !Number.isInteger(br.duration_sec) ||
+          Number(br.duration_sec) <= 0
+        ) {
+          throw new Error('Optimizer trả rest_break không hợp lệ');
+        }
+      }
+    }
+    if (route.province_hops !== undefined) {
+      if (
+        !Array.isArray(route.province_hops) ||
+        !route.province_hops.every((hop) => typeof hop === 'string' && hop.length > 0)
+      ) {
+        throw new Error('Optimizer trả province_hops không hợp lệ');
+      }
+    }
+    for (const optionalCostField of ['toll_cost_vnd', 'overnight_allowance_vnd']) {
+      const optVal = route.cost[optionalCostField];
+      if (optVal !== undefined && (typeof optVal !== 'number' || !Number.isFinite(optVal) || optVal < 0)) {
+        throw new Error(`Optimizer trả trường chi phí ${optionalCostField} không hợp lệ`);
+      }
     }
     for (const field of [
       'base_fuel_cost_vnd',

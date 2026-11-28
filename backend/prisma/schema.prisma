@@ -228,9 +228,13 @@ model Vehicle {
   reservations                          ResourceReservation[]
   fuelLogs                              FuelLog[]
   maintenanceRecords                    MaintenanceRecord[]
+  returnToDepot                         Boolean                 @default(true)
+  endDepotLocationId                    String?
+  endDepotLocation                      Location?               @relation("VehicleEndDepots", fields: [endDepotLocationId], references: [id], onDelete: Restrict)
   homeDepotLocationId                   String?
   homeDepotLocation                     Location?               @relation("VehicleHomeDepots", fields: [homeDepotLocationId], references: [id], onDelete: Restrict)
   @@index([homeDepotLocationId])
+  @@index([endDepotLocationId])
 }
 
 model Driver {
@@ -246,6 +250,10 @@ model Driver {
   licenseExpiry DateTime @db.Date
   homeBranchId  String
   homeBranch    Branch   @relation(fields: [homeBranchId], references: [id])
+  homeLocationId String?
+  homeLocation  Location? @relation("DriverHomeLocations", fields: [homeLocationId], references: [id], onDelete: Restrict)
+  homeProvinceCode String?
+  strictHomeLocation Boolean @default(false)
 
   status             DriverStatus          @default(AVAILABLE)
   fixedSalaryMonthly Decimal               @default(0) @db.Decimal(14, 2)
@@ -261,6 +269,7 @@ model Driver {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
+  @@index([homeLocationId])
   @@map("drivers")
   employeeId    String?               @unique
   employee      Employee?             @relation(fields: [employeeId], references: [id], onDelete: Restrict)
@@ -346,6 +355,8 @@ model OrderStop {
   order                  Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
   type                   StopType // PICKUP hoặc DELIVERY
   sequence               Int // 1 = Pickup, 2 = Delivery
+  locationId             String?
+  location               Location?  @relation("OrderStopLocations", fields: [locationId], references: [id], onDelete: SetNull)
   address                String
   latitude               Float
   longitude              Float
@@ -360,6 +371,7 @@ model OrderStop {
 
   @@unique([orderId, sequence])
   @@index([orderId, type])
+  @@index([locationId])
   @@map("order_stops")
 }
 
@@ -684,6 +696,25 @@ enum CargoKind {
   FRAGILE
 }
 
+enum CargoTemperature {
+  DRY
+  CHILLED
+  FROZEN
+}
+
+enum TemperatureMode {
+  DRY
+  CHILLED
+  FROZEN
+  ISOTHERMAL
+}
+
+enum WarehouseRole {
+  HUB
+  WAREHOUSE
+  TRANSIT
+}
+
 model Package {
   id                  String           @id @default(uuid())
   orderItemId         String?
@@ -693,12 +724,16 @@ model Package {
   widthMm             Int
   heightMm            Int
   weightG             BigInt
-  cargoKind           CargoKind        @default(UNCLASSIFIED)
-  allowUpperTier      Boolean          @default(false)
-  noTopLoadRequested  Boolean          @default(false)
-  maxTopLoadG         Int?
-  allowedOrientations Json?
-  measurementSource   String
+  cargoKind               CargoKind         @default(UNCLASSIFIED)
+  allowUpperTier          Boolean           @default(false)
+  noTopLoadRequested      Boolean           @default(false)
+  maxTopLoadG             Int?
+  allowedOrientations     Json?
+  requiredTemperature     CargoTemperature?
+  cargoGroup              String?
+  incompatibleCargoGroups String[]          @default([])
+  requiresLiftEquipment   Boolean           @default(false)
+  measurementSource       String
   measuredAt          DateTime?        @db.Timestamptz(3)
   status              PackageStatus    @default(DRAFT)
   version             Int              @default(1)
@@ -761,6 +796,9 @@ model VehicleType {
   fixedOperatingCostPerTrip             Decimal   @default(0) @db.Decimal(14, 2)
   requiredLicenseCategory String?
   handlingCapabilities    Json?
+  temperatureMode         TemperatureMode @default(DRY)
+  hasTailLift             Boolean         @default(false)
+  tollFactor              Float           @default(1.0)
   active                  Boolean   @default(true)
   vehicles                Vehicle[]
   createdAt               DateTime  @default(now()) @db.Timestamptz(3)
@@ -1233,6 +1271,16 @@ model Location {
   timezone                String                 @default("Asia/Ho_Chi_Minh")
   workStartTime           String                 @default("08:00")
   workEndTime             String                 @default("17:00")
+  provinceCode            String?
+  provinceName            String?
+  warehouseRole           WarehouseRole?
+  dockingTimeSec          Int                    @default(0)
+  maxVehiclePayloadKg     Float?
+  maxVehicleLengthCm      Float?
+  hasForklift             Boolean?
+  operatingWindows        Json?
+  handlingSecPerTon       Int                    @default(0)
+  handlingSecPerPackage   Int                    @default(0)
   capabilities            Json?
   totalHoldingSlots       Int                    @default(0)
   availableHoldingSlots   Int                    @default(0)
@@ -1244,12 +1292,16 @@ model Location {
   sourceTransferShipments TransferShipment[]     @relation("SourceTransferShipments")
   destTransferShipments   TransferShipment[]     @relation("DestTransferShipments")
   depotVehicles           Vehicle[]              @relation("VehicleHomeDepots")
+  endRouteVehicles        Vehicle[]              @relation("VehicleEndDepots")
+  homeDrivers             Driver[]               @relation("DriverHomeLocations")
+  orderStops              OrderStop[]            @relation("OrderStopLocations")
   maxDeliveryDistanceKm   Int?                   @default(100)
   createdAt               DateTime               @default(now()) @db.Timestamptz(3)
   updatedAt               DateTime               @updatedAt @db.Timestamptz(3)
 
   @@index([type, active])
   @@index([managingBranchId])
+  @@index([provinceCode])
   @@map("locations")
 }
 
@@ -1803,4 +1855,20 @@ model LoadRestrictionZone {
 
   @@index([branchId, active])
   @@map("load_restriction_zones")
+}
+
+model TollCorridor {
+  id               String   @id @default(uuid())
+  fromProvinceCode String
+  toProvinceCode   String
+  highwayName      String?
+  baseTollVnd      Int      @default(0)
+  distanceHintKm   Float?
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([fromProvinceCode, toProvinceCode])
+  @@index([active])
+  @@map("toll_corridors")
 }

@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsEnum,
   IsOptional,
   IsString,
@@ -26,6 +27,14 @@ export class UpdateVehicleDto {
   @IsOptional()
   @IsUUID()
   homeDepotLocationId?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  returnToDepot?: boolean;
+
+  @IsOptional()
+  @IsUUID()
+  endDepotLocationId?: string | null;
 
   @IsOptional()
   @IsEnum(VehicleStatus)

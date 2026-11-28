@@ -133,6 +133,20 @@ export class OrdersService {
             noTopLoadRequested: pkg.noTopLoadRequested ?? previous.noTopLoadRequested,
             maxTopLoadG: pkg.maxTopLoadG === undefined ? previous.maxTopLoadG : pkg.maxTopLoadG,
             allowedOrientations: preservedOrientations,
+            requiredTemperature:
+              pkg.requiredTemperature === undefined
+                ? previous.requiredTemperature
+                : pkg.requiredTemperature,
+            cargoGroup:
+              pkg.cargoGroup === undefined ? previous.cargoGroup : pkg.cargoGroup,
+            incompatibleCargoGroups:
+              pkg.incompatibleCargoGroups === undefined
+                ? previous.incompatibleCargoGroups
+                : pkg.incompatibleCargoGroups,
+            requiresLiftEquipment:
+              pkg.requiresLiftEquipment === undefined
+                ? previous.requiresLiftEquipment
+                : pkg.requiresLiftEquipment,
           };
         }) })),
       };
@@ -153,7 +167,7 @@ export class OrdersService {
       const order = await this.lockedOrder(tx, id, user, dto.version);
       if (order.status !== 'DRAFT') throw new ConflictException({ code: 'ORDER_NOT_DRAFT', message: 'Chỉ xác nhận đơn nháp' });
       assertPackageManifest(order);
-      validateOrderInput({ ...order, notes: order.notes ?? undefined, stops: order.stops.map(s => ({ ...s, type: s.type === 'PICKUP' ? 'PICKUP' : 'DELIVERY', windowStart: s.windowStart?.toISOString(), windowEnd: s.windowEnd?.toISOString() })), items: order.items.map(i => ({ ...i, sku: i.sku ?? undefined, packages: i.packages.map(p => ({ ...p, weightG: p.weightG.toString(), allowedOrientations: normalizeAllowedOrientations(p.allowedOrientations) })) })) }, true);
+      validateOrderInput({ ...order, notes: order.notes ?? undefined, stops: order.stops.map(s => ({ ...s, locationId: s.locationId ?? undefined, type: s.type === 'PICKUP' ? 'PICKUP' : 'DELIVERY', windowStart: s.windowStart?.toISOString(), windowEnd: s.windowEnd?.toISOString() })), items: order.items.map(i => ({ ...i, sku: i.sku ?? undefined, packages: i.packages.map(p => ({ ...p, weightG: p.weightG.toString(), allowedOrientations: normalizeAllowedOrientations(p.allowedOrientations) })) })) }, true);
       await this.access.branch(user, 'orders.write', order.branchId, tx);
       await this.access.customer(user, order.customerId, order.branchId, tx);
       const charge = order.charges?.[0];
@@ -187,9 +201,19 @@ export class OrdersService {
     if (old.packageDataStatus !== 'COMPLETE' && old.items.some(i => !dto.items.some(n => n.id === i.id))) orderFieldError('items', 'Đối soát phải giữ các dòng hàng cũ để lưu căn cứ');
   }
   private async writeContents(tx: Prisma.TransactionClient, orderId: string, dto: CreateOrderDto, status: PackageStatus, old?: OrderRecord) {
+    const requestedLocationIds = [...new Set(dto.stops.map(s => s.locationId).filter((id): id is string => Boolean(id)))];
+    if (requestedLocationIds.length > 0) {
+      const validLocations = await tx.location.findMany({
+        where: { id: { in: requestedLocationIds }, active: true },
+        select: { id: true },
+      });
+      if (validLocations.length !== requestedLocationIds.length) {
+        orderFieldError('stops', 'Kho/địa điểm tham chiếu không tồn tại hoặc đã ngừng hoạt động');
+      }
+    }
     for (const stop of dto.stops) {
       const { id, ...input } = stop;
-      const data = { ...input, orderId, sequence: stop.type === 'PICKUP' ? 1 : 2, windowBasis: 'SERVICE_START', windowStart: stop.windowStart ? new Date(stop.windowStart) : null, windowEnd: stop.windowEnd ? new Date(stop.windowEnd) : null };
+      const data = { ...input, locationId: stop.locationId ?? null, orderId, sequence: stop.type === 'PICKUP' ? 1 : 2, windowBasis: 'SERVICE_START', windowStart: stop.windowStart ? new Date(stop.windowStart) : null, windowEnd: stop.windowEnd ? new Date(stop.windowEnd) : null };
       if (id) await tx.orderStop.update({ where: { id }, data });
       else await tx.orderStop.create({ data });
     }
@@ -210,11 +234,19 @@ export class OrdersService {
           cargoKind === 'STANDARD' && !noTopLoadRequested
             ? (p.allowUpperTier ?? true)
             : false;
+        const normalizedCargoGroup = p.cargoGroup?.trim() ? p.cargoGroup.trim().toUpperCase() : null;
+        const normalizedIncompatibleGroups = Array.isArray(p.incompatibleCargoGroups)
+          ? [...new Set(p.incompatibleCargoGroups.map(g => g.trim().toUpperCase()).filter(Boolean))]
+          : [];
         const data = {
           lengthMm: p.lengthMm, widthMm: p.widthMm, heightMm: p.heightMm, weightG: BigInt(p.weightG),
           cargoKind, allowUpperTier,
           noTopLoadRequested, maxTopLoadG: p.maxTopLoadG ?? null,
           allowedOrientations: normalizedOrientations === null ? Prisma.DbNull : normalizedOrientations,
+          requiredTemperature: p.requiredTemperature ?? null,
+          cargoGroup: normalizedCargoGroup,
+          incompatibleCargoGroups: normalizedIncompatibleGroups,
+          requiresLiftEquipment: Boolean(p.requiresLiftEquipment),
           measurementSource: 'USER_DECLARED' as const, status,
         };
         if (p.id) await tx.package.update({ where: { id: p.id }, data: { ...data, version: { increment: 1 } } });

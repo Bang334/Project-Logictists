@@ -1,16 +1,21 @@
-import type { CargoKind } from '@prisma/client';
+import type { CargoKind, CargoTemperature, TemperatureMode } from '@prisma/client';
 import { PackageMeasurements, packageTotals } from '../orders/package-measurements';
 import {
   FloorOrientation,
   isFloorRotationLocked,
   normalizeAllowedOrientations,
 } from '../orders/package-orientations';
+import type { InterprovincialLocationPayload } from './interprovincial-policy';
 export type PhysicalPackageLine = {
   id: string; orderId: string; description: string; quantity: number;
   packages: Array<PackageMeasurements & {
     id: string; orderItemId: string | null; cargoKind?: CargoKind;
     allowUpperTier?: boolean; noTopLoadRequested?: boolean; maxTopLoadG?: number | null;
     allowedOrientations?: unknown;
+    requiredTemperature?: CargoTemperature | null;
+    cargoGroup?: string | null;
+    incompatibleCargoGroups?: string[] | null;
+    requiresLiftEquipment?: boolean;
   }>;
 };
 export type OptimizerCargoUnit = {
@@ -29,6 +34,10 @@ export type OptimizerCargoUnit = {
   allow_upper_tier?: boolean;
   no_top_load_requested?: boolean;
   max_top_load_g?: number | null;
+  required_temperature?: CargoTemperature | null;
+  cargo_group?: string | null;
+  incompatible_cargo_groups?: string[];
+  requires_lift_equipment?: boolean;
 };
 /** Only persisted packages. Compatibility units are converted once at this boundary. */
 export function packagesToCargoUnits(items: PhysicalPackageLine[], customerId?: string): OptimizerCargoUnit[] {
@@ -42,6 +51,10 @@ export function packagesToCargoUnits(items: PhysicalPackageLine[], customerId?: 
       seen.add(p.id);
       const allowedOrientations = normalizeAllowedOrientations(p.allowedOrientations);
       const canRotate = !isFloorRotationLocked(allowedOrientations);
+      const normalizedGroup = p.cargoGroup?.trim() ? p.cargoGroup.trim().toUpperCase() : undefined;
+      const normalizedIncompatible = Array.isArray(p.incompatibleCargoGroups)
+        ? [...new Set(p.incompatibleCargoGroups.map(g => g.trim().toUpperCase()).filter(Boolean))]
+        : [];
       return {
         id: p.id, order_id: item.orderId, order_item_id: item.id, description: item.description,
         ...(customerId ? { customer_id: customerId } : {}),
@@ -57,6 +70,12 @@ export function packagesToCargoUnits(items: PhysicalPackageLine[], customerId?: 
           no_top_load_requested: p.noTopLoadRequested ?? false,
           max_top_load_g: p.maxTopLoadG ?? null,
         } : {}),
+        ...(p.requiredTemperature ? { required_temperature: p.requiredTemperature } : {}),
+        ...(normalizedGroup ? { cargo_group: normalizedGroup } : {}),
+        ...(normalizedIncompatible.length > 0
+          ? { incompatible_cargo_groups: normalizedIncompatible }
+          : {}),
+        ...(p.requiresLiftEquipment ? { requires_lift_equipment: true } : {}),
       };
     });
   });
@@ -69,9 +88,11 @@ export type OptimizerFleetVehicle = {
   width_cm: number;
   height_cm: number;
   payload_limit_kg: number;
+  temperature_mode?: TemperatureMode;
+  has_tail_lift?: boolean;
 };
 
-export type OptimizerLocation = {
+export type OptimizerLocation = InterprovincialLocationPayload & {
   id: string;
   source_location_id?: string;
   name: string;
@@ -94,10 +115,45 @@ export type OptimizerOrder = {
   service_time_sec: number;
 };
 
+function isTemperatureCompatible(
+  requiredTemperature: CargoTemperature | null | undefined,
+  vehicleMode: TemperatureMode | undefined,
+): boolean {
+  if (!requiredTemperature || !vehicleMode) return true;
+  if (requiredTemperature === 'FROZEN') return vehicleMode === 'FROZEN';
+  if (requiredTemperature === 'CHILLED') return vehicleMode === 'CHILLED';
+  if (requiredTemperature === 'DRY') return vehicleMode === 'DRY' || vehicleMode === 'ISOTHERMAL';
+  return true;
+}
+
+function itemsHaveCompatibilityConflict(cargo: OptimizerCargoUnit[]): boolean {
+  for (let i = 0; i < cargo.length; i++) {
+    const a = cargo[i];
+    const groupA = a.cargo_group?.trim().toUpperCase();
+    const incompatA = new Set((a.incompatible_cargo_groups ?? []).map((g) => g.trim().toUpperCase()));
+    const tempA = a.required_temperature ?? null;
+    for (let j = i + 1; j < cargo.length; j++) {
+      const b = cargo[j];
+      const groupB = b.cargo_group?.trim().toUpperCase();
+      const incompatB = new Set((b.incompatible_cargo_groups ?? []).map((g) => g.trim().toUpperCase()));
+      if ((groupA && incompatB.has(groupA)) || (groupB && incompatA.has(groupB))) {
+        return true;
+      }
+      if (tempA && b.required_temperature && tempA !== b.required_temperature) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 function cargoFitsVehicle(
   cargo: OptimizerCargoUnit,
   vehicle: OptimizerFleetVehicle,
 ): boolean {
+  if (!isTemperatureCompatible(cargo.required_temperature, vehicle.temperature_mode)) {
+    return false;
+  }
   if (cargo.weight_kg > vehicle.payload_limit_kg) return false;
   if (cargo.height_cm > vehicle.height_cm) return false;
   const orientations = cargo.can_rotate
@@ -311,6 +367,7 @@ export function cargoSetFitsVehicle(
   vehicle: OptimizerFleetVehicle,
 ): boolean {
   return (
+    !itemsHaveCompatibilityConflict(cargo) &&
     cargo.every((item) => cargoFitsVehicle(item, vehicle)) &&
     cargo.reduce((total, item) => total + item.weight_kg, 0) <=
       vehicle.payload_limit_kg &&
