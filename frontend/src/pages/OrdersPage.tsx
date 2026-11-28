@@ -197,7 +197,10 @@ const OrdersPage: React.FC = () => {
     <Table<Order> rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1000 }} locale={{ emptyText: 'Chưa có đơn phù hợp' }} pagination={{ current: page, pageSize, total, showSizeChanger: true, onChange: (p, size) => { setPage(p); setPageSize(size); } }} columns={[
       { title: 'Mã đơn', dataIndex: 'orderNumber', width: 240, render: (v: string) => <Typography.Text style={{ overflowWrap: 'anywhere' }}>{v}</Typography.Text> },
       { title: 'Khách / Chi nhánh', render: (_, o) => <>{o.customer.name}<br />{o.branch?.name}</> },
-      { title: 'Trạng thái', render: (_, o) => <><Tag>{o.status}</Tag>{o.packageDataStatus === 'LEGACY_REVIEW' && <Tag color="orange">Cần đối soát kiện</Tag>}</> },
+      { title: 'Trạng thái', render: (_, o) => {
+        const custodyHubs = Array.from(new Map(o.items.flatMap(i => i.packages.filter(p => p.status === 'READY' && p.custodyLocation).map(p => [p.custodyLocation!.id, p.custodyLocation!]))).values());
+        return <><Tag>{o.status}</Tag>{o.packageDataStatus === 'LEGACY_REVIEW' && <Tag color="orange">Cần đối soát kiện</Tag>}{custodyHubs.map(hub => <Tag key={hub.id} color="cyan">Giữ tại kho {hub.name}</Tag>)}</>;
+      } },
       { title: 'Tổng đã lưu', render: (_, o) => <>{o.totalPackages} kiện<br />{o.totalWeightKg} kg · {o.totalVolumeM3} m³</> },
       { title: 'Thao tác', render: (_, o) => <Space wrap><Button onClick={() => void ordersApi.getOne(o.id).then(setDetail).catch(e => message.error(apiErrorMessage(e)))}>Chi tiết</Button><Button disabled={!canEdit(o)} onClick={() => void beginEdit(o)}>Sửa</Button>{o.status === 'DRAFT' && <Button disabled={!can('orders.write') || o.packageDataStatus !== 'COMPLETE'} loading={saving} onClick={() => requestConfirmation(o)}>Xác nhận</Button>}</Space> },
     ]} />

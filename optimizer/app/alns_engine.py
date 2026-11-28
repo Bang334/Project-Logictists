@@ -24,6 +24,7 @@ from .interprovincial import (
     is_driver_compatible_with_vehicle,
     is_order_compatible_with_vehicle_and_warehouses,
     location_identity,
+    resolve_rest_policy_limits,
     resolve_vehicle_end_location,
     resolve_vehicle_end_node_index,
     route_stops_have_cargo_conflict,
@@ -53,7 +54,7 @@ from .models import (
     can_driver_drive_vehicle,
 )
 from .planning_objective import calendar_salary_for_span, operational_late_penalty_for_stops
-from .packing_rules import resolve_can_rotate
+from .packing_rules import calculate_route_weight_balance_penalty_vnd, resolve_can_rotate
 from .route_costing import (
     calculate_driver_cost,
     calculate_late_delivery_penalty,
@@ -63,6 +64,7 @@ from .request_preprocessor import split_infeasible_orders_across_fleet
 from .hybrid_alns.packing_checker import bounded_spatial_fallback
 from .spatial_validator import SpatialValidator
 from .stacking import (
+    enforce_spatial_weight_balance_if_needed,
     fast_validate_stacked_route,
     sync_route_stacking_unloads,
     validate_stop_actions,
@@ -337,7 +339,11 @@ class ALNSFleetOptimizer:
         valid, _ = self.checkers[v_idx].validate_route_stops(cand_stops, self.cargo_by_id)
         if not valid and getattr(self, "_allow_layout_search", True):
             valid = bounded_spatial_fallback(
-                v, cand_stops, self.cargo_by_id, demo_stacking=self.request.demo_stacking
+                v,
+                cand_stops,
+                self.cargo_by_id,
+                demo_stacking=self.request.demo_stacking,
+                cost_policy=self.policy,
             )
         self._packing_cache[cache_key] = valid
         return valid
@@ -814,11 +820,14 @@ class ALNSFleetOptimizer:
             if max_time_seconds is not None
             else {}
         )
-        return validate_stop_actions(
+        res = validate_stop_actions(
             self.request.demo_stacking,
             self.vehicles[vehicle_index],
             actions,
             **validator_kwargs,
+        )
+        return enforce_spatial_weight_balance_if_needed(
+            self.request.demo_stacking, res, cost_policy=self.policy
         )
 
     @staticmethod
@@ -1065,6 +1074,24 @@ class ALNSFleetOptimizer:
             list(timeline.rest_breaks) if timeline is not None else (),
             getattr(self.policy, "driving_rest_policy", None),
         )
+        step_balances = [
+            st.weight_balance
+            for st in (spatial_res.step_states if spatial_res is not None else ())
+            if getattr(st, "weight_balance", None) is not None
+        ]
+        weight_balance_penalty_vnd = calculate_route_weight_balance_penalty_vnd(
+            step_balances,
+            self.policy,
+            getattr(self.request, "demo_stacking", None),
+        )
+        total_driving_sec = (
+            timeline.total_driving_sec
+            if timeline is not None
+            else (
+                sum(int(getattr(st, "travel_time_sec", 0) or 0) for st in formatted_stops)
+                + int(return_travel_sec or 0)
+            )
+        )
         cost_bd = RouteCostBreakdown(
             base_fuel_cost_vnd=base_fuel,
             load_fuel_surcharge_vnd=load_fuel,
@@ -1078,6 +1105,7 @@ class ALNSFleetOptimizer:
             driver_trip_pay_vnd=0,
             toll_cost_vnd=toll_cost_vnd,
             overnight_allowance_vnd=overnight_allowance_vnd,
+            weight_balance_penalty_vnd=weight_balance_penalty_vnd,
             total_cost_vnd=(
                 fuel_cost
                 + v.fixed_operating_cost_vnd
@@ -1085,6 +1113,7 @@ class ALNSFleetOptimizer:
                 + late_penalty
                 + toll_cost_vnd
                 + overnight_allowance_vnd
+                + weight_balance_penalty_vnd
             ),
         )
         end_location = resolve_vehicle_end_location(v, formatted_stops, order_by_id)
@@ -1107,6 +1136,7 @@ class ALNSFleetOptimizer:
             mandatory_rest_sec=(
                 timeline.mandatory_rest_sec if timeline is not None else 0
             ),
+            total_driving_sec=total_driving_sec,
             rest_breaks=list(timeline.rest_breaks) if timeline is not None else [],
             province_hops=list(timeline.province_hops) if timeline is not None else [],
             depot=v.depot,
@@ -1463,16 +1493,8 @@ class ALNSFleetOptimizer:
                 if empty_v_idx in used_v_indices or not self._vehicle_has_compatible_driver(v):
                     continue
                 phys_id = v.source_vehicle_id or v.id
-                rest_gap = max(
-                    0,
-                    int(
-                        getattr(
-                            getattr(self.policy, "driving_rest_policy", None),
-                            "min_inter_trip_rest_sec",
-                            0,
-                        )
-                        or 0
-                    ),
+                rest_gap, _ = resolve_rest_policy_limits(
+                    getattr(self.policy, "driving_rest_policy", None)
                 )
                 if any(
                     (
@@ -1622,18 +1644,11 @@ class ALNSFleetOptimizer:
 
         # Phòng thủ trước split_groups: loại bỏ tuyến trùng lịch xe vật lý xuyên ngày / chưa đủ nghỉ giữa 2 chuyến
         if len(optimized_routes) > 1:
-            rest_gap = max(
-                0,
-                int(
-                    getattr(
-                        getattr(self.policy, "driving_rest_policy", None),
-                        "min_inter_trip_rest_sec",
-                        0,
-                    )
-                    or 0
-                ),
+            rest_gap, max_weekly_driving = resolve_rest_policy_limits(
+                getattr(self.policy, "driving_rest_policy", None)
             )
             vehicle_by_id_map = {v.id: v for v in self.vehicles}
+            driver_by_id_map = {d.id: d for d in self.request.drivers}
             accepted_routes: List[OptimizedRoute] = []
             dropped_for_overlap = False
             for r in sorted(
@@ -1644,6 +1659,8 @@ class ALNSFleetOptimizer:
                     accepted_routes + [r],
                     vehicle_by_id_map,
                     min_inter_trip_rest_sec=rest_gap,
+                    max_weekly_driving_sec=max_weekly_driving,
+                    driver_by_id=driver_by_id_map,
                 ):
                     dropped_for_overlap = True
                     for st in r.stops:

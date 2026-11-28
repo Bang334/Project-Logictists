@@ -85,6 +85,7 @@ function makeCompanyRow(overrides: Record<string, unknown> = {}) {
     defaultSearchBudgetSeconds: 10,
     maxOptimizationTimeSeconds: 120,
     hybridSeedCount: null,
+    dispatchPreparationMinutes: 20,
     unassignedOrderPenaltyVnd: BigInt(1_000_000_000),
     maxRoutesPerDay: null,
     demoAllowOverride: true,
@@ -164,6 +165,7 @@ describe('SettingsService & TMS DB Policy Integration', () => {
     // Must stay null (unlimited) instead of inheriting 5 from company
     expect(effective.optimization.maxRoutesPerDay).toBeNull();
     expect(effective.optimization.hybridSeedCount).toBe(3);
+    expect(effective.optimization.dispatchPreparationMinutes).toBe(20);
     expect(effective.optimization.demoAllowOverride).toBe(false);
     expect(effective.costPenalty.fuelPricePerLiter).toBe(23_500);
   });

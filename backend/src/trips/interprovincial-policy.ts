@@ -1,8 +1,8 @@
 import { BadRequestException } from '@nestjs/common';
 
 export type WarehouseRoleCode = 'HUB' | 'WAREHOUSE' | 'TRANSIT';
-export type TemperatureModeCode = 'DRY' | 'CHILLED' | 'FROZEN' | 'ISOTHERMAL';
-export type CargoTemperatureCode = 'DRY' | 'CHILLED' | 'FROZEN';
+export type TemperatureModeCode = 'DRY' | 'CHILLED' | 'FROZEN' | 'ISOTHERMAL' | 'HAZMAT';
+export type CargoTemperatureCode = 'DRY' | 'CHILLED' | 'FROZEN' | 'HAZMAT';
 
 export interface WarehouseOperatingWindowPayload {
   start_sec: number;
@@ -10,6 +10,7 @@ export interface WarehouseOperatingWindowPayload {
 }
 
 export interface InterprovincialLocationPayload {
+  warehouse_location_id?: string;
   province_code?: string;
   province_name?: string;
   warehouse_role?: WarehouseRoleCode;
@@ -17,6 +18,7 @@ export interface InterprovincialLocationPayload {
   max_vehicle_payload_kg?: number;
   max_vehicle_length_cm?: number;
   has_forklift?: boolean;
+  allows_hazmat?: boolean;
   operating_windows?: WarehouseOperatingWindowPayload[];
   handling_sec_per_ton?: number;
   handling_sec_per_package?: number;
@@ -34,6 +36,7 @@ export interface LocationConstraintSource {
   operatingWindows?: unknown;
   handlingSecPerTon?: number | null;
   handlingSecPerPackage?: number | null;
+  capabilities?: unknown;
 }
 
 export interface DrivingRestPolicyPayload {
@@ -66,6 +69,21 @@ export interface TollCorridorRecord {
   baseTollVnd: number;
   active?: boolean;
 }
+
+export const DEFAULT_VN_2024_DRIVING_REST_POLICY: DrivingRestPolicyPayload = {
+  policy_code: 'VN_TTATGTDB_2024',
+  effective_from: '2025-01-01',
+  jurisdiction: 'VN',
+  enabled: true,
+  max_continuous_driving_sec: 4 * 3600,
+  short_rest_duration_sec: 15 * 60,
+  max_daily_driving_sec: 10 * 3600,
+  daily_rest_duration_sec: 8 * 3600,
+  max_weekly_driving_sec: 48 * 3600,
+  min_inter_trip_rest_sec: 0,
+  overnight_allowance_vnd: 0,
+  rest_allowance_during_service: true,
+};
 
 const CLOCK_REGEX = /^(\d{2}):(\d{2})$/;
 const VALID_WAREHOUSE_ROLES = new Set<string>(['HUB', 'WAREHOUSE', 'TRANSIT']);
@@ -156,6 +174,17 @@ export function extractLocationConstraintFields(
   if (typeof location.hasForklift === 'boolean') {
     payload.has_forklift = location.hasForklift;
   }
+  if (
+    location.capabilities &&
+    typeof location.capabilities === 'object' &&
+    !Array.isArray(location.capabilities)
+  ) {
+    const caps = location.capabilities as Record<string, unknown>;
+    const rawAllowsHazmat = caps.allowsHazmat ?? caps.allows_hazmat;
+    if (typeof rawAllowsHazmat === 'boolean') {
+      payload.allows_hazmat = rawAllowsHazmat;
+    }
+  }
   const operatingWindows = parseOperatingWindows(location.operatingWindows);
   if (operatingWindows.length > 0) {
     payload.operating_windows = operatingWindows;
@@ -220,9 +249,11 @@ export function parseWorkPolicyToDrivingRest(
   );
   const rawWeekly = raw.maxWeeklyDrivingSec ?? raw.max_weekly_driving_sec;
   const maxWeekly =
-    typeof rawWeekly === 'number' && Number.isInteger(rawWeekly) && rawWeekly > 0
-      ? rawWeekly
-      : undefined;
+    rawWeekly === null
+      ? undefined
+      : typeof rawWeekly === 'number' && Number.isInteger(rawWeekly) && rawWeekly > 0
+        ? rawWeekly
+        : 48 * 3600;
   const minInterTripRest = readInt(
     ['minInterTripRestSec', 'min_inter_trip_rest_sec'],
     0,
@@ -359,4 +390,53 @@ export function findMatchingWarehouseLocation<T extends LocationConstraintSource
     }
   }
   return null;
+}
+
+export function startOfWeekInTimeZone(epoch: Date, timeZone = 'Asia/Ho_Chi_Minh'): Date {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(epoch);
+    const get = (type: string) =>
+      Number(parts.find((part) => part.type === type)?.value ?? 0);
+    const localUtcMs = Date.UTC(
+      get('year'),
+      get('month') - 1,
+      get('day'),
+      get('hour'),
+      get('minute'),
+      get('second'),
+    );
+    const tzOffsetMs = localUtcMs - epoch.getTime();
+    const localDate = new Date(localUtcMs);
+    const mondayDeltaDays = (localDate.getUTCDay() + 6) % 7;
+    const localMondayMidnightMs = Date.UTC(
+      localDate.getUTCFullYear(),
+      localDate.getUTCMonth(),
+      localDate.getUTCDate() - mondayDeltaDays,
+      0,
+      0,
+      0,
+    );
+    return new Date(localMondayMidnightMs - tzOffsetMs);
+  } catch {
+    const mondayDeltaDays = (epoch.getUTCDay() + 6) % 7;
+    return new Date(
+      Date.UTC(
+        epoch.getUTCFullYear(),
+        epoch.getUTCMonth(),
+        epoch.getUTCDate() - mondayDeltaDays,
+        0,
+        0,
+        0,
+      ),
+    );
+  }
 }

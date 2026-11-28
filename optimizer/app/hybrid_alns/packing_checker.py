@@ -1,11 +1,22 @@
 """Fast conservative 2D packing pre-check ported from algo_lab."""
 
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 from .models import CargoItem, FleetVehicle, PlacedItem, ScheduledStop
 from ..models import CargoItem as ProductionCargo, DemoStackingPolicy, FleetVehicle as ProductionVehicle
-from ..models import ScheduledStop as ProductionStop, StopAction, VehicleFloor
-from ..packing_rules import resolve_can_rotate, score_candidate_balance_and_fragility
-from ..stacking import fast_validate_stacked_route, validate_stop_actions
+from ..models import ScheduledStop as ProductionStop, StopAction, VehicleFloor, WeightBalanceMetrics
+from ..packing_rules import (
+    build_weight_balance_metrics,
+    resolve_can_rotate,
+    resolve_weight_balance_thresholds,
+    score_candidate_balance_and_fragility,
+    weight_balance_exceeds_limit,
+)
+from ..stacking import (
+    enforce_spatial_weight_balance_if_needed,
+    fast_validate_stacked_route,
+    fast_validate_stacked_route_with_balances,
+    validate_stop_actions,
+)
 
 
 def bounded_spatial_fallback(
@@ -13,6 +24,9 @@ def bounded_spatial_fallback(
     stops: Sequence[Union[ScheduledStop, ProductionStop]],
     cargo: Mapping[str, Union[CargoItem, ProductionCargo]],
     demo_stacking: Optional[DemoStackingPolicy] = None,
+    *,
+    cost_policy: Any = None,
+    step_balances_out: Optional[List[WeightBalanceMetrics]] = None,
 ) -> bool:
     """Recover small greedy false negatives without accepting an unchecked plan.
 
@@ -42,13 +56,21 @@ def bounded_spatial_fallback(
             max_top_load_g=getattr(cargo[cid], "max_top_load_g", None),
         ) for cid in stop.items_loaded],
         items_to_unload=list(stop.items_unloaded)) for i,stop in enumerate(stops)]
-    return validate_stop_actions(
+    res = validate_stop_actions(
         demo_stacking,
         vehicle,
         actions,
         max_search_nodes=256,
         max_time_seconds=0.02 if demo_stacking is not None else 0.01,
-    ).is_valid
+    )
+    res = enforce_spatial_weight_balance_if_needed(
+        demo_stacking, res, cost_policy=cost_policy
+    )
+    if res.is_valid and step_balances_out is not None:
+        step_balances_out[:] = [
+            st.weight_balance for st in res.step_states if st.weight_balance is not None
+        ]
+    return res.is_valid
 
 
 def is_box_overlap(
@@ -95,12 +117,36 @@ class FastPackingChecker:
         *,
         allow_layout_search: bool = True,
         demo_stacking: Optional[DemoStackingPolicy] = None,
+        cost_policy: Any = None,
     ):
         self.vehicle = vehicle
         self.allow_layout_search = allow_layout_search
         self.demo_stacking = demo_stacking
+        self.cost_policy = cost_policy
         self.L = vehicle.length_cm
         self.W = vehicle.width_cm
+        (
+            self._enforce_wb,
+            self._max_lat_wb,
+            self._max_lon_wb,
+        ) = resolve_weight_balance_thresholds(demo_stacking, cost_policy)
+        self._effective_demo_stacking = demo_stacking
+        if (
+            demo_stacking is not None
+            and hasattr(demo_stacking, "model_copy")
+            and (
+                self._enforce_wb != bool(getattr(demo_stacking, "enforce_weight_balance", False))
+                or self._max_lat_wb != getattr(demo_stacking, "max_lateral_imbalance_percent", None)
+                or self._max_lon_wb != getattr(demo_stacking, "max_longitudinal_imbalance_percent", None)
+            )
+        ):
+            self._effective_demo_stacking = demo_stacking.model_copy(
+                update={
+                    "enforce_weight_balance": self._enforce_wb,
+                    "max_lateral_imbalance_percent": self._max_lat_wb,
+                    "max_longitudinal_imbalance_percent": self._max_lon_wb,
+                }
+            )
 
     def find_placement(
         self,
@@ -226,37 +272,90 @@ class FastPackingChecker:
     def validate_route_stops(
         self, stops: List[ScheduledStop], cargo_items_by_id: Dict[str, CargoItem],
     ) -> Tuple[bool, str]:
-        if self.demo_stacking is not None:
-            return fast_validate_stacked_route(
+        ok, reason, _ = self._validate_route_stops_impl(
+            stops, cargo_items_by_id, collect_balances=False
+        )
+        return ok, reason
+
+    def validate_route_stops_with_balances(
+        self, stops: List[ScheduledStop], cargo_items_by_id: Dict[str, CargoItem],
+    ) -> Tuple[bool, str, List[WeightBalanceMetrics]]:
+        return self._validate_route_stops_impl(
+            stops, cargo_items_by_id, collect_balances=True
+        )
+
+    def _validate_route_stops_impl(
+        self,
+        stops: List[ScheduledStop],
+        cargo_items_by_id: Dict[str, CargoItem],
+        *,
+        collect_balances: bool = False,
+    ) -> Tuple[bool, str, List[WeightBalanceMetrics]]:
+        if self._effective_demo_stacking is not None:
+            if collect_balances:
+                return fast_validate_stacked_route_with_balances(
+                    self.vehicle,
+                    stops,
+                    cargo_items_by_id,
+                    self._effective_demo_stacking,
+                    allow_layout_search=self.allow_layout_search,
+                    cost_policy=self.cost_policy,
+                )
+            ok, msg = fast_validate_stacked_route(
                 self.vehicle,
                 stops,
                 cargo_items_by_id,
-                self.demo_stacking,
+                self._effective_demo_stacking,
                 allow_layout_search=self.allow_layout_search,
             )
-        valid, reason = self._validate_greedy_route_stops(stops, cargo_items_by_id, strategy="default")
+            return ok, msg, []
+        step_balances: List[WeightBalanceMetrics] = []
+        valid, reason = self._validate_greedy_route_stops(
+            stops,
+            cargo_items_by_id,
+            strategy="default",
+            step_balances_out=step_balances if collect_balances else None,
+        )
         if valid:
-            return valid, reason
+            return valid, reason, step_balances
         order_count = len({s.order_id for s in stops if s.order_id})
         if order_count > 1:
             for strategy in ("lane_y_left", "lane_y_right"):
+                alt_balances: List[WeightBalanceMetrics] = []
                 alt_valid, alt_reason = self._validate_greedy_route_stops(
-                    stops, cargo_items_by_id, strategy=strategy
+                    stops,
+                    cargo_items_by_id,
+                    strategy=strategy,
+                    step_balances_out=alt_balances if collect_balances else None,
                 )
                 if alt_valid:
-                    return alt_valid, alt_reason
+                    return alt_valid, alt_reason, alt_balances
         if len(stops) <= 12 or self.allow_layout_search:
-            valid_dyn, dyn_reason = self._validate_dynamic_lifo_route_stops(stops, cargo_items_by_id)
+            dyn_balances: List[WeightBalanceMetrics] = []
+            valid_dyn, dyn_reason = self._validate_dynamic_lifo_route_stops(
+                stops,
+                cargo_items_by_id,
+                step_balances_out=dyn_balances if collect_balances else None,
+            )
             if valid_dyn:
-                return True, "Hợp lệ theo LIFO động"
-        if self.allow_layout_search and bounded_spatial_fallback(self.vehicle, stops, cargo_items_by_id):
-            return True, "Hợp lệ sau tìm kiếm bố trí có giới hạn"
-        return False, reason
+                return True, "Hợp lệ theo LIFO động", dyn_balances
+        fb_balances: List[WeightBalanceMetrics] = []
+        if self.allow_layout_search and bounded_spatial_fallback(
+            self.vehicle,
+            stops,
+            cargo_items_by_id,
+            cost_policy=self.cost_policy,
+            step_balances_out=fb_balances if collect_balances else None,
+        ):
+            return True, "Hợp lệ sau tìm kiếm bố trí có giới hạn", fb_balances
+        return False, reason, []
 
     def _validate_dynamic_lifo_route_stops(
         self,
         stops: List[ScheduledStop],
         cargo_items_by_id: Dict[str, CargoItem],
+        *,
+        step_balances_out: Optional[List[WeightBalanceMetrics]] = None,
     ) -> Tuple[bool, str]:
         placed_boxes: List[Dict] = []
         onboard_weight = 0.0
@@ -292,6 +391,36 @@ class FastPackingChecker:
                     item = cargo_items_by_id.get(target_box["id"])
                     if item:
                         onboard_weight = max(0.0, onboard_weight - item.weight_kg)
+
+            if placed_boxes and (self._enforce_wb or step_balances_out is not None):
+                wb = build_weight_balance_metrics(
+                    [
+                        PlacedItem(
+                            item_id=b["id"],
+                            order_id=b["order_id"],
+                            x=b["x"],
+                            y=b["y"],
+                            length_cm=b["l"],
+                            width_cm=b["w"],
+                            weight_kg=float(cargo_items_by_id[b["id"]].weight_kg)
+                            if b["id"] in cargo_items_by_id
+                            else 0.0,
+                        )
+                        for b in placed_boxes
+                    ],
+                    self.L,
+                    self.W,
+                )
+                if step_balances_out is not None:
+                    step_balances_out.append(wb)
+                if self._enforce_wb:
+                    violated = weight_balance_exceeds_limit(wb, self._max_lat_wb, self._max_lon_wb)
+                    if violated is not None:
+                        lat_pct, lon_pct = violated
+                        return (
+                            False,
+                            f"WEIGHT_BALANCE_EXCEEDED: Phân bổ tải trọng lệch tâm (ngang {lat_pct:.1f}%, dọc {lon_pct:.1f}%).",
+                        )
 
         if placed_boxes:
             return False, "Còn hàng chưa dỡ"
@@ -357,6 +486,7 @@ class FastPackingChecker:
         stops: List[ScheduledStop],
         cargo_items_by_id: Dict[str, CargoItem],
         strategy: str = "default",
+        step_balances_out: Optional[List[WeightBalanceMetrics]] = None,
     ) -> Tuple[bool, str]:
         current_placed: List[PlacedItem] = []
         loaded_item_ids = set()
@@ -442,6 +572,19 @@ class FastPackingChecker:
 
             else:
                 return False, f"Loại điểm dừng không hợp lệ: {stop.stop_type}"
+
+            if current_placed and (self._enforce_wb or step_balances_out is not None):
+                wb = build_weight_balance_metrics(current_placed, self.L, self.W)
+                if step_balances_out is not None:
+                    step_balances_out.append(wb)
+                if self._enforce_wb:
+                    violated = weight_balance_exceeds_limit(wb, self._max_lat_wb, self._max_lon_wb)
+                    if violated is not None:
+                        lat_pct, lon_pct = violated
+                        return (
+                            False,
+                            f"WEIGHT_BALANCE_EXCEEDED: Phân bổ tải trọng lệch tâm (ngang {lat_pct:.1f}%, dọc {lon_pct:.1f}%).",
+                        )
 
         if current_placed:
             remaining = ", ".join(p.item_id for p in current_placed[:5])

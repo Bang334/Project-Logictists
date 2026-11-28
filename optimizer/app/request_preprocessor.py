@@ -22,7 +22,11 @@ from .models import (
 )
 from .spatial_validator import SpatialValidator
 from .packing_rules import resolve_can_rotate
-from .stacking import effective_floor_capacity_cm2, validate_stop_actions
+from .stacking import (
+    effective_floor_capacity_cm2,
+    enforce_spatial_weight_balance_if_needed,
+    validate_stop_actions,
+)
 
 
 _GEOMETRY_TOLERANCE = 0.01
@@ -470,16 +474,20 @@ def split_orders_within_deadline(
                 items_to_unload=[item.id for item in items],
             ),
         ]
-        result = validate_stop_actions(
+        result = enforce_spatial_weight_balance_if_needed(
             request.demo_stacking,
-            vehicle,
-            stops,
-            max_search_nodes=2_500,
-            max_time_seconds=(
-                _MAX_LAYOUT_CHECK_SECONDS
-                if remaining is None
-                else min(_MAX_LAYOUT_CHECK_SECONDS, remaining)
+            validate_stop_actions(
+                request.demo_stacking,
+                vehicle,
+                stops,
+                max_search_nodes=2_500,
+                max_time_seconds=(
+                    _MAX_LAYOUT_CHECK_SECONDS
+                    if remaining is None
+                    else min(_MAX_LAYOUT_CHECK_SECONDS, remaining)
+                ),
             ),
+            cost_policy=request.policy,
         )
         # A search limit leaves feasibility unknown. It must neither force an
         # extra order trip nor count as a verified packing for a split bin.

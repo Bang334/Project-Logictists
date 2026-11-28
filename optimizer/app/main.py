@@ -18,6 +18,8 @@ from .models import (
     FleetOptimizationRequest,
     FleetOptimizationBatchResponse,
     FleetOptimizationResponse,
+    InProgressEvaluationRequest,
+    InProgressEvaluationResponse,
     OptimizationRequest,
     OptimizationResponse,
     VehicleFloor,
@@ -31,6 +33,7 @@ from .routing_solver import OrToolsRoutingSolver
 from .multi_start import MultiStartFleetOptimizer
 from .demo import router as demo_router
 from .stacking import DemoStacks
+from .inprogress_evaluator import evaluate_inprogress_trip
 
 app = FastAPI(
     title="TMS Optimization & Spatial Packing Engine",
@@ -76,6 +79,16 @@ def validate_spatial(request: ValidatePlanRequest):
         return validator.validate_plan(request.stops)
     stacks = DemoStacks(request.demo_stacking, [request.vehicle])
     return stacks.validate_stops(validator, request.stops)
+
+
+@app.post("/evaluate-inprogress-trip", response_model=InProgressEvaluationResponse)
+def evaluate_inprogress(request: InProgressEvaluationRequest):
+    """
+    Đánh giá tiếp tục chuyến đang chạy sau sự cố giao hàng (A1 + A2):
+    - Kiểm tra cản 3D / đè tầng / khung giờ cho các điểm đang chở trên xe.
+    - Kiểm tra các đơn chưa lấy xem còn đủ tải/thể tích 3D/giờ hay phải tách cho xe rảnh.
+    """
+    return evaluate_inprogress_trip(request)
 
 @app.post("/optimize", response_model=OptimizationResponse)
 def optimize(request: OptimizationRequest):

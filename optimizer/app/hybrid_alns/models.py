@@ -11,6 +11,7 @@ class LocationPoint:
     latitude: float = 0.0
     longitude: float = 0.0
     source_location_id: Optional[str] = None
+    warehouse_location_id: Optional[str] = None
     province_code: Optional[str] = None
     province_name: Optional[str] = None
     warehouse_role: Optional[str] = None
@@ -18,6 +19,7 @@ class LocationPoint:
     max_vehicle_payload_kg: Optional[float] = None
     max_vehicle_length_cm: Optional[float] = None
     has_forklift: Optional[bool] = None
+    allows_hazmat: Optional[bool] = None
     operating_windows: List[object] = field(default_factory=list)
     handling_sec_per_ton: int = 0
     handling_sec_per_package: int = 0
@@ -42,6 +44,7 @@ class CargoItem:
     required_temperature: Optional[str] = None
     cargo_group: Optional[str] = None
     incompatible_cargo_groups: List[str] = field(default_factory=list)
+    is_hazmat: bool = False
     requires_lift_equipment: bool = False
 
 
@@ -109,6 +112,7 @@ class FleetVehicle:
     vehicle_type: Optional[str] = None
     model: Optional[str] = None
     temperature_mode: str = "DRY"
+    allows_hazmat: bool = False
     has_tail_lift: bool = False
     toll_factor: float = 1.0
 
@@ -126,6 +130,7 @@ class DriverOption:
     home_location_id: Optional[str] = None
     home_province_code: Optional[str] = None
     strict_home_location: bool = False
+    initial_weekly_driving_sec: int = 0
 
 
 @dataclass
@@ -140,6 +145,10 @@ class CostPolicy:
     demo_stacking: Optional[object] = None
     driving_rest_policy: Optional[object] = None
     toll_matrix_vnd: Optional[List[List[float]]] = None
+    weight_balance_penalty_vnd_per_percent: int = 0
+    enforce_weight_balance: bool = False
+    max_lateral_imbalance_percent: Optional[float] = None
+    max_longitudinal_imbalance_percent: Optional[float] = None
 
 
 @dataclass
@@ -186,6 +195,7 @@ class RouteCostBreakdown:
     late_delivery_penalty_vnd: int = 0
     toll_cost_vnd: int = 0
     overnight_allowance_vnd: int = 0
+    weight_balance_penalty_vnd: int = 0
     total_cost_vnd: int = 0
 
 
@@ -197,6 +207,7 @@ class OptimizedRoute:
     total_distance_km: float
     total_duration_minutes: float
     cost_breakdown: RouteCostBreakdown
+    total_driving_sec: int = 0
 
 
 @dataclass

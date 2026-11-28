@@ -199,6 +199,7 @@ export class SettingsService {
             maxOptimizationTimeSeconds: nextOptimization.maxTimeSeconds,
             hybridSeedCount: nextOptimization.hybridSeedCount,
             earlyStopPatience: nextOptimization.earlyStopPatience,
+            dispatchPreparationMinutes: nextOptimization.dispatchPreparationMinutes,
             unassignedOrderPenaltyVnd: BigInt(Math.round(nextOptimization.unassignedOrderPenaltyVnd)),
             maxRoutesPerDay: nextOptimization.maxRoutesPerDay,
             demoAllowOverride: nextOptimization.demoAllowOverride,
@@ -355,6 +356,9 @@ export class SettingsService {
           maxRoutesPerDay: nextOverrideOptimization ? nextOptimization.maxRoutesPerDay : null,
           hybridSeedCount: nextOverrideOptimization ? nextOptimization.hybridSeedCount : null,
           earlyStopPatience: nextOverrideOptimization ? nextOptimization.earlyStopPatience : null,
+          dispatchPreparationMinutes: nextOverrideOptimization
+            ? nextOptimization.dispatchPreparationMinutes
+            : null,
           demoAllowOverride: nextOverrideOptimization ? nextOptimization.demoAllowOverride : null,
 
           overrideCostPenalty: nextOverrideCostPenalty,
@@ -531,6 +535,7 @@ export class SettingsService {
               maxOptimizationTimeSeconds: null,
               hybridSeedCount: null,
               earlyStopPatience: null,
+              dispatchPreparationMinutes: null,
               unassignedOrderPenaltyVnd: null,
               maxRoutesPerDay: null,
               demoAllowOverride: null,

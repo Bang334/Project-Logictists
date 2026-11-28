@@ -26,6 +26,24 @@ export function vehicleCapabilities(vehicle: VehicleWithType): VehicleCapabiliti
   return vehicle.vehicleTypeRecord;
 }
 
+export function vehicleTypeAllowsHazmat(type: {
+  temperatureMode?: string | null;
+  handlingCapabilities?: unknown;
+}): boolean {
+  if ((type.temperatureMode ?? '').toUpperCase() === 'HAZMAT') {
+    return true;
+  }
+  const raw = type.handlingCapabilities;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return false;
+  }
+  const record = raw as Record<string, unknown>;
+  if (record.allowsHazmat === true || record.allows_hazmat === true) {
+    return true;
+  }
+  return Array.isArray(record.modes) && record.modes.includes('HAZMAT');
+}
+
 /**
  * Keep the existing flat HTTP contract while VehicleType becomes the only
  * persistence source for shared capacity, geometry, fuel, and cost values.

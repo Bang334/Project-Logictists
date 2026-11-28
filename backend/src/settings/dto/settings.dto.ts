@@ -72,6 +72,12 @@ export class OptimizationSettingsInputDto {
   earlyStopPatience?: number;
 
   @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Max(240)
+  dispatchPreparationMinutes?: number;
+
+  @IsOptional()
   @IsNumber()
   @Min(1)
   @Max(1_000_000_000_000)

@@ -18,6 +18,7 @@ import {
   Spin,
   Alert,
   DatePicker,
+  Popconfirm,
   App as AntdApp,
 } from 'antd';
 import {
@@ -53,7 +54,7 @@ const { Title, Text } = Typography;
 const DispatchPage: React.FC = () => {
   const createCommandRef = useRef<{ payloadHash: string; key: string } | null>(null);
   const { message } = AntdApp.useApp();
-  const { can, branchId } = useAuth();
+  const { user, can, branchId, setBranchId } = useAuth();
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -246,7 +247,7 @@ const DispatchPage: React.FC = () => {
   };
 
   const handleCreateTrip = async () => {
-    if (!branchId) return message.warning('Hãy chọn chi nhánh làm việc trên thanh điều hướng');
+    if (!branchId) return message.warning('Vui lòng chọn chi nhánh điều phối');
     if (!selectedVehicleId) {
       return message.warning('Vui lòng chọn xe tải thực hiện chuyến đi');
     }
@@ -320,8 +321,27 @@ const DispatchPage: React.FC = () => {
     }
   };
 
+  const handleDetachUnpicked = async (trip: Trip, orderId: string) => {
+    try {
+      setSubmitting(true);
+      await tripsApi.detachUnpicked(trip.id, {
+        expectedVersion: trip.version,
+        orderIds: [orderId],
+        reason: 'Điều phối viên tách đơn chưa lấy cho xe rảnh',
+      });
+      message.success('Đã tách đơn chưa lấy về hàng chờ để bố trí xe rảnh!');
+      const updated = await tripsApi.getOne(trip.id);
+      setActiveTrip(updated.data);
+      await fetchData();
+    } catch (err: any) {
+      message.error(err.response?.data?.message || 'Không thể tách đơn chưa lấy');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleRunOptimization = async () => {
-    if (!branchId) return message.warning('Hãy chọn chi nhánh làm việc trên thanh điều hướng');
+    if (!branchId) return message.warning('Vui lòng chọn chi nhánh điều phối');
     if (!selectedVehicleId) {
       return message.warning('Vui lòng chọn xe tải để tối ưu tuyến');
     }
@@ -404,6 +424,23 @@ const DispatchPage: React.FC = () => {
   );
   const estimatedWeight = chosenOrders.reduce((sum, o) => sum + o.totalWeightKg, 0);
   const estimatedVolume = chosenOrders.reduce((sum, o) => sum + o.totalVolumeM3, 0);
+  const resolveEffectiveOrderStop = (
+    order: Order,
+    stop: Order['stops'][number],
+  ) => {
+    if (stop.type !== 'PICKUP') return stop;
+    const hub = order.items
+      ?.flatMap((i) => i.packages)
+      .find((p) => p.status === 'READY' && p.custodyLocation)?.custodyLocation;
+    if (!hub) return stop;
+    return {
+      ...stop,
+      address: `${hub.name} — ${hub.address}`,
+      latitude: hub.latitude,
+      longitude: hub.longitude,
+    };
+  };
+
   const selectedStopById = new Map<string, {
     id: string;
     type: 'PICKUP' | 'DELIVERY';
@@ -413,7 +450,10 @@ const DispatchPage: React.FC = () => {
     orderNumber: string;
   }>(
     chosenOrders.flatMap((order) =>
-      order.stops.map((stop) => ({ ...stop, orderNumber: order.orderNumber })),
+      order.stops.map((stop) => ({
+        ...resolveEffectiveOrderStop(order, stop),
+        orderNumber: order.orderNumber,
+      })),
     ).map((stop) => [stop.id, stop]),
   );
   if (editingTripId === activeTrip?.id) {
@@ -447,7 +487,9 @@ const DispatchPage: React.FC = () => {
 
     const token = import.meta.env.VITE_MAPBOX_TOKEN;
     const stopById = new Map(
-      chosenOrders.flatMap((order) => order.stops).map((stop) => [stop.id, stop]),
+      chosenOrders.flatMap((order) =>
+        order.stops.map((stop) => resolveEffectiveOrderStop(order, stop)),
+      ).map((stop) => [stop.id, stop]),
     );
     const coords: [number, number][] = [];
 
@@ -580,7 +622,11 @@ const DispatchPage: React.FC = () => {
           type: 'DEPOT',
         });
       }
-      const stopById = new Map(chosenOrders.flatMap((order) => order.stops).map((stop) => [stop.id, stop]));
+      const stopById = new Map(
+        chosenOrders.flatMap((order) =>
+          order.stops.map((stop) => resolveEffectiveOrderStop(order, stop)),
+        ).map((stop) => [stop.id, stop]),
+      );
       orderedStopIds.forEach((stopId, index) => {
         const stop = stopById.get(stopId);
         if (!stop) return;
@@ -683,7 +729,7 @@ const DispatchPage: React.FC = () => {
 
   return (
     <div className="tms-page">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: '20px' }}>
         <div>
           <Title level={4} style={{ margin: 0 }}>
             <CompassOutlined style={{ color: '#1d4ed8', marginRight: '8px' }} />
@@ -693,6 +739,19 @@ const DispatchPage: React.FC = () => {
             Chọn đơn ngay trên danh sách/bản đồ, sắp thứ tự điểm dừng, gán xe và tài xế trước khi phát hành
           </Text>
         </div>
+        {(user?.branches?.length ?? 0) > 0 && (
+          <Select
+            aria-label="Chọn chi nhánh điều phối thủ công"
+            placeholder="Chọn chi nhánh"
+            style={{ minWidth: 260 }}
+            value={branchId || 'ALL'}
+            onChange={(value) => setBranchId(value === 'ALL' ? undefined : value)}
+            options={[
+              { value: 'ALL', label: user?.companyScope ? 'Toàn công ty' : 'Các chi nhánh được cấp' },
+              ...(user?.branches || []).map((b) => ({ value: b.id, label: b.name })),
+            ]}
+          />
+        )}
       </div>
 
       <Row gutter={[20, 20]}>
@@ -833,6 +892,16 @@ const DispatchPage: React.FC = () => {
                           <span style={{ marginLeft: '8px', color: '#475569', fontSize: '12px' }}>
                             {o.customer.name}
                           </span>
+                          {(() => {
+                            const hub = o.items
+                              ?.flatMap((i) => i.packages)
+                              .find((p) => p.status === 'READY' && p.custodyLocation)?.custodyLocation;
+                            return hub ? (
+                              <Tag color="cyan" style={{ marginLeft: 8 }}>
+                                Lấy từ kho: {hub.name}
+                              </Tag>
+                            ) : null;
+                          })()}
                         </div>
                         <div style={{ fontSize: '11px', color: '#64748b' }}>
                           {o.totalPackages} kiện · {o.totalWeightKg} kg · {o.totalVolumeM3} m³ ({o.items.length} loại hàng)
@@ -1095,12 +1164,95 @@ const DispatchPage: React.FC = () => {
             <Alert
               type="warning"
               showIcon
-              message="Chờ điều phối"
-              description={retainedStops.map((stop) => (
-                <div key={stop.id}>
-                  {stop.address} · {stop.deliveryAttempts?.length} kiện còn trên xe
+              style={{ marginBottom: 16 }}
+              message="Có kiện giao chưa thành công đang giữ trên xe"
+              description={
+                <div>
+                  {retainedStops.map((stop) => (
+                    <div key={stop.id} style={{ marginBottom: 4 }}>
+                      <strong>{stop.address}</strong> · {stop.deliveryAttempts?.length} kiện còn trên xe
+                      {stop.deliveryAttempts?.[0]?.failureCategory && (
+                        <Tag color="orange" style={{ marginLeft: 8 }}>
+                          {stop.deliveryAttempts[0].failureCategory}
+                        </Tag>
+                      )}
+                      {stop.deliveryAttempts?.[0]?.failureReason && (
+                        <span style={{ color: '#475569', marginLeft: 6 }}>
+                          ({stop.deliveryAttempts[0].failureReason})
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                  {(() => {
+                    const skippedStops = activeTrip?.stops.filter((s) => s.status === 'SKIPPED') ?? [];
+                    const hubReturnStop = activeTrip?.stops.find(
+                      (s) => s.stopType === 'DEPOT_END' && s.hubLocation,
+                    );
+                    const unpickedPending = activeTrip?.stops.filter(
+                      (s) =>
+                        s.stopType === 'PICKUP' &&
+                        s.status === 'PENDING' &&
+                        s.tasks.some((t) => (t.actualQuantity ?? 0) === 0),
+                    ) ?? [];
+                    const pendingOrdersMap = new Map<string, { id: string; orderNumber: string }>();
+                    unpickedPending.forEach((s) =>
+                      s.tasks.forEach((t) => {
+                        if (t.orderId && !pendingOrdersMap.has(t.orderId)) {
+                          pendingOrdersMap.set(t.orderId, {
+                            id: t.orderId,
+                            orderNumber: t.order?.orderNumber ?? t.orderId.slice(0, 8),
+                          });
+                        }
+                      }),
+                    );
+                    return (
+                      <div style={{ marginTop: 8 }}>
+                        {skippedStops.length > 0 && (
+                          <div style={{ marginBottom: 4 }}>
+                            {skippedStops.map((s) => (
+                              <Tag key={s.id} color="volcano" style={{ marginBottom: 4 }}>
+                                Bỏ qua chặng #{s.sequence} ({s.address}):{' '}
+                                {s.skipReason === 'BLOCKED_BY_RETAINED_CARGO'
+                                  ? 'Bị hàng hoàn chắn lối/đè tầng 3D · Chở về kho'
+                                  : s.skipReason === 'OUTSIDE_SHIFT_WINDOW'
+                                  ? 'Không kịp giờ ca'
+                                  : 'Đã tách cho xe rảnh'}
+                              </Tag>
+                            ))}
+                          </div>
+                        )}
+                        {hubReturnStop?.hubLocation && (
+                          <div style={{ marginBottom: 6 }}>
+                            <Tag color="cyan">
+                              Điểm hoàn hàng về kho: {hubReturnStop.hubLocation.name} ({hubReturnStop.hubLocation.address})
+                            </Tag>
+                          </div>
+                        )}
+                        {activeTrip &&
+                          pendingOrdersMap.size > 0 &&
+                          ['DISPATCHED', 'IN_PROGRESS'].includes(activeTrip.status) && (
+                            <Space wrap style={{ marginTop: 4 }}>
+                              {[...pendingOrdersMap.values()].map((ord) => (
+                                <Popconfirm
+                                  key={ord.id}
+                                  title={`Tách đơn chưa lấy ${ord.orderNumber} khỏi chuyến?`}
+                                  description="Đơn sẽ quay về hàng chờ CONFIRMED để bố trí ngay cho xe rảnh khác."
+                                  okText="Tách đơn"
+                                  cancelText="Đóng"
+                                  onConfirm={() => void handleDetachUnpicked(activeTrip, ord.id)}
+                                >
+                                  <Button size="small" danger disabled={!can('trips.plan')} loading={submitting}>
+                                    Tách đơn chưa lấy ({ord.orderNumber}) cho xe rảnh
+                                  </Button>
+                                </Popconfirm>
+                              ))}
+                            </Space>
+                          )}
+                      </div>
+                    );
+                  })()}
                 </div>
-              ))}
+              }
             />
           )}
           {retainedStops.length === 0 && loadProfileError && <Alert type="warning" showIcon message={loadProfileError} action={<Button onClick={() => activeTrip && void fetchLoadProfile(activeTrip.id)}>Thử lại</Button>} />}

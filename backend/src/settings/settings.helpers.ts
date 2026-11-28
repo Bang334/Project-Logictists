@@ -57,6 +57,8 @@ export function extractCompanySettingValues(companyRow: SystemSetting | null): {
       maxTimeSeconds: companyRow.maxOptimizationTimeSeconds ?? defaults.optimization.maxTimeSeconds,
       hybridSeedCount: companyRow.hybridSeedCount ?? defaults.optimization.hybridSeedCount,
       earlyStopPatience: companyRow.earlyStopPatience ?? defaults.optimization.earlyStopPatience,
+      dispatchPreparationMinutes:
+        companyRow.dispatchPreparationMinutes ?? defaults.optimization.dispatchPreparationMinutes,
       unassignedOrderPenaltyVnd: toFiniteNumber(
         companyRow.unassignedOrderPenaltyVnd,
         defaults.optimization.unassignedOrderPenaltyVnd,
@@ -141,6 +143,8 @@ export function buildBranchScopedResponse(
         maxTimeSeconds: branchRow.maxOptimizationTimeSeconds ?? company.optimization.maxTimeSeconds,
         hybridSeedCount: branchRow.hybridSeedCount ?? company.optimization.hybridSeedCount,
         earlyStopPatience: branchRow.earlyStopPatience ?? company.optimization.earlyStopPatience,
+        dispatchPreparationMinutes:
+          branchRow.dispatchPreparationMinutes ?? company.optimization.dispatchPreparationMinutes,
         unassignedOrderPenaltyVnd: toFiniteNumber(
           branchRow.unassignedOrderPenaltyVnd,
           company.optimization.unassignedOrderPenaltyVnd,
@@ -327,6 +331,7 @@ export function buildCompanySeedCreateData(
     maxOptimizationTimeSeconds: d.optimization.maxTimeSeconds,
     hybridSeedCount: d.optimization.hybridSeedCount,
     earlyStopPatience: d.optimization.earlyStopPatience,
+    dispatchPreparationMinutes: d.optimization.dispatchPreparationMinutes,
     unassignedOrderPenaltyVnd: BigInt(Math.round(d.optimization.unassignedOrderPenaltyVnd)),
     maxRoutesPerDay: d.optimization.maxRoutesPerDay,
     demoAllowOverride: d.optimization.demoAllowOverride,

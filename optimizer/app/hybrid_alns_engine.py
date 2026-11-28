@@ -39,7 +39,9 @@ from .hybrid_alns.models import (
     RouteCostBreakdown as HybridRouteCostBreakdown,
     ScheduledStop as HybridScheduledStop,
 )
+from .hybrid_alns.packing_checker import FastPackingChecker
 from .hybrid_alns.savings_constructor import build_savings_routes
+from .packing_rules import calculate_route_weight_balance_penalty_vnd, resolve_can_rotate
 from .hybrid_alns.solver import solve_hybrid_alns
 from .hybrid_alns.stop_moves import (
     MAX_RESEQUENCE_STOPS,
@@ -445,7 +447,8 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     vehicle.width_cm,
                     vehicle.height_cm,
                     vehicle.depot.id,
-                    getattr(vehicle, "temperature_mode", "AMBIENT"),
+                    getattr(vehicle, "temperature_mode", "DRY"),
+                    bool(getattr(vehicle, "allows_hazmat", False)),
                     bool(getattr(vehicle, "has_tail_lift", False)),
                     float(getattr(vehicle, "toll_factor", 1.0)),
                 )
@@ -1579,6 +1582,21 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     timeline.rest_breaks,
                     getattr(self.policy, "driving_rest_policy", None),
                 )
+                wb_penalty_vnd = 0
+                if int(getattr(self.policy, "weight_balance_penalty_vnd_per_percent", 0) or 0) > 0:
+                    cargo_map = {item.id: item for o in self.orders for item in o.items}
+                    wb_ok, _, step_balances = FastPackingChecker(
+                        vehicle,
+                        allow_layout_search=False,
+                        demo_stacking=self.request.demo_stacking,
+                        cost_policy=self.policy,
+                    ).validate_route_stops_with_balances(scheduled_stops, cargo_map)
+                    if wb_ok:
+                        wb_penalty_vnd = calculate_route_weight_balance_penalty_vnd(
+                            step_balances,
+                            self.policy,
+                            getattr(self.request, "demo_stacking", None),
+                        )
                 start, scheduled_stops = self._adjust_first_stop_waiting_for_jit_start(
                     vehicle, scheduled_stops
                 )
@@ -1587,6 +1605,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     service_day_index=vehicle.service_day_index, plate_number=vehicle.plate_number,
                     vehicle_length_cm=vehicle.length_cm, vehicle_width_cm=vehicle.width_cm, vehicle_height_cm=vehicle.height_cm,
                     start_time_sec=start, end_time_sec=route_end, return_travel_time_sec=return_travel,
+                    total_driving_sec=timeline.total_driving_sec,
                     total_distance_km=round(self._calc_route_distance_km(index, scheduled_stops), 2),
                     total_duration_minutes=round((route_end-start)/60.0, 1), stops=scheduled_stops,
                     spatial_validation=SpatialValidationResult(is_valid=False),
@@ -1598,6 +1617,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                         driver_fixed_salary_allocation_vnd=0, driver_trip_pay_vnd=0,
                         toll_cost_vnd=toll_cost_vnd,
                         overnight_allowance_vnd=overnight_allowance_vnd,
+                        weight_balance_penalty_vnd=wb_penalty_vnd,
                         total_cost_vnd=(
                             base
                             + surcharge
@@ -1606,6 +1626,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                             + vehicle.fixed_operating_cost_vnd
                             + toll_cost_vnd
                             + overnight_allowance_vnd
+                            + wb_penalty_vnd
                         ),
                     ),
                 )
@@ -4010,6 +4031,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                 hybrid_end_depot = HybridLocation(
                     id=end_depot_key,
                     source_location_id=vehicle.end_depot.source_location_id,
+                    warehouse_location_id=getattr(vehicle.end_depot, "warehouse_location_id", None),
                     name=vehicle.end_depot.name or "End Depot",
                     latitude=float(vehicle.end_depot.latitude),
                     longitude=float(vehicle.end_depot.longitude),
@@ -4020,6 +4042,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     max_vehicle_payload_kg=vehicle.end_depot.max_vehicle_payload_kg,
                     max_vehicle_length_cm=vehicle.end_depot.max_vehicle_length_cm,
                     has_forklift=bool(vehicle.end_depot.has_forklift),
+                    allows_hazmat=getattr(vehicle.end_depot, "allows_hazmat", None),
                     operating_windows=list(vehicle.end_depot.operating_windows),
                     handling_sec_per_ton=int(vehicle.end_depot.handling_sec_per_ton or 0),
                     handling_sec_per_package=int(vehicle.end_depot.handling_sec_per_package or 0),
@@ -4035,6 +4058,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     depot=HybridLocation(
                         id=depot_key,
                         source_location_id=vehicle.depot.source_location_id,
+                        warehouse_location_id=getattr(vehicle.depot, "warehouse_location_id", None),
                         name=vehicle.depot.name or "Depot",
                         latitude=float(vehicle.depot.latitude),
                         longitude=float(vehicle.depot.longitude),
@@ -4045,6 +4069,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                         max_vehicle_payload_kg=vehicle.depot.max_vehicle_payload_kg,
                         max_vehicle_length_cm=vehicle.depot.max_vehicle_length_cm,
                         has_forklift=bool(vehicle.depot.has_forklift),
+                        allows_hazmat=getattr(vehicle.depot, "allows_hazmat", None),
                         operating_windows=list(vehicle.depot.operating_windows),
                         handling_sec_per_ton=int(vehicle.depot.handling_sec_per_ton or 0),
                         handling_sec_per_package=int(vehicle.depot.handling_sec_per_package or 0),
@@ -4067,7 +4092,8 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     available_end_sec=vehicle.available_end_sec,
                     vehicle_type=vehicle.vehicle_type,
                     model=vehicle.model,
-                    temperature_mode=getattr(vehicle, "temperature_mode", "AMBIENT"),
+                    temperature_mode=getattr(vehicle, "temperature_mode", "DRY"),
+                    allows_hazmat=bool(getattr(vehicle, "allows_hazmat", False)),
                     has_tail_lift=bool(getattr(vehicle, "has_tail_lift", False)),
                     toll_factor=float(getattr(vehicle, "toll_factor", 1.0)),
                 )
@@ -4087,6 +4113,9 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     home_location_id=driver.home_location_id,
                     home_province_code=driver.home_province_code,
                     strict_home_location=bool(driver.strict_home_location),
+                    initial_weekly_driving_sec=int(
+                        getattr(driver, "initial_weekly_driving_sec", 0) or 0
+                    ),
                 )
             )
             original_vehicle_indices.append(original_vehicle_index)
@@ -4107,6 +4136,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     pickup_location=HybridLocation(
                         id=pickup_key,
                         source_location_id=order.pickup_location.source_location_id or order.pickup_location.id,
+                        warehouse_location_id=getattr(order.pickup_location, "warehouse_location_id", None),
                         name=order.pickup_location.name or "Pickup",
                         latitude=float(order.pickup_location.latitude),
                         longitude=float(order.pickup_location.longitude),
@@ -4117,6 +4147,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                         max_vehicle_payload_kg=order.pickup_location.max_vehicle_payload_kg,
                         max_vehicle_length_cm=order.pickup_location.max_vehicle_length_cm,
                         has_forklift=bool(order.pickup_location.has_forklift),
+                        allows_hazmat=getattr(order.pickup_location, "allows_hazmat", None),
                         operating_windows=list(order.pickup_location.operating_windows),
                         handling_sec_per_ton=int(order.pickup_location.handling_sec_per_ton or 0),
                         handling_sec_per_package=int(order.pickup_location.handling_sec_per_package or 0),
@@ -4124,6 +4155,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                     delivery_location=HybridLocation(
                         id=delivery_key,
                         source_location_id=order.delivery_location.source_location_id or order.delivery_location.id,
+                        warehouse_location_id=getattr(order.delivery_location, "warehouse_location_id", None),
                         name=order.delivery_location.name or "Delivery",
                         latitude=float(order.delivery_location.latitude),
                         longitude=float(order.delivery_location.longitude),
@@ -4134,6 +4166,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                         max_vehicle_payload_kg=order.delivery_location.max_vehicle_payload_kg,
                         max_vehicle_length_cm=order.delivery_location.max_vehicle_length_cm,
                         has_forklift=bool(order.delivery_location.has_forklift),
+                        allows_hazmat=getattr(order.delivery_location, "allows_hazmat", None),
                         operating_windows=list(order.delivery_location.operating_windows),
                         handling_sec_per_ton=int(order.delivery_location.handling_sec_per_ton or 0),
                         handling_sec_per_package=int(order.delivery_location.handling_sec_per_package or 0),
@@ -4164,6 +4197,7 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
                             incompatible_cargo_groups=list(
                                 getattr(item, "incompatible_cargo_groups", ()) or ()
                             ),
+                            is_hazmat=bool(getattr(item, "is_hazmat", False)),
                             requires_lift_equipment=bool(
                                 getattr(item, "requires_lift_equipment", False)
                             ),
@@ -4226,6 +4260,18 @@ class PackingAwareHybridALNSOptimizer(PackingAwareILSOptimizer):
             demo_stacking=self.request.demo_stacking,
             driving_rest_policy=self.policy.driving_rest_policy,
             toll_matrix_vnd=getattr(self.request, "toll_matrix_vnd", None),
+            weight_balance_penalty_vnd_per_percent=int(
+                getattr(self.policy, "weight_balance_penalty_vnd_per_percent", 0) or 0
+            ),
+            enforce_weight_balance=bool(
+                getattr(self.policy, "enforce_weight_balance", False)
+            ),
+            max_lateral_imbalance_percent=getattr(
+                self.policy, "max_lateral_imbalance_percent", None
+            ),
+            max_longitudinal_imbalance_percent=getattr(
+                self.policy, "max_longitudinal_imbalance_percent", None
+            ),
         )
         self._hybrid_model_context = (orders, policy, node_id_to_index)
         construction_deadline = search_deadline

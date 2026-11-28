@@ -367,6 +367,34 @@ export const SettingsGroupsForm: React.FC<SettingsGroupsFormProps> = ({
 
           <Col xs={24} md={8}>
             <Text strong style={{ display: 'block', marginBottom: 6 }}>
+              Thời gian chuẩn bị trước khi xuất phát
+            </Text>
+            <InputNumber
+              aria-label="Thời gian chuẩn bị trước khi xuất phát"
+              min={0}
+              max={240}
+              precision={0}
+              addonAfter="phút"
+              style={{ width: '100%' }}
+              value={displayedOptimization.dispatchPreparationMinutes ?? 20}
+              disabled={!isOptimizationEditable}
+              onChange={(value) =>
+                onChangeDraft((prev) => ({
+                  ...prev,
+                  optimization: {
+                    ...prev.optimization,
+                    dispatchPreparationMinutes: value ?? 20,
+                  },
+                }))
+              }
+            />
+            <Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
+              Áp dụng cho chế độ Giờ hiện tại, cộng thêm thời gian xe và tài xế chuẩn bị sau khi chốt.
+            </Text>
+          </Col>
+
+          <Col xs={24} md={8}>
+            <Text strong style={{ display: 'block', marginBottom: 6 }}>
               Phạt đơn không thể xếp chuyến (VNĐ)
             </Text>
             <InputNumber

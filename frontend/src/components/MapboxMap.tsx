@@ -187,6 +187,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
+  const zonePopupRef = useRef<mapboxgl.Popup | null>(null);
   const sharedStopsRef = useRef<{ pin: HTMLElement; visits: MapMarker[] }[]>([]);
   const completedStopRef = useRef(completedStopSequence);
   useLayoutEffect(() => {
@@ -307,7 +308,56 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     const rememberManualZoom = (event: { type: 'zoomstart' }) => {
       if ('originalEvent' in event && event.originalEvent) hasManualZoomRef.current = true;
     };
+    const handleZoneEnter = () => {
+      const canvas = map.getCanvas?.();
+      if (canvas) canvas.style.cursor = 'pointer';
+    };
+    const handleZoneLeave = () => {
+      const canvas = map.getCanvas?.();
+      if (canvas) canvas.style.cursor = '';
+    };
+    const handleZoneClick = (event: mapboxgl.MapLayerMouseEvent) => {
+      const props = event.features?.[0]?.properties;
+      if (!props) return;
+      zonePopupRef.current?.remove();
+
+      const popupEl = document.createElement('div');
+      popupEl.className = 'map-zone-popup';
+      popupEl.style.padding = '4px 6px';
+      popupEl.style.fontSize = '12px';
+
+      const nameEl = document.createElement('div');
+      nameEl.style.fontWeight = '600';
+      nameEl.style.color = '#b91c1c';
+      nameEl.textContent = String(props.name || 'Vùng cấm tải');
+      popupEl.appendChild(nameEl);
+
+      const limitEl = document.createElement('div');
+      limitEl.style.color = '#334155';
+      limitEl.style.marginTop = '2px';
+      const maxKg = Number(props.maxPayloadKg);
+      limitEl.textContent = Number.isFinite(maxKg)
+        ? `Hạn chế xe > ${maxKg.toLocaleString('vi-VN')} kg`
+        : 'Hạn chế xe tải theo giờ';
+      popupEl.appendChild(limitEl);
+
+      if (props.curfewSummary) {
+        const windowEl = document.createElement('div');
+        windowEl.style.color = '#64748b';
+        windowEl.style.marginTop = '2px';
+        windowEl.textContent = `Khung giờ cấm: ${String(props.curfewSummary)}`;
+        popupEl.appendChild(windowEl);
+      }
+
+      zonePopupRef.current = new mapboxgl.Popup({ offset: 8 })
+        .setLngLat(event.lngLat)
+        .setDOMContent(popupEl)
+        .addTo(map);
+    };
     map.on('zoomstart', rememberManualZoom);
+    map.on('mouseenter', 'restricted-zones-fill', handleZoneEnter);
+    map.on('mouseleave', 'restricted-zones-fill', handleZoneLeave);
+    map.on('click', 'restricted-zones-fill', handleZoneClick);
 
     const resizeObserver = new ResizeObserver(() => {
       map.resize();
@@ -318,6 +368,11 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
 
     return () => {
       map.off('zoomstart', rememberManualZoom);
+      map.off('mouseenter', 'restricted-zones-fill', handleZoneEnter);
+      map.off('mouseleave', 'restricted-zones-fill', handleZoneLeave);
+      map.off('click', 'restricted-zones-fill', handleZoneClick);
+      zonePopupRef.current?.remove();
+      zonePopupRef.current = null;
       resizeObserver.disconnect();
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
@@ -558,11 +613,22 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
 
       // 0. Lớp vùng cấm tải theo giờ (hiển thị dưới các tuyến đường)
       const activeZones = (restrictedZones || []).filter((z) => z.active && Array.isArray(z.polygon));
+      if (activeZones.length === 0) {
+        zonePopupRef.current?.remove();
+        zonePopupRef.current = null;
+      }
       const zoneGeoJson = {
         type: 'FeatureCollection',
         features: activeZones.map((zone) => ({
           type: 'Feature',
-          properties: { id: zone.id, name: zone.name, maxPayloadKg: zone.maxPayloadKg },
+          properties: {
+            id: zone.id,
+            name: zone.name,
+            maxPayloadKg: zone.maxPayloadKg,
+            curfewSummary: (zone.curfewWindows || [])
+              .map((w) => `${w.startTime}–${w.endTime}`)
+              .join(', '),
+          },
           geometry: { type: 'Polygon', coordinates: zone.polygon },
         })),
       };
@@ -573,25 +639,32 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
           type: 'geojson',
           data: zoneGeoJson as any,
         });
-        map.addLayer({
-          id: 'restricted-zones-fill',
-          type: 'fill',
-          source: 'restricted-zones',
-          paint: {
-            'fill-color': '#ef4444',
-            'fill-opacity': 0.12,
+        const beforeRouteLayer = map.getLayer('route-line-bg') ? 'route-line-bg' : undefined;
+        map.addLayer(
+          {
+            id: 'restricted-zones-fill',
+            type: 'fill',
+            source: 'restricted-zones',
+            paint: {
+              'fill-color': '#ef4444',
+              'fill-opacity': 0.12,
+            },
           },
-        });
-        map.addLayer({
-          id: 'restricted-zones-outline',
-          type: 'line',
-          source: 'restricted-zones',
-          paint: {
-            'line-color': '#dc2626',
-            'line-width': 2,
-            'line-dasharray': [4, 3],
+          beforeRouteLayer,
+        );
+        map.addLayer(
+          {
+            id: 'restricted-zones-outline',
+            type: 'line',
+            source: 'restricted-zones',
+            paint: {
+              'line-color': '#dc2626',
+              'line-width': 2,
+              'line-dasharray': [4, 3],
+            },
           },
-        });
+          beforeRouteLayer,
+        );
       }
 
       // 1. Tuyến đường nền (Đoạn chưa chạy tới: màu xám nhạt nếu đang mô phỏng, hoặc màu xanh nếu tĩnh)

@@ -38,7 +38,12 @@ from .packing_rules import resolve_can_rotate
 from .planning_objective import calendar_salary_for_span, operational_late_penalty_for_stops
 from .route_costing import build_route_cost_breakdown
 from .spatial_validator import SpatialValidator
-from .stacking import effective_floor_capacity_cm2, sync_route_stacking_unloads, validate_stop_actions
+from .stacking import (
+    effective_floor_capacity_cm2,
+    enforce_spatial_weight_balance_if_needed,
+    sync_route_stacking_unloads,
+    validate_stop_actions,
+)
 
 DIRECT_DESCRIPTION = "Mỗi chuyến chở một đơn. Xe và tài xế có thể chạy nhiều chuyến nối tiếp trong ca."
 
@@ -55,6 +60,7 @@ class _EvaluatedRoute:
     return_travel_time_sec: int = 0
     return_waiting_time_sec: int = 0
     mandatory_rest_sec: int = 0
+    total_driving_sec: int = 0
     rest_breaks: List[RestBreakRecord] = field(default_factory=list)
     province_hops: List[str] = field(default_factory=list)
 
@@ -222,6 +228,7 @@ class BaselineCostCalculator:
         return_travel = 0
         return_waiting = 0
         mandatory_rest_sec = 0
+        total_driving_sec = 0
         rest_breaks: List[RestBreakRecord] = []
         if return_to_depot:
             end_node_idx = resolve_vehicle_end_node_index(
@@ -231,6 +238,10 @@ class BaselineCostCalculator:
                 total_distance += self.request.distance_matrix_meters[current_node][end_node_idx]
                 return_travel = round(self.request.duration_matrix_seconds[current_node][end_node_idx])
                 current_time += return_travel
+        total_driving_sec = (
+            sum(int(getattr(st, "travel_time_sec", 0) or 0) for st in scheduled)
+            + int(return_travel or 0)
+        )
         if current_time > vehicle.available_end_sec and not violations:
             violations.append(f"VEHICLE_AVAILABILITY:{vehicle.plate_number} kết thúc chuyến sau giờ khả dụng")
 
@@ -264,6 +275,7 @@ class BaselineCostCalculator:
                     return_travel = timeline.return_travel_time_sec
                     return_waiting = timeline.return_waiting_time_sec
                     mandatory_rest_sec = timeline.mandatory_rest_sec
+                    total_driving_sec = timeline.total_driving_sec
                     rest_breaks = timeline.rest_breaks
 
         # Fast checks: Nếu đã vi phạm tải trọng, trạng thái dỡ hoặc thời gian, bỏ qua xếp dỡ hình học nặng
@@ -329,12 +341,17 @@ class BaselineCostCalculator:
                 time_limit = remaining
                 if spatial_time_limit_seconds is not None:
                     time_limit = min(time_limit, spatial_time_limit_seconds) if time_limit is not None else spatial_time_limit_seconds
-                self._spatial_cache[cache_key] = validate_stop_actions(
+                raw_spatial = validate_stop_actions(
                     self.request.demo_stacking,
                     vehicle,
                     actions,
                     max_search_nodes=2000,
                     max_time_seconds=time_limit,
+                )
+                self._spatial_cache[cache_key] = enforce_spatial_weight_balance_if_needed(
+                    self.request.demo_stacking,
+                    raw_spatial,
+                    cost_policy=self.request.policy,
                 )
             spatial = self._spatial_cache[cache_key]
             if self.request.demo_stacking is not None:
@@ -360,6 +377,7 @@ class BaselineCostCalculator:
             return_travel_time_sec=return_travel,
             return_waiting_time_sec=return_waiting,
             mandatory_rest_sec=mandatory_rest_sec,
+            total_driving_sec=total_driving_sec,
             rest_breaks=rest_breaks,
             province_hops=province_hops,
         )
@@ -375,6 +393,15 @@ class BaselineCostCalculator:
         self, route: _EvaluatedRoute, driver: DriverOption,
         start_node_index: int, return_to_depot: bool,
     ) -> RouteCostBreakdown:
+        step_balances = [
+            st.weight_balance
+            for st in (
+                route.spatial_validation.step_states
+                if route.spatial_validation is not None
+                else ()
+            )
+            if getattr(st, "weight_balance", None) is not None
+        ]
         return build_route_cost_breakdown(
             self.request,
             self.nodes,
@@ -387,6 +414,7 @@ class BaselineCostCalculator:
             start_node_index=start_node_index,
             return_to_depot=return_to_depot,
             rest_breaks=route.rest_breaks,
+            step_balances=step_balances,
         )
 
     def _unavailable_direct(self, reason: str) -> BenchmarkMetric:
@@ -757,6 +785,7 @@ class BaselineCostCalculator:
                     return_travel_time_sec=trip.return_travel_time_sec,
                     return_waiting_time_sec=trip.return_waiting_time_sec,
                     mandatory_rest_sec=trip.mandatory_rest_sec,
+                    total_driving_sec=trip.total_driving_sec,
                     rest_breaks=trip.rest_breaks,
                     province_hops=trip.province_hops,
                     plate_number=vehicle.plate_number,

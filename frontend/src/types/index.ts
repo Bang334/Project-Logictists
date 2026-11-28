@@ -122,6 +122,51 @@ export interface OrderPackage extends PackageHandling {
   id: string; orderId: string; orderItemId: string; packageCode: string;
   lengthMm: number; widthMm: number; heightMm: number; weightG: string;
   pickupStopId: string | null; deliveryStopId: string | null; status: string; version: number;
+  custodyLocationId?: string | null;
+  returnedToHubAt?: string | null;
+  deliveryAttemptCount?: number;
+  custodyLocation?: {
+    id: string;
+    code: string;
+    name: string;
+    address: string;
+    latitude: number;
+    longitude: number;
+  } | null;
+}
+
+export interface WarehouseCustodyPackage {
+  id: string;
+  packageCode: string;
+  weightKg: number;
+  lengthMm: number;
+  widthMm: number;
+  heightMm: number;
+  cargoKind: string;
+  returnedToHubAt: string | null;
+  deliveryAttemptCount: number;
+  description: string;
+  orderId: string;
+  orderNumber: string;
+  orderStatus: string;
+  customer: { id: string; name: string; phone: string | null } | null;
+  deliveryStop: { id: string; address: string; latitude: number; longitude: number } | null;
+}
+
+export interface WarehouseSummary {
+  id: string;
+  code: string;
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  active: boolean;
+  type: 'CENTRAL_WAREHOUSE';
+  managingBranchId: string | null;
+  managingBranch?: { id: string; code: string; name: string } | null;
+  custodyPackageCount: number;
+  custodyTotalWeightKg: number;
+  custodyPackages: WarehouseCustodyPackage[];
 }
 
 export interface OrderItem {
@@ -189,7 +234,15 @@ export interface Order {
 }
 
 export interface TripStop {
-  deliveryAttempts?: { id: string; occurredAt: string; failureReason: string | null }[];
+  deliveryAttempts?: {
+    id: string;
+    attemptNumber?: number;
+    occurredAt: string;
+    result?: string;
+    failureReason: string | null;
+    failureCategory?: string | null;
+    requestedRedeliveryAt?: string | null;
+  }[];
   id: string;
   sequence: number;
   stopType: 'DEPOT_START' | 'PICKUP' | 'DELIVERY' | 'DEPOT_END';
@@ -201,6 +254,14 @@ export interface TripStop {
   plannedArrivalTime?: string;
   plannedDepartureTime?: string;
   status: string;
+  skipReason?: string | null;
+  hubLocationId?: string | null;
+  hubLocation?: {
+    id: string;
+    code: string;
+    name: string;
+    address: string;
+  } | null;
   tasks: Array<{
     id: string;
     orderId?: string;
@@ -209,6 +270,7 @@ export interface TripStop {
     plannedQuantity: number;
     actualQuantity?: number;
     order?: Pick<Order, 'id' | 'orderNumber' | 'customer' | 'items'>;
+    deliveryResults?: Array<{ id: string; result: string; packageId: string }>;
   }>;
 }
 
@@ -520,6 +582,7 @@ export interface AutomaticOptimizationResponseUI {
   status: OptimizationJobStatusUI;
   schemaVersion: string;
   planningEpochIso: string | null;
+  earliestDepartureAt?: string | null;
   scheduleMode: AutomaticDispatchScheduleModeUI | null;
   searchBudgetSeconds: number | null;
   progress: OptimizationJobProgressUI | null;

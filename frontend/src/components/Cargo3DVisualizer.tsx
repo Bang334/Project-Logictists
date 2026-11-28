@@ -45,8 +45,8 @@ export interface Cargo3DVisualizerProps {
   onSelectItem?: (itemId: string | null) => void;
 }
 
-const VIEW_W = 860;
-const VIEW_H = 420;
+const VIEW_W = 720;
+const VIEW_H = 440;
 
 function adjustHexBrightness(hex: string, factor: number): string {
   const clean = hex.replace('#', '');
@@ -292,15 +292,15 @@ export const Cargo3DVisualizer: React.FC<Cargo3DVisualizerProps> = ({
           alignItems: 'center',
           justifyContent: 'space-between',
           flexWrap: 'wrap',
-          gap: 10,
-          marginBottom: 10,
-          padding: '8px 12px',
+          gap: 6,
+          marginBottom: 8,
+          padding: '6px 10px',
           backgroundColor: '#f8fafc',
           border: '1px solid #e2e8f0',
           borderRadius: 8,
         }}
       >
-        <Space size={6} wrap align="center">
+        <Space size={4} wrap align="center">
           <CompassOutlined style={{ color: '#0284c7' }} />
           <span style={{ fontSize: 12, fontWeight: 600, color: '#334155' }}>Góc camera 3D:</span>
           {(Object.keys(CAMERA_3D_PRESETS) as Camera3DPresetKey[]).map((key) => (
@@ -315,8 +315,8 @@ export const Cargo3DVisualizer: React.FC<Cargo3DVisualizerProps> = ({
           ))}
         </Space>
 
-        <Space size={12} wrap align="center">
-          <Space size={6} align="center">
+        <Space size={8} wrap align="center">
+          <Space size={4} align="center">
             <ExpandOutlined style={{ color: '#7c3aed', fontSize: 12 }} />
             <span style={{ fontSize: 12, color: '#334155', fontWeight: 500 }}>
               Tách tầng Z:
@@ -328,10 +328,10 @@ export const Cargo3DVisualizer: React.FC<Cargo3DVisualizerProps> = ({
               step={5}
               value={explodeGapCm}
               onChange={(val) => setExplodeGapCm(val)}
-              style={{ width: 95, margin: '0 4px' }}
+              style={{ width: 78, margin: '0 4px' }}
               tooltip={{ formatter: (v) => `+${v} cm mỗi tầng` }}
             />
-            <span style={{ fontSize: 11, color: '#64748b', minWidth: 38 }}>+{explodeGapCm}cm</span>
+            <span style={{ fontSize: 11, color: '#64748b', minWidth: 34 }}>+{explodeGapCm}cm</span>
           </Space>
 
           {distinctTiers > 1 && (
@@ -390,10 +390,13 @@ export const Cargo3DVisualizer: React.FC<Cargo3DVisualizerProps> = ({
       >
         <svg
           width="100%"
-          height={VIEW_H}
           viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
           style={{
             display: 'block',
+            width: '100%',
+            height: 'auto',
+            aspectRatio: `${VIEW_W} / ${VIEW_H}`,
+            maxHeight: 460,
             cursor: dragOriginRef.current ? 'grabbing' : 'grab',
             userSelect: 'none',
           }}

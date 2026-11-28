@@ -1,3 +1,5 @@
+const MIN_REMAINING_MINUTES = 15;
+
 export type ServiceDayWindow = {
   serviceDayIndex: number;
   startsAt: Date;
@@ -188,7 +190,7 @@ export function buildServiceDayWindows(
             `Ca làm việc hôm nay đã kết thúc lúc ${workEndTime}. Vui lòng chọn tùy chọn 'Bắt đầu từ ngày tiếp theo'.`,
           );
         }
-        const minRemainingMinutes = options.minRemainingMinutes ?? 15;
+        const minRemainingMinutes = options.minRemainingMinutes ?? MIN_REMAINING_MINUTES;
         const remainingMinutes =
           (endsAt.getTime() - options.effectiveStartTime.getTime()) / (60 * 1000);
         if (remainingMinutes < minRemainingMinutes) {
@@ -208,4 +210,31 @@ export function buildServiceDayWindows(
       endSec: Math.round((endsAt.getTime() - planningEpoch.getTime()) / 1000),
     };
   });
+}
+
+export function resolveCurrentDispatchStart(
+  earliest: Date,
+  timeZone: string,
+  workStartTime: string,
+  workEndTime: string,
+): { planningEpoch: Date; effectiveStartTime: Date } {
+  let planningEpoch = getPlanningEpoch([], timeZone, earliest);
+  let [day] = buildServiceDayWindows(planningEpoch, timeZone, workStartTime, workEndTime, 1);
+  const usableStart = Math.max(day.startsAt.getTime(), earliest.getTime());
+  if (day.endsAt.getTime() - usableStart >= MIN_REMAINING_MINUTES * 60_000) {
+    return { planningEpoch, effectiveStartTime: new Date(usableStart) };
+  }
+  planningEpoch = getNextDayPlanningEpoch([], timeZone, earliest);
+  [day] = buildServiceDayWindows(planningEpoch, timeZone, workStartTime, workEndTime, 1);
+  return { planningEpoch, effectiveStartTime: day.startsAt };
+}
+
+export function currentDispatchEarliest(
+  now: Date,
+  preparationMinutes: number,
+  estimatedSeconds = 0,
+): Date {
+  return new Date(
+    Math.ceil((now.getTime() + preparationMinutes * 60_000 + estimatedSeconds * 1000) / 1000) * 1000,
+  );
 }

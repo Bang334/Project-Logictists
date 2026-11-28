@@ -100,7 +100,7 @@ import {
 import { buildDriverSchedule } from '../utils/driverSchedule';
 import { formatDecimal } from '../utils/format';
 
-const { Text, Title, Paragraph } = Typography;
+const { Text, Title } = Typography;
 const currency = new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' });
 const getRouteKey = (route: OptimizedRouteUI) => route.route_id;
 const DIRECT_COMPARISON = 0;
@@ -158,7 +158,6 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
   const [scheduleMode, setScheduleMode] = useState<AutomaticDispatchScheduleModeUI>('CURRENT_TIME');
   const [customStartTime, setCustomStartTime] = useState<dayjs.Dayjs | null>(null);
   const [useCustomTime, setUseCustomTime] = useState<boolean>(false);
-  const [isRestoredFromStorage, setIsRestoredFromStorage] = useState<boolean>(false);
 
   // Chế độ: Chi nhánh thực tế vs Demo Benchmark
   const [pageMode, setPageMode] = useState<'BRANCH' | 'DEMO'>('BRANCH');
@@ -235,7 +234,6 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       setScheduleMode(restoredScheduleMode);
       setUseCustomTime(restoredUseCustomTime);
       setCustomStartTime(restoredCustomStart ? dayjs(restoredCustomStart) : null);
-      setIsRestoredFromStorage(true);
       if (!dismissed) saveAutoDispatchState({
         branchId,
         optimizationJobId: job.id,
@@ -358,7 +356,6 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     // Reset sạch sẽ phương án của chi nhánh cũ ngay khi đổi chi nhánh
     setOptimization(null);
     setAppliedTripCount(null);
-    setIsRestoredFromStorage(false);
     setSelectedVehicleForMap('ALL');
     setEnableSim(false);
     setActiveStepIndex(0);
@@ -402,7 +399,6 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     setEnableSim(false);
     setActiveStepIndex(0);
     setMapStopSelection(undefined);
-    setIsRestoredFromStorage(false);
   }, []);
 
   useEffect(() => {
@@ -539,7 +535,6 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
       optimizationIdempotencyKeyRef.current = null;
       restoreRequestIdRef.current += 1;
       setOptimization(response.data);
-      setIsRestoredFromStorage(false);
 
       saveAutoDispatchState({
         branchId: selectedBranchId,
@@ -555,9 +550,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
         savedAt: new Date().toISOString(),
       });
 
-      message.success(
-        'Đã bắt đầu tối ưu tự động (ngân sách thời gian thích ứng thông minh theo quy mô bài toán)',
-      );
+      message.success('Đã gửi yêu cầu tối ưu tuyến.');
     } catch (error: any) {
       message.error(error.response?.data?.message || 'Không thể bắt đầu tối ưu tự động');
     } finally {
@@ -649,7 +642,6 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
     setSelectedCandidateResult(null);
     setLoadedCandidateResults({});
     setAppliedTripCount(null);
-    setIsRestoredFromStorage(false);
     setSelectedVehicleForMap('ALL');
     setEnableSim(false);
     setActiveStepIndex(0);
@@ -2290,20 +2282,39 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                       {
                         title: 'Điểm lấy hàng (Pickup)',
                         key: 'pickup',
-                        width: 200,
+                        width: 220,
                         render: (_, r) => {
                           const p = r.stops?.find((s) => s.type === 'PICKUP');
+                          const custodyHub = r.items
+                            ?.flatMap((i) => i.packages)
+                            .find((pkg) => pkg.status === 'READY' && pkg.custodyLocation)?.custodyLocation;
                           return (
-                            <div style={{ maxWidth: 195 }}>
-                              <div style={{ fontSize: 12, fontWeight: 500, color: '#166534' }}>
-                                <EnvironmentOutlined /> {p?.contactName || 'Người gửi'}
-                              </div>
-                              <ExpandableText
-                                text={p?.address || 'Tại chi nhánh / kho'}
-                                maxChars={24}
-                                maxWidth={190}
-                                style={{ fontSize: 11, color: '#64748b', lineHeight: 1.3 }}
-                              />
+                            <div style={{ maxWidth: 215 }}>
+                              {custodyHub ? (
+                                <>
+                                  <Tag color="cyan" style={{ marginBottom: 4 }}>
+                                    Nhận từ kho: {custodyHub.name}
+                                  </Tag>
+                                  <ExpandableText
+                                    text={custodyHub.address}
+                                    maxChars={24}
+                                    maxWidth={210}
+                                    style={{ fontSize: 11, color: '#0e7490', lineHeight: 1.3 }}
+                                  />
+                                </>
+                              ) : (
+                                <>
+                                  <div style={{ fontSize: 12, fontWeight: 500, color: '#166534' }}>
+                                    <EnvironmentOutlined /> {p?.contactName || 'Người gửi'}
+                                  </div>
+                                  <ExpandableText
+                                    text={p?.address || 'Tại chi nhánh / kho'}
+                                    maxChars={24}
+                                    maxWidth={210}
+                                    style={{ fontSize: 11, color: '#64748b', lineHeight: 1.3 }}
+                                  />
+                                </>
+                              )}
                             </div>
                           );
                         },
@@ -2752,6 +2763,18 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                   },
                 ]}
               />
+              {scheduleMode === 'CURRENT_TIME' &&
+                optimization?.scheduleMode === 'CURRENT_TIME' &&
+                optimization.earliestDepartureAt && (
+                  <Tag color="cyan">
+                    Xuất phát sớm nhất lúc{' '}
+                    {new Date(optimization.earliestDepartureAt).toLocaleString('vi-VN', {
+                      timeZone: 'Asia/Ho_Chi_Minh',
+                      dateStyle: 'short',
+                      timeStyle: 'short',
+                    })}
+                  </Tag>
+                )}
               {scheduleMode === 'CURRENT_TIME' && useCustomTime && (
                 <TimePicker
                   format="HH:mm"
@@ -2822,7 +2845,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
             canPropose={canProposeDeliveryWindow}
             onJob={async id => {
               const response = await tripsApi.getAutomaticOptimizationJob(id);
-              setOptimization(response.data); setSelectedCandidateNumber(1); setSelectedCandidateResult(null); setAppliedTripCount(null); setIsRestoredFromStorage(false);
+              setOptimization(response.data); setSelectedCandidateNumber(1); setSelectedCandidateResult(null); setAppliedTripCount(null);
               saveAutoDispatchState({ branchId: selectedBranchId, optimizationJobId: id, appliedTripCount: null, scheduleMode, customStartTimeStr: customStartTime?.toISOString() ?? null, useCustomTime, savedAt: new Date().toISOString() });
             }}
           />}
@@ -2955,12 +2978,12 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
             <div>
               {result.diagnostics.length > 0 && (
                 <div style={{ marginBottom: 4 }}>
-                  <Text strong>Chẩn đoán tầng Hybrid-first:</Text> {result.diagnostics.join(' · ')}
+                  <Text strong>Nguyên nhân:</Text> {result.diagnostics.join(' · ')}
                 </div>
               )}
-              {result.routes.length === 0 && (
+              {result.routes.length === 0 && result.diagnostics.length === 0 && (
                 <Text type="secondary">
-                  Toàn bộ đơn hàng chưa thể ghép vào tuyến. Hãy chọn "Ngày tiếp theo (ca mai)" hoặc chỉnh thời gian xuất bến về 08:00 sáng để xe và tài xế có trọn vẹn ca làm việc.
+                  Không thể ghép đơn nào trong khung giờ đã chọn.
                 </Text>
               )}
             </div>
@@ -3220,8 +3243,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                 <Alert
                   type="success"
                   showIcon
-                  message={`Đã ghi lại ${optimization.candidates.length} phương án tối ưu giao đủ 100% đơn`}
-                  description="Khi có lịch giao đủ với số ngày khác nhau, bảng giữ các lựa chọn để so sánh. Chi phí toàn đội gồm chi phí vận hành, lương lịch và điểm phạt vận hành do trễ."
+                  message={`Đủ 100% đơn · ${optimization.candidates.length} phương án`}
                   style={{ marginBottom: 12 }}
                 />
               )}
@@ -3377,30 +3399,29 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
               />
             </Card>
           )}
-          <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-            <Col xs={24} xl={mapLayoutMode === 'FULL' ? 24 : 12}>
+          <Row gutter={[16, 16]} align="stretch" className="automatic-dispatch-pair-row" style={{ marginBottom: 16 }}>
+            <Col xs={24} xl={mapLayoutMode === 'FULL' ? 24 : 12} className="automatic-dispatch-pair-col">
               <Card
                 id="map-card-section"
+                styles={{
+                  header: { padding: '10px 14px', minHeight: 58, borderBottom: '1px solid #f1f5f9' },
+                  body: { padding: '12px 14px' },
+                }}
                 title={
-                  <Space wrap>
+                  <Space wrap size={[6, 6]} style={{ paddingBlock: 2 }}>
                     <NodeIndexOutlined style={{ color: '#1677ff', fontSize: 16 }} />
                     <span>Bản đồ lộ trình</span>
-                    {showingDirect && <Tag color="blue">Chuyến đơn lẻ · Tuyến đường Mapbox</Tag>}
-                    {optimization?.scheduleMode === 'CURRENT_TIME' ? (
-                      <Tag color="cyan" icon={<ClockCircleOutlined />}>
-                        Khởi hành từ giờ hiện tại
+                    {showingDirect && <Tag color="blue" style={{ margin: 0 }}>Chuyến đơn lẻ · Tuyến đường Mapbox</Tag>}
+                    {optimization?.scheduleMode === 'CURRENT_TIME' && optimization.earliestDepartureAt && (
+                      <Tag color="cyan" icon={<ClockCircleOutlined />} style={{ margin: 0 }}>
+                        {`Xuất phát sớm nhất lúc ${new Date(
+                          optimization.earliestDepartureAt,
+                        ).toLocaleString('vi-VN', {
+                          timeZone: 'Asia/Ho_Chi_Minh',
+                          dateStyle: 'short',
+                          timeStyle: 'short',
+                        })}`}
                       </Tag>
-                    ) : optimization?.scheduleMode === 'NEXT_DAY' ? (
-                      <Tag color="purple" icon={<ScheduleOutlined />}>
-                        Khởi hành từ ca ngày tiếp theo
-                      </Tag>
-                    ) : null}
-                    {isRestoredFromStorage && (
-                      <Tooltip title="Phương án này được tự động khôi phục từ phiên làm việc trước khi bạn chuyển tab hoặc tải lại trang">
-                        <Tag color="geekblue" icon={<CheckCircleOutlined />}>
-                          Đã khôi phục từ phiên trước
-                        </Tag>
-                      </Tooltip>
                     )}
                   </Space>
                 }
@@ -3557,7 +3578,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                 <MapboxMap
                   markers={mapMarkers}
                   routeGeometry={routeGeometry}
-                  height={mapLayoutMode === 'FULL' ? 640 : 560}
+                  height={mapLayoutMode === 'FULL' ? 620 : 480}
                   enableSimulation={showSimulation}
                   autoPlaySimulation={isSimulating}
                   followSimulationVehicle
@@ -3576,7 +3597,12 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                 />
               </Card>
             </Col>
-            <Col xs={24} xl={mapLayoutMode === 'FULL' ? 0 : 12} style={{ display: mapLayoutMode === 'FULL' ? 'none' : 'block' }}>
+            <Col
+              xs={24}
+              xl={mapLayoutMode === 'FULL' ? 0 : 12}
+              className="automatic-dispatch-pair-col"
+              style={{ display: mapLayoutMode === 'FULL' ? 'none' : 'flex' }}
+            >
               {currentActiveRoute ? <FloorPackingVisualizer
                 key={JSON.stringify([activeOptimizationJobId, selectedCandidateNumber, showingDirect, currentActiveRoute.route_id])}
                 route={currentActiveRoute}
@@ -3608,6 +3634,7 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                 onStepChange={changePackingStep}
                 isSimulating={showSimulation && canSimulate}
                 simulationPlayback={{ playing: mapPlaying, onToggle: toggleMapPlayback }}
+                pairedWithMap={mapLayoutMode === 'HALF'}
               /> : <Card title="Sơ đồ xếp dỡ thùng xe" className="card-elevation">
                 <Empty description="Chọn một tuyến xe trên bản đồ để xem hàng trên xe." />
               </Card>}
@@ -3626,14 +3653,11 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
               <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
                 description={
-                  <div style={{ maxWidth: 720, margin: '0 auto', textAlign: 'left' }}>
+                  <div style={{ maxWidth: 680, margin: '0 auto', textAlign: 'left' }}>
                     <Title level={5} style={{ color: '#c2410c', textAlign: 'center', marginBottom: 12 }}>
                       <ClockCircleOutlined style={{ marginRight: 8 }} />
-                      0 tuyến đường được tạo — Toàn bộ {result.unassigned_orders.length} đơn chưa thể xếp vào ca làm việc này
+                      0 tuyến đường · {result.unassigned_orders.length} đơn chưa thể xếp
                     </Title>
-                    <Paragraph type="secondary" style={{ marginBottom: 14, textAlign: 'center' }}>
-                      Tầng tối ưu Hybrid ALNS (Packing-aware ALNS + Dynamic 2D Spatial Validator) không tìm thấy phương án ghép tuyến khả thi do ràng buộc khung giờ làm việc hoặc giới hạn tài nguyên.
-                    </Paragraph>
 
                     {result.diagnostics.length > 0 && (
                       <div
@@ -3642,11 +3666,10 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                           borderRadius: 8,
                           padding: '12px 16px',
                           border: '1px solid #fed7aa',
-                          marginBottom: 14,
                         }}
                       >
                         <Text strong style={{ color: '#9a3412', display: 'block', marginBottom: 6 }}>
-                          🔍 Chẩn đoán từ tầng tối ưu Hybrid-first:
+                          Chi tiết nguyên nhân:
                         </Text>
                         <ul style={{ paddingLeft: 20, margin: 0, color: '#475569', fontSize: 13 }}>
                           {result.diagnostics.map((diag, idx) => (
@@ -3657,22 +3680,6 @@ const AutomaticDispatchPage: React.FC<AutomaticDispatchPageProps> = ({ onNavigat
                         </ul>
                       </div>
                     )}
-
-                    <Alert
-                      type="info"
-                      showIcon
-                      message="Gợi ý khắc phục cho điều phối viên:"
-                      description={
-                        <ul style={{ paddingLeft: 20, margin: '4px 0 0', fontSize: 13, lineHeight: '1.6' }}>
-                          <li>
-                            <strong>Hết ca làm việc hôm nay:</strong> Nếu bạn đang điều phối vào cuối buổi chiều (gần 17:00), xe và tài xế không còn đủ thời gian di chuyển. Hãy chọn <strong>"Ngày tiếp theo (ca mai)"</strong> hoặc bật <strong>"Chỉnh giờ cụ thể"</strong> về <strong>08:00 sáng</strong> trên thanh công cụ.
-                          </li>
-                          <li>
-                            <strong>Thời gian chờ của đơn:</strong> Đơn cũ vẫn được xếp giao; sau khoảng miễn phạt, chi phí trễ tăng theo thời gian. Không cần dời ngày đặt đơn.
-                          </li>
-                        </ul>
-                      }
-                    />
                   </div>
                 }
               />

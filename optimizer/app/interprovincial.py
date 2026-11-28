@@ -19,9 +19,15 @@ def location_identity(location: Any) -> str:
     if location is None:
         return ""
     if isinstance(location, Mapping):
-        return str(location.get("source_location_id") or location.get("id") or "")
+        return str(
+            location.get("warehouse_location_id")
+            or location.get("source_location_id")
+            or location.get("id")
+            or ""
+        )
+    wh = getattr(location, "warehouse_location_id", None)
     src = getattr(location, "source_location_id", None)
-    return str(src or getattr(location, "id", "") or "")
+    return str(wh or src or getattr(location, "id", "") or "")
 
 
 def _coord_key(location: Any) -> Tuple[float, float]:
@@ -85,7 +91,8 @@ def is_driver_compatible_with_vehicle(
 def _item_has_compat_rule(item: Any) -> bool:
     temp = getattr(item, "required_temperature", "ANY")
     return bool(
-        getattr(item, "cargo_group", None)
+        getattr(item, "is_hazmat", False)
+        or getattr(item, "cargo_group", None)
         or getattr(item, "incompatible_cargo_groups", None)
         or (temp and str(temp).strip().upper() != "ANY")
     )
@@ -98,10 +105,31 @@ def _normalize_cargo_group(group: Optional[str]) -> Optional[str]:
     return cleaned or None
 
 
+def is_item_hazmat(item: Any) -> bool:
+    """Return True when an item is marked as HAZMAT via flag, thermal mode, or group."""
+    if bool(getattr(item, "is_hazmat", False)):
+        return True
+    temp = (getattr(item, "required_temperature", None) or "").strip().upper()
+    if temp == "HAZMAT":
+        return True
+    return _normalize_cargo_group(getattr(item, "cargo_group", None)) == "HAZMAT"
+
+
+def vehicle_allows_hazmat(vehicle: Any) -> bool:
+    """Return True when a vehicle is certified for HAZMAT transport."""
+    if bool(getattr(vehicle, "allows_hazmat", False)):
+        return True
+    v_mode = (getattr(vehicle, "temperature_mode", None) or "").strip().upper()
+    return v_mode == "HAZMAT"
+
+
 def is_temperature_compatible(
-    required_temperature: Optional[str], vehicle_temperature_mode: Optional[str]
+    required_temperature: Optional[str],
+    vehicle_temperature_mode: Optional[str],
+    *,
+    allows_hazmat: bool = False,
 ) -> bool:
-    """Validate cold-chain/dry thermal compatibility between cargo and truck."""
+    """Validate cold-chain/dry/HAZMAT compatibility between cargo and truck."""
     if not required_temperature:
         return True
     req = required_temperature.strip().upper()
@@ -112,15 +140,23 @@ def is_temperature_compatible(
         return v_mode == "CHILLED"
     if req == "DRY":
         return v_mode in ("DRY", "ISOTHERMAL")
+    if req == "HAZMAT":
+        return v_mode == "HAZMAT" or bool(allows_hazmat)
     return True
 
 
 def is_location_accessible_for_vehicle(
-    location: Any, vehicle: Any, *, requires_lift: bool = False
+    location: Any,
+    vehicle: Any,
+    *,
+    requires_lift: bool = False,
+    requires_hazmat: bool = False,
 ) -> bool:
-    """Check warehouse physical access restrictions and handling equipment."""
+    """Check warehouse physical access, HAZMAT permission, and handling equipment."""
     if location is None:
         return True
+    if requires_hazmat and getattr(location, "allows_hazmat", None) is False:
+        return False
     max_payload = getattr(location, "max_vehicle_payload_kg", None)
     if (
         max_payload is not None
@@ -152,6 +188,7 @@ def items_have_compatibility_conflict(
     ):
         return False
     for a in items_a:
+        haz_a = is_item_hazmat(a)
         grp_a = _normalize_cargo_group(getattr(a, "cargo_group", None))
         raw_incompat_a = getattr(a, "incompatible_cargo_groups", None)
         incompat_a = (
@@ -162,6 +199,9 @@ def items_have_compatibility_conflict(
         temp_a = (getattr(a, "required_temperature", None) or "").strip().upper()
         temp_a_spec = temp_a not in ("", "ANY")
         for b in items_b:
+            haz_b = is_item_hazmat(b)
+            if haz_a != haz_b:
+                return True
             grp_b = _normalize_cargo_group(getattr(b, "cargo_group", None))
             raw_incompat_b = getattr(b, "incompatible_cargo_groups", None)
             incompat_b = (
@@ -181,7 +221,7 @@ def items_have_compatibility_conflict(
 def is_order_compatible_with_vehicle_and_warehouses(
     order: Any, vehicle: Any
 ) -> bool:
-    """Enforce order-vehicle allowlist, thermal mode, warehouse truck limits & lift gear."""
+    """Enforce order-vehicle allowlist, thermal/HAZMAT mode, warehouse limits & lift gear."""
     allowed = getattr(order, "allowed_source_vehicle_ids", None) or ()
     if allowed:
         v_phys = getattr(vehicle, "source_vehicle_id", None) or vehicle.id
@@ -190,10 +230,19 @@ def is_order_compatible_with_vehicle_and_warehouses(
 
     items = getattr(order, "items", None) or ()
     v_temp = getattr(vehicle, "temperature_mode", "DRY")
+    v_hazmat = vehicle_allows_hazmat(vehicle)
     requires_lift = False
+    requires_hazmat = False
     for item in items:
+        item_haz = is_item_hazmat(item)
+        if item_haz:
+            requires_hazmat = True
+            if not v_hazmat:
+                return False
         if not is_temperature_compatible(
-            getattr(item, "required_temperature", None), v_temp
+            getattr(item, "required_temperature", None),
+            v_temp,
+            allows_hazmat=v_hazmat,
         ):
             return False
         if bool(getattr(item, "requires_lift_equipment", False)):
@@ -207,7 +256,10 @@ def is_order_compatible_with_vehicle_and_warehouses(
         getattr(order, "delivery_location", None),
     ):
         if not is_location_accessible_for_vehicle(
-            loc, vehicle, requires_lift=requires_lift
+            loc,
+            vehicle,
+            requires_lift=requires_lift,
+            requires_hazmat=requires_hazmat,
         ):
             return False
     return True
@@ -278,6 +330,40 @@ def align_arrival_with_warehouse_hours(
     return t
 
 
+def _coerce_location_point(
+    loc: Any,
+    *,
+    fallback_id: str = "",
+    fallback_name: str = "Location",
+    fallback_lat: float = 0.0,
+    fallback_lon: float = 0.0,
+) -> Optional[LocationPoint]:
+    """Convert any LocationPoint-like object into contract LocationPoint preserving metadata."""
+    if loc is None:
+        return None
+    if isinstance(loc, LocationPoint):
+        return loc
+    return LocationPoint(
+        id=str(getattr(loc, "id", fallback_id) or fallback_id),
+        source_location_id=getattr(loc, "source_location_id", None),
+        warehouse_location_id=getattr(loc, "warehouse_location_id", None),
+        name=str(getattr(loc, "name", fallback_name) or fallback_name),
+        latitude=float(getattr(loc, "latitude", fallback_lat)),
+        longitude=float(getattr(loc, "longitude", fallback_lon)),
+        province_code=getattr(loc, "province_code", None),
+        province_name=getattr(loc, "province_name", None),
+        warehouse_role=getattr(loc, "warehouse_role", None),
+        docking_time_sec=int(getattr(loc, "docking_time_sec", 0) or 0),
+        max_vehicle_payload_kg=getattr(loc, "max_vehicle_payload_kg", None),
+        max_vehicle_length_cm=getattr(loc, "max_vehicle_length_cm", None),
+        has_forklift=getattr(loc, "has_forklift", None),
+        allows_hazmat=getattr(loc, "allows_hazmat", None),
+        operating_windows=list(getattr(loc, "operating_windows", None) or ()),
+        handling_sec_per_ton=int(getattr(loc, "handling_sec_per_ton", 0) or 0),
+        handling_sec_per_package=int(getattr(loc, "handling_sec_per_package", 0) or 0),
+    )
+
+
 def resolve_vehicle_end_location(
     vehicle: Any,
     stops: Optional[Sequence[ScheduledStop]] = None,
@@ -286,19 +372,7 @@ def resolve_vehicle_end_location(
     """Resolve the physical end location of a route (home depot, custom end_depot, or open-route)."""
     end_depot = getattr(vehicle, "end_depot", None)
     if end_depot is not None:
-        if isinstance(end_depot, LocationPoint):
-            return end_depot
-        return LocationPoint(
-            id=str(getattr(end_depot, "id", "")),
-            source_location_id=getattr(end_depot, "source_location_id", None),
-            name=str(getattr(end_depot, "name", "") or "End Depot"),
-            latitude=float(getattr(end_depot, "latitude", 0.0)),
-            longitude=float(getattr(end_depot, "longitude", 0.0)),
-            province_code=getattr(end_depot, "province_code", None),
-            province_name=getattr(end_depot, "province_name", None),
-            warehouse_role=getattr(end_depot, "warehouse_role", None),
-            docking_time_sec=int(getattr(end_depot, "docking_time_sec", 0) or 0),
-        )
+        return _coerce_location_point(end_depot, fallback_name="End Depot")
 
     if not getattr(vehicle, "return_to_depot", True):
         if stops:
@@ -317,18 +391,12 @@ def resolve_vehicle_end_location(
                         if last_stop.stop_type == "PICKUP"
                         else order.delivery_location
                     )
-                    if isinstance(loc, LocationPoint):
-                        return loc
-                    return LocationPoint(
-                        id=str(getattr(loc, "id", last_stop.location_id)),
-                        source_location_id=getattr(loc, "source_location_id", None),
-                        name=str(getattr(loc, "name", last_stop.location_name)),
-                        latitude=float(getattr(loc, "latitude", fallback_lat)),
-                        longitude=float(getattr(loc, "longitude", fallback_lon)),
-                        province_code=getattr(loc, "province_code", None),
-                        province_name=getattr(loc, "province_name", None),
-                        warehouse_role=getattr(loc, "warehouse_role", None),
-                        docking_time_sec=int(getattr(loc, "docking_time_sec", 0) or 0),
+                    return _coerce_location_point(
+                        loc,
+                        fallback_id=str(last_stop.location_id),
+                        fallback_name=str(last_stop.location_name),
+                        fallback_lat=fallback_lat,
+                        fallback_lon=fallback_lon,
                     )
             return LocationPoint(
                 id=str(last_stop.location_id),
@@ -338,20 +406,7 @@ def resolve_vehicle_end_location(
             )
         return None
 
-    depot = getattr(vehicle, "depot", None)
-    if depot is None or isinstance(depot, LocationPoint):
-        return depot
-    return LocationPoint(
-        id=str(getattr(depot, "id", "")),
-        source_location_id=getattr(depot, "source_location_id", None),
-        name=str(getattr(depot, "name", "") or "Depot"),
-        latitude=float(getattr(depot, "latitude", 0.0)),
-        longitude=float(getattr(depot, "longitude", 0.0)),
-        province_code=getattr(depot, "province_code", None),
-        province_name=getattr(depot, "province_name", None),
-        warehouse_role=getattr(depot, "warehouse_role", None),
-        docking_time_sec=int(getattr(depot, "docking_time_sec", 0) or 0),
-    )
+    return _coerce_location_point(getattr(vehicle, "depot", None), fallback_name="Depot")
 
 
 def resolve_vehicle_end_node_index(
@@ -419,6 +474,16 @@ class DriverRestState:
 
 def is_rest_policy_enabled(rest_policy: Any) -> bool:
     return rest_policy is not None and bool(getattr(rest_policy, "enabled", True))
+
+
+def resolve_rest_policy_limits(rest_policy: Any) -> Tuple[int, Optional[int]]:
+    """Return (min_inter_trip_rest_sec, max_weekly_driving_sec) when rest policy is enabled."""
+    if not is_rest_policy_enabled(rest_policy):
+        return 0, None
+    min_rest = max(0, int(getattr(rest_policy, "min_inter_trip_rest_sec", 0) or 0))
+    raw_weekly = getattr(rest_policy, "max_weekly_driving_sec", None)
+    max_weekly = int(raw_weekly) if raw_weekly is not None and int(raw_weekly) > 0 else None
+    return min_rest, max_weekly
 
 
 def estimate_driving_rest_lower_bound_sec(transit_sec: float, rest_policy: Any) -> int:
@@ -622,6 +687,7 @@ class ScheduledTimelineResult:
     return_travel_time_sec: int = 0
     return_waiting_time_sec: int = 0
     mandatory_rest_sec: int = 0
+    total_driving_sec: int = 0
     rest_breaks: List[RestBreakRecord] = field(default_factory=list)
     total_distance_meters: float = 0.0
     province_hops: List[str] = field(default_factory=list)
@@ -648,7 +714,7 @@ def stop_effective_service_seconds(
         dynamic_handling = 0
     base_service = int(order.service_seconds(stop_type)) + dynamic_handling
 
-    loc_key = str(getattr(loc, "source_location_id", None) or getattr(loc, "id", "") or "")
+    loc_key = location_identity(loc)
     docking = int(getattr(loc, "docking_time_sec", 0) or 0)
     if docking > 0 and loc_key and loc_key != previous_location_key:
         return base_service + docking, loc_key
@@ -679,16 +745,44 @@ def needs_interprovincial_timeline(request: Any, vehicle: Any) -> bool:
     return False
 
 
+def route_driving_seconds(route: Any) -> int:
+    """Return total active driving seconds for a route, deriving from stops if unset."""
+    explicit = int(getattr(route, "total_driving_sec", 0) or 0)
+    if explicit > 0:
+        return explicit
+    stop_drive = sum(
+        int(getattr(stop, "travel_time_sec", 0) or 0)
+        for stop in (getattr(route, "stops", None) or ())
+    )
+    ret_drive = int(getattr(route, "return_travel_time_sec", 0) or 0)
+    if ret_drive == 0:
+        cost = getattr(route, "cost", None) or getattr(route, "cost_breakdown", None)
+        _ = cost
+    return max(0, stop_drive + ret_drive)
+
+
 def check_cross_day_resource_conflicts(
     routes: Sequence[Any],
     vehicle_by_id: Mapping[str, Any],
     *,
     min_inter_trip_rest_sec: int = 0,
+    max_weekly_driving_sec: Optional[int] = None,
+    driver_by_id: Optional[Mapping[str, Any]] = None,
 ) -> bool:
-    """Return True if any physical vehicle or driver has overlapping or under-rested trips."""
+    """Return True if any vehicle/driver overlaps, lacks rest, or exceeds weekly driving."""
     day_drivers: set[Tuple[int, str]] = set()
     vehicle_intervals: Dict[str, List[Tuple[int, int, int]]] = {}
     driver_intervals: Dict[str, List[Tuple[int, int, int]]] = {}
+    driver_weekly_driving: Dict[Tuple[str, int], int] = {}
+
+    if driver_by_id and max_weekly_driving_sec is not None and max_weekly_driving_sec > 0:
+        for drv in driver_by_id.values():
+            phys_d = str(getattr(drv, "source_driver_id", None) or getattr(drv, "id", "") or "")
+            init_sec = int(getattr(drv, "initial_weekly_driving_sec", 0) or 0)
+            if phys_d and init_sec > 0:
+                key = (phys_d, 0)
+                if init_sec > driver_weekly_driving.get(key, 0):
+                    driver_weekly_driving[key] = init_sec
 
     for route in routes:
         day_idx = int(getattr(route, "service_day_index", 0) or 0)
@@ -710,14 +804,32 @@ def check_cross_day_resource_conflicts(
                     return True
             existing_v.append((day_idx, start_s, end_s))
 
-        driver_id = getattr(route, "driver_id", None)
+        raw_driver = getattr(route, "driver", None)
+        driver_id = getattr(route, "driver_id", None) or (
+            getattr(raw_driver, "source_driver_id", None) or getattr(raw_driver, "id", None)
+            if raw_driver is not None
+            else None
+        )
         if driver_id:
-            if (day_idx, driver_id) in day_drivers:
+            drv_obj = driver_by_id.get(str(driver_id)) if driver_by_id else raw_driver
+            phys_driver = str(
+                getattr(drv_obj, "source_driver_id", None)
+                or getattr(drv_obj, "id", None)
+                or driver_id
+            )
+            if (day_idx, phys_driver) in day_drivers:
                 return True
-            day_drivers.add((day_idx, driver_id))
-            driver_intervals.setdefault(str(driver_id), []).append(
+            day_drivers.add((day_idx, phys_driver))
+            driver_intervals.setdefault(phys_driver, []).append(
                 (day_idx, start_s, end_s)
             )
+            if max_weekly_driving_sec is not None and max_weekly_driving_sec > 0:
+                w_key = (phys_driver, day_idx // 7)
+                driver_weekly_driving[w_key] = (
+                    driver_weekly_driving.get(w_key, 0) + route_driving_seconds(route)
+                )
+                if driver_weekly_driving[w_key] > int(max_weekly_driving_sec):
+                    return True
 
     rest_gap = max(0, int(min_inter_trip_rest_sec or 0))
     for intervals in driver_intervals.values():
@@ -966,6 +1078,7 @@ def schedule_route_timeline(
             return_travel_time_sec=return_travel,
             return_waiting_time_sec=return_waiting,
             mandatory_rest_sec=total_mandatory_rest,
+            total_driving_sec=state.total_driving_sec,
             rest_breaks=all_breaks,
             total_distance_meters=total_distance,
             province_hops=hops,

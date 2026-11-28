@@ -24,8 +24,10 @@ const mapboxMocks = vi.hoisted(() => {
   }
 
   class MockMap {
-    sources = new globalThis.Map<string, { setData: (data: unknown) => void }>();
+    sources = new globalThis.Map<string, { setData: ReturnType<typeof vi.fn> }>();
     layers = new Set<string>();
+    layerListeners = new globalThis.Map<string, (event: unknown) => void>();
+    canvas = { style: { cursor: '' } };
     removed = false;
     zoom = 11;
     zooming = false;
@@ -42,23 +44,56 @@ const mapboxMocks = vi.hoisted(() => {
     remove() { this.removed = true; }
     isStyleLoaded() { return true; }
     isZooming() { return this.zooming; }
-    on(_event: string, callback: (event: { originalEvent?: Event }) => void) { this.zoomStart = callback; }
-    off() {}
+    getCanvas() { return this.canvas; }
+    on(
+      event: string,
+      layerOrCallback: string | ((event: { originalEvent?: Event }) => void),
+      callback?: (event: unknown) => void,
+    ) {
+      if (typeof layerOrCallback === 'function') {
+        if (event === 'zoomstart') this.zoomStart = layerOrCallback;
+      } else if (typeof callback === 'function') {
+        this.layerListeners.set(`${event}:${layerOrCallback}`, callback);
+      }
+    }
+    off(
+      event?: string,
+      layerOrCallback?: string | ((event: { originalEvent?: Event }) => void),
+    ) {
+      if (event && typeof layerOrCallback === 'string') {
+        this.layerListeners.delete(`${event}:${layerOrCallback}`);
+      }
+    }
     once(_event: string, callback: () => void) { callback(); }
-    addSource(id: string) { this.sources.set(id, { setData: vi.fn() }); }
+    addSource(id: string, config?: { data?: unknown }) { this.sources.set(id, { setData: vi.fn(), ...(config ? { initialData: config.data } : {}) }); }
     getSource(id: string) { return this.sources.get(id); }
-    addLayer(layer: { id: string }) { this.layers.add(layer.id); }
+    addLayer(layer: { id: string }, _beforeId?: string) { this.layers.add(layer.id); }
     getLayer(id: string) { return this.layers.has(id) ? { id } : undefined; }
     getZoom() { return this.zoom; }
     setPaintProperty() {}
     fitBounds() {}
   }
 
+  const popupInstances: MockPopup[] = [];
+
   class MockPopup {
     content?: HTMLElement;
+    lngLat?: unknown;
+    addedMap?: unknown;
     remove = vi.fn();
+    constructor() {
+      popupInstances.push(this);
+    }
+    setLngLat(lngLat: unknown) {
+      this.lngLat = lngLat;
+      return this;
+    }
     setDOMContent(content: HTMLElement) {
       this.content = content;
+      return this;
+    }
+    addTo(map: unknown) {
+      this.addedMap = map;
       return this;
     }
   }
@@ -86,7 +121,7 @@ const mapboxMocks = vi.hoisted(() => {
     togglePopup = vi.fn();
   }
 
-  return { mapInstances, markerInstances, MockBounds, MockMap, MockMarker, MockPopup };
+  return { mapInstances, markerInstances, popupInstances, MockBounds, MockMap, MockMarker, MockPopup };
 });
 
 vi.mock('mapbox-gl', () => ({
@@ -168,6 +203,7 @@ describe('MapboxMap vehicle simulation lifecycle', () => {
   beforeEach(() => {
     mapboxMocks.mapInstances.length = 0;
     mapboxMocks.markerInstances.length = 0;
+    mapboxMocks.popupInstances.length = 0;
     vi.stubEnv('VITE_MAPBOX_TOKEN', 'test-token');
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
@@ -370,5 +406,55 @@ describe('MapboxMap vehicle simulation lifecycle', () => {
     fireEvent.keyDown(speedInput, { key: 'Enter' });
     expect(advance(10)).toBeCloseTo(overviewSpeed / 2, 8);
     expect(advance(20)).toBeCloseTo(closeupSpeed / 2, 8);
+  });
+
+  it('renders active restricted zones and shows zone details popup on click', () => {
+    render(
+      <MapboxMap
+        routeGeometry={firstRoute}
+        restrictedZones={[
+          {
+            id: 'zone-han',
+            branchId: 'branch-han',
+            name: 'Nội thành Hà Nội (Vành đai 3)',
+            active: true,
+            maxPayloadKg: 2500,
+            polygon: [[[105.78, 21.08], [105.82, 20.97], [105.86, 21.02], [105.78, 21.08]]],
+            curfewWindows: [
+              { startTime: '06:00', endTime: '09:00' },
+              { startTime: '16:00', endTime: '20:00' },
+            ],
+            createdAt: '2026-11-26T00:00:00.000Z',
+            updatedAt: '2026-11-26T00:00:00.000Z',
+          },
+        ]}
+      />,
+    );
+
+    const map = mapboxMocks.mapInstances[0] as InstanceType<typeof mapboxMocks.MockMap>;
+    expect(map.getLayer('restricted-zones-fill')).toBeDefined();
+    expect(map.getLayer('restricted-zones-outline')).toBeDefined();
+
+    const clickHandler = map.layerListeners.get('click:restricted-zones-fill');
+    expect(clickHandler).toBeTypeOf('function');
+    act(() => {
+      clickHandler?.({
+        lngLat: { lng: 105.85, lat: 21.02 },
+        features: [
+          {
+            properties: {
+              name: 'Nội thành Hà Nội (Vành đai 3)',
+              maxPayloadKg: 2500,
+              curfewSummary: '06:00–09:00, 16:00–20:00',
+            },
+          },
+        ],
+      });
+    });
+
+    const zonePopup = mapboxMocks.popupInstances[mapboxMocks.popupInstances.length - 1];
+    expect(zonePopup?.content).toHaveTextContent('Nội thành Hà Nội (Vành đai 3)');
+    expect(zonePopup?.content).toHaveTextContent('Hạn chế xe > 2.500 kg');
+    expect(zonePopup?.content).toHaveTextContent('Khung giờ cấm: 06:00–09:00, 16:00–20:00');
   });
 });

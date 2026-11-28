@@ -459,6 +459,9 @@ model TripStop {
   actualArrivalTime    DateTime?  @db.Timestamptz(3)
   actualDepartureTime  DateTime?  @db.Timestamptz(3)
   status               String     @default("PENDING") // PENDING, ARRIVED, COMPLETED, SKIPPED
+  hubLocationId        String?
+  hubLocation          Location?  @relation("TripStopHubLocation", fields: [hubLocationId], references: [id], onDelete: Restrict)
+  skipReason           String?
   tasks                StopTask[]
 
   assignmentStarts DriverAssignment[] @relation("AssignmentStartStop")
@@ -469,6 +472,7 @@ model TripStop {
 
   @@unique([tripId, sequence])
   @@index([tripId, status])
+  @@index([hubLocationId])
   @@map("trip_stops")
   transferPickups  TripTransferShipment[] @relation("TransferPickupStop")
   transferDrops    TripTransferShipment[] @relation("TransferDeliveryStop")
@@ -751,6 +755,10 @@ model Package {
   holdingSlot            String?
   arrivedAtPickupPointAt DateTime?         @db.Timestamptz(3)
   releasedAt             DateTime?         @db.Timestamptz(3)
+  custodyLocationId      String?
+  custodyLocation        Location?          @relation("PackageCustodyLocation", fields: [custodyLocationId], references: [id], onDelete: Restrict)
+  returnedToHubAt        DateTime?          @db.Timestamptz(3)
+  deliveryAttemptCount   Int                @default(0)
   items                  PackageItem[]
   events                 PackageEvent[]
   transferShipment       TransferShipment?
@@ -762,6 +770,7 @@ model Package {
   measuredByUser         User?                    @relation("MeasuredPackages", fields: [measuredByUserId], references: [id], onDelete: SetNull)
   @@index([orderId, status])
   @@index([fulfillmentGroupId, status])
+  @@index([custodyLocationId, status])
 }
 
 model OrderEvent {
@@ -938,6 +947,8 @@ model DeliveryAttempt {
   recipientName String?
   result        String
   failureReason String?
+  failureCategory       String?
+  requestedRedeliveryAt DateTime?        @db.Timestamptz(3)
   commandId     String           @unique
   results       DeliveryResult[]
   podFiles      PodFile[]
@@ -1295,6 +1306,8 @@ model Location {
   endRouteVehicles        Vehicle[]              @relation("VehicleEndDepots")
   homeDrivers             Driver[]               @relation("DriverHomeLocations")
   orderStops              OrderStop[]            @relation("OrderStopLocations")
+  custodyPackages         Package[]              @relation("PackageCustodyLocation")
+  hubTripStops            TripStop[]             @relation("TripStopHubLocation")
   maxDeliveryDistanceKm   Int?                   @default(100)
   createdAt               DateTime               @default(now()) @db.Timestamptz(3)
   updatedAt               DateTime               @updatedAt @db.Timestamptz(3)
@@ -1648,6 +1661,7 @@ model DeliveryAppointment {
   requestedStart DateTime? @db.Timestamptz(3)
   requestedEnd   DateTime? @db.Timestamptz(3)
   responseNote   String?
+  recipientPhone String?
   createdAt      DateTime @default(now()) @db.Timestamptz(3)
   updatedAt      DateTime @updatedAt @db.Timestamptz(3)
 
@@ -1818,6 +1832,7 @@ model SystemSetting {
   maxOptimizationTimeSeconds  Int?
   hybridSeedCount             Int?
   earlyStopPatience           Int?
+  dispatchPreparationMinutes  Int?
   unassignedOrderPenaltyVnd   BigInt?
   maxRoutesPerDay             Int?
   demoAllowOverride           Boolean?

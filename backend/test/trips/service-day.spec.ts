@@ -1,8 +1,10 @@
 import {
   buildServiceDayWindows,
+  currentDispatchEarliest,
   getFullServiceDayPlanningEpoch,
   getNextDayPlanningEpoch,
   getPlanningEpoch,
+  resolveCurrentDispatchStart,
 } from '../../src/trips/service-day';
 
 describe('service day planning', () => {
@@ -134,5 +136,28 @@ describe('service day planning', () => {
         },
       ),
     ).toThrow('không đủ tối thiểu 15 phút');
+  });
+});
+
+describe('current dispatch start', () => {
+  const zone = 'Asia/Ho_Chi_Minh';
+  const start = (earliest: Date) => resolveCurrentDispatchStart(earliest, zone, '08:00', '17:00');
+
+  it('reserves compute and preparation time while keeping the rest of today', () => {
+    const window = start(currentDispatchEarliest(new Date('2026-11-21T09:33:00+07:00'), 20, 7 * 60));
+    expect(window.effectiveStartTime.toISOString()).toBe('2026-11-21T03:00:00.000Z');
+    expect(window.planningEpoch.toISOString()).toBe('2026-11-20T17:00:00.000Z');
+    expect(currentDispatchEarliest(new Date('2026-11-21T09:50:00+07:00'), 20).toISOString())
+      .toBe('2026-11-21T03:10:00.000Z');
+  });
+
+  it('starts at opening before the shift and moves to the next day if less than 15 minutes remain', () => {
+    expect(start(new Date('2026-11-21T07:45:00+07:00')).effectiveStartTime.toISOString())
+      .toBe('2026-11-21T01:00:00.000Z');
+    expect(start(new Date('2026-11-21T16:45:00+07:00')).effectiveStartTime.toISOString())
+      .toBe('2026-11-21T09:45:00.000Z');
+    const next = start(new Date('2026-11-21T16:46:00+07:00'));
+    expect(next.effectiveStartTime.toISOString()).toBe('2026-11-22T01:00:00.000Z');
+    expect(next.planningEpoch.toISOString()).toBe('2026-11-21T17:00:00.000Z');
   });
 });

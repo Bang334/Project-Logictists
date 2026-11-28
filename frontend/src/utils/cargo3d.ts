@@ -126,8 +126,8 @@ export function createProjectionContext(
 
   const spanX = Math.max(1, maxX - minX);
   const spanY = Math.max(1, maxY - minY);
-  const padX = Math.max(60, viewportWidth * 0.14);
-  const padY = Math.max(54, viewportHeight * 0.16);
+  const padX = Math.max(46, viewportWidth * 0.1);
+  const padY = Math.max(40, viewportHeight * 0.11);
   const fitScale = Math.min((viewportWidth - padX) / spanX, (viewportHeight - padY) / spanY);
 
   return {

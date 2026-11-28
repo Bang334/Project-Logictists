@@ -13,6 +13,9 @@ import { assertOptimizationProposal, signOptimizationProposal } from '../../src/
 import { OptimizationProposal } from '../../src/trips/optimization-proposal';
 import { assertFleetOptimizationResult } from '../../src/trips/optimizer-contract';
 import { DeliveryResponse } from '../../src/trips/dto/delivery-planning.dto';
+import { recipientLink } from '../../src/common/services/delivery-sms';
+
+const optimizerPython = process.env.OPTIMIZER_TEST_PYTHON ?? resolve('../optimizer/.venv/Scripts/python.exe');
 
 const url = process.env.DELIVERY_TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
@@ -66,7 +69,7 @@ suite('Delivery planning — PostgreSQL, real solver and transaction guards', ()
 
   async function candidate(day = 0) {
     const order = await db.order.create({ data: { orderNumber: randomUUID(), customerId, branchId, packageDataStatus: 'COMPLETE', orderedAt: new Date('2031-01-01'),
-      stops: { create: (['PICKUP','DELIVERY'] as const).map((type, index) => ({ type, sequence: index + 1, address: 'test', latitude: 10, longitude: 106, contactName: 'Test', contactPhone: '000', serviceDurationMinutes: 1 })) },
+      stops: { create: (['PICKUP','DELIVERY'] as const).map((type, index) => ({ type, sequence: index + 1, address: 'test', latitude: 10, longitude: 106, contactName: 'Test', contactPhone: '0900000000', serviceDurationMinutes: 1 })) },
       items: { create: { description: 'Test', quantity: 1, weightKg: 1, volumeM3: 0.001, packages: { create: { packageCode: randomUUID(), lengthMm: 100, widthMm: 100, heightMm: 100, weightG: 1000n, status: 'READY', measurementSource: 'SEED_DEMO' } } } },
     }, include: { stops: true, items: { include: { packages: true } } } });
     const vehicle = await db.vehicle.findUniqueOrThrow({ where: { id: vehicleId }, include: { vehicleTypeRecord: true } });
@@ -83,7 +86,7 @@ suite('Delivery planning — PostgreSQL, real solver and transaction guards', ()
       }], policy: { fuel_price_per_liter_vnd: 23000, monthly_working_minutes: 10560 },
       distance_matrix_meters: [[0,100,100],[100,0,100],[100,100,0]], duration_matrix_seconds: [[0,60,60],[60,0,60],[60,60,0]],
     };
-    const run = spawnSync(resolve('../optimizer/.venv/Scripts/python.exe'), ['-X','utf8','-c', 'import sys,json;from app.models import FleetOptimizationRequest;from app.hybrid_alns_engine import PackingAwareHybridALNSOptimizer;q=FleetOptimizationRequest.model_validate(json.load(sys.stdin));print(PackingAwareHybridALNSOptimizer(q,time_budget_seconds=2).solve().model_dump_json())'], {
+    const run = spawnSync(optimizerPython, ['-X','utf8','-c', 'import sys,json;from app.models import FleetOptimizationRequest;from app.hybrid_alns_engine import PackingAwareHybridALNSOptimizer;q=FleetOptimizationRequest.model_validate(json.load(sys.stdin));print(PackingAwareHybridALNSOptimizer(q,time_budget_seconds=2).solve().model_dump_json())'], {
       cwd: resolve('../optimizer'), input: JSON.stringify(payload), encoding: 'utf8', windowsHide: true,
     });
     if (run.status !== 0) throw new Error(run.stderr);
@@ -134,6 +137,36 @@ suite('Delivery planning — PostgreSQL, real solver and transaction guards', ()
     expect(changed.windowStart.toISOString()).toBe(appointment.windowStart.toISOString());
     expect(await db.deliveryCapacityHold.count({ where: { batchId: batch.id, status: 'HELD' } })).toBe(0);
     await expect(service.optimize(owner, batch.id, { idempotencyKey: randomUUID() })).rejects.toThrow(/Chưa có khách/);
+  }, 60000);
+
+  it('người nhận đổi giờ qua liên kết, chỉ một phản hồi thắng và hệ thống lưu khung mới khi chốt', async () => {
+    const dto = await candidate(4);
+    const batch = await service.propose(owner, { ...dto, recipientWeb: true });
+    const offer = batch.appointments[0];
+    const token = new URL(recipientLink(offer, 'https://example.com')).hash.slice(1);
+    expect((await service.recipientAppointment(token)).status).toBe('PENDING');
+    await expect(service.recipientAppointment(token + 'x')).rejects.toThrow(/không hợp lệ/);
+    await expect(service.respond(customer, offer.id, { idempotencyKey: randomUUID(), version: 1, decision: DeliveryResponse.CONFIRMED })).rejects.toThrow(/thuộc tài khoản/);
+    const requestedStart = new Date(offer.windowStart.getTime() + 15 * 60_000);
+    const requestedEnd = new Date(offer.windowEnd.getTime() + 15 * 60_000);
+    const command = {
+      version: 1,
+      decision: DeliveryResponse.CHANGE_REQUESTED,
+      idempotencyKey: randomUUID(),
+      requestedStart: requestedStart.toISOString(),
+      requestedEnd: requestedEnd.toISOString(),
+    };
+    const results = await Promise.allSettled([
+      service.respondAsRecipient(token, command),
+      service.respondAsRecipient(token, { ...command, idempotencyKey: randomUUID() }),
+    ]);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    const saved = await service.recipientAppointment(token);
+    expect(saved.status).toBe('CHANGE_REQUESTED');
+    expect(saved.requestedStart?.toISOString()).toBe(requestedStart.toISOString());
+    expect(await db.deliveryCapacityHold.count({ where: { batchId: batch.id, status: 'HELD' } })).toBe(0);
+    await expect(service.propose(owner, { ...dto, recipientWeb: true, idempotencyKey: randomUUID() }))
+      .rejects.toThrow(/đã có giờ người nhận chọn/);
   }, 60000);
 
   it('database tự chặn giữ chỗ đồng thời và đặt chuyến đè lên chỗ đã giữ, kể cả bỏ qua service', async () => {

@@ -966,7 +966,111 @@ async function main() {
     `✅ Đã tạo dữ liệu vận tải, ${demoOrders.length} đơn đa loại và ${southernAisleOrders.length} đơn demo lối đi 2D miền Nam.`,
   );
 
-  // 7. Khởi tạo 30 đơn hàng, đội xe, tài xế cho Chi nhánh Miền Trung (Đà Nẵng - BRANCH-DAD)
+  const hanoiPolygon = [
+    [
+      [105.78781, 21.08405],
+      [105.78817, 21.08046],
+      [105.78578, 21.07566],
+      [105.78493, 21.06712],
+      [105.78175, 21.0537],
+      [105.78055, 21.03823],
+      [105.77847, 21.02486],
+      [105.77975, 21.02047],
+      [105.80342, 20.99172],
+      [105.81552, 20.97525],
+      [105.81793, 20.9733],
+      [105.82621, 20.97049],
+      [105.8345, 20.9663],
+      [105.85034, 20.96552],
+      [105.86568, 20.96363],
+      [105.87259, 20.9643],
+      [105.87618, 20.96598],
+      [105.88147, 20.97245],
+      [105.88806, 20.97759],
+      [105.89307, 20.98353],
+      [105.89476, 20.9834],
+      [105.89483, 20.98664],
+      [105.89205, 20.99245],
+      [105.89222, 20.99637],
+      [105.8837, 21.00096],
+      [105.88198, 21.00125],
+      [105.87939, 21.00065],
+      [105.87712, 21.00189],
+      [105.8718, 21.00322],
+      [105.86529, 21.00943],
+      [105.86361, 21.01247],
+      [105.86049, 21.02467],
+      [105.85479, 21.0352],
+      [105.83822, 21.05265],
+      [105.83292, 21.06093],
+      [105.83172, 21.06406],
+      [105.82914, 21.065],
+      [105.82653, 21.06831],
+      [105.82573, 21.07296],
+      [105.82072, 21.07756],
+      [105.81456, 21.08828],
+      [105.81277, 21.08965],
+      [105.81074, 21.09007],
+      [105.79737, 21.08929],
+      [105.78733, 21.09088],
+      [105.78781, 21.08405],
+    ],
+  ];
+
+  const existingHanZone = await prisma.loadRestrictionZone.findFirst({
+    where: {
+      branchId: branchHN.id,
+      name: 'Nội thành Hà Nội (Vành đai 3)',
+    },
+  });
+  if (!existingHanZone) {
+    await prisma.loadRestrictionZone.create({
+      data: {
+        branchId: branchHN.id,
+        name: 'Nội thành Hà Nội (Vành đai 3)',
+        description:
+          'Cấm xe tải > 2.5 tấn giờ cao điểm trong Vành đai 3 – Đê Hữu Hồng bờ Tây sông Hồng',
+        active: true,
+        maxPayloadKg: 2500,
+        polygon: hanoiPolygon,
+        curfewWindows: [
+          { startTime: '06:00', endTime: '09:00' },
+          { startTime: '16:00', endTime: '20:00' },
+        ],
+      },
+    });
+  }
+
+  // 7. Khởi tạo chính sách giờ lái chuẩn VN (Luật TTATGTĐB 2024: 4h liên tục / 10h ngày / 48h tuần)
+  await prisma.workPolicy.upsert({
+    where: {
+      code_revision: {
+        code: 'VN_TTATGTDB_2024',
+        revision: 1,
+      },
+    },
+    update: {},
+    create: {
+      code: 'VN_TTATGTDB_2024',
+      revision: 1,
+      effectiveFrom: new Date('2025-01-01T00:00:00Z'),
+      jurisdiction: 'VN',
+      approvalReference: 'Luật TTATGTĐB 2024 (36/2024/QH15)',
+      limits: {
+        enabled: true,
+        maxContinuousDrivingSec: 4 * 3600,
+        shortRestDurationSec: 15 * 60,
+        maxDailyDrivingSec: 10 * 3600,
+        dailyRestDurationSec: 8 * 3600,
+        maxWeeklyDrivingSec: 48 * 3600,
+        minInterTripRestSec: 0,
+        overnightAllowanceVnd: 0,
+        restAllowanceDuringService: true,
+      },
+    },
+  });
+
+  // 8. Khởi tạo 30 đơn hàng, đội xe, tài xế cho Chi nhánh Miền Trung (Đà Nẵng - BRANCH-DAD)
   await seedCentralBranchData();
 
   console.log('🎉 KHỞI TẠO MASTER DATA THÀNH CÔNG VÀO POSTGRESQL SUPABASE!');

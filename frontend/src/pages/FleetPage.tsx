@@ -19,6 +19,7 @@ import {
 import {
   CarOutlined,
   TeamOutlined,
+  BankOutlined,
   EnvironmentOutlined,
   ApartmentOutlined,
   EditOutlined,
@@ -32,6 +33,7 @@ import { Vehicle, Driver, Branch } from '../types';
 import { EditBranchModal } from '../components/EditBranchModal';
 import { EditVehicleModal } from '../components/EditVehicleModal';
 import { EditDriverModal } from '../components/EditDriverModal';
+import { WarehousesTab } from '../components/WarehousesTab';
 import { getVehicleImage } from '../utils/demoAssets';
 
 const { Title, Text } = Typography;
@@ -645,6 +647,21 @@ const FleetPage: React.FC = () => {
                   rowKey="id"
                   loading={loading}
                   pagination={{ pageSize: 8 }}
+                />
+              ),
+            },
+            {
+              key: 'warehouses',
+              label: (
+                <span>
+                  <BankOutlined /> Kho Lưu Chuyển & Hàng Hoàn
+                </span>
+              ),
+              children: (
+                <WarehousesTab
+                  branches={branches}
+                  selectedBranchId={selectedBranchId}
+                  canManage={can('branches.manage')}
                 />
               ),
             },

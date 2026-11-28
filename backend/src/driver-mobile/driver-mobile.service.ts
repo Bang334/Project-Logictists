@@ -32,6 +32,12 @@ const stopFields = {
   id: true,
   sequence: true,
   stopType: true,
+  status: true,
+  skipReason: true,
+  hubLocationId: true,
+  hubLocation: {
+    select: { id: true, code: true, name: true, address: true },
+  },
   address: true,
   latitude: true,
   longitude: true,
@@ -52,6 +58,9 @@ const tripFields = {
 const packageFields = {
   id: true,
   packageCode: true,
+  status: true,
+  custodyLocationId: true,
+  deliveryAttemptCount: true,
   lengthMm: true,
   widthMm: true,
   heightMm: true,
@@ -191,6 +200,7 @@ export class DriverMobileService {
                         id: true,
                         action: true,
                         plannedQuantity: true,
+                        actualQuantity: true,
                         deliveryResults: {
                           where: { result: "RETAINED_ON_VEHICLE" },
                           select: { id: true },
@@ -278,6 +288,7 @@ export class DriverMobileService {
                   id: task.id,
                   action: task.action,
                   plannedQuantity: task.plannedQuantity,
+                  actualQuantity: task.actualQuantity ?? null,
                   retainedOnVehicle: task.deliveryResults.length > 0,
                   allocationId: task.allocation?.id ?? null,
                   description: task.allocation?.orderItem.description ?? null,

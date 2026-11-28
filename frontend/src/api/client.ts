@@ -16,6 +16,7 @@ import {
   Driver,
   LoadProfileResult,
   Location,
+  WarehouseSummary,
   OptimizationResultUI,
   OptimizationCandidateDetailUI,
   RunAutomaticOptimizationPayloadUI,
@@ -163,6 +164,15 @@ export const tripsApi = {
   }) => apiClient.patch<Trip>(`/trips/${id}/plan`, data),
   publish: (id: string, expectedVersion: number) =>
     apiClient.patch<Trip>(`/trips/${id}/publish`, { expectedVersion }),
+  detachUnpicked: (
+    id: string,
+    data: { expectedVersion: number; orderIds: string[]; reason?: string },
+  ) =>
+    apiClient.post<{
+      tripId: string;
+      tripVersion: number;
+      detachedOrderIds: string[];
+    }>(`/trips/${id}/detach-unpicked`, data),
   getLoadProfile: (id: string) =>
     apiClient.get<LoadProfileResult>(`/trips/${id}/load-profile`),
   optimize: (data: { vehicleId: string; orderIds: string[] }) =>
@@ -218,6 +228,30 @@ export const tripsApi = {
 
 export const locationsApi = {
   getAll: () => apiClient.get<Location[]>('/locations'),
+  getWarehouses: (branchId?: string) =>
+    apiClient.get<WarehouseSummary[]>('/locations/warehouses', {
+      params: branchId ? { branchId } : undefined,
+    }),
+  createWarehouse: (data: {
+    code: string;
+    name: string;
+    address: string;
+    latitude: number;
+    longitude: number;
+    managingBranchId: string;
+    active?: boolean;
+  }) => apiClient.post<WarehouseSummary>('/locations/warehouses', data),
+  updateWarehouse: (
+    id: string,
+    data: {
+      name?: string;
+      address?: string;
+      latitude?: number;
+      longitude?: number;
+      managingBranchId?: string;
+      active?: boolean;
+    },
+  ) => apiClient.patch<WarehouseSummary>(`/locations/warehouses/${id}`, data),
 };
 
 async function getDrivingRouteThrough(waypoints: [number, number][], signal?: AbortSignal) {

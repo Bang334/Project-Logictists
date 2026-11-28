@@ -15,6 +15,7 @@ export interface OptimizationSettings {
   maxTimeSeconds: number;
   hybridSeedCount: number;
   earlyStopPatience: number;
+  dispatchPreparationMinutes: number;
   unassignedOrderPenaltyVnd: number;
   maxRoutesPerDay: number | null;
   demoAllowOverride: boolean;
@@ -105,6 +106,7 @@ export const COMPANY_SETTING_DEFAULTS: {
     maxTimeSeconds: 240,
     hybridSeedCount: 0,
     earlyStopPatience: 0,
+    dispatchPreparationMinutes: 20,
     unassignedOrderPenaltyVnd: 1_000_000_000,
     maxRoutesPerDay: null,
     demoAllowOverride: true,

@@ -22,6 +22,7 @@ import { Roles } from '../auth/roles.decorator';
 import { PublishTripDto } from './dto/publish-trip.dto';
 import { UpdateTripPlanDto } from './dto/update-trip-plan.dto';
 import { ApplyOptimizationCandidateDto } from './dto/apply-optimization-candidate.dto';
+import { DetachUnpickedOrdersDto } from './dto/detach-unpicked-orders.dto';
 
 @Controller('trips')
 @RequirePermission('trips.read')
@@ -194,5 +195,15 @@ export class TripsController {
     @Body() body: UpdateTripPlanDto,
   ) {
     return this.tripsService.updatePlan(id, body, req.user);
+  }
+
+  @Post(':id/detach-unpicked')
+  @RequirePermission('trips.plan')
+  detachUnpicked(
+    @Req() req: AuthRequest,
+    @Param('id') id: string,
+    @Body() body: DetachUnpickedOrdersDto,
+  ) {
+    return this.tripsService.detachUnpickedOrders(id, body, req.user);
   }
 }

@@ -53,6 +53,7 @@ export type OptimizedRouteResult = {
   return_travel_time_sec?: number;
   return_waiting_time_sec?: number;
   mandatory_rest_sec?: number;
+  total_driving_sec?: number;
   rest_breaks?: Array<{
     leg_after_sequence: number;
     reason: 'CONTINUOUS_DRIVING' | 'DAILY_LIMIT';
@@ -140,6 +141,7 @@ export type OptimizedRouteResult = {
     driver_trip_pay_vnd: number;
     toll_cost_vnd?: number;
     overnight_allowance_vnd?: number;
+    weight_balance_penalty_vnd?: number;
     total_cost_vnd: number;
   };
   route_geometry?: { type: string; coordinates: number[][] };
@@ -670,6 +672,11 @@ export function assertFleetOptimizationResult(
         throw new Error('Optimizer trả mandatory_rest_sec không hợp lệ');
       }
     }
+    if (route.total_driving_sec !== undefined) {
+      if (!Number.isInteger(route.total_driving_sec) || Number(route.total_driving_sec) < 0) {
+        throw new Error('Optimizer trả total_driving_sec không hợp lệ');
+      }
+    }
     if (route.rest_breaks !== undefined) {
       if (!Array.isArray(route.rest_breaks)) {
         throw new Error('Optimizer trả rest_breaks phải là mảng');
@@ -699,7 +706,11 @@ export function assertFleetOptimizationResult(
         throw new Error('Optimizer trả province_hops không hợp lệ');
       }
     }
-    for (const optionalCostField of ['toll_cost_vnd', 'overnight_allowance_vnd']) {
+    for (const optionalCostField of [
+      'toll_cost_vnd',
+      'overnight_allowance_vnd',
+      'weight_balance_penalty_vnd',
+    ]) {
       const optVal = route.cost[optionalCostField];
       if (optVal !== undefined && (typeof optVal !== 'number' || !Number.isFinite(optVal) || optVal < 0)) {
         throw new Error(`Optimizer trả trường chi phí ${optionalCostField} không hợp lệ`);

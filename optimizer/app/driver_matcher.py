@@ -11,7 +11,11 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from .interprovincial import is_driver_compatible_with_vehicle, is_rest_policy_enabled
+from .interprovincial import (
+    is_driver_compatible_with_vehicle,
+    is_rest_policy_enabled,
+    route_driving_seconds,
+)
 from .models import (
     DriverOption,
     FleetOptimizationRequest,
@@ -36,12 +40,25 @@ class DriverMatcher:
             return routes
 
         rest_policy = getattr(self.request.policy, "driving_rest_policy", None)
+        rest_enabled = is_rest_policy_enabled(rest_policy)
         min_inter_trip_rest = (
             int(getattr(rest_policy, "min_inter_trip_rest_sec", 0) or 0)
-            if is_rest_policy_enabled(rest_policy)
+            if rest_enabled
             else 0
         )
+        max_weekly_driving = (
+            int(getattr(rest_policy, "max_weekly_driving_sec", 0) or 0)
+            if rest_enabled and getattr(rest_policy, "max_weekly_driving_sec", None) is not None
+            else None
+        )
         driver_intervals_by_phys: Dict[str, List[Tuple[int, int]]] = {}
+        driver_weekly_driving_by_key: Dict[Tuple[str, int], int] = {}
+        if max_weekly_driving is not None:
+            for drv in self.request.drivers:
+                phys_drv = drv.source_driver_id or drv.id
+                init_sec = int(getattr(drv, "initial_weekly_driving_sec", 0) or 0)
+                if init_sec > driver_weekly_driving_by_key.get((phys_drv, 0), 0):
+                    driver_weekly_driving_by_key[(phys_drv, 0)] = init_sec
 
         # Group routes and drivers by service_day_index
         day_indices = sorted({r.service_day_index for r in routes})
@@ -70,6 +87,8 @@ class DriverMatcher:
                 payload = veh.payload_limit_kg if veh else 0.0
                 r_start = int(getattr(route, "start_time_sec", 0) or 0)
                 r_end = int(getattr(route, "end_time_sec", 0) or 0)
+                r_drive = route_driving_seconds(route)
+                week_idx = day // 7
 
                 for d_idx, driver in enumerate(day_drivers):
                     if veh is not None:
@@ -85,6 +104,11 @@ class DriverMatcher:
                         for p_start, p_end in driver_intervals_by_phys.get(phys_drv, ())
                     )
                     if has_cross_day_conflict:
+                        continue
+                    if max_weekly_driving is not None and (
+                        driver_weekly_driving_by_key.get((phys_drv, week_idx), 0) + r_drive
+                        > max_weekly_driving
+                    ):
                         continue
 
                     # Calculate total wage for this route
@@ -116,6 +140,12 @@ class DriverMatcher:
                         int(getattr(route, "end_time_sec", 0) or 0),
                     )
                 )
+                if max_weekly_driving is not None:
+                    w_key = (phys_drv, day // 7)
+                    driver_weekly_driving_by_key[w_key] = (
+                        driver_weekly_driving_by_key.get(w_key, 0)
+                        + route_driving_seconds(route)
+                    )
 
                 route.driver_id = assigned_driver.source_driver_id or assigned_driver.id
                 route.driver_name = assigned_driver.full_name

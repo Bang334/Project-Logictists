@@ -9,7 +9,26 @@ export const orderInclude = {
   branch: { select: { id: true, code: true, name: true } },
   customer: { select: { id: true, code: true, name: true, phone: true } },
   stops: { orderBy: { sequence: 'asc' as const } },
-  items: { include: { packages: { orderBy: { packageCode: 'asc' as const } } }, orderBy: { createdAt: 'asc' as const } },
+  items: {
+    include: {
+      packages: {
+        orderBy: { packageCode: 'asc' as const },
+        include: {
+          custodyLocation: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              address: true,
+              latitude: true,
+              longitude: true,
+            },
+          },
+        },
+      },
+    },
+    orderBy: { createdAt: 'asc' as const },
+  },
   charges: { where: { chargeType: TOP_LOAD_PROTECTION_CHARGE, status: { in: ['DRAFT', 'CONFIRMED'] } }, select: { id: true, amount: true, status: true } },
 } satisfies Prisma.OrderInclude;
 export type OrderRecord = Prisma.OrderGetPayload<{ include: typeof orderInclude }>;
@@ -82,8 +101,13 @@ export function assertDispatchableOrder(order: {
     throw new ConflictException({ code: 'ORDER_NOT_DISPATCHABLE', message: 'Chỉ điều phối đơn vận chuyển' });
   }
   assertPackageManifest(order);
-  if (order.status !== 'CONFIRMED' || order.items.some(i => i.packages.some(p => p.status !== 'READY'))) {
-    throw new ConflictException({ code: 'ORDER_NOT_DISPATCHABLE', message: 'Đơn phải được xác nhận và mọi kiện phải ở trạng thái READY' });
+  const allPackages = order.items.flatMap((i) => i.packages);
+  const hasReady = allPackages.some((p) => p.status === 'READY');
+  const hasInvalidNonReady = allPackages.some(
+    (p) => p.status !== 'READY' && p.status !== 'DELIVERED',
+  );
+  if (order.status !== 'CONFIRMED' || !hasReady || hasInvalidNonReady) {
+    throw new ConflictException({ code: 'ORDER_NOT_DISPATCHABLE', message: 'Đơn phải được xác nhận và có kiện ở trạng thái READY' });
   }
   if (order.stops.length !== 2 || order.stops.filter(s => s.type === 'PICKUP').length !== 1 || order.stops.filter(s => s.type === 'DELIVERY').length !== 1) {
     throw new ConflictException({ code: 'ORDER_WINDOWS_INVALID', message: 'Cần đúng một điểm lấy, một điểm giao' });

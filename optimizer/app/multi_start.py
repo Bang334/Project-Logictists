@@ -15,6 +15,7 @@ from .interprovincial import (
     check_cross_day_resource_conflicts,
     estimate_driving_rest_lower_bound_sec,
     is_order_compatible_with_vehicle_and_warehouses,
+    resolve_rest_policy_limits,
     stop_effective_service_seconds,
 )
 from .models import (
@@ -206,8 +207,9 @@ def _collect_worker_audited_plans(
         return primary_plan, obj, []
 
     rest_policy = getattr(objective_request.policy, "driving_rest_policy", None)
-    rest_gap = max(0, int(getattr(rest_policy, "min_inter_trip_rest_sec", 0) or 0))
+    rest_gap, max_weekly_driving = resolve_rest_policy_limits(rest_policy)
     veh_map = {v.id: v for v in objective_request.vehicles}
+    drv_map = {d.id: d for d in objective_request.drivers}
     complete_pool = [
         plan
         for plan in pool
@@ -218,6 +220,8 @@ def _collect_worker_audited_plans(
             expected_items=expected_items,
             vehicle_by_id=veh_map,
             min_inter_trip_rest_sec=rest_gap,
+            max_weekly_driving_sec=max_weekly_driving,
+            driver_by_id=drv_map,
         )
     ]
     ranked_pool = complete_pool or pool
@@ -305,23 +309,19 @@ def _solve_hybrid_worker_bundle(
                 probe_plan = probe_hybrid.solve(
                     hard_deadline=min(worker_deadline, time.perf_counter() + probe_budget)
                 )
+                req_rest_gap_probe, req_max_weekly_probe = resolve_rest_policy_limits(
+                    getattr(request.policy, "driving_rest_policy", None)
+                )
+                req_drv_map_probe = {d.id: d for d in request.drivers}
                 if is_fully_served(
                     probe_plan,
                     set(expected_items),
                     request.policy.max_routes_per_day,
                     expected_items,
                     vehicle_by_id={v.id: v for v in request.vehicles},
-                    min_inter_trip_rest_sec=max(
-                        0,
-                        int(
-                            getattr(
-                                getattr(request.policy, "driving_rest_policy", None),
-                                "min_inter_trip_rest_sec",
-                                0,
-                            )
-                            or 0
-                        ),
-                    ),
+                    min_inter_trip_rest_sec=req_rest_gap_probe,
+                    max_weekly_driving_sec=req_max_weekly_probe,
+                    driver_by_id=req_drv_map_probe,
                 ):
                     chosen_probe, obj, extra_probe = _collect_worker_audited_plans(
                         probe_plan,
@@ -342,16 +342,9 @@ def _solve_hybrid_worker_bundle(
         # Nếu bất kỳ seed nào nhận được warm_plan đã hoàn tất trong K ngày (< tổng số ngày mở),
         # giữ bước tinh chỉnh tập trung trên đúng K ngày đó để mọi seed tối ưu công bằng.
         req_veh_map = {v.id: v for v in request.vehicles}
-        req_rest_gap = max(
-            0,
-            int(
-                getattr(
-                    getattr(request.policy, "driving_rest_policy", None),
-                    "min_inter_trip_rest_sec",
-                    0,
-                )
-                or 0
-            ),
+        req_drv_map = {d.id: d for d in request.drivers}
+        req_rest_gap, req_max_weekly = resolve_rest_policy_limits(
+            getattr(request.policy, "driving_rest_policy", None)
         )
         if (
             initial_plan is not None
@@ -364,6 +357,8 @@ def _solve_hybrid_worker_bundle(
                 expected_items,
                 vehicle_by_id=req_veh_map,
                 min_inter_trip_rest_sec=req_rest_gap,
+                max_weekly_driving_sec=req_max_weekly,
+                driver_by_id=req_drv_map,
             )
         ):
             warm_days = max(r.service_day_index + 1 for r in initial_plan.routes)
@@ -400,6 +395,8 @@ def _solve_hybrid_worker_bundle(
                 expected_items,
                 vehicle_by_id=req_veh_map,
                 min_inter_trip_rest_sec=req_rest_gap,
+                max_weekly_driving_sec=req_max_weekly,
+                driver_by_id=req_drv_map,
             ),
             ortools_seed_pool=ortools_seed_pool,
             should_split_orders=False,
@@ -704,6 +701,8 @@ def is_fully_served(
     *,
     vehicle_by_id: Optional[Dict[str, Any]] = None,
     min_inter_trip_rest_sec: int = 0,
+    max_weekly_driving_sec: Optional[int] = None,
+    driver_by_id: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Check whether a plan delivers 100% of requested orders without violations."""
     if plan.status != "SUCCESS":
@@ -781,11 +780,17 @@ def is_fully_served(
     # Bất biến TMS: Chống trùng xe/tài xế trong ngày và chồng lịch xuyên ngày / thiếu giờ nghỉ giữa 2 chuyến
     # Chỉ kích hoạt khi có ngữ cảnh fleet (vehicle_by_id) hoặc chính sách nghỉ giữa chuyến,
     # giữ tương thích cho các unit test mock cũ dùng giờ tương đối theo ngày.
-    if vehicle_by_id is not None or min_inter_trip_rest_sec > 0:
+    if (
+        vehicle_by_id is not None
+        or min_inter_trip_rest_sec > 0
+        or max_weekly_driving_sec is not None
+    ):
         if check_cross_day_resource_conflicts(
             plan.routes,
             vehicle_by_id or {},
             min_inter_trip_rest_sec=min_inter_trip_rest_sec,
+            max_weekly_driving_sec=max_weekly_driving_sec,
+            driver_by_id=driver_by_id,
         ):
             return False
 
@@ -814,6 +819,8 @@ def select_ranked_candidates(
     *,
     vehicle_by_id: Optional[Dict[str, Any]] = None,
     min_inter_trip_rest_sec: int = 0,
+    max_weekly_driving_sec: Optional[int] = None,
+    driver_by_id: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[FleetOptimizationCandidate], int, List[str]]:
     """Pure selection and ranking function to allow isolated unit testing.
 
@@ -831,6 +838,8 @@ def select_ranked_candidates(
             expected_items=expected_items,
             vehicle_by_id=vehicle_by_id,
             min_inter_trip_rest_sec=min_inter_trip_rest_sec,
+            max_weekly_driving_sec=max_weekly_driving_sec,
+            driver_by_id=driver_by_id,
         )
     ]
     fully_served_count = len(fully_served_runs)
@@ -996,16 +1005,9 @@ class MultiStartFleetOptimizer:
         order_ids = set(expected_items)
         max_routes_per_day = limited.policy.max_routes_per_day
         limited_veh_map = {v.id: v for v in limited.vehicles}
-        limited_rest_gap = max(
-            0,
-            int(
-                getattr(
-                    getattr(limited.policy, "driving_rest_policy", None),
-                    "min_inter_trip_rest_sec",
-                    0,
-                )
-                or 0
-            ),
+        limited_drv_map = {d.id: d for d in limited.drivers}
+        limited_rest_gap, limited_max_weekly = resolve_rest_policy_limits(
+            getattr(limited.policy, "driving_rest_policy", None)
         )
         if is_fully_served(
             verified,
@@ -1014,6 +1016,8 @@ class MultiStartFleetOptimizer:
             expected_items,
             vehicle_by_id=limited_veh_map,
             min_inter_trip_rest_sec=limited_rest_gap,
+            max_weekly_driving_sec=limited_max_weekly,
+            driver_by_id=limited_drv_map,
         ):
             improved = engine.refine_direct_span(verified, audited_trips, deadline)
             best_plan = (
@@ -1026,6 +1030,8 @@ class MultiStartFleetOptimizer:
                     expected_items,
                     vehicle_by_id=limited_veh_map,
                     min_inter_trip_rest_sec=limited_rest_gap,
+                    max_weekly_driving_sec=limited_max_weekly,
+                    driver_by_id=limited_drv_map,
                 )
                 else verified
             )
@@ -1040,6 +1046,8 @@ class MultiStartFleetOptimizer:
                         expected_items,
                         vehicle_by_id=limited_veh_map,
                         min_inter_trip_rest_sec=limited_rest_gap,
+                        max_weekly_driving_sec=limited_max_weekly,
+                        driver_by_id=limited_drv_map,
                     )
                 ):
                     return polished
@@ -1067,16 +1075,9 @@ class MultiStartFleetOptimizer:
         job_deadline = job_started_at + job_budget
         exhaustive_fallback_diagnostic: Optional[str] = None
         self_veh_map = {v.id: v for v in self.request.vehicles}
-        self_rest_gap = max(
-            0,
-            int(
-                getattr(
-                    getattr(self.request.policy, "driving_rest_policy", None),
-                    "min_inter_trip_rest_sec",
-                    0,
-                )
-                or 0
-            ),
+        self_drv_map = {d.id: d for d in self.request.drivers}
+        self_rest_gap, self_max_weekly = resolve_rest_policy_limits(
+            getattr(self.request.policy, "driving_rest_policy", None)
         )
         if self.use_exhaustive_search:
             exhaustive_started_at = time.monotonic()
@@ -1095,6 +1096,8 @@ class MultiStartFleetOptimizer:
                     expected_items=expected_items,
                     vehicle_by_id=self_veh_map,
                     min_inter_trip_rest_sec=self_rest_gap,
+                    max_weekly_driving_sec=self_max_weekly,
+                    driver_by_id=self_drv_map,
                 )
             ]
             if exhaustive.plans:
@@ -1379,6 +1382,8 @@ class MultiStartFleetOptimizer:
                                 expected_items,
                                 vehicle_by_id=self_veh_map,
                                 min_inter_trip_rest_sec=self_rest_gap,
+                                max_weekly_driving_sec=self_max_weekly,
+                                driver_by_id=self_drv_map,
                             )
                             rank = (
                                 not complete,
@@ -1531,6 +1536,8 @@ class MultiStartFleetOptimizer:
                 expected_items,
                 vehicle_by_id=self_veh_map,
                 min_inter_trip_rest_sec=self_rest_gap,
+                max_weekly_driving_sec=self_max_weekly,
+                driver_by_id=self_drv_map,
             )
             for _, plan, _ in evaluated_runs
         ):
@@ -1596,6 +1603,8 @@ class MultiStartFleetOptimizer:
                     expected_items=expected_items,
                     vehicle_by_id=self_veh_map,
                     min_inter_trip_rest_sec=self_rest_gap,
+                    max_weekly_driving_sec=self_max_weekly,
+                    driver_by_id=self_drv_map,
                 )
             ]
             extra_routes: List[OptimizedRoute] = []
@@ -1730,6 +1739,8 @@ class MultiStartFleetOptimizer:
                         expected_items=expected_items,
                         vehicle_by_id=self_veh_map,
                         min_inter_trip_rest_sec=self_rest_gap,
+                        max_weekly_driving_sec=self_max_weekly,
+                        driver_by_id=self_drv_map,
                     ):
                         continue
                     c_score = int(c_obj.selection_score_vnd)
@@ -1776,6 +1787,8 @@ class MultiStartFleetOptimizer:
             expected_items=expected_items,
             vehicle_by_id=self_veh_map,
             min_inter_trip_rest_sec=self_rest_gap,
+            max_weekly_driving_sec=self_max_weekly,
+            driver_by_id=self_drv_map,
         )
 
         if calculator is None and any(candidate.result.routes for candidate in candidates):

@@ -3,7 +3,7 @@
 import time
 from dataclasses import dataclass, field
 from itertools import permutations
-from typing import Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .models import (
     CargoItem,
@@ -22,8 +22,8 @@ from ..models import (
     StopAction,
     VehicleFloor,
 )
-from ..packing_rules import resolve_can_rotate
-from ..stacking import validate_stop_actions
+from ..packing_rules import calculate_route_weight_balance_penalty_vnd, resolve_can_rotate
+from ..stacking import enforce_spatial_weight_balance_if_needed, validate_stop_actions
 
 
 @dataclass
@@ -45,6 +45,8 @@ def _validate_spatial_route(
     *,
     max_time_seconds: float,
     demo_stacking: DemoStackingPolicy | None = None,
+    cost_policy: Optional[CostPolicy] = None,
+    step_balances_out: Optional[List[Any]] = None,
 ) -> Tuple[bool, str, List[List[PlacedItem]], List[List[str]]]:
     floor = VehicleFloor(
         id=vehicle.id,
@@ -90,16 +92,22 @@ def _validate_spatial_route(
             )
         )
 
-    result = validate_stop_actions(
+    result = enforce_spatial_weight_balance_if_needed(
         demo_stacking,
-        floor,
-        actions,
-        max_search_nodes=20_000,
-        max_time_seconds=max_time_seconds,
+        validate_stop_actions(
+            demo_stacking,
+            floor,
+            actions,
+            max_search_nodes=20_000,
+            max_time_seconds=max_time_seconds,
+        ),
+        cost_policy=cost_policy,
     )
     layouts: List[List[PlacedItem]] = []
     unload_sequences: List[List[str]] = []
     for state in result.step_states:
+        if step_balances_out is not None and state.weight_balance is not None:
+            step_balances_out.append(state.weight_balance)
         unload_sequences.append(list(state.unload_sequence))
         layouts.append(
             [
@@ -222,25 +230,41 @@ def audit_solution(
             unload_sequences = []
         else:
             spatial_started_at = time.monotonic()
+            step_balances: List[Any] = []
             route_spatial_valid, reason, layouts, unload_sequences = _validate_spatial_route(
                 vehicle,
                 route.stops,
                 cargo_by_id,
                 max_time_seconds=spatial_remaining,
                 demo_stacking=getattr(policy, "demo_stacking", None),
+                cost_policy=policy,
+                step_balances_out=step_balances,
             )
             spatial_remaining -= time.monotonic() - spatial_started_at
         if not route_spatial_valid:
             spatial_valid = False
             spatially_invalid_vehicle_ids.append(vehicle.id)
             issues.append(f"Xe {vehicle.plate_number}: {reason}")
-        elif len(layouts) == len(route.stops):
-            for stop, layout, unload_sequence in zip(
-                route.stops, layouts, unload_sequences
+        else:
+            if len(layouts) == len(route.stops):
+                for stop, layout, unload_sequence in zip(
+                    route.stops, layouts, unload_sequences
+                ):
+                    stop.placed_items = layout
+                    if stop.stop_type == "DELIVERY":
+                        stop.items_unloaded = unload_sequence
+            if (
+                route.cost_breakdown is not None
+                and int(getattr(policy, "weight_balance_penalty_vnd_per_percent", 0) or 0) > 0
             ):
-                stop.placed_items = layout
-                if stop.stop_type == "DELIVERY":
-                    stop.items_unloaded = unload_sequence
+                wb_pen = calculate_route_weight_balance_penalty_vnd(
+                    step_balances, policy, getattr(policy, "demo_stacking", None)
+                )
+                delta = wb_pen - int(route.cost_breakdown.weight_balance_penalty_vnd or 0)
+                if delta:
+                    route.cost_breakdown.weight_balance_penalty_vnd = wb_pen
+                    route.cost_breakdown.total_cost_vnd += delta
+                    total_cost += delta
 
     served_ids = {
         order.id
@@ -404,6 +428,7 @@ def _repair_spatial_routes(
                 cargo_by_id,
                 max_time_seconds=min(spatial_time_limit_sec, remaining),
                 demo_stacking=getattr(policy, "demo_stacking", None),
+                cost_policy=policy,
             )
             if valid:
                 best = evaluation

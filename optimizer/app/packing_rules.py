@@ -169,6 +169,101 @@ def build_weight_balance_metrics(
     )
 
 
+def resolve_weight_balance_thresholds(
+    stacking_policy: Any = None,
+    cost_policy: Any = None,
+) -> Tuple[bool, Optional[float], Optional[float]]:
+    """Combine hard enforcement and lateral/longitudinal caps across stacking and cost policies."""
+    enforce = bool(getattr(stacking_policy, "enforce_weight_balance", False)) or bool(
+        getattr(cost_policy, "enforce_weight_balance", False)
+    )
+    lat_candidates = [
+        float(v)
+        for v in (
+            getattr(stacking_policy, "max_lateral_imbalance_percent", None),
+            getattr(cost_policy, "max_lateral_imbalance_percent", None),
+        )
+        if v is not None
+    ]
+    lon_candidates = [
+        float(v)
+        for v in (
+            getattr(stacking_policy, "max_longitudinal_imbalance_percent", None),
+            getattr(cost_policy, "max_longitudinal_imbalance_percent", None),
+        )
+        if v is not None
+    ]
+    return (
+        enforce,
+        min(lat_candidates) if lat_candidates else None,
+        min(lon_candidates) if lon_candidates else None,
+    )
+
+
+def weight_balance_exceeds_limit(
+    wb: Optional[WeightBalanceMetrics],
+    max_lat_limit: Optional[float],
+    max_lon_limit: Optional[float],
+) -> Optional[Tuple[float, float]]:
+    """Return (lat_pct, lon_pct) when weight balance violates configured thresholds."""
+    if wb is None or float(getattr(wb, "total_weight_kg", 0.0) or 0.0) <= 1e-6:
+        return None
+    lat_pct = float(getattr(wb, "lateral_imbalance_percent", 0.0) or 0.0)
+    lon_pct = float(getattr(wb, "longitudinal_imbalance_percent", 0.0) or 0.0)
+    violated = False
+    if max_lat_limit is not None and lat_pct > float(max_lat_limit) + 1e-6:
+        violated = True
+    if max_lon_limit is not None and lon_pct > float(max_lon_limit) + 1e-6:
+        violated = True
+    if (
+        max_lat_limit is None
+        and max_lon_limit is None
+        and getattr(wb, "status", "EMPTY") == "IMBALANCED"
+    ):
+        violated = True
+    return (lat_pct, lon_pct) if violated else None
+
+
+def check_placed_items_weight_balance(
+    placed_items: Iterable[PlacedItem],
+    floor_length_cm: float,
+    floor_width_cm: float,
+    *,
+    max_lat_limit: Optional[float],
+    max_lon_limit: Optional[float],
+) -> Optional[Tuple[float, float]]:
+    """Compute WeightBalanceMetrics for placed items and check hard limits."""
+    items = list(placed_items)
+    if not items:
+        return None
+    wb = build_weight_balance_metrics(items, floor_length_cm, floor_width_cm)
+    return weight_balance_exceeds_limit(wb, max_lat_limit, max_lon_limit)
+
+
+def calculate_route_weight_balance_penalty_vnd(
+    step_balances: Sequence[Optional[WeightBalanceMetrics]],
+    cost_policy: Any,
+    stacking_policy: Any = None,
+) -> int:
+    """Calculate soft route penalty in VND from peak lateral/longitudinal excess over target."""
+    rate = int(getattr(cost_policy, "weight_balance_penalty_vnd_per_percent", 0) or 0)
+    if rate <= 0 or not step_balances:
+        return 0
+    _, max_lat, max_lon = resolve_weight_balance_thresholds(stacking_policy, cost_policy)
+    lat_target = float(max_lat) if max_lat is not None else 0.0
+    lon_target = float(max_lon) if max_lon is not None else 0.0
+    peak_excess = 0.0
+    for wb in step_balances:
+        if wb is None or float(getattr(wb, "total_weight_kg", 0.0) or 0.0) <= 1e-6:
+            continue
+        lat_excess = max(0.0, float(getattr(wb, "lateral_imbalance_percent", 0.0) or 0.0) - lat_target)
+        lon_excess = max(0.0, float(getattr(wb, "longitudinal_imbalance_percent", 0.0) or 0.0) - lon_target)
+        peak_excess = max(peak_excess, lat_excess + lon_excess)
+    if peak_excess <= 1e-6:
+        return 0
+    return int(round(peak_excess * rate))
+
+
 def _interval_overlap(a0: float, a1: float, b0: float, b1: float) -> float:
     return max(0.0, min(a1, b1) - max(a0, b0))
 

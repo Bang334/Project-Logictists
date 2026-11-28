@@ -51,6 +51,18 @@ export const detailSchema = assignment.extend({
         id: z.string(),
         sequence: z.number(),
         stopType: z.string(),
+        status: z.string().optional(),
+        skipReason: z.string().nullable().optional(),
+        hubLocationId: z.string().nullable().optional(),
+        hubLocation: z
+          .object({
+            id: z.string(),
+            code: z.string(),
+            name: z.string(),
+            address: z.string(),
+          })
+          .nullable()
+          .optional(),
         address: z.string(),
         latitude: z.number(),
         longitude: z.number(),
@@ -63,6 +75,7 @@ export const detailSchema = assignment.extend({
             id: z.string(),
             action: z.enum(["LOAD", "UNLOAD"]),
             plannedQuantity: z.number(),
+            actualQuantity: z.number().nullable().optional(),
             retainedOnVehicle: z.boolean().default(false),
             allocationId: z.string().nullable(),
             description: z.string().nullable(),
@@ -73,6 +86,9 @@ export const detailSchema = assignment.extend({
               .object({
                 id: z.string(),
                 packageCode: z.string(),
+                status: z.string().optional(),
+                custodyLocationId: z.string().nullable().optional(),
+                deliveryAttemptCount: z.number().int().optional(),
                 lengthMm: z.number().nullable(),
                 widthMm: z.number().nullable(),
                 heightMm: z.number().nullable(),
@@ -99,6 +115,50 @@ export const responseSchema = z.object({
   tripId: z.string(),
   tripVersion: z.number(),
   respondedAt: z.string().datetime(),
+});
+
+export const taskConfirmResponseSchema = z.object({
+  taskId: z.string(),
+  packageId: z.string(),
+  packageStatus: z.string(),
+  tripId: z.string(),
+  tripStatus: z.string(),
+  tripVersion: z.number().int(),
+  tripCompleted: z.boolean().optional(),
+  assignmentVersion: z.number().int(),
+});
+
+export const deliveryFailureResponseSchema = z.object({
+  attemptId: z.string(),
+  tripVersion: z.number().int(),
+  failureCategory: z.string().optional(),
+  requestedRedeliveryAt: nullableDate.optional(),
+  continuation: z
+    .object({
+      returnWarehouseId: z.string().nullable(),
+      returnWarehouseName: z.string().nullable(),
+      keptDeliveryStopIds: z.array(z.string()),
+      returnToHubStopIds: z.array(z.string()),
+      detachedOrderIds: z.array(z.string()),
+      usedExactPlacements: z.boolean(),
+    })
+    .optional(),
+});
+
+export const returnToHubResponseSchema = z.object({
+  stopId: z.string(),
+  warehouse: z.object({
+    id: z.string(),
+    code: z.string(),
+    name: z.string(),
+    address: z.string(),
+  }),
+  returnedPackageIds: z.array(z.string()),
+  returnedPackageCount: z.number().int(),
+  tripId: z.string(),
+  tripStatus: z.string(),
+  tripVersion: z.number().int(),
+  tripCompleted: z.boolean(),
 });
 export type Profile = z.infer<typeof profileSchema>;
 export type AssignmentList = z.infer<typeof listSchema>;

@@ -8,6 +8,7 @@ import LoginPage from './pages/LoginPage';
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
 
+const RecipientDeliveryPage = lazy(() => import('./pages/RecipientDeliveryPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const OrdersPage = lazy(() => import('./pages/OrdersPage'));
 const FleetPage = lazy(() => import('./pages/FleetPage'));
@@ -83,7 +84,11 @@ const MainLayout: React.FC = () => {
       <Navbar />
       <Layout>
         <Sidebar currentTab={currentTab} onSelectTab={setCurrentTab} />
-        <Content key={`${user.id}:${scopeVersion}`} style={{ minHeight: 'calc(100vh - 64px)', background: '#f8fafc' }}>
+        <Content
+          className="tms-content"
+          key={`${user.id}:${scopeVersion}`}
+          style={{ minWidth: 0, flex: 1, minHeight: 'calc(100vh - 64px)', background: '#f8fafc' }}
+        >
           {error && <Alert type="warning" showIcon message={error} />}
           <Suspense fallback={<Spin />}>{renderContent()}</Suspense>
         </Content>
@@ -170,9 +175,15 @@ const App: React.FC = () => {
       }}
     >
       <AntdApp>
-        <AuthProvider>
-          <MainLayout />
-        </AuthProvider>
+        {window.location.pathname === '/hen-giao' ? (
+          <Suspense fallback={<Spin fullscreen aria-label="Đang tải trang hẹn giao" />}>
+            <RecipientDeliveryPage />
+          </Suspense>
+        ) : (
+          <AuthProvider>
+            <MainLayout />
+          </AuthProvider>
+        )}
       </AntdApp>
     </ConfigProvider>
   );

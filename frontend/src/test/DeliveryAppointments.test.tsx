@@ -94,3 +94,21 @@ it('cho phép chạy tối ưu lại cùng xe & đơn khác khi khách yêu cầ
   ));
   expect(onJob).toHaveBeenCalledWith('replan-job-1');
 });
+
+it('cho phép điều phối viên lấy liên kết người nhận SMS trong modal phản hồi', async () => {
+  const smsAppointment = { ...appointment, recipientPhone: '+84901234567' };
+  vi.mocked(apiClient.get)
+    .mockResolvedValueOnce({
+      data: [{ id: 'batch-sms', status: 'OFFERING', expiresAt: appointment.expiresAt, windowMinutes: 60, appointments: [smsAppointment] }],
+    })
+    .mockResolvedValueOnce({
+      data: { url: 'https://tms.example.com/hen-giao#token-1', phone: '+84901234567' },
+    });
+
+  render(<DispatcherDeliveryPlanning branchId="branch" candidateNumber={1} canPropose={false} onJob={async () => undefined} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Xem phản hồi' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Lấy liên kết' }));
+
+  await screen.findByText('Số người nhận +84901234567');
+  expect(screen.getByDisplayValue('https://tms.example.com/hen-giao#token-1')).toBeInTheDocument();
+});

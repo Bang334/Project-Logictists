@@ -83,6 +83,9 @@ class SpatialValidationCache:
                 float(policy.lift_clearance_cm),
                 policy.owner_mode,
                 int(policy.max_top_load_percent),
+                bool(getattr(policy, "enforce_weight_balance", False)),
+                getattr(policy, "max_lateral_imbalance_percent", None),
+                getattr(policy, "max_longitudinal_imbalance_percent", None),
             )
             if policy is not None
             else None

@@ -1,6 +1,7 @@
 import { IsBoolean, IsEnum, IsISO8601, IsInt, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min } from 'class-validator';
 
 export class ProposeDeliveryBatchDto {
+  @IsOptional() @IsBoolean() recipientWeb?: boolean;
   @IsUUID() jobId!: string;
   @IsInt() @Min(1) @Max(10) candidateNumber!: number;
   @IsInt() @Min(1) @Max(1440) windowMinutes!: number;

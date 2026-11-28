@@ -708,4 +708,214 @@ describe('TripsService automatic optimization search budget', () => {
     expect(geom2.coordinates[0][0]).toBe(106.67);
     expect(geom2.waypoint_indices).toEqual([0, 1, 2]);
   });
+
+  it('reserves dispatchPreparationMinutes and solver overhead for CURRENT_TIME and records earliestDepartureAt', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-11-21T02:00:00.000Z')); // 09:00 UTC+7
+    try {
+      const branch = {
+        id: branchId,
+        active: true,
+        timezone: 'Asia/Ho_Chi_Minh',
+        workStartTime: '08:00',
+        workEndTime: '17:00',
+        fuelPricePerLiter: 25_000,
+        monthlyWorkingMinutes: 10_560,
+        cargoHoldingCostVndPerTonHour: 0,
+        deliveryGraceDays: 0,
+        lateDeliveryPenaltyMode: 'NONE',
+        lateDeliveryPenaltyValue: 0,
+      };
+      const depot = {
+        id: 'depot-1',
+        code: 'DEPOT-1',
+        name: 'Kho',
+        type: LocationType.CENTRAL_WAREHOUSE,
+        managingBranchId: branchId,
+        latitude: 10.75,
+        longitude: 106.67,
+        active: true,
+      };
+      const vehicle = {
+        id: 'vehicle-1',
+        plateNumber: '51A-00001',
+        model: 'Truck',
+        homeBranchId: branchId,
+        homeDepotLocationId: depot.id,
+        homeDepotLocation: depot,
+        homeBranch: branch,
+        updatedAt: now,
+        lastLocationAt: null,
+        vehicleTypeRecord: {
+          name: 'Xe tải',
+          lengthCm: 600,
+          widthCm: 240,
+          heightCm: 240,
+          payloadCapacityKg: 5_000,
+          fuelConsumptionLitersPer100Km: 12,
+          loadFuelSurchargePercentAtFullPayload: 0,
+          fixedOperatingCostPerTrip: 100_000,
+          updatedAt: now,
+        },
+      };
+      const driver = {
+        id: 'driver-1',
+        fullName: 'Tài xế',
+        licenseClass: 'C',
+        fixedSalaryMonthly: 10_000_000,
+        tripBasePay: 100_000,
+        perKmPay: 2_000,
+        updatedAt: now,
+      };
+      const order = {
+        id: 'order-1',
+        orderNumber: 'ORD-1',
+        orderType: 'B2B_TRANSPORT',
+        status: OrderStatus.CONFIRMED,
+        packageDataStatus: 'COMPLETE',
+        orderedAt: new Date('2026-11-21T01:00:00.000Z'),
+        totalAmount: 1_000_000,
+        version: 1,
+        stops: [
+          {
+            id: 'pickup-1',
+            type: StopType.PICKUP,
+            sequence: 1,
+            address: 'Kho',
+            latitude: 10.75,
+            longitude: 106.67,
+            windowBasis: 'SERVICE_START',
+            windowStart: null,
+            windowEnd: null,
+            serviceDurationMinutes: 15,
+          },
+          {
+            id: 'delivery-1',
+            type: StopType.DELIVERY,
+            sequence: 2,
+            address: 'Khách',
+            latitude: 10.8,
+            longitude: 106.7,
+            windowBasis: 'SERVICE_START',
+            windowStart: null,
+            windowEnd: null,
+            serviceDurationMinutes: 15,
+          },
+        ],
+        items: [
+          {
+            id: 'item-1',
+            orderId: 'order-1',
+            description: 'Hàng',
+            quantity: 1,
+            packages: [
+              {
+                id: 'pkg-1',
+                orderItemId: 'item-1',
+                status: PackageStatus.READY,
+                lengthMm: 1_000,
+                widthMm: 800,
+                heightMm: 800,
+                weightG: 100_000n,
+              },
+            ],
+          },
+        ],
+      };
+      const prisma = {
+        deliveryAppointment: { findMany: jest.fn().mockResolvedValue([]) },
+        deliveryCapacityHold: { findMany: jest.fn().mockResolvedValue([]) },
+        resourceReservation: { findMany: jest.fn().mockResolvedValue([]) },
+        branch: { findFirst: jest.fn().mockResolvedValue(branch) },
+        vehicle: { findMany: jest.fn().mockResolvedValue([vehicle]) },
+        driver: { findMany: jest.fn().mockResolvedValue([driver]) },
+        order: { findMany: jest.fn().mockResolvedValue([order]) },
+        optimizationJob: { update: jest.fn().mockResolvedValue({}) },
+      };
+      const mapbox = {
+        getRoadMatrix: jest.fn().mockResolvedValue({
+          distancesMeters: [
+            [0, 1_000, 2_000],
+            [1_000, 0, 1_000],
+            [2_000, 1_000, 0],
+          ],
+          durationsSeconds: [
+            [0, 60, 120],
+            [60, 0, 60],
+            [120, 60, 0],
+          ],
+        }),
+      };
+      const mockSettings = {
+        resolveEffectiveSettings: jest.fn().mockResolvedValue({
+          policyVersion: 'company:v1',
+          stacking: {
+            enabled: true,
+            ownerMode: 'ANY_CUSTOMER',
+            maxTiers: 3,
+            liftClearanceMm: 50,
+            maxTopLoadPercent: 30,
+          },
+          optimization: {
+            defaultSearchBudgetSeconds: 60,
+            maxTimeSeconds: 240,
+            hybridSeedCount: 0,
+            earlyStopPatience: 0,
+            dispatchPreparationMinutes: 20,
+            unassignedOrderPenaltyVnd: 1_000_000_000,
+            maxRoutesPerDay: null,
+            demoAllowOverride: true,
+          },
+          costPenalty: {
+            fuelPricePerLiter: 23_500,
+            monthlyWorkingMinutes: 10_560,
+            cargoHoldingCostVndPerTonHour: 0,
+            workStartTime: '08:00',
+            workEndTime: '17:00',
+            deliveryGraceDays: 2,
+            lateDeliveryPenaltyMode: 'NONE',
+            lateDeliveryPenaltyValue: 0,
+          },
+        }),
+      };
+      const axiosPost = axios.post as jest.MockedFunction<typeof axios.post>;
+      axiosPost.mockRejectedValueOnce(new Error('stop after snapshot update'));
+      const service = new TripsService(
+        prisma as never,
+        mapbox as never,
+        {} as never,
+        {} as never,
+        mockSettings as never,
+      );
+
+      await expect(
+        service.executeAutomaticOptimization(
+          user,
+          {
+            idempotencyKey: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            branchId,
+            scheduleMode: 'CURRENT_TIME' as never,
+            searchBudgetSeconds: 60,
+          },
+          'job-prep-1',
+        ),
+      ).rejects.toThrow('stop after snapshot update');
+
+      // 09:00 + 20m prep + 60s budget + 60s overhead = 09:22:00 UTC+7 = 02:22:00Z
+      expect(prisma.optimizationJob.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'job-prep-1' },
+          data: expect.objectContaining({
+            requestSnapshot: expect.objectContaining({
+              scheduleMode: 'CURRENT_TIME',
+              earliestDepartureAt: '2026-11-21T02:22:00.000Z',
+            }),
+          }),
+        }),
+      );
+      const payload = axiosPost.mock.calls[0][1] as { vehicles: Array<{ available_start_sec: number }> };
+      expect(payload.vehicles[0].available_start_sec).toBe(9 * 3600 + 22 * 60);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });

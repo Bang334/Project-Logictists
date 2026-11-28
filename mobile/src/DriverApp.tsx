@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
-  Alert,
   AppState,
   Button,
   KeyboardAvoidingView,
@@ -43,6 +42,12 @@ export function DriverApp({
       null,
     ),
     [reason, setReason] = useState("");
+  const [failureDraft, setFailureDraft] = useState<{
+    taskId: string;
+    packageCode: string;
+    category: "CUSTOMER_BUSY" | "UNREACHABLE" | "REFUSED" | "OTHER";
+    reason: string;
+  } | null>(null);
   useEffect(() => {
     if (!manageSession) return;
     void store.restore();
@@ -206,26 +211,157 @@ export function DriverApp({
                               Khung bắt đầu phục vụ: {time(task.windowStart)} →{" "}
                               {time(task.windowEnd)}
                             </Text>
-                            {task.retainedOnVehicle ? (
-                              <Text>Giao chưa thành công · Kiện vẫn trên xe · Chờ điều phối</Text>
-                            ) : task.action === "UNLOAD" && task.package && task.allocationId &&
-                              detail.status === "ACCEPTED" &&
-                              ["DISPATCHED", "IN_PROGRESS"].includes(detail.trip.status) && (
-                                <Button
-                                  title="Báo người nhận không thể nhận hàng"
-                                  disabled={state.busy}
-                                  onPress={() => Alert.alert(
-                                    "Xác nhận kiện vẫn trên xe",
-                                    `Bạn xác nhận kiện ${task.package?.packageCode} chưa giao và đang ở trên xe này?`,
-                                    [
-                                      { text: "Hủy", style: "cancel" },
-                                      { text: "Báo điều phối", onPress: () => void store.reportRecipientUnavailable(task.id) },
-                                    ],
+                            {stop.status === "SKIPPED" ? (
+                              <Text style={s.error}>
+                                {stop.skipReason === "BLOCKED_BY_RETAINED_CARGO"
+                                  ? "Bị hàng hoàn chắn lối/đè tầng 3D · Giữ trên xe chở về kho"
+                                  : stop.skipReason === "OUTSIDE_SHIFT_WINDOW"
+                                    ? "Không kịp khung giờ ca · Giữ trên xe chở về kho"
+                                    : "Đơn đã tách khỏi chuyến để bố trí xe rảnh"}
+                              </Text>
+                            ) : task.retainedOnVehicle ? (
+                              <Text>
+                                Giao chưa thành công · Kiện đang giữ trên xe chở về kho
+                              </Text>
+                            ) : (task.actualQuantity ?? 0) >= task.plannedQuantity ? (
+                              <Text style={s.badge}>
+                                {task.action === "LOAD"
+                                  ? "Đã xác nhận lấy hàng lên xe"
+                                  : "Đã giao hàng thành công"}
+                              </Text>
+                            ) : detail.status === "ACCEPTED" &&
+                              ["DISPATCHED", "IN_PROGRESS"].includes(
+                                detail.trip.status,
+                              ) ? (
+                              <View style={{ gap: 8 }}>
+                                {task.action === "LOAD" && (
+                                  <Button
+                                    title="Xác nhận đã lấy hàng"
+                                    disabled={state.busy}
+                                    onPress={() => void store.confirmPickup(task.id)}
+                                  />
+                                )}
+                                {task.action === "UNLOAD" &&
+                                  stop.stopType === "DELIVERY" &&
+                                  task.package &&
+                                  task.allocationId && (
+                                    <>
+                                      <Button
+                                        title="Xác nhận đã giao hàng"
+                                        disabled={state.busy}
+                                        onPress={() => void store.confirmDelivery(task.id)}
+                                      />
+                                      <Button
+                                        title="Khách bận / Không thể nhận hàng"
+                                        disabled={state.busy}
+                                        onPress={() =>
+                                          setFailureDraft({
+                                            taskId: task.id,
+                                            packageCode:
+                                              task.package?.packageCode ?? "",
+                                            category: "CUSTOMER_BUSY",
+                                            reason: "Khách bận đột xuất",
+                                          })
+                                        }
+                                      />
+                                      {failureDraft?.taskId === task.id && (
+                                        <View style={s.box}>
+                                          <Text style={s.subtitle}>
+                                            Báo giao thất bại ({failureDraft.packageCode})
+                                          </Text>
+                                          <View style={s.row}>
+                                            {(
+                                              [
+                                                ["CUSTOMER_BUSY", "Khách bận"],
+                                                ["UNREACHABLE", "Không nghe máy"],
+                                                ["REFUSED", "Từ chối nhận"],
+                                                ["OTHER", "Khác"],
+                                              ] as const
+                                            ).map(([cat, label]) => (
+                                              <Button
+                                                key={cat}
+                                                title={
+                                                  failureDraft.category === cat
+                                                    ? `[✓] ${label}`
+                                                    : label
+                                                }
+                                                onPress={() =>
+                                                  setFailureDraft((cur) =>
+                                                    cur
+                                                      ? {
+                                                          ...cur,
+                                                          category: cat,
+                                                          reason:
+                                                            cat === "CUSTOMER_BUSY"
+                                                              ? "Khách bận đột xuất"
+                                                              : cat === "UNREACHABLE"
+                                                                ? "Không liên lạc được với người nhận"
+                                                                : cat === "REFUSED"
+                                                                  ? "Người nhận từ chối nhận hàng"
+                                                                  : cur.reason,
+                                                        }
+                                                      : null,
+                                                  )
+                                                }
+                                              />
+                                            ))}
+                                          </View>
+                                          <TextInput
+                                            accessibilityLabel="Lý do giao thất bại"
+                                            style={s.input}
+                                            value={failureDraft.reason}
+                                            onChangeText={(val) =>
+                                              setFailureDraft((cur) =>
+                                                cur ? { ...cur, reason: val } : null,
+                                              )
+                                            }
+                                            placeholder="Nhập chi tiết lý do..."
+                                          />
+                                          <View style={s.row}>
+                                            <Button
+                                              title="Gửi báo cáo & Tính lộ trình về kho"
+                                              disabled={
+                                                state.busy ||
+                                                !failureDraft.reason.trim()
+                                              }
+                                              onPress={() => {
+                                                const draft = failureDraft;
+                                                setFailureDraft(null);
+                                                void store.reportRecipientUnavailable(
+                                                  draft.taskId,
+                                                  {
+                                                    failureCategory: draft.category,
+                                                    reason: draft.reason,
+                                                  },
+                                                );
+                                              }}
+                                            />
+                                            <Button
+                                              title="Đóng"
+                                              onPress={() => setFailureDraft(null)}
+                                            />
+                                          </View>
+                                        </View>
+                                      )}
+                                    </>
                                   )}
-                                />
-                              )}
+                              </View>
+                            ) : null}
                           </View>
                         ))}
+                        {stop.stopType === "DEPOT_END" &&
+                          detail.status === "ACCEPTED" &&
+                          ["DISPATCHED", "IN_PROGRESS"].includes(
+                            detail.trip.status,
+                          ) &&
+                          stop.status !== "COMPLETED" &&
+                          (stop.hubLocation || stop.tasks.length > 0) && (
+                            <Button
+                              title="Xác nhận trả hàng về kho"
+                              disabled={state.busy}
+                              onPress={() => void store.confirmReturnToHub(stop.id)}
+                            />
+                          )}
                       </View>
                     ))}
                     {detail.status === "ASSIGNED" &&

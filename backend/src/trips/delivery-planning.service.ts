@@ -5,18 +5,23 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ResourceAccess } from '../auth/resource-access.service';
 import { Principal } from '../auth/access';
 import { resolveBranchScope } from '../auth/branch-scope';
+import { normalizeRecipientPhone, recipientLink, verifyRecipientToken } from '../common/services/delivery-sms';
 import { OutboxService } from '../common/services/outbox.service';
 import { TripsService } from './trips.service';
 import { OptimizationJobsService } from './optimization-jobs.service';
 import { assertOptimizationProposal } from './optimization-proposal';
 import { OptimizeDeliveryBatchDto, ProposeDeliveryBatchDto, RespondDeliveryAppointmentDto } from './dto/delivery-planning.dto';
-import { proposedDeliveryWindows, refreshBatchHolds } from './delivery-planning.rules';
+import { lockDeliveryResources, proposedDeliveryWindows, refreshBatchHolds } from './delivery-planning.rules';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const publicAppointment = {
   id: true, batchId: true, orderId: true, windowStart: true, windowEnd: true, expiresAt: true,
   status: true, version: true, requestedStart: true, requestedEnd: true, responseNote: true,
   order: { select: { orderNumber: true } },
+} satisfies Prisma.DeliveryAppointmentSelect;
+const dispatcherAppointment = {
+  ...publicAppointment,
+  recipientPhone: true,
 } satisfies Prisma.DeliveryAppointmentSelect;
 
 @Injectable()
@@ -63,7 +68,13 @@ export class DeliveryPlanningService implements OnApplicationBootstrap, OnModule
   async propose(user: Principal, dto: ProposeDeliveryBatchDto) {
     const expiresAt = new Date(dto.expiresAt);
     if (!Number.isFinite(expiresAt.getTime())) throw new BadRequestException('Hạn phản hồi không hợp lệ');
-    const fingerprint = hash({ jobId: dto.jobId, candidateNumber: dto.candidateNumber, windowMinutes: dto.windowMinutes, expiresAt: expiresAt.toISOString() });
+    const fingerprint = hash({
+      jobId: dto.jobId,
+      candidateNumber: dto.candidateNumber,
+      windowMinutes: dto.windowMinutes,
+      expiresAt: expiresAt.toISOString(),
+      ...(dto.recipientWeb ? { recipientWeb: true } : {}),
+    });
     const existing = await this.prisma.deliveryPlanningBatch.findUnique({ where: { createdById_idempotencyKey: { createdById: user.id, idempotencyKey: dto.idempotencyKey } } });
     if (existing) {
       await this.access.branch(user, 'trips.plan', existing.branchId);
@@ -100,10 +111,38 @@ export class DeliveryPlanningService implements OnApplicationBootstrap, OnModule
         if (supersededBatch) {
           await tx.$queryRaw`SELECT id FROM delivery_planning_batches WHERE id = ${supersededBatch.id} FOR UPDATE`;
         }
+        if (supersededBatch?.status === 'OFFERING' && supersededBatch.appointments.some(row => row.recipientPhone)) {
+          throw new ConflictException('Hãy chốt phương án từ đợt hẹn hiện tại');
+        }
         const ownBatchId = supersededBatch?.status === 'OFFERING' ? supersededBatch.id : undefined;
         const trips = await this.trips.validateDeliveryPlanningCandidate(proposal, signature, user, tx, ownBatchId);
-        const orders = await tx.order.findMany({ where: { id: { in: offers.map(row => row.orderId) } }, include: { customer: { include: { userAccounts: { where: { active: true } } } } } });
-        if (orders.some(order => !order.customer.userId && !order.customer.userAccounts.length)) throw new BadRequestException('Có khách chưa liên kết tài khoản app; cần liên kết trước khi gửi đề xuất');
+        const existingChanges = dto.recipientWeb
+          ? await tx.deliveryAppointment.findMany({
+              where: {
+                orderId: { in: offers.map(row => row.orderId) },
+                recipientPhone: { not: null },
+                status: 'CHANGE_REQUESTED',
+                batch: { status: 'OFFERING' },
+              },
+              select: { orderId: true },
+            })
+          : [];
+        const alreadyResponded = new Set(existingChanges.map(row => row.orderId));
+        const newOffers = offers.filter(offer => !alreadyResponded.has(offer.orderId));
+        if (newOffers.length === 0) {
+          throw new ConflictException('Các đơn đã có giờ người nhận chọn. Hãy xếp lại từ đợt hẹn hiện tại');
+        }
+        const offeredOrderIds = new Set(newOffers.map(row => row.orderId));
+        const orders = await tx.order.findMany({
+          where: { id: { in: [...offeredOrderIds] } },
+          include: {
+            customer: { select: { userId: true, userAccounts: { where: { active: true }, select: { userId: true } } } },
+            stops: { where: { type: 'DELIVERY' }, select: { contactPhone: true } },
+          },
+        });
+        if (!dto.recipientWeb && orders.some(order => !order.customer.userId && !order.customer.userAccounts.length)) {
+          throw new BadRequestException('Có khách chưa liên kết tài khoản app; cần liên kết trước khi gửi đề xuất');
+        }
         const previouslyConfirmed = new Map(
           (supersededBatch?.status === 'OFFERING' ? supersededBatch.appointments : [])
             .filter(row => row.status === 'CONFIRMED')
@@ -120,15 +159,24 @@ export class DeliveryPlanningService implements OnApplicationBootstrap, OnModule
           createdById: user.id, idempotencyKey: dto.idempotencyKey, requestHash: fingerprint,
           windowMinutes: dto.windowMinutes, expiresAt: new Date(dto.expiresAt), proposal: proposal as unknown as Prisma.InputJsonValue,
         } });
-        for (const offer of offers) {
+        for (const offer of newOffers) {
           const order = orders.find(row => row.id === offer.orderId);
           if (!order) throw new ConflictException('Đơn đã thay đổi');
+          let recipientPhone: string | null = null;
+          if (dto.recipientWeb) {
+            try {
+              recipientPhone = normalizeRecipientPhone(order.stops[0]?.contactPhone);
+            } catch {
+              throw new BadRequestException(`Đơn ${order.orderNumber} thiếu số điện thoại người nhận hợp lệ`);
+            }
+          }
           const confirmedPrior = previouslyConfirmed.get(offer.orderId);
           const orderDeliveries = offerWitness.result.routes.flatMap(route =>
             route.stops.filter(stop => stop.stop_type === 'DELIVERY' && stop.order_id === offer.orderId),
           );
           const preserveConfirmed = Boolean(
             confirmedPrior &&
+            confirmedPrior.recipientPhone === recipientPhone &&
             orderDeliveries.length > 0 &&
             orderDeliveries.every(stop => {
               const arrivalMs = epochMs + stop.arrival_time_sec * 1000;
@@ -143,13 +191,23 @@ export class DeliveryPlanningService implements OnApplicationBootstrap, OnModule
             respondedAt: preserveConfirmed && confirmedPrior ? confirmedPrior.respondedAt : null,
             batchId: batch.id,
             customerId: order.customerId,
+            recipientPhone,
             expiresAt: batch.expiresAt,
           } });
           await this.event(tx, appointment.id, order.customerId, appointment.version);
+          if (appointment.recipientPhone && appointment.status === 'PENDING' && process.env.DELIVERY_SMS_WEBHOOK_URL) {
+            await this.outbox.enqueue({
+              aggregateType: 'DeliveryAppointment',
+              aggregateId: appointment.id,
+              aggregateVersion: appointment.version,
+              eventType: 'DELIVERY_SMS_OFFERED',
+              payload: {},
+            }, tx);
+          }
         }
-        await tx.deliveryCapacityHold.createMany({ data: trips.map((trip, routeIndex) => ({ ...trip, routeIndex })).filter(trip => trip.orderIds.some(id => tomorrowOrders.has(id))).map((trip) => ({
+        await tx.deliveryCapacityHold.createMany({ data: trips.map((trip, routeIndex) => ({ ...trip, routeIndex })).filter(trip => trip.orderIds.some(id => offeredOrderIds.has(id))).map((trip) => ({
           batchId: batch.id, routeIndex: trip.routeIndex, vehicleId: trip.vehicleId, driverId: trip.driverId,
-          orderIds: trip.orderIds.filter(id => tomorrowOrders.has(id)), startsAt: trip.plannedStartTime, endsAt: trip.plannedEndTime, expiresAt: batch.expiresAt,
+          orderIds: trip.orderIds.filter(id => offeredOrderIds.has(id)), startsAt: trip.plannedStartTime, endsAt: trip.plannedEndTime, expiresAt: batch.expiresAt,
         })) });
         if (previouslyConfirmed.size > 0) await refreshBatchHolds(tx, batch.id);
         return batch.id;
@@ -170,7 +228,7 @@ export class DeliveryPlanningService implements OnApplicationBootstrap, OnModule
     await this.access.branch(user, 'trips.plan', branchId);
     await this.expire();
     return this.prisma.deliveryPlanningBatch.findMany({ where: { branchId }, orderBy: { createdAt: 'desc' }, take: 50,
-      select: { id: true, status: true, version: true, windowMinutes: true, expiresAt: true, finalOptimizationJobId: true, createdAt: true, appointments: { select: publicAppointment } } });
+      select: { id: true, status: true, version: true, windowMinutes: true, expiresAt: true, finalOptimizationJobId: true, createdAt: true, appointments: { select: dispatcherAppointment } } });
   }
   async getBatch(user: Principal, id: string) {
     const batch = await this.prisma.deliveryPlanningBatch.findUnique({ where: { id }, select: { branchId: true } });
@@ -178,13 +236,13 @@ export class DeliveryPlanningService implements OnApplicationBootstrap, OnModule
     await this.access.branch(user, 'trips.plan', batch.branchId);
     return this.prisma.deliveryPlanningBatch.findUniqueOrThrow({ where: { id }, select: {
       id: true, status: true, version: true, windowMinutes: true, expiresAt: true, finalOptimizationJobId: true,
-      appointments: { select: publicAppointment },
+      appointments: { select: dispatcherAppointment },
     } });
   }
   async mine(user: Principal, page = 1) {
     if (user.role !== 'CUSTOMER') throw new ForbiddenException('Chỉ khách hàng được xem hộp đề xuất nhận hàng');
     if (!Number.isInteger(page) || page < 1 || page > 100000) throw new BadRequestException('Trang không hợp lệ');
-    const where: Prisma.DeliveryAppointmentWhereInput = { customer: { OR: [{ userId: user.id }, { userAccounts: { some: { userId: user.id, active: true } } }] } };
+    const where: Prisma.DeliveryAppointmentWhereInput = { recipientPhone: null, customer: { OR: [{ userId: user.id }, { userAccounts: { some: { userId: user.id, active: true } } }] } };
     const [items, total] = await this.prisma.$transaction([
       this.prisma.deliveryAppointment.findMany({ where, select: publicAppointment, orderBy: { createdAt: 'desc' }, take: 20, skip: (page - 1) * 20 }),
       this.prisma.deliveryAppointment.count({ where }),
@@ -193,12 +251,61 @@ export class DeliveryPlanningService implements OnApplicationBootstrap, OnModule
   }
   async respond(user: Principal, id: string, dto: RespondDeliveryAppointmentDto) {
     if (user.role !== 'CUSTOMER') throw new ForbiddenException('Chỉ khách hàng được phản hồi');
+    return this.recordResponse({ id, recipientPhone: null, customer: { OR: [{ userId: user.id }, { userAccounts: { some: { userId: user.id, active: true } } }] } }, dto);
+  }
+
+  async getRecipientLink(user: Principal, batchId: string, id: string) {
+    await this.getBatch(user, batchId);
+    const appointment = await this.prisma.deliveryAppointment.findFirst({
+      where: {
+        id,
+        batchId,
+        recipientPhone: { not: null },
+        status: 'PENDING',
+        expiresAt: { gt: new Date() },
+        batch: { status: 'OFFERING' },
+      },
+    });
+    if (!appointment) throw new NotFoundException('Không tìm thấy lời hẹn đang chờ người nhận');
+    return {
+      url: recipientLink(appointment, process.env.DELIVERY_PUBLIC_WEB_URL ?? process.env.CORS_ORIGIN?.split(',')[0]?.trim()),
+      phone: appointment.recipientPhone,
+    };
+  }
+
+  async recipientAppointment(token: string) {
+    const id = verifyRecipientToken(token);
+    const appointment = await this.prisma.deliveryAppointment.findFirst({
+      where: { id, recipientPhone: { not: null } },
+      select: { ...publicAppointment, batch: { select: { status: true } } },
+    });
+    if (!appointment || appointment.batch.status === 'CANCELLED') {
+      throw new NotFoundException('Liên kết hẹn giao không còn hiệu lực');
+    }
+    const { batch, ...view } = appointment;
+    void batch;
+    if (view.status === 'PENDING' && view.expiresAt <= new Date()) {
+      return { ...view, status: 'EXPIRED' };
+    }
+    return view;
+  }
+
+  respondAsRecipient(token: string, dto: RespondDeliveryAppointmentDto) {
+    if (dto.decision === 'DECLINED') throw new BadRequestException('Hãy xác nhận hoặc chọn khung giờ khác');
+    if (dto.decision === 'CHANGE_REQUESTED' && (!dto.requestedStart || !dto.requestedEnd)) {
+      throw new BadRequestException('Cần chọn ngày và đủ hai mốc giờ');
+    }
+    return this.recordResponse({ id: verifyRecipientToken(token), recipientPhone: { not: null } }, dto);
+  }
+
+  private async recordResponse(where: Prisma.DeliveryAppointmentWhereInput, dto: RespondDeliveryAppointmentDto) {
     if (Boolean(dto.requestedStart) !== Boolean(dto.requestedEnd) || (dto.requestedStart && dto.requestedEnd && Date.parse(dto.requestedStart) >= Date.parse(dto.requestedEnd))) throw new BadRequestException('Khung yêu cầu đổi không hợp lệ');
     if (dto.decision !== 'CHANGE_REQUESTED' && (dto.requestedStart || dto.requestedEnd)) throw new BadRequestException('Chỉ yêu cầu đổi khung được nhập thời gian khác');
     const fingerprint = hash({ decision: dto.decision, requestedStart: dto.requestedStart ? new Date(dto.requestedStart).toISOString() : null, requestedEnd: dto.requestedEnd ? new Date(dto.requestedEnd).toISOString() : null, note: dto.note ?? null });
     return this.prisma.$transaction(async tx => {
-      const owned = await tx.deliveryAppointment.findFirst({ where: { id, customer: { OR: [{ userId: user.id }, { userAccounts: { some: { userId: user.id, active: true } } }] } } });
-      if (!owned) throw new NotFoundException('Không tìm thấy đề xuất thuộc tài khoản');
+      const owned = await tx.deliveryAppointment.findFirst({ where });
+      if (!owned) throw new NotFoundException('Không tìm thấy đề xuất thuộc tài khoản hoặc liên kết');
+      const { id } = owned;
       await tx.$queryRaw`SELECT id FROM delivery_planning_batches WHERE id = ${owned.batchId} FOR UPDATE`;
       const current = await tx.deliveryAppointment.findUniqueOrThrow({ where: { id } });
       if (current.responseKey === dto.idempotencyKey) {
@@ -207,9 +314,13 @@ export class DeliveryPlanningService implements OnApplicationBootstrap, OnModule
       }
       const batch = await tx.deliveryPlanningBatch.findUniqueOrThrow({ where: { id: current.batchId } });
       if (batch.status !== 'OFFERING' || current.status !== 'PENDING' || current.expiresAt <= new Date() || current.version !== dto.version) throw new ConflictException('Đề xuất hết hạn hoặc đã thay đổi; hãy tải lại');
+      await lockDeliveryResources(tx, [], [], [current.orderId]);
       await tx.$queryRaw`SELECT id FROM orders WHERE id = ${current.orderId} FOR UPDATE`;
       const order = await tx.order.findUniqueOrThrow({ where: { id: current.orderId } });
       if (order.status !== 'CONFIRMED') throw new ConflictException('Đơn không còn chờ lập lịch');
+      if (current.recipientPhone && dto.requestedStart && Date.parse(dto.requestedStart) <= Date.now()) {
+        throw new BadRequestException('Khung giờ mới phải nằm trong tương lai');
+      }
       const updated = await tx.deliveryAppointment.update({ where: { id }, data: {
         status: dto.decision, version: { increment: 1 }, respondedAt: new Date(), responseKey: dto.idempotencyKey,
         responseHash: fingerprint, requestedStart: dto.requestedStart ? new Date(dto.requestedStart) : null,

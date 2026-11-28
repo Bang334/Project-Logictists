@@ -322,6 +322,7 @@ export class OptimizationJobsService {
         j."createdAt", j."updatedAt",
         jsonb_build_object(
           'planningEpochIso', j."requestSnapshot"->'planningEpochIso',
+          'earliestDepartureAt', j."requestSnapshot"->'earliestDepartureAt',
           'scheduleMode', j."requestSnapshot"->'scheduleMode',
           'searchBudgetSeconds', j."requestSnapshot"->'searchBudgetSeconds'
         ) AS "requestSnapshot",
@@ -598,6 +599,7 @@ export class OptimizationJobsService {
     const proposal = stored?.proposal as { result?: unknown } | undefined;
     const snapshot = job.requestSnapshot as {
       planningEpochIso?: unknown;
+      earliestDepartureAt?: unknown;
       scheduleMode?: unknown;
       searchBudgetSeconds?: unknown;
     };
@@ -632,6 +634,10 @@ export class OptimizationJobsService {
       planningEpochIso:
         typeof snapshot.planningEpochIso === 'string'
           ? snapshot.planningEpochIso
+          : null,
+      earliestDepartureAt:
+        typeof snapshot.earliestDepartureAt === 'string'
+          ? snapshot.earliestDepartureAt
           : null,
       scheduleMode:
         typeof snapshot.scheduleMode === 'string' ? snapshot.scheduleMode : null,

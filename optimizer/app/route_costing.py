@@ -5,6 +5,7 @@ from .interprovincial import (
     calculate_route_toll_vnd,
     resolve_vehicle_end_node_index,
 )
+from .packing_rules import calculate_route_weight_balance_penalty_vnd
 from .models import (
     CostPolicy,
     DriverOption,
@@ -265,6 +266,8 @@ def build_route_cost_breakdown(
     return_to_depot: bool = True,
     end_node_index: Optional[int] = None,
     rest_breaks: Sequence = (),
+    step_balances: Sequence = (),
+    weight_balance_penalty_vnd: Optional[int] = None,
 ) -> RouteCostBreakdown:
     node_index_by_id, pickup_index_by_order, vehicle_index = _resolve_node_lookup_context(
         request, nodes, vehicle
@@ -314,6 +317,15 @@ def build_route_cost_breakdown(
     overnight_allowance_vnd = calculate_route_overnight_allowance_vnd(
         rest_breaks, getattr(request.policy, "driving_rest_policy", None)
     )
+    resolved_balance_penalty = (
+        calculate_route_weight_balance_penalty_vnd(
+            step_balances,
+            request.policy,
+            getattr(request, "demo_stacking", None),
+        )
+        if weight_balance_penalty_vnd is None
+        else int(weight_balance_penalty_vnd)
+    )
     fuel_cost = base_fuel_cost + load_fuel_surcharge
     total_cost = (
         fuel_cost
@@ -324,6 +336,7 @@ def build_route_cost_breakdown(
         + late_delivery_penalty
         + toll_cost_vnd
         + overnight_allowance_vnd
+        + resolved_balance_penalty
     )
     return RouteCostBreakdown(
         base_fuel_cost_vnd=base_fuel_cost,
@@ -338,5 +351,6 @@ def build_route_cost_breakdown(
         driver_trip_pay_vnd=trip_pay,
         toll_cost_vnd=toll_cost_vnd,
         overnight_allowance_vnd=overnight_allowance_vnd,
+        weight_balance_penalty_vnd=resolved_balance_penalty,
         total_cost_vnd=total_cost,
     )

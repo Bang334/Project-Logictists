@@ -32,6 +32,7 @@ def calculate_route_cost(
     route_duration_minutes_override: Optional[float] = None,
     end_node_index_override: Optional[int] = None,
     rest_breaks: Sequence = (),
+    weight_balance_penalty_vnd: int = 0,
 ) -> Tuple[RouteCostBreakdown, float, float]:
     """Evaluates the full cost breakdown, total distance (km), and duration (minutes)."""
     if not stops:
@@ -166,6 +167,7 @@ def calculate_route_cost(
         rest_breaks, getattr(policy, "driving_rest_policy", None)
     )
 
+    balance_penalty_vnd = max(0, int(weight_balance_penalty_vnd or 0))
     total_cost = (
         fuel_cost
         + vehicle.fixed_operating_cost_vnd
@@ -174,6 +176,7 @@ def calculate_route_cost(
         + late_penalty
         + toll_cost_vnd
         + overnight_allowance_vnd
+        + balance_penalty_vnd
     )
 
     breakdown = RouteCostBreakdown(
@@ -188,6 +191,7 @@ def calculate_route_cost(
         late_delivery_penalty_vnd=late_penalty,
         toll_cost_vnd=toll_cost_vnd,
         overnight_allowance_vnd=overnight_allowance_vnd,
+        weight_balance_penalty_vnd=balance_penalty_vnd,
         total_cost_vnd=total_cost,
     )
 

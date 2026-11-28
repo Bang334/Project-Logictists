@@ -12,6 +12,10 @@ from ..interprovincial import (
     schedule_route_timeline,
 )
 from ..models import advance_past_curfews
+from ..packing_rules import (
+    calculate_route_weight_balance_penalty_vnd,
+    resolve_weight_balance_thresholds,
+)
 from .cost_evaluator import calculate_route_cost
 from .models import (
     CargoItem,
@@ -34,6 +38,7 @@ class RouteEvaluation:
     cost: Optional[RouteCostBreakdown] = None
     distance_km: float = 0.0
     duration_minutes: float = 0.0
+    total_driving_sec: int = 0
 
 
 def clone_stops(stops: Sequence[ScheduledStop]) -> List[ScheduledStop]:
@@ -94,9 +99,11 @@ def _validate_route_packing_cached(
     policy: CostPolicy,
     *,
     allow_layout_search: bool,
-    packing_cache: Optional[Dict[Tuple[object, ...], Tuple[bool, str]]],
-) -> Tuple[bool, str]:
+    packing_cache: Optional[Dict[Tuple[object, ...], Tuple[bool, str, int]]],
+) -> Tuple[bool, str, int]:
     demo_stacking = getattr(policy, "demo_stacking", None)
+    enforce_wb, max_lat_wb, max_lon_wb = resolve_weight_balance_thresholds(demo_stacking, policy)
+    wb_rate = int(getattr(policy, "weight_balance_penalty_vnd_per_percent", 0) or 0)
     packing_key: Optional[Tuple[object, ...]] = None
     if packing_cache is not None:
         stacking_key = (
@@ -117,6 +124,10 @@ def _validate_route_packing_cached(
             vehicle.door_position,
             getattr(vehicle, "door_width_cm", None),
             stacking_key,
+            enforce_wb,
+            max_lat_wb,
+            max_lon_wb,
+            wb_rate,
             allow_layout_search,
             tuple(
                 (
@@ -130,12 +141,26 @@ def _validate_route_packing_cached(
         )
         cached = packing_cache.get(packing_key)
         if cached is not None:
+            if len(cached) == 2:
+                return cached[0], cached[1], 0
             return cached
-    result = FastPackingChecker(
+    checker = FastPackingChecker(
         vehicle,
         allow_layout_search=allow_layout_search,
         demo_stacking=demo_stacking,
-    ).validate_route_stops(scheduled, cargo_by_id)
+        cost_policy=policy,
+    )
+    if wb_rate > 0:
+        ok, reason, step_balances = checker.validate_route_stops_with_balances(scheduled, cargo_by_id)
+        wb_penalty = (
+            calculate_route_weight_balance_penalty_vnd(step_balances, policy, demo_stacking)
+            if ok
+            else 0
+        )
+        result: Tuple[bool, str, int] = (ok, reason, wb_penalty)
+    else:
+        ok, reason = checker.validate_route_stops(scheduled, cargo_by_id)
+        result = (ok, reason, 0)
     if packing_cache is not None and packing_key is not None:
         packing_cache[packing_key] = result
     return result
@@ -284,8 +309,9 @@ def schedule_and_evaluate_route(
     for st, weight in zip(scheduled, stop_weights):
         st.current_weight_kg = weight
 
+    wb_penalty_vnd = 0
     if use_fast_packing:
-        packing_ok, packing_reason = _validate_route_packing_cached(
+        packing_ok, packing_reason, wb_penalty_vnd = _validate_route_packing_cached(
             vehicle,
             scheduled,
             cargo_by_id,
@@ -311,6 +337,7 @@ def schedule_and_evaluate_route(
         route_duration_minutes_override=duration_override,
         end_node_index_override=end_depot_idx,
         rest_breaks=timeline.rest_breaks,
+        weight_balance_penalty_vnd=wb_penalty_vnd,
     )
     return RouteEvaluation(
         feasible=True,
@@ -318,4 +345,5 @@ def schedule_and_evaluate_route(
         cost=cost,
         distance_km=distance_km,
         duration_minutes=duration_minutes,
+        total_driving_sec=timeline.total_driving_sec,
     )

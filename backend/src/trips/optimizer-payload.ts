@@ -6,15 +6,20 @@ import {
   normalizeAllowedOrientations,
 } from '../orders/package-orientations';
 import type { InterprovincialLocationPayload } from './interprovincial-policy';
+
+export type OptimizerCargoTemperature = CargoTemperature | 'HAZMAT';
+export type OptimizerTemperatureMode = TemperatureMode | 'HAZMAT';
+
 export type PhysicalPackageLine = {
   id: string; orderId: string; description: string; quantity: number;
   packages: Array<PackageMeasurements & {
-    id: string; orderItemId: string | null; cargoKind?: CargoKind;
+    id: string; orderItemId: string | null; status?: string; cargoKind?: CargoKind;
     allowUpperTier?: boolean; noTopLoadRequested?: boolean; maxTopLoadG?: number | null;
     allowedOrientations?: unknown;
-    requiredTemperature?: CargoTemperature | null;
+    requiredTemperature?: OptimizerCargoTemperature | null;
     cargoGroup?: string | null;
     incompatibleCargoGroups?: string[] | null;
+    isHazmat?: boolean;
     requiresLiftEquipment?: boolean;
   }>;
 };
@@ -34,18 +39,26 @@ export type OptimizerCargoUnit = {
   allow_upper_tier?: boolean;
   no_top_load_requested?: boolean;
   max_top_load_g?: number | null;
-  required_temperature?: CargoTemperature | null;
+  required_temperature?: OptimizerCargoTemperature | null;
   cargo_group?: string | null;
   incompatible_cargo_groups?: string[];
+  is_hazmat?: boolean;
   requires_lift_equipment?: boolean;
 };
 /** Only persisted packages. Compatibility units are converted once at this boundary. */
-export function packagesToCargoUnits(items: PhysicalPackageLine[], customerId?: string): OptimizerCargoUnit[] {
+export function packagesToCargoUnits(
+  items: PhysicalPackageLine[],
+  customerId?: string,
+  options?: { readyOnly?: boolean },
+): OptimizerCargoUnit[] {
   const seen = new Set<string>();
   return items.flatMap(item => {
     if (!item.packages.length || item.quantity !== item.packages.length) throw new Error('Danh sách Package chưa được đối soát');
     packageTotals(item.packages);
-    return item.packages.map(p => {
+    const activePackages = options?.readyOnly
+      ? item.packages.filter((p) => p.status === 'READY')
+      : item.packages;
+    return activePackages.map(p => {
       if (p.orderItemId !== item.id || seen.has(p.id)) throw new Error('ID kiện trùng hoặc sai dòng hàng');
       if (p.weightG > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Khối lượng vượt độ chính xác contract optimizer');
       seen.add(p.id);
@@ -55,6 +68,7 @@ export function packagesToCargoUnits(items: PhysicalPackageLine[], customerId?: 
       const normalizedIncompatible = Array.isArray(p.incompatibleCargoGroups)
         ? [...new Set(p.incompatibleCargoGroups.map(g => g.trim().toUpperCase()).filter(Boolean))]
         : [];
+      const isHazmat = Boolean(p.isHazmat) || normalizedGroup === 'HAZMAT';
       return {
         id: p.id, order_id: item.orderId, order_item_id: item.id, description: item.description,
         ...(customerId ? { customer_id: customerId } : {}),
@@ -75,6 +89,7 @@ export function packagesToCargoUnits(items: PhysicalPackageLine[], customerId?: 
         ...(normalizedIncompatible.length > 0
           ? { incompatible_cargo_groups: normalizedIncompatible }
           : {}),
+        ...(isHazmat ? { is_hazmat: true } : {}),
         ...(p.requiresLiftEquipment ? { requires_lift_equipment: true } : {}),
       };
     });
@@ -88,7 +103,8 @@ export type OptimizerFleetVehicle = {
   width_cm: number;
   height_cm: number;
   payload_limit_kg: number;
-  temperature_mode?: TemperatureMode;
+  temperature_mode?: OptimizerTemperatureMode;
+  allows_hazmat?: boolean;
   has_tail_lift?: boolean;
 };
 
@@ -115,25 +131,41 @@ export type OptimizerOrder = {
   service_time_sec: number;
 };
 
+function isCargoUnitHazmat(cargo: OptimizerCargoUnit): boolean {
+  return Boolean(cargo.is_hazmat) ||
+    cargo.required_temperature === 'HAZMAT' ||
+    cargo.cargo_group?.trim().toUpperCase() === 'HAZMAT';
+}
+
+function vehicleAllowsHazmat(vehicle: OptimizerFleetVehicle): boolean {
+  return Boolean(vehicle.allows_hazmat) || vehicle.temperature_mode === 'HAZMAT';
+}
+
 function isTemperatureCompatible(
-  requiredTemperature: CargoTemperature | null | undefined,
-  vehicleMode: TemperatureMode | undefined,
+  requiredTemperature: OptimizerCargoTemperature | null | undefined,
+  vehicleMode: OptimizerTemperatureMode | undefined,
+  allowsHazmat = false,
 ): boolean {
   if (!requiredTemperature || !vehicleMode) return true;
   if (requiredTemperature === 'FROZEN') return vehicleMode === 'FROZEN';
   if (requiredTemperature === 'CHILLED') return vehicleMode === 'CHILLED';
   if (requiredTemperature === 'DRY') return vehicleMode === 'DRY' || vehicleMode === 'ISOTHERMAL';
+  if (requiredTemperature === 'HAZMAT') return vehicleMode === 'HAZMAT' || allowsHazmat;
   return true;
 }
 
 function itemsHaveCompatibilityConflict(cargo: OptimizerCargoUnit[]): boolean {
   for (let i = 0; i < cargo.length; i++) {
     const a = cargo[i];
+    const hazA = isCargoUnitHazmat(a);
     const groupA = a.cargo_group?.trim().toUpperCase();
     const incompatA = new Set((a.incompatible_cargo_groups ?? []).map((g) => g.trim().toUpperCase()));
     const tempA = a.required_temperature ?? null;
     for (let j = i + 1; j < cargo.length; j++) {
       const b = cargo[j];
+      if (hazA !== isCargoUnitHazmat(b)) {
+        return true;
+      }
       const groupB = b.cargo_group?.trim().toUpperCase();
       const incompatB = new Set((b.incompatible_cargo_groups ?? []).map((g) => g.trim().toUpperCase()));
       if ((groupA && incompatB.has(groupA)) || (groupB && incompatA.has(groupB))) {
@@ -151,7 +183,11 @@ function cargoFitsVehicle(
   cargo: OptimizerCargoUnit,
   vehicle: OptimizerFleetVehicle,
 ): boolean {
-  if (!isTemperatureCompatible(cargo.required_temperature, vehicle.temperature_mode)) {
+  const vHazmat = vehicleAllowsHazmat(vehicle);
+  if (isCargoUnitHazmat(cargo) && !vHazmat) {
+    return false;
+  }
+  if (!isTemperatureCompatible(cargo.required_temperature, vehicle.temperature_mode, vHazmat)) {
     return false;
   }
   if (cargo.weight_kg > vehicle.payload_limit_kg) return false;

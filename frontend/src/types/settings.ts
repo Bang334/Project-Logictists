@@ -22,6 +22,7 @@ export interface OptimizationSettings {
   maxTimeSeconds: number;
   hybridSeedCount: number;
   earlyStopPatience: number;
+  dispatchPreparationMinutes: number;
   unassignedOrderPenaltyVnd: number;
   maxRoutesPerDay: number | null;
   demoAllowOverride: boolean;
@@ -169,6 +170,7 @@ export const SETTING_FIELD_LABELS: Record<string, string> = {
   'optimization.maxTimeSeconds': 'Trần thời gian tối đa (giây)',
   'optimization.hybridSeedCount': 'Số seed Hybrid ALNS',
   'optimization.earlyStopPatience': 'Ngưỡng dừng sớm',
+  'optimization.dispatchPreparationMinutes': 'Thời gian chuẩn bị trước khi xuất phát (phút)',
   'optimization.unassignedOrderPenaltyVnd': 'Phạt đơn không xếp được (VNĐ)',
   'optimization.maxRoutesPerDay': 'Giới hạn số chuyến / ngày',
   'optimization.demoAllowOverride': 'Cho phép ghi đè trong màn hình Demo',

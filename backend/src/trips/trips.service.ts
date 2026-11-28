@@ -49,6 +49,7 @@ import { OptimizeTripDto } from "./dto/optimize-trip.dto";
 import { packagesToCargoUnits, splitOversizedOrdersAcrossFleet } from "./optimizer-payload";
 import { assertDemoStackSupports, matchesDemoStackingPolicy, readDemoStackingPolicy } from './demo-stacking';
 import { SettingsService } from '../settings/settings.service';
+import { COMPANY_SETTING_DEFAULTS } from '../settings/settings.types';
 import { toResolvedStackingPolicy } from '../settings/settings.helpers';
 import {
   assertFleetOptimizationBatchResult,
@@ -70,9 +71,11 @@ import {
 import { RunDemoOptimizationDto } from './dto/run-demo-optimization.dto';
 import {
   buildServiceDayWindows,
+  currentDispatchEarliest,
   getFullServiceDayPlanningEpoch,
   getNextDayPlanningEpoch,
   getPlanningEpoch,
+  resolveCurrentDispatchStart,
   ServiceDayWindow,
 } from './service-day';
 import { OutboxService } from '../common/services/outbox.service';
@@ -84,11 +87,13 @@ import {
 } from './vehicle-planning-start';
 import {
   buildInterprovincialTollMatrix,
+  DEFAULT_VN_2024_DRIVING_REST_POLICY,
   expectedWarehouseStopServiceSec,
   extractLocationConstraintFields,
   findMatchingWarehouseLocation,
   LocationConstraintSource,
   parseWorkPolicyToDrivingRest,
+  startOfWeekInTimeZone,
   TollCorridorRecord,
   WorkPolicyRow,
 } from './interprovincial-policy';
@@ -96,6 +101,7 @@ import { OptimizationProgressReporter } from './optimization-progress';
 import {
   flattenVehicleType,
   vehicleCapabilities,
+  vehicleTypeAllowsHazmat,
 } from '../vehicles/vehicle-capabilities';
 
 const ACTIVE_TRIP_STATUSES = [
@@ -114,14 +120,35 @@ type StopLocationRecord = OrderStopRecord & {
   location?: LocationConstraintSource | null;
 };
 
-type OrderWithStopsAndItems = Omit<
+type CustodyLocationSummary = {
+  id: string;
+  code: string;
+  name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+};
+
+type BaseOrderWithStopsAndItems = Omit<
   Prisma.OrderGetPayload<{
     include: { stops: true; items: { include: { packages: true } } };
   }>,
   'stops'
 > & {
   stops: StopLocationRecord[];
+};
+
+type OrderWithStopsAndItems = Omit<BaseOrderWithStopsAndItems, 'items'> & {
   packages?: any[];
+  items: Array<
+    Omit<BaseOrderWithStopsAndItems['items'][number], 'packages'> & {
+      packages: Array<
+        BaseOrderWithStopsAndItems['items'][number]['packages'][number] & {
+          custodyLocation?: CustodyLocationSummary | null;
+        }
+      >;
+    }
+  >;
 };
 
 type DispatchStopWithItems = {
@@ -165,6 +192,7 @@ type PlannedAutomaticTrip = {
     longitude: number;
     contactName: string;
     contactPhone: string;
+    hubLocationId?: string | null;
     plannedArrivalTime: Date;
     plannedDepartureTime: Date;
   }>;
@@ -234,10 +262,26 @@ export class TripsService {
         stops: {
           orderBy: { sequence: "asc" },
           include: {
+            hubLocation: {
+              select: {
+                id: true,
+                code: true,
+                name: true,
+                address: true,
+                latitude: true,
+                longitude: true,
+              },
+            },
             tasks: true,
             deliveryAttempts: {
               where: { results: { some: { result: 'RETAINED_ON_VEHICLE', package: { status: 'LOADED' } } } },
-              select: { id: true, occurredAt: true, failureReason: true },
+              select: {
+                id: true,
+                occurredAt: true,
+                failureReason: true,
+                failureCategory: true,
+                requestedRedeliveryAt: true,
+              },
               orderBy: { occurredAt: 'desc' },
             },
           },
@@ -260,8 +304,33 @@ export class TripsService {
         stops: {
           orderBy: { sequence: "asc" },
           include: {
+            hubLocation: {
+              select: {
+                id: true,
+                code: true,
+                name: true,
+                address: true,
+                latitude: true,
+                longitude: true,
+              },
+            },
+            deliveryAttempts: {
+              orderBy: { occurredAt: 'desc' },
+              select: {
+                id: true,
+                attemptNumber: true,
+                occurredAt: true,
+                result: true,
+                failureReason: true,
+                failureCategory: true,
+                requestedRedeliveryAt: true,
+              },
+            },
             tasks: {
               include: {
+                deliveryResults: {
+                  select: { id: true, result: true, packageId: true },
+                },
                 allocation: {
                   include: { package: true, orderItem: { include: { order: true } } },
                 },
@@ -446,7 +515,24 @@ export class TripsService {
       },
       include: {
         stops: { orderBy: { sequence: 'asc' } },
-        items: { include: { packages: true } },
+        items: {
+          include: {
+            packages: {
+              include: {
+                custodyLocation: {
+                  select: {
+                    id: true,
+                    code: true,
+                    name: true,
+                    address: true,
+                    latitude: true,
+                    longitude: true,
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     });
 
@@ -462,6 +548,34 @@ export class TripsService {
     }
     if (dto.orderedStopIds && (new Set(dto.orderedStopIds).size !== orders.length * 2 || dto.orderedStopIds.length !== orders.length * 2)) throw new BadRequestException('Phải chọn đủ mỗi điểm lấy/giao đúng một lần');
     // 4. Sắp xếp thứ tự các điểm dừng (Ordered Stops)
+    const hubLocationIdByOrderStopId = new Map<string, string>();
+    const projectManualStop = (
+      stop: OrderWithStopsAndItems['stops'][number],
+      order: OrderWithStopsAndItems,
+    ): DispatchStopWithItems => {
+      if (stop.type === StopType.PICKUP) {
+        const readyIds = order.items.flatMap((i) =>
+          i.packages
+            .filter((p) => p.status === PackageStatus.READY)
+            .map((p) => p.id),
+        );
+        const hub = this.resolveOrderCustodyHubForCargo(order, readyIds);
+        if (hub) {
+          hubLocationIdByOrderStopId.set(stop.id, hub.id);
+          return {
+            orderStop: {
+              ...stop,
+              address: `${hub.name} — ${hub.address}`,
+              latitude: hub.latitude,
+              longitude: hub.longitude,
+            },
+            order,
+          };
+        }
+      }
+      return { orderStop: stop, order };
+    };
+
     const stopWithItemsList: Array<{ orderStop: OrderWithStopsAndItems['stops'][number]; order: OrderWithStopsAndItems }> = [];
 
     if (dto.orderedStopIds && dto.orderedStopIds.length > 0) {
@@ -482,7 +596,7 @@ export class TripsService {
         for (const order of orders) {
           const match = order.stops.find((s) => s.id === stopId);
           if (match) {
-            stopWithItemsList.push({ orderStop: match, order });
+            stopWithItemsList.push(projectManualStop(match, order));
             break;
           }
         }
@@ -495,9 +609,9 @@ export class TripsService {
       for (const order of orders) {
         for (const stop of order.stops) {
           if (stop.type === StopType.PICKUP) {
-            pickups.push({ orderStop: stop, order });
+            pickups.push(projectManualStop(stop, order));
           } else {
-            deliveries.push({ orderStop: stop, order });
+            deliveries.push(projectManualStop(stop, order));
           }
         }
       }
@@ -730,6 +844,9 @@ export class TripsService {
             tripId: trip.id,
             sequence: i + 2,
             stopType: item.orderStop.type,
+            hubLocationId: isPickup
+              ? (hubLocationIdByOrderStopId.get(item.orderStop.id) ?? null)
+              : null,
             address: item.orderStop.address,
             latitude: item.orderStop.latitude,
             longitude: item.orderStop.longitude,
@@ -740,14 +857,31 @@ export class TripsService {
         });
 
         for (const line of item.order.items) {
-          for (const pkg of line.packages) {
+          for (const pkg of line.packages.filter(
+            (p) => p.status === PackageStatus.READY,
+          )) {
             let allocation = await tx.allocation.findFirst({ where: { tripId: trip.id, packageId: pkg.id } });
             if (!allocation) allocation = await tx.allocation.create({ data: { tripId: trip.id, orderItemId: line.id, packageId: pkg.id, allocatedQuantity: 1, status: 'ACTIVE' } });
             await tx.stopTask.create({ data: { tripStopId: tripStop.id, allocationId: allocation.id, orderId: item.order.id, packageId: pkg.id, orderStopId: item.orderStop.id, action: isPickup ? TaskAction.LOAD : TaskAction.UNLOAD, plannedQuantity: 1 } });
           }
         }
       }
-      await tx.package.updateMany({ where: { orderItem: { orderId: { in: dto.orderIds } } }, data: { status: 'ALLOCATED', version: { increment: 1 } } });
+      const manualReadyPackageIds = orders.flatMap((order) =>
+        order.items.flatMap((line) =>
+          line.packages
+            .filter((pkg) => pkg.status === PackageStatus.READY)
+            .map((pkg) => pkg.id),
+        ),
+      );
+      if (manualReadyPackageIds.length > 0) {
+        await tx.package.updateMany({
+          where: {
+            id: { in: manualReadyPackageIds },
+            status: PackageStatus.READY,
+          },
+          data: { status: 'ALLOCATED', version: { increment: 1 } },
+        });
+      }
 
       await tx.tripStop.create({
         data: {
@@ -1472,7 +1606,24 @@ export class TripsService {
         where: { id: { in: body.orderIds }, orderType: 'B2B_TRANSPORT' },
         include: {
           stops: { orderBy: { sequence: 'asc' }, include: { location: true } },
-          items: { include: { packages: true } },
+          items: {
+            include: {
+              packages: {
+                include: {
+                  custodyLocation: {
+                    select: {
+                      id: true,
+                      code: true,
+                      name: true,
+                      address: true,
+                      latitude: true,
+                      longitude: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
           packages: true,
         },
       }),
@@ -1493,6 +1644,7 @@ export class TripsService {
               operatingWindows: true,
               handlingSecPerTon: true,
               handlingSecPerPackage: true,
+              capabilities: true,
             },
           })
         : Promise.resolve([]),
@@ -1602,6 +1754,11 @@ export class TripsService {
     if (deliveryBatchId && (!deliveryBatch || deliveryBatch.branchId !== branchId || deliveryBatch.status !== 'OFFERING' || deliveryBatch.appointments.some(row => row.status === 'PENDING'))) throw new ConflictException('Đợt hẹn chưa sẵn sàng chốt');
     const confirmations = deliveryBatch?.appointments.filter(row => row.status === 'CONFIRMED') ?? [];
     const batchChangeRequests = deliveryBatch?.appointments.filter(row => row.status === 'CHANGE_REQUESTED') ?? [];
+    const recipientBatch = Boolean(deliveryBatch?.appointments.some(row => row.recipientPhone));
+    if (recipientBatch && batchChangeRequests.length > 0 && !replanWithFleet) {
+      throw new ConflictException('Cần xếp lại theo giờ người nhận đã chọn');
+    }
+    const acknowledgedIds = [...confirmations, ...(replanWithFleet ? batchChangeRequests : [])].map(row => row.orderId);
     const batchDeclinedIds = deliveryBatch?.appointments.filter(row => row.status === 'DECLINED').map(row => row.orderId) ?? [];
     const otherOrderHolds = await this.prisma.deliveryAppointment.findMany({ where: {
       ...(deliveryBatchId ? { batchId: { not: deliveryBatchId } } : {}),
@@ -1649,13 +1806,30 @@ export class TripsService {
           branchId,
           orderType: 'B2B_TRANSPORT',
           status: OrderStatus.CONFIRMED,
-          id: deliveryBatchId && !replanWithFleet
-            ? { in: confirmations.map(row => row.orderId) }
+          id: deliveryBatchId && (!replanWithFleet || recipientBatch)
+            ? { in: acknowledgedIds }
             : { notIn: [...new Set([...otherOrderHolds.map(row => row.orderId), ...batchDeclinedIds])] },
         },
         include: {
           stops: { orderBy: { sequence: 'asc' }, include: { location: true } },
-          items: { include: { packages: true } },
+          items: {
+            include: {
+              packages: {
+                include: {
+                  custodyLocation: {
+                    select: {
+                      id: true,
+                      code: true,
+                      name: true,
+                      address: true,
+                      latitude: true,
+                      longitude: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
           packages: true,
         },
         orderBy: { orderedAt: "asc" },
@@ -1690,17 +1864,14 @@ export class TripsService {
               operatingWindows: true,
               handlingSecPerTon: true,
               handlingSecPerPackage: true,
+              capabilities: true,
             },
           })
         : Promise.resolve([] as Array<LocationConstraintSource & { latitude: number; longitude: number }>),
     ]);
 
     const orders = candidateOrders.filter((order) =>
-      order.packageDataStatus === 'COMPLETE' &&
-      order.items.length > 0 &&
-      order.items.every((item) =>
-        item.packages.length > 0 && item.packages.every((pkg) => pkg.status === PackageStatus.READY),
-      ),
+      this.isOrderEligibleForAutomaticOptimization(order),
     );
 
     if (!branch)
@@ -1714,9 +1885,10 @@ export class TripsService {
     if (orders.length === 0)
       throw new BadRequestException('Không có đơn CONFIRMED để tối ưu');
 
-    const effectiveSettings = this.settingsService
-      ? await this.settingsService.resolveEffectiveSettings(branchId)
-      : null;
+    const effectiveSettings =
+      typeof this.settingsService?.resolveEffectiveSettings === 'function'
+        ? await this.settingsService.resolveEffectiveSettings(branchId)
+        : null;
     const effectiveWorkStartTime =
       effectiveSettings?.costPenalty.workStartTime ?? branch.workStartTime;
     const effectiveWorkEndTime =
@@ -1729,6 +1901,27 @@ export class TripsService {
         planningStart: resolveVehiclePlanningStart(vehicle),
       }));
 
+    const resolvedSearchBudget =
+      searchBudgetSeconds ?? effectiveSettings?.optimization.defaultSearchBudgetSeconds;
+    const effectiveMaxTimeSeconds = effectiveSettings?.optimization.maxTimeSeconds ?? 120;
+    const earlyStopPatience = effectiveSettings?.optimization.earlyStopPatience ?? 0;
+    const largeBatchFloorSeconds = orders.length >= 50 ? 48 : 0;
+    const boundedSearchBudgetSeconds =
+      resolvedSearchBudget !== undefined || largeBatchFloorSeconds > 0
+        ? Math.min(
+            effectiveMaxTimeSeconds,
+            Math.max(resolvedSearchBudget ?? largeBatchFloorSeconds, largeBatchFloorSeconds),
+          )
+        : undefined;
+    const preparationMinutes =
+      effectiveSettings?.optimization.dispatchPreparationMinutes ??
+      COMPANY_SETTING_DEFAULTS.optimization.dispatchPreparationMinutes;
+    const estimatedSolverSeconds =
+      earlyStopPatience > 0
+        ? effectiveMaxTimeSeconds
+        : (boundedSearchBudgetSeconds ?? effectiveMaxTimeSeconds);
+    const routingOverheadSeconds = 60;
+
     const now = new Date();
     let planningEpoch: Date;
     let effectiveStartTime: Date | undefined;
@@ -1736,7 +1929,19 @@ export class TripsService {
     if (deliveryBatch) {
       const witness = deliveryBatch.proposal;
       assertOptimizationProposal(witness);
-      planningEpoch = new Date(witness.planningEpochIso);
+      planningEpoch =
+        recipientBatch && replanWithFleet
+          ? new Date(
+              Math.max(
+                Date.parse(witness.planningEpochIso),
+                getPlanningEpoch(
+                  orders.map((order) => order.orderedAt),
+                  branch.timezone,
+                  now,
+                ).getTime(),
+              ),
+            )
+          : new Date(witness.planningEpochIso);
     } else if (scheduleMode === AutomaticDispatchScheduleMode.NEXT_DAY) {
       planningEpoch = getNextDayPlanningEpoch(
         orders.map(order => order.orderedAt),
@@ -1744,18 +1949,24 @@ export class TripsService {
         now,
       );
     } else if (scheduleMode === AutomaticDispatchScheduleMode.CURRENT_TIME) {
-      planningEpoch = getPlanningEpoch(
-        orders.map(order => order.orderedAt),
-        branch.timezone,
+      const requestedStart = customStartTimeStr ? Date.parse(customStartTimeStr) : 0;
+      if (!Number.isFinite(requestedStart)) {
+        throw new BadRequestException('customStartTime không hợp lệ');
+      }
+      const earliest = currentDispatchEarliest(
         now,
+        preparationMinutes,
+        estimatedSolverSeconds + routingOverheadSeconds,
       );
-      if (customStartTimeStr) {
-        effectiveStartTime = new Date(customStartTimeStr);
-        if (Number.isNaN(effectiveStartTime.getTime())) {
-          throw new BadRequestException('customStartTime không hợp lệ');
-        }
-      } else {
-        effectiveStartTime = now;
+      try {
+        ({ planningEpoch, effectiveStartTime } = resolveCurrentDispatchStart(
+          new Date(Math.max(requestedStart, earliest.getTime())),
+          branch.timezone,
+          effectiveWorkStartTime,
+          effectiveWorkEndTime,
+        ));
+      } catch (error: any) {
+        throw new BadRequestException(error?.message || 'Không thể lập lịch trong ca');
       }
     } else {
       planningEpoch = getFullServiceDayPlanningEpoch(
@@ -1766,11 +1977,72 @@ export class TripsService {
       );
     }
 
+    let replanDuringShift = false;
+    if (recipientBatch && replanWithFleet && planningEpoch < now) {
+      try {
+        const [today] = buildServiceDayWindows(
+          planningEpoch,
+          branch.timezone,
+          effectiveWorkStartTime,
+          effectiveWorkEndTime,
+          1,
+        );
+        if (today.endsAt.getTime() - now.getTime() < 15 * 60_000) {
+          planningEpoch = getNextDayPlanningEpoch([], branch.timezone, now);
+        } else {
+          replanDuringShift = true;
+        }
+      } catch (error: any) {
+        throw new BadRequestException(
+          error?.message || 'Không thể tạo cửa sổ thời gian điều phối',
+        );
+      }
+    }
+
+    const weekStart = startOfWeekInTimeZone(planningEpoch, branch.timezone);
+    const rawPriorDriverAssignments =
+      drivers.length > 0 && this.prisma.driverAssignment?.findMany
+        ? await this.prisma.driverAssignment.findMany({
+            where: {
+              driverId: { in: drivers.map((driver) => driver.id) },
+              startTime: { lt: planningEpoch },
+              endTime: { gt: weekStart },
+              trip: {
+                status: {
+                  in: [...ACTIVE_TRIP_STATUSES, TripStatus.COMPLETED],
+                },
+              },
+            },
+            select: {
+              driverId: true,
+              startTime: true,
+              endTime: true,
+            },
+          })
+        : [];
+    const priorWeeklyDrivingSecByDriver = new Map<string, number>();
+    if (Array.isArray(rawPriorDriverAssignments)) {
+      const epochMs = planningEpoch.getTime();
+      const weekStartMs = weekStart.getTime();
+      for (const row of rawPriorDriverAssignments) {
+        const clippedStart = Math.max(weekStartMs, row.startTime.getTime());
+        const clippedEnd = Math.min(epochMs, row.endTime.getTime());
+        if (clippedEnd > clippedStart) {
+          const addedSec = Math.round((clippedEnd - clippedStart) / 1000);
+          priorWeeklyDrivingSecByDriver.set(
+            row.driverId,
+            (priorWeeklyDrivingSecByDriver.get(row.driverId) ?? 0) + addedSec,
+          );
+        }
+      }
+    }
+
     const baseVehicles = candidateVehicles.map((vehicle) => {
       const endDepotLoc =
         vehicle.endDepotLocation && vehicle.endDepotLocation.active
           ? vehicle.endDepotLocation
           : null;
+      const allowsHazmat = vehicleTypeAllowsHazmat(vehicle.vehicleTypeRecord);
       return {
         id: vehicle.id,
         source_vehicle_id: vehicle.id,
@@ -1783,6 +2055,7 @@ export class TripsService {
         payload_limit_kg: vehicle.vehicleTypeRecord.payloadCapacityKg,
         door_position: 'REAR',
         temperature_mode: vehicle.vehicleTypeRecord.temperatureMode ?? 'DRY',
+        ...(allowsHazmat ? { allows_hazmat: true } : {}),
         has_tail_lift: vehicle.vehicleTypeRecord.hasTailLift ?? false,
         toll_factor: Number(vehicle.vehicleTypeRecord.tollFactor ?? 1),
         return_to_depot: vehicle.returnToDepot ?? true,
@@ -1791,6 +2064,7 @@ export class TripsService {
               end_depot: {
                 id: `end_depot:${endDepotLoc.id}`,
                 source_location_id: endDepotLoc.id,
+                warehouse_location_id: endDepotLoc.id,
                 name: endDepotLoc.name,
                 latitude: endDepotLoc.latitude,
                 longitude: endDepotLoc.longitude,
@@ -1801,6 +2075,7 @@ export class TripsService {
         depot: {
           id: `depot:${vehicle.planningStart.locationId}`,
           source_location_id: vehicle.planningStart.locationId,
+          warehouse_location_id: vehicle.planningStart.locationId,
           name: vehicle.planningStart.name,
           latitude: vehicle.planningStart.latitude,
           longitude: vehicle.planningStart.longitude,
@@ -1818,6 +2093,7 @@ export class TripsService {
     const baseDrivers = drivers.map((driver) => {
       const homeProvince =
         driver.homeProvinceCode ?? driver.homeLocation?.provinceCode ?? null;
+      const initialWeeklyDrivingSec = priorWeeklyDrivingSecByDriver.get(driver.id) ?? 0;
       return {
         source_driver_id: driver.id,
         full_name: driver.fullName,
@@ -1828,6 +2104,9 @@ export class TripsService {
         ...(driver.homeLocationId ? { home_location_id: driver.homeLocationId } : {}),
         ...(homeProvince ? { home_province_code: homeProvince } : {}),
         ...(driver.strictHomeLocation ? { strict_home_location: true } : {}),
+        ...(initialWeeklyDrivingSec > 0
+          ? { initial_weekly_driving_sec: initialWeeklyDrivingSec }
+          : {}),
       };
     });
     const activeWorkPolicyRow = workPolicies.find(
@@ -1835,7 +2114,11 @@ export class TripsService {
         policy.effectiveFrom <= planningEpoch &&
         (!policy.effectiveTo || policy.effectiveTo >= planningEpoch),
     );
-    const drivingRestPolicy = parseWorkPolicyToDrivingRest(activeWorkPolicyRow);
+    const drivingRestPolicy = activeWorkPolicyRow
+      ? parseWorkPolicyToDrivingRest(activeWorkPolicyRow)
+      : workPolicies.length === 0
+        ? DEFAULT_VN_2024_DRIVING_REST_POLICY
+        : null;
     const deliveryHolds = await this.prisma.deliveryCapacityHold.findMany({ where: {
       status: 'HELD', ...(deliveryBatchId ? { batchId: { not: deliveryBatchId } } : {}),
       OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
@@ -1850,18 +2133,6 @@ export class TripsService {
     const demoStacking = effectiveSettings
       ? toResolvedStackingPolicy(effectiveSettings.stacking)
       : readDemoStackingPolicy(process.env);
-    const resolvedSearchBudget =
-      searchBudgetSeconds ?? effectiveSettings?.optimization.defaultSearchBudgetSeconds;
-    const effectiveMaxTimeSeconds = effectiveSettings?.optimization.maxTimeSeconds ?? 120;
-    const earlyStopPatience = effectiveSettings?.optimization.earlyStopPatience ?? 0;
-    const largeBatchFloorSeconds = orders.length >= 50 ? 48 : 0;
-    const boundedSearchBudgetSeconds =
-      resolvedSearchBudget !== undefined || largeBatchFloorSeconds > 0
-        ? Math.min(
-            effectiveMaxTimeSeconds,
-            Math.max(resolvedSearchBudget ?? largeBatchFloorSeconds, largeBatchFloorSeconds),
-          )
-        : undefined;
     const latestChangeRequests = (!deliveryBatchId || replanWithFleet) && orders.length > 0 && this.prisma.deliveryAppointment?.findMany
       ? await this.prisma.deliveryAppointment.findMany({
           where: {
@@ -1882,8 +2153,8 @@ export class TripsService {
           effectiveWorkEndTime,
           dayCount,
           {
-            scheduleMode,
-            effectiveStartTime,
+            scheduleMode: replanDuringShift ? AutomaticDispatchScheduleMode.CURRENT_TIME : scheduleMode,
+            effectiveStartTime: replanDuringShift ? now : effectiveStartTime,
           },
         );
       } catch (error: any) {
@@ -1988,6 +2259,11 @@ export class TripsService {
       const indexes = snapshot.vehicles.map(({ depot }) => {
         knownLocationKeys.add(depot.id);
         if (depot.source_location_id) knownLocationKeys.add(depot.source_location_id);
+        if ((depot as { warehouse_location_id?: string }).warehouse_location_id) {
+          knownLocationKeys.add(
+            String((depot as { warehouse_location_id?: string }).warehouse_location_id),
+          );
+        }
         nodeProvinceCodes.push(depot.province_code ?? null);
         const key = JSON.stringify([depot.longitude, depot.latitude]);
         const existing = depotIndex.get(key);
@@ -2002,6 +2278,7 @@ export class TripsService {
         for (const point of [order.pickup_location, order.delivery_location]) {
           knownLocationKeys.add(point.id);
           if (point.source_location_id) knownLocationKeys.add(point.source_location_id);
+          if (point.warehouse_location_id) knownLocationKeys.add(point.warehouse_location_id);
           nodeProvinceCodes.push(point.province_code ?? null);
           indexes.push(coordinates.length);
           coordinates.push([point.longitude, point.latitude]);
@@ -2014,7 +2291,10 @@ export class TripsService {
       for (const vehicle of snapshot.vehicles) {
         const endDepot = vehicle.end_depot;
         if (!endDepot) continue;
-        const endKey = endDepot.source_location_id ?? endDepot.id;
+        const endKey =
+          (endDepot as { warehouse_location_id?: string }).warehouse_location_id ??
+          endDepot.source_location_id ??
+          endDepot.id;
         const coordKey = `${endDepot.latitude.toFixed(6)}:${endDepot.longitude.toFixed(6)}`;
         if (
           !knownLocationKeys.has(endDepot.id) &&
@@ -2072,6 +2352,7 @@ export class TripsService {
           branchId,
           planningEpochIso: planningEpoch.toISOString(),
           scheduleMode: scheduleMode ?? null,
+          ...(effectiveStartTime ? { earliestDepartureAt: effectiveStartTime.toISOString() } : {}),
           searchBudgetSeconds: searchBudgetSeconds ?? null,
           resources: {
             orders: orders.map((order) => ({
@@ -2363,9 +2644,22 @@ export class TripsService {
     const driverIds = proposal.result.routes.map(route => route.driver_id).filter((id): id is string => Boolean(id));
     await this.acquireApplicationLocks(tx, vehicleIds, driverIds, orderIds, ownDeliveryBatchId);
     await tx.$queryRaw(Prisma.sql`SELECT id FROM orders WHERE id IN (${Prisma.join(orderIds)}) ORDER BY id FOR UPDATE`);
+    const custodyPackageInclude = {
+      custodyLocation: {
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          address: true,
+          latitude: true,
+          longitude: true,
+        },
+      },
+    } as const;
+
     const [orders, vehicles, drivers, warehouses] = await Promise.all([
       tx.order.findMany({ where: { id: { in: orderIds }, branchId: proposal.branchId }, include: {
-        stops: { include: { location: true } }, items: { include: { packages: true } }, packages: true,
+        stops: { include: { location: true } }, items: { include: { packages: { include: custodyPackageInclude } } }, packages: true,
       } }),
       tx.vehicle.findMany({ where: { id: { in: vehicleIds }, homeBranchId: proposal.branchId }, include: { vehicleTypeRecord: true } }),
       tx.driver.findMany({ where: { id: { in: driverIds }, homeBranchId: proposal.branchId } }),
@@ -2386,6 +2680,7 @@ export class TripsService {
               operatingWindows: true,
               handlingSecPerTon: true,
               handlingSecPerPackage: true,
+              capabilities: true,
             },
           })
         : Promise.resolve([]),
@@ -2475,6 +2770,14 @@ export class TripsService {
       );
     }
 
+    const preparationMinutes =
+      proposal.scheduleMode === AutomaticDispatchScheduleMode.CURRENT_TIME
+        ? (typeof this.settingsService?.resolveEffectiveSettings === 'function'
+            ? (await this.settingsService.resolveEffectiveSettings(branchId))?.optimization
+                .dispatchPreparationMinutes
+            : undefined) ?? COMPANY_SETTING_DEFAULTS.optimization.dispatchPreparationMinutes
+        : undefined;
+
     const applied = await this.prisma.$transaction(
       async (tx) => {
         if (sourceJobId) {
@@ -2502,6 +2805,10 @@ export class TripsService {
         );
         if (deliveryBatch) {
           await tx.$queryRaw`SELECT id FROM delivery_planning_batches WHERE id = ${deliveryBatch.id} FOR UPDATE`;
+          const recipientBatch = deliveryBatch.appointments.some(row => row.recipientPhone);
+          const acknowledgedIds = deliveryBatch.appointments
+            .filter(row => row.status === 'CONFIRMED' || row.status === 'CHANGE_REQUESTED')
+            .map(row => row.orderId);
           const confirmedIds = deliveryBatch.appointments.filter(row => row.status === 'CONFIRMED').map(row => row.orderId);
           const declinedIds = deliveryBatch.appointments.filter(row => row.status === 'DECLINED').map(row => row.orderId);
           if (
@@ -2509,6 +2816,9 @@ export class TripsService {
             deliveryBatch.appointments.some(row => row.status === 'PENDING') ||
             confirmedIds.some(id => !orderIds.includes(id)) ||
             declinedIds.some(id => orderIds.includes(id)) ||
+            (recipientBatch &&
+              (orderIds.some(id => !acknowledgedIds.includes(id)) ||
+                acknowledgedIds.some(id => !orderIds.includes(id)))) ||
             (!isReplanBatchJob && confirmedIds.length !== orderIds.length)
           ) {
             throw new ConflictException('Phương án phải giao đủ và chỉ gồm các đơn đã xác nhận của đợt này');
@@ -2540,7 +2850,24 @@ export class TripsService {
             where: { id: { in: orderIds }, branchId },
             include: {
               stops: { include: { location: true } },
-              items: { include: { packages: true } },
+              items: {
+                include: {
+                  packages: {
+                    include: {
+                      custodyLocation: {
+                        select: {
+                          id: true,
+                          code: true,
+                          name: true,
+                          address: true,
+                          latitude: true,
+                          longitude: true,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
               packages: true,
             },
           }),
@@ -2612,6 +2939,20 @@ export class TripsService {
           await this.assertNoResourceOverlap(tx, trip, deliveryBatch?.id);
         }
 
+        if (preparationMinutes !== undefined) {
+          const earliest = currentDispatchEarliest(new Date(), preparationMinutes);
+          if (plannedTrips.some(trip => trip.plannedStartTime < earliest)) {
+            const departure = new Intl.DateTimeFormat('vi-VN', {
+              timeZone: 'Asia/Ho_Chi_Minh',
+              dateStyle: 'short',
+              timeStyle: 'short',
+            }).format(earliest);
+            throw new ConflictException(
+              `Lịch cần đủ thời gian chuẩn bị. Giờ xuất phát sớm nhất là ${departure} (giờ Việt Nam). Hãy chạy tối ưu lại.`,
+            );
+          }
+        }
+
         if (deliveryBatch) await tx.deliveryCapacityHold.updateMany({ where: { batchId: deliveryBatch.id, status: 'HELD' }, data: { status: 'RELEASED' } });
 
         const tripNumbers = await this.allocateTripNumbers(
@@ -2673,16 +3014,50 @@ export class TripsService {
           const scheduledAppointments = deliveryBatch.appointments.filter(
             row => orderIds.includes(row.orderId) && (row.status === 'CONFIRMED' || row.status === 'CHANGE_REQUESTED'),
           );
-          if (scheduledAppointments.length > 0) {
-            await tx.deliveryAppointment.updateMany({
-              where: { id: { in: scheduledAppointments.map(row => row.id) } },
-              data: { status: 'SCHEDULED', version: { increment: 1 } },
+          for (const appointment of scheduledAppointments) {
+            const window =
+              appointment.status === 'CHANGE_REQUESTED' &&
+              appointment.requestedStart &&
+              appointment.requestedEnd
+                ? {
+                    windowStart: appointment.requestedStart,
+                    windowEnd: appointment.requestedEnd,
+                  }
+                : {};
+            await tx.deliveryAppointment.update({
+              where: { id: appointment.id },
+              data: {
+                status: 'SCHEDULED',
+                version: { increment: 1 },
+                ...window,
+              },
             });
+            await this.outbox.enqueue(
+              {
+                aggregateType: 'DeliveryAppointment',
+                aggregateId: appointment.id,
+                aggregateVersion: appointment.version + 1,
+                eventType: 'DELIVERY_APPOINTMENT_UPDATED',
+                payload: {
+                  appointmentId: appointment.id,
+                  customerId: appointment.customerId,
+                },
+              },
+              tx,
+            );
+            if (appointment.recipientPhone && process.env.DELIVERY_SMS_WEBHOOK_URL) {
+              await this.outbox.enqueue(
+                {
+                  aggregateType: 'DeliveryAppointment',
+                  aggregateId: appointment.id,
+                  aggregateVersion: appointment.version + 1,
+                  eventType: 'DELIVERY_SMS_SCHEDULED',
+                  payload: {},
+                },
+                tx,
+              );
+            }
           }
-          for (const appointment of scheduledAppointments) await this.outbox.enqueue({
-            aggregateType: 'DeliveryAppointment', aggregateId: appointment.id, aggregateVersion: appointment.version + 1,
-            eventType: 'DELIVERY_APPOINTMENT_UPDATED', payload: { appointmentId: appointment.id, customerId: appointment.customerId },
-          }, tx);
         }
         if (sourceJobId) {
           const finalizedJob = await tx.optimizationJob.updateMany({
@@ -2806,7 +3181,11 @@ export class TripsService {
     const cargoByOrderId = new Map<string, ReturnType<typeof packagesToCargoUnits>>();
     for (const entry of stopsWithItems) {
       if (!cargoByOrderId.has(entry.order.id)) {
-        const orderCargo = packagesToCargoUnits(entry.order.items, entry.order.customerId);
+        const orderCargo = packagesToCargoUnits(
+          entry.order.items,
+          entry.order.customerId,
+          { readyOnly: true },
+        );
         cargoByOrderId.set(entry.order.id, orderCargo);
       }
     }
@@ -2987,7 +3366,11 @@ export class TripsService {
     const expectedCargoByOrder = new Map(
       orders.map((order) => [
         order.id,
-        new Set(packagesToCargoUnits(order.items).map((item) => item.id)),
+        new Set(
+          packagesToCargoUnits(order.items, order.customerId, {
+            readyOnly: true,
+          }).map((item) => item.id),
+        ),
       ]),
     );
 
@@ -3092,18 +3475,43 @@ export class TripsService {
         }
 
         assertDispatchableOrder(order);
+        const cargoUnitIds =
+          stop.stop_type === StopType.PICKUP
+            ? stop.items_loaded
+            : stop.items_unloaded;
+        if (new Set(cargoUnitIds).size !== cargoUnitIds.length || (stop.stop_type === StopType.PICKUP ? stop.items_unloaded : stop.items_loaded).length > 0) throw new BadRequestException('Package trùng hoặc sai thao tác tại stop');
+        if (index > 0 && stop.arrival_time_sec < sortedStops[index - 1].departure_time_sec) throw new BadRequestException('Thời gian điểm dừng không đúng thứ tự');
+        if (cargoUnitIds.length === 0) {
+          throw new BadRequestException(
+            `Điểm dừng [${stop.location_id}] không có kiện để xử lý`,
+          );
+        }
         const arrival = planningEpoch.getTime() + stop.arrival_time_sec * 1000;
-        const stopLocation =
-          orderStop.location ??
-          (warehouses.length > 0
-            ? findMatchingWarehouseLocation(
-                orderStop.latitude,
-                orderStop.longitude,
-                warehouses,
-              )
-            : null);
+        const isPickupStop = orderStop.type === StopType.PICKUP;
+        const custodyHub = isPickupStop
+          ? this.resolveOrderCustodyHubForCargo(order, cargoUnitIds)
+          : null;
+        const stopLocation = custodyHub
+          ? (warehouses.find((w) => w.id === custodyHub.id) ??
+            findMatchingWarehouseLocation(
+              custodyHub.latitude,
+              custodyHub.longitude,
+              warehouses,
+            ))
+          : (orderStop.location ??
+            (warehouses.length > 0
+              ? findMatchingWarehouseLocation(
+                  orderStop.latitude,
+                  orderStop.longitude,
+                  warehouses,
+                )
+              : null));
         const orderItemsCargo = packagesToCargoUnits(order.items, order.customerId);
-        const stopOrderWeightKg = orderItemsCargo.reduce(
+        const stopCargo = orderItemsCargo.filter((unit) =>
+          cargoUnitIds.includes(unit.id),
+        );
+        const activeStopCargo = stopCargo.length > 0 ? stopCargo : orderItemsCargo;
+        const stopOrderWeightKg = activeStopCargo.reduce(
           (sum, unit) => sum + unit.weight_kg,
           0,
         );
@@ -3112,7 +3520,7 @@ export class TripsService {
           location: stopLocation,
           previousLocationKey: previousStopLocationKey,
           totalWeightKg: stopOrderWeightKg,
-          packageCount: orderItemsCargo.length,
+          packageCount: activeStopCargo.length,
         });
         previousStopLocationKey = locationKey;
         const actualServiceSec = stop.departure_time_sec - stop.arrival_time_sec;
@@ -3124,17 +3532,6 @@ export class TripsService {
             stop.service_time_sec !== actualServiceSec)
         ) {
           throw new BadRequestException('Optimizer vi phạm ngày đặt/thời lượng phục vụ đã xác nhận');
-        }
-        const cargoUnitIds =
-          stop.stop_type === StopType.PICKUP
-            ? stop.items_loaded
-            : stop.items_unloaded;
-        if (new Set(cargoUnitIds).size !== cargoUnitIds.length || (stop.stop_type === StopType.PICKUP ? stop.items_unloaded : stop.items_loaded).length > 0) throw new BadRequestException('Package trùng hoặc sai thao tác tại stop');
-        if (index > 0 && stop.arrival_time_sec < sortedStops[index - 1].departure_time_sec) throw new BadRequestException('Thời gian điểm dừng không đúng thứ tự');
-        if (cargoUnitIds.length === 0) {
-          throw new BadRequestException(
-            `Điểm dừng [${stop.location_id}] không có kiện để xử lý`,
-          );
         }
         const expectedCargo = expectedCargoByOrder.get(order.id);
         if (
@@ -3175,9 +3572,12 @@ export class TripsService {
           cargoUnitIds,
           sequence: stop.sequence,
           stopType: orderStop.type,
-          address: orderStop.address,
-          latitude: orderStop.latitude,
-          longitude: orderStop.longitude,
+          hubLocationId: custodyHub?.id ?? null,
+          address: custodyHub
+            ? `${custodyHub.name} — ${custodyHub.address}`
+            : orderStop.address,
+          latitude: custodyHub ? custodyHub.latitude : orderStop.latitude,
+          longitude: custodyHub ? custodyHub.longitude : orderStop.longitude,
           contactName: orderStop.contactName,
           contactPhone: orderStop.contactPhone,
           plannedArrivalTime: new Date(
@@ -3319,6 +3719,19 @@ export class TripsService {
     for (const visit of visits) for (const appointment of appointments.filter(row => row.orderId === visit.orderId)) {
       if (visit.arrival < appointment.windowStart || visit.arrival > appointment.windowEnd) throw new ConflictException('Lịch giao vi phạm khung khách đã xác nhận; không được ghi đè cam kết');
     }
+    if (!deliveryBatchId && visits.length > 0 && typeof tx.deliveryAppointment?.findFirst === 'function') {
+      const unfinished = await tx.deliveryAppointment.findFirst({
+        where: {
+          orderId: { in: [...new Set(visits.map(visit => visit.orderId))] },
+          recipientPhone: { not: null },
+          status: { in: ['PENDING', 'CONFIRMED', 'CHANGE_REQUESTED', 'EXPIRED'] },
+          batch: { status: 'OFFERING' },
+        },
+      });
+      if (unfinished) {
+        throw new ConflictException('Hãy chốt đơn từ đợt hẹn của người nhận');
+      }
+    }
     if (deliveryBatchId) {
       const requested = await tx.deliveryAppointment.findMany({ where: { batchId: deliveryBatchId, orderId: { in: [...new Set(visits.map(visit => visit.orderId))] }, status: 'CHANGE_REQUESTED' } });
       for (const visit of visits) for (const appointment of requested.filter(row => row.orderId === visit.orderId && row.requestedStart && row.requestedEnd)) {
@@ -3421,7 +3834,11 @@ export class TripsService {
         policy.effectiveFrom <= plannedTrip.plannedStartTime &&
         (!policy.effectiveTo || policy.effectiveTo >= plannedTrip.plannedStartTime),
     );
-    const parsedRestPolicy = parseWorkPolicyToDrivingRest(activePolicy);
+    const parsedRestPolicy = activePolicy
+      ? parseWorkPolicyToDrivingRest(activePolicy)
+      : activeWorkPolicies.length === 0
+        ? DEFAULT_VN_2024_DRIVING_REST_POLICY
+        : null;
     const minInterTripRestMs =
       parsedRestPolicy?.enabled && parsedRestPolicy.min_inter_trip_rest_sec > 0
         ? parsedRestPolicy.min_inter_trip_rest_sec * 1000
@@ -3524,6 +3941,7 @@ export class TripsService {
           tripId: trip.id,
           sequence: stop.sequence,
           stopType: stop.stopType,
+          hubLocationId: stop.hubLocationId ?? null,
           address: stop.address,
           latitude: stop.latitude,
           longitude: stop.longitude,
@@ -3781,6 +4199,224 @@ export class TripsService {
     return millimeters;
   }
 
+  private isOrderEligibleForAutomaticOptimization(
+    order: OrderWithStopsAndItems,
+  ): boolean {
+    if (order.packageDataStatus !== 'COMPLETE' || order.items.length === 0) {
+      return false;
+    }
+    const packages = order.items.flatMap((item) => item.packages);
+    return (
+      order.items.every(
+        (item) =>
+          item.packages.length > 0 &&
+          item.packages.every(
+            (pkg) =>
+              pkg.status === PackageStatus.READY ||
+              pkg.status === PackageStatus.DELIVERED,
+          ),
+      ) && packages.some((pkg) => pkg.status === PackageStatus.READY)
+    );
+  }
+
+  private resolveOrderCustodyHubForCargo(
+    order: OrderWithStopsAndItems,
+    cargoUnitIds?: string[],
+  ): CustodyLocationSummary | null {
+    const idFilter = cargoUnitIds ? new Set(cargoUnitIds) : null;
+    for (const item of order.items) {
+      for (const pkg of item.packages) {
+        if (idFilter && !idFilter.has(pkg.id)) continue;
+        if (pkg.custodyLocation) {
+          return pkg.custodyLocation;
+        }
+      }
+    }
+    return null;
+  }
+
+  async detachUnpickedOrders(
+    tripId: string,
+    dto: { orderIds: string[]; expectedVersion: number; reason?: string },
+    user: Principal,
+  ) {
+    const now = new Date();
+    const orderIds = [...new Set(dto.orderIds)];
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM trips WHERE id = ${tripId} FOR UPDATE`;
+      const trip = await tx.trip.findUnique({
+        where: { id: tripId },
+        include: {
+          stops: {
+            include: {
+              tasks: {
+                include: {
+                  allocation: {
+                    include: {
+                      package: { select: { id: true, status: true } },
+                      orderItem: { select: { orderId: true } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+      if (!trip) {
+        throw new NotFoundException(`Không tìm thấy chuyến đi [${tripId}]`);
+      }
+      if (trip.managingBranchId) {
+        resolveBranchScope(user, trip.managingBranchId);
+      }
+      if (trip.version !== dto.expectedVersion) {
+        throw new ConflictException(
+          'Phiên bản chuyến đã thay đổi; hãy tải lại trước khi tách đơn.',
+        );
+      }
+      if (
+        trip.status !== TripStatus.IN_PROGRESS &&
+        trip.status !== TripStatus.DISPATCHED
+      ) {
+        throw new ConflictException(
+          'Chỉ tách đơn chưa lấy trên chuyến đang điều phối hoặc đang chạy.',
+        );
+      }
+
+      const targetAllocs = await tx.allocation.findMany({
+        where: {
+          tripId,
+          releasedAt: null,
+          orderItem: { orderId: { in: orderIds } },
+        },
+        include: {
+          package: { select: { id: true, status: true } },
+          orderItem: { select: { orderId: true } },
+        },
+      });
+      if (targetAllocs.length === 0) {
+        throw new ConflictException(
+          'Không tìm thấy phân bổ đang hoạt động cho các đơn được chọn.',
+        );
+      }
+      const alreadyLoaded = targetAllocs.filter(
+        (a) => a.package && a.package.status !== PackageStatus.ALLOCATED,
+      );
+      if (alreadyLoaded.length > 0) {
+        throw new ConflictException({
+          code: 'CANNOT_DETACH_LOADED_CARGO',
+          message:
+            'Không thể tách đơn đã bốc lên xe; hàng đã lấy phải chở về kho hoặc giao nốt.',
+        });
+      }
+
+      const allocIds = targetAllocs.map((a) => a.id);
+      const packageIds = targetAllocs
+        .map((a) => a.packageId)
+        .filter((pid): pid is string => Boolean(pid));
+
+      await tx.allocation.updateMany({
+        where: { id: { in: allocIds } },
+        data: { status: 'RELEASED', releasedAt: now },
+      });
+      if (packageIds.length > 0) {
+        await tx.package.updateMany({
+          where: { id: { in: packageIds } },
+          data: { status: PackageStatus.READY },
+        });
+      }
+
+      for (const stop of trip.stops) {
+        const belongs = stop.tasks.some((t) => {
+          const oid = t.orderId ?? t.allocation?.orderItem.orderId;
+          return oid ? orderIds.includes(oid) : false;
+        });
+        if (belongs && stop.status === 'PENDING') {
+          await tx.tripStop.update({
+            where: { id: stop.id },
+            data: {
+              status: 'SKIPPED',
+              skipReason: 'DISPATCHER_DETACHED_TO_FREE_VEHICLE',
+            },
+          });
+        }
+      }
+
+      for (const orderId of orderIds) {
+        const orderRow = await tx.order.findUnique({
+          where: { id: orderId },
+          select: {
+            status: true,
+            items: {
+              select: {
+                packages: {
+                  select: {
+                    status: true,
+                    allocations: {
+                      where: { releasedAt: null },
+                      select: { id: true },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        });
+        if (!orderRow) continue;
+        const pkgs = orderRow.items.flatMap((i) => i.packages);
+        const stillAllocated = pkgs.some(
+          (p) =>
+            p.status === PackageStatus.LOADED ||
+            p.status === PackageStatus.ALLOCATED ||
+            p.allocations.length > 0,
+        );
+        if (!stillAllocated && pkgs.some((p) => p.status === PackageStatus.READY)) {
+          await tx.order.update({
+            where: { id: orderId },
+            data: { status: OrderStatus.CONFIRMED },
+          });
+          await tx.orderEvent.create({
+            data: {
+              orderId,
+              eventType: 'ORDER_DETACHED_FOR_FREE_VEHICLE',
+              fromStatus: orderRow.status,
+              toStatus: OrderStatus.CONFIRMED,
+              actorUserId: user.id,
+              commandId: `detach:${tripId}:${orderId}:${now.getTime()}`,
+              payload: {
+                tripId,
+                reason:
+                  dto.reason?.trim() ||
+                  'Điều phối viên tách đơn chưa lấy để bố trí xe rảnh',
+              },
+            },
+          });
+        }
+      }
+
+      const updatedTrip = await tx.trip.update({
+        where: { id: tripId },
+        data: { version: { increment: 1 } },
+        select: { id: true, version: true, status: true },
+      });
+      await this.outbox.enqueue(
+        {
+          aggregateType: 'Trip',
+          aggregateId: trip.id,
+          aggregateVersion: updatedTrip.version,
+          eventType: 'TRIP_PLAN_UPDATED',
+          payload: { tripId: trip.id, detachedOrderIds: orderIds },
+        },
+        tx,
+      );
+      return {
+        tripId: trip.id,
+        tripVersion: updatedTrip.version,
+        detachedOrderIds: orderIds,
+      };
+    });
+  }
+
   private buildOptimizerOrders(
     orders: OrderWithStopsAndItems[],
     planningEpoch: Date,
@@ -3794,7 +4430,7 @@ export class TripsService {
     const orderedSeconds = (value: Date) => Math.floor((value.getTime() - planningEpoch.getTime()) / 1000);
     const totalDays = Math.max(1, Math.ceil(horizonSeconds / 86400));
 
-    return orders.map((order) => {
+    return orders.flatMap((order) => {
       assertDispatchableOrder(order);
       if (order.status !== 'CONFIRMED') throw new ConflictException('Chỉ tối ưu đơn đã xác nhận');
       const commitment = confirmedWindows.get(order.id);
@@ -3827,72 +4463,155 @@ export class TripsService {
         (warehouses.length > 0
           ? findMatchingWarehouseLocation(delivery.latitude, delivery.longitude, warehouses)
           : null);
-      let items;
+      let readyCargo: ReturnType<typeof packagesToCargoUnits>;
       try {
-        items = packagesToCargoUnits(order.items, order.customerId);
+        readyCargo = packagesToCargoUnits(order.items, order.customerId, {
+          readyOnly: true,
+        });
       } catch (error: any) {
         throw new BadRequestException(error.message);
       }
-      return {
-        id: order.id,
-        order_number: order.orderNumber,
-        pickup_location: {
-          id: pickup.id,
-          source_location_id: pickup.locationId ?? pickupLocationSource?.id ?? pickup.id,
-          name: pickup.address,
-          latitude: pickup.latitude,
-          longitude: pickup.longitude,
-          ...extractLocationConstraintFields(pickupLocationSource),
-        },
-        delivery_location: {
-          id: delivery.id,
-          source_location_id: delivery.locationId ?? deliveryLocationSource?.id ?? delivery.id,
-          name: delivery.address,
-          latitude: delivery.latitude,
-          longitude: delivery.longitude,
-          ...extractLocationConstraintFields(deliveryLocationSource),
-        },
-        items,
-        pickup_window_start_sec: Math.max(0, Math.ceil((order.orderedAt.getTime() - planningEpoch.getTime()) / 1000)),
-        pickup_window_end_sec: horizonSeconds,
-        delivery_window_start_sec: deliveryStart,
-        delivery_window_end_sec: deliveryEnd,
-        pickup_service_time_sec: pickup.serviceDurationMinutes * 60,
-        delivery_service_time_sec: delivery.serviceDurationMinutes * 60,
-        ...(restrictionZones.length > 0
-          ? (() => {
-              const pCurfews = expandZoneCurfewsRelativeToEpoch(
+      if (readyCargo.length === 0) {
+        throw new BadRequestException(
+          `Đơn ${order.orderNumber} không còn kiện READY để tối ưu`,
+        );
+      }
+
+      const packageById = new Map(
+        order.items.flatMap((item) => item.packages.map((p) => [p.id, p])),
+      );
+      const grouped = new Map<
+        string,
+        {
+          hub: CustodyLocationSummary | null;
+          items: typeof readyCargo;
+          latestReturnedAtMs: number;
+        }
+      >();
+      for (const unit of readyCargo) {
+        const pkg = packageById.get(unit.id);
+        const hub = pkg?.custodyLocation ?? null;
+        const key = hub ? `hub:${hub.id}` : 'ORIGINAL_PICKUP';
+        const bucket = grouped.get(key) ?? {
+          hub,
+          items: [],
+          latestReturnedAtMs: 0,
+        };
+        bucket.items.push(unit);
+        if (pkg?.returnedToHubAt) {
+          bucket.latestReturnedAtMs = Math.max(
+            bucket.latestReturnedAtMs,
+            pkg.returnedToHubAt.getTime(),
+          );
+        }
+        grouped.set(key, bucket);
+      }
+
+      const dCurfews =
+        restrictionZones.length > 0
+          ? expandZoneCurfewsRelativeToEpoch(
+              restrictionZones,
+              delivery.latitude,
+              delivery.longitude,
+              planningEpoch,
+              totalDays,
+              timeZone,
+            )
+          : [];
+
+      const entries = [...grouped.entries()];
+      return entries.map(([groupKey, bucket]) => {
+        const optimizerOrderId =
+          entries.length === 1 ? order.id : `${order.id}::${groupKey}`;
+        const hub = bucket.hub;
+        const hubWarehouseSource = hub
+          ? (warehouses.find((w) => w.id === hub.id) ??
+            findMatchingWarehouseLocation(hub.latitude, hub.longitude, warehouses))
+          : null;
+        const effectivePickupSource = hub ? hubWarehouseSource : pickupLocationSource;
+        const pickupWarehouseId =
+          effectivePickupSource?.id ?? (hub ? undefined : pickup.locationId ?? undefined);
+        const pickupLocation = hub
+          ? {
+              id: `hub:${hub.id}:${order.id}`,
+              source_location_id: pickup.id,
+              ...(pickupWarehouseId ? { warehouse_location_id: pickupWarehouseId } : {}),
+              name: `${hub.name} — ${hub.address}`,
+              latitude: hub.latitude,
+              longitude: hub.longitude,
+              ...extractLocationConstraintFields(effectivePickupSource),
+            }
+          : {
+              id: pickup.id,
+              source_location_id: pickup.id,
+              ...(pickupWarehouseId ? { warehouse_location_id: pickupWarehouseId } : {}),
+              name: pickup.address,
+              latitude: pickup.latitude,
+              longitude: pickup.longitude,
+              ...extractLocationConstraintFields(pickupLocationSource),
+            };
+        const readyBaseMs = hub
+          ? Math.max(order.orderedAt.getTime(), bucket.latestReturnedAtMs)
+          : order.orderedAt.getTime();
+        const pCurfews =
+          restrictionZones.length > 0
+            ? expandZoneCurfewsRelativeToEpoch(
                 restrictionZones,
-                pickup.latitude,
-                pickup.longitude,
+                pickupLocation.latitude,
+                pickupLocation.longitude,
                 planningEpoch,
                 totalDays,
                 timeZone,
-              );
-              const dCurfews = expandZoneCurfewsRelativeToEpoch(
-                restrictionZones,
-                delivery.latitude,
-                delivery.longitude,
-                planningEpoch,
-                totalDays,
-                timeZone,
-              );
-              return {
-                ...(pCurfews.length > 0 ? { pickup_curfew_windows: pCurfews } : {}),
-                ...(dCurfews.length > 0 ? { delivery_curfew_windows: dCurfews } : {}),
-              };
-            })()
-          : {}),
-        time_window_basis: 'SERVICE_START' as const,
-        package_contract_version: '1' as const,
-        ordered_at_sec: orderedSeconds(order.orderedAt),
-        order_value_vnd: Math.round(Number(order.totalAmount)),
-        service_time_sec:
-          Math.max(
-            pickup.serviceDurationMinutes,
-            delivery.serviceDurationMinutes,
-          ) * 60,
-      };
+              )
+            : [];
+
+        const deliveryWarehouseId =
+          deliveryLocationSource?.id ?? delivery.locationId ?? undefined;
+        return {
+          id: optimizerOrderId,
+          ...(entries.length > 1 || hub
+            ? {
+                source_order_id: order.id,
+                source_order_number: order.orderNumber,
+              }
+            : {}),
+          order_number:
+            entries.length === 1
+              ? order.orderNumber
+              : `${order.orderNumber} (${hub?.code ?? 'GỐC'})`,
+          pickup_location: pickupLocation,
+          delivery_location: {
+            id: delivery.id,
+            source_location_id: delivery.id,
+            ...(deliveryWarehouseId ? { warehouse_location_id: deliveryWarehouseId } : {}),
+            name: delivery.address,
+            latitude: delivery.latitude,
+            longitude: delivery.longitude,
+            ...extractLocationConstraintFields(deliveryLocationSource),
+          },
+          items: bucket.items,
+          pickup_window_start_sec: Math.max(
+            0,
+            Math.ceil((readyBaseMs - planningEpoch.getTime()) / 1000),
+          ),
+          pickup_window_end_sec: horizonSeconds,
+          delivery_window_start_sec: deliveryStart,
+          delivery_window_end_sec: deliveryEnd,
+          pickup_service_time_sec: pickup.serviceDurationMinutes * 60,
+          delivery_service_time_sec: delivery.serviceDurationMinutes * 60,
+          ...(pCurfews.length > 0 ? { pickup_curfew_windows: pCurfews } : {}),
+          ...(dCurfews.length > 0 ? { delivery_curfew_windows: dCurfews } : {}),
+          time_window_basis: 'SERVICE_START' as const,
+          package_contract_version: '1' as const,
+          ordered_at_sec: orderedSeconds(order.orderedAt),
+          order_value_vnd: Math.round(Number(order.totalAmount)),
+          service_time_sec:
+            Math.max(
+              pickup.serviceDurationMinutes,
+              delivery.serviceDurationMinutes,
+            ) * 60,
+        };
+      });
     });
   }
 

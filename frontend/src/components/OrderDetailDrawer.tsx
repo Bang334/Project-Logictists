@@ -511,6 +511,7 @@ export const OrderDetailDrawer: React.FC<OrderDetailDrawerProps> = ({
         { title: 'Dài × rộng × cao (mm)', render: (_, p) => `${p.lengthMm} × ${p.widthMm} × ${p.heightMm}` },
         { title: 'Khối lượng (g)', dataIndex: 'weightG' },
         { title: 'Loại hàng', render: (_, p) => <>{cargoKindLabels[p.cargoKind ?? 'UNCLASSIFIED']}{(p.cargoKind === 'FRAGILE' || p.noTopLoadRequested) && <><br />Không đặt hàng lên trên</>}{isFloorRotationLocked(p.allowedOrientations) && <><br /><Tag color="purple">Khóa xoay 90° (LWH)</Tag></>}</> },
+        { title: 'Vị trí / Kho lưu giữ', render: (_, p) => <>{<Tag color={p.status === 'DELIVERED' ? 'green' : p.custodyLocation ? 'cyan' : 'default'}>{p.status}</Tag>}{p.custodyLocation && <><br /><Tag color="gold">Kho giữ: {p.custodyLocation.name}</Tag></>}{(p.deliveryAttemptCount ?? 0) > 0 && <><br /><Text type="secondary">Thử giao: {p.deliveryAttemptCount} lần</Text></>}</> },
         { title: 'Điểm lấy → giao (ID)', render: (_, p) => <>{p.pickupStopId ?? 'Chưa đối soát'}<br />→ {p.deliveryStopId ?? 'Chưa đối soát'}</> },
       ]} />
       {order.totalWeightG !== null && <Typography.Paragraph>Tổng server: {order.totalPackages} kiện · {order.totalWeightG} g · {order.totalVolumeMm3} mm³</Typography.Paragraph>}

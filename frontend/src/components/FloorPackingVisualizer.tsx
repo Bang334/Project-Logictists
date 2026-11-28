@@ -71,6 +71,7 @@ interface Props {
   onSelectRoute?: (routeId: string) => void;
   isSimulating?: boolean;
   simulationPlayback?: { playing: boolean; onToggle: () => void };
+  pairedWithMap?: boolean;
 }
 
 // Bảng màu sang trọng và đồng nhất theo đơn hàng
@@ -99,8 +100,9 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
   route,
   allRoutes,
   onSelectRoute,
-  isSimulating,
+  isSimulating = false,
   simulationPlayback,
+  pairedWithMap = false,
 }) => {
   const [internalStep, setInternalStep] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -724,7 +726,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             </Tag>
           )}
           {hasAnyStepEdited && (
-            <Tooltip title="Khôi phục toàn bộ các bước về phương án ban đầu của AI">
+            <Tooltip title="Khôi phục toàn bộ các bước về vị trí ban đầu">
               <Button
                 size="small"
                 icon={<ReloadOutlined />}
@@ -775,19 +777,19 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
       style={{ marginTop: route ? 0 : 16 }}
       styles={{
         header: {
-          padding: '0 16px',
-          minHeight: 52,
+          padding: '10px 14px',
+          minHeight: 58,
           borderBottom: '1px solid #f1f5f9',
         },
         body: {
-          padding: '16px',
+          padding: pairedWithMap ? '12px 14px' : '16px',
         },
       }}
     >
       {/* ============================================================ */}
-      {/* THANH THÔNG TIN TUYẾN XE & TÀI XẾ (ĐỒNG BỘ MAP TOOLBAR)     */}
+      {/* THANH THÔNG TIN TUYẾN XE & TÀI XẾ (ẨN KHI GHÉP CẠNH BẢN ĐỒ) */}
       {/* ============================================================ */}
-      {route && (
+      {route && !pairedWithMap && (
         <div className="automatic-map-toolbar">
           <div className="automatic-map-filter">
             <Text strong>Tuyến xe</Text>
@@ -860,13 +862,8 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
         <Alert
           type="info"
           showIcon
-          message="Chế độ mô phỏng di chuyển kiện hàng thủ công đang BẬT"
-          description={
-            <span style={{ fontSize: 12 }}>
-              Nhấn giữ chuột trái vào kiện trên sàn xe để <b>kéo thả (Drag & Drop)</b> đến vị trí mong muốn (tự động căn lưới 5cm và chặn mép thùng xe). Bạn cũng có thể click chọn kiện để xoay 90° hoặc nhập tọa độ cm chính xác. <i>(Mọi thay đổi chỉ là mô phỏng tạm thời trên giao diện, không lưu vào database).</i>
-            </span>
-          }
-          style={{ marginBottom: 12, backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0' }}
+          message="Chế độ chỉnh vị trí thủ công — kéo thả hoặc chọn kiện để xoay 90° / chỉnh tọa độ (chỉ xem tạm)."
+          style={{ marginBottom: 10, backgroundColor: '#f0fdf4', border: '1px solid #bbf7d0' }}
         />
       )}
 
@@ -987,16 +984,16 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
             </Button>
           </Tooltip>
 
-          {/* NÚT KHÔI PHỤC BƯỚC NÀY VỀ AI NẾU CÓ CHỈNH SỬA */}
+          {/* NÚT KHÔI PHỤC BƯỚC NÀY VỀ VỊ TRÍ BAN ĐẦU */}
           {isStepEdited && (
-            <Tooltip title="Khôi phục vị trí các kiện ở bước này về phương án tính toán ban đầu của AI">
+            <Tooltip title="Khôi phục vị trí các kiện ở bước này về vị trí ban đầu">
               <Button
                 size="small"
                 icon={<UndoOutlined />}
                 danger
                 onClick={handleResetCurrentStep}
               >
-                Khôi phục bước (AI)
+                Khôi phục bước
               </Button>
             </Tooltip>
           )}
@@ -1028,298 +1025,10 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
         </Space>
       </div>
 
-      {/* Thanh trạng thái cân bằng trọng tâm (CG) */}
-      <div
-        data-testid="floor-weight-balance-bar"
-        style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 8,
-          backgroundColor: '#f8fafc',
-          border: '1px solid #e2e8f0',
-          borderRadius: 6,
-          padding: '6px 10px',
-          marginBottom: 10,
-          fontSize: 12,
-        }}
-      >
-        <Space size={8} wrap>
-          <span style={{ color: '#475569', fontWeight: 600 }}>Cân bằng trọng tâm (CG):</span>
-          <Tag color={weightBalanceMeta.tagColor} style={{ margin: 0 }}>
-            {weightBalanceMeta.label}
-          </Tag>
-          <span style={{ color: '#334155' }}>
-            Lệch trái/phải: <b>{currentWeightBalance.lateral_imbalance_percent}%</b>
-          </span>
-          <span style={{ color: '#64748b' }}>
-            Trái {currentWeightBalance.left_weight_kg} kg · Phải {currentWeightBalance.right_weight_kg} kg
-          </span>
-          <span style={{ color: '#64748b' }}>
-            Đầu {currentWeightBalance.front_weight_kg} kg · Đuôi {currentWeightBalance.rear_weight_kg} kg
-          </span>
-        </Space>
-        <span style={{ color: '#64748b', fontSize: 11 }}>
-          CG: ({currentWeightBalance.cg_x_cm} cm, {currentWeightBalance.cg_y_cm} cm)
-        </span>
-      </div>
-
       {/* ============================================================ */}
-      {/* 2. BẢNG 4 METRIC CARDS CHI TIẾT KỸ THUẬT (PHẦN TRÊN CHI TIẾT HƠN) */}
+      {/* 2. KHUNG MÔ PHỎNG KHÔNG GIAN THÙNG XE (3D / 2D VIEWPORT)    */}
+      {/* Đặt ngay dưới thanh điều khiển bước để ngang tầm mắt với bản đồ */}
       {/* ============================================================ */}
-      <Row gutter={[8, 8]} style={{ marginBottom: 12 }}>
-        <Col xs={12} sm={6}>
-          <div
-            style={{
-              backgroundColor: '#f1f5f9',
-              border: '1px solid #e2e8f0',
-              borderRadius: 6,
-              padding: '8px 10px',
-              height: '100%',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: '#64748b' }}>Tải trọng trên xe</span>
-              <DashboardOutlined style={{ color: '#2563eb', fontSize: 13 }} />
-            </div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
-              {currentWeightKg.toLocaleString('vi-VN')} <span style={{ fontSize: 12, fontWeight: 500 }}>kg</span>
-            </div>
-            <div style={{ fontSize: 11, color: '#475569' }}>
-              <b>Còn {currentPlacedItems.length} kiện trên xe</b>
-            </div>
-          </div>
-        </Col>
-
-        <Col xs={12} sm={6}>
-          <div
-            style={{
-              backgroundColor: '#f1f5f9',
-              border: '1px solid #e2e8f0',
-              borderRadius: 6,
-              padding: '8px 10px',
-              height: '100%',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: '#64748b' }}>
-                {showingUnload ? 'Tiến độ dỡ mô phỏng' : 'Biến động theo kế hoạch'}
-              </span>
-              <SwapOutlined
-                style={{
-                  color: stepDelta.type === 'DEPOT' ? '#2563eb' : stepDelta.type === 'PICKUP' ? '#16a34a' : '#ea580c',
-                  fontSize: 13,
-                }}
-              />
-            </div>
-            <div
-              style={{
-                fontSize: 16,
-                fontWeight: 700,
-                color: stepDelta.type === 'DEPOT' ? '#2563eb' : stepDelta.type === 'PICKUP' ? '#16a34a' : '#ea580c',
-                marginTop: 2,
-              }}
-            >
-              {stepDelta.type === 'DEPOT'
-                ? '0 kiện'
-                : stepDelta.type === 'PICKUP'
-                ? `+${stepDelta.count} kiện`
-                : `-${stepDelta.count} kiện`}
-            </div>
-            <div style={{ fontSize: 11, color: '#475569' }}>
-              {stepDelta.type === 'DEPOT' ? 'Thùng xe:' : stepDelta.type === 'PICKUP' ? 'Bốc nhận:' : 'Dỡ giao:'}{' '}
-              <b>{stepDelta.type === 'DEPOT' ? 'Xe rỗng' : `${stepDelta.weight.toFixed(0)} kg`}</b>
-            </div>
-          </div>
-        </Col>
-
-        <Col xs={12} sm={6}>
-          <div
-            style={{
-              backgroundColor: '#f1f5f9',
-              border: '1px solid #e2e8f0',
-              borderRadius: 6,
-              padding: '8px 10px',
-              height: '100%',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: '#64748b' }}>Diện tích mặt sàn</span>
-              <AppstoreOutlined style={{ color: '#0891b2', fontSize: 13 }} />
-            </div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
-              {occupiedAreaM2.toFixed(2)} <span style={{ fontSize: 12, fontWeight: 500 }}>/ {totalFloorAreaM2.toFixed(2)} m²</span>
-            </div>
-            <div style={{ fontSize: 11, color: '#475569' }}>
-              Trống: <b>{freeAreaM2.toFixed(2)} m²</b> ({freeAreaPercent.toFixed(1)}%)
-            </div>
-          </div>
-        </Col>
-
-        <Col xs={12} sm={6}>
-          <div
-            style={{
-              backgroundColor: '#f1f5f9',
-              border: '1px solid #e2e8f0',
-              borderRadius: 6,
-              padding: '8px 10px',
-              height: '100%',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: '#64748b' }}>Lối dỡ cửa sau</span>
-              <SafetyCertificateOutlined
-                style={{
-                  color: clampedStep === 0 ? '#3b82f6' : clearCorridorCount === currentPlacedItems.length ? '#16a34a' : '#eab308',
-                  fontSize: 13,
-                }}
-              />
-            </div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
-              {clampedStep === 0
-                ? '0 / 0 '
-                : `${clearCorridorCount} / ${currentPlacedItems.length} `}
-              <span style={{ fontSize: 12, fontWeight: 500 }}>kiện</span>
-            </div>
-            <div
-              style={{
-                fontSize: 11,
-                color: clampedStep === 0
-                  ? '#3b82f6'
-                  : clearCorridorCount === currentPlacedItems.length
-                  ? '#16a34a'
-                  : '#d97706',
-              }}
-            >
-              {currentPlacedItems.length === 0
-                ? 'Thùng xe trống'
-                : clearCorridorCount === currentPlacedItems.length
-                ? '✓ 100% thông thoáng'
-                : `${currentPlacedItems.length - clearCorridorCount} kiện chờ dỡ sau`}
-            </div>
-          </div>
-        </Col>
-      </Row>
-
-      {/* ============================================================ */}
-      {/* 3. DẢI BỘ LỌC THEO ĐƠN HÀNG TRÊN XE (ORDER PALETTE FILTERS)   */}
-      {/* ============================================================ */}
-      {orderGroups.length > 0 && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            marginBottom: 10,
-            overflowX: 'auto',
-            paddingBottom: 2,
-          }}
-        >
-          <span style={{ fontSize: 11, color: '#64748b', whiteSpace: 'nowrap' }}>
-            <FilterOutlined style={{ marginRight: 3 }} /> Lọc đơn trên xe:
-          </span>
-          <Tag
-            color={selectedOrderFilter === null ? 'blue' : 'default'}
-            style={{ cursor: 'pointer', fontSize: 11, margin: 0 }}
-            onClick={() => setSelectedOrderFilter(null)}
-          >
-            Tất cả ({currentPlacedItems.length} kiện)
-          </Tag>
-          {orderGroups.map((grp) => {
-            const isSelected = selectedOrderFilter === grp.orderKey;
-            return (
-              <Tag
-                key={grp.orderKey}
-                style={{
-                  cursor: 'pointer',
-                  fontSize: 11,
-                  margin: 0,
-                  border: `1px solid ${grp.color.border}`,
-                  backgroundColor: isSelected ? grp.color.light : '#f8fafc',
-                  color: isSelected ? grp.color.border : '#334155',
-                  fontWeight: isSelected ? 600 : 400,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 4,
-                }}
-                onClick={() => setSelectedOrderFilter(isSelected ? null : grp.orderKey)}
-              >
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: 8,
-                    height: 8,
-                    borderRadius: 2,
-                    backgroundColor: grp.color.bg,
-                  }}
-                />
-                <span>Đơn {grp.orderKey.slice(-6).toUpperCase()}</span>
-                <span style={{ color: '#64748b', fontSize: 10 }}>({grp.items.length} kiện - {grp.totalWeight.toFixed(0)}kg)</span>
-              </Tag>
-            );
-          })}
-        </div>
-      )}
-
-      {hasStackedPlan && <Space wrap style={{ marginBottom: 10 }}>
-        <Tag color="geekblue">Xếp chồng theo mô hình nâng demo</Tag>
-        {viewMode === '2d' && (
-          <Select aria-label="Lọc theo độ cao đáy kiện" placeholder="Tất cả độ cao" allowClear
-            value={visibleHeight} onChange={setSelectedHeight}
-            options={heights.map(height => ({ value: height, label: height ? `Đáy kiện ở ${Math.round(height * 10) / 10} cm` : 'Mặt sàn' }))} />
-        )}
-      </Space>}
-
-      {canPreviewUnload && activeState && <Card size="small" title="Thứ tự dỡ tại điểm giao" style={{ marginBottom: 10 }}>
-        <Space direction="vertical" size="small">
-          <Space wrap>
-            <Select aria-label="Bước dỡ kiện" value={completedUnloads}
-              onChange={(completed) => {
-                setIsUnloadPlaying(false);
-                setUnloadPreview({ stopId: activeState.stop_id, completed });
-              }}
-              options={Array.from({ length: unloadSequence.length + 1 }, (_, value) => ({
-                value, label: value === 0 ? 'Trước khi dỡ' : `Sau khi dỡ ${value}/${unloadSequence.length} kiện`,
-              }))} />
-            <Button size="small"
-              onClick={() => {
-                setIsUnloadPlaying(false);
-                setUnloadPreview({ stopId: activeState.stop_id, completed: showingUnload ? completedUnloads + 1 : 0 });
-              }}>
-              {showingUnload ? 'Dỡ kiện tiếp theo' : 'Xem dỡ từ đầu'}
-            </Button>
-            <Button
-              size="small"
-              type={isUnloadPlaying ? 'primary' : 'default'}
-              icon={isUnloadPlaying ? <PauseOutlined /> : <PlayCircleOutlined />}
-              onClick={() => {
-                if (isUnloadPlaying) {
-                  setIsUnloadPlaying(false);
-                  return;
-                }
-                if (!showingUnload) {
-                  setUnloadPreview({ stopId: activeState.stop_id, completed: 0 });
-                }
-                setIsUnloadPlaying(true);
-              }}
-            >
-              {isUnloadPlaying ? 'Tạm dừng dỡ' : 'Phát dỡ tự động'}
-            </Button>
-          </Space>
-          <Space wrap>{unloadSequence.map((id, index) => {
-            const item = previousById.get(id);
-            if (!item) return null;
-            return <Tag key={id} title={id} color={index < completedUnloads ? 'green' : index === completedUnloads ? 'blue' : undefined}>
-              {index + 1}. {getItemShortLabel(item)} · {item.weight_kg.toLocaleString('vi-VN')} kg · cao độ {Math.round((item.z ?? 0) * 10) / 10} cm
-            </Tag>;
-          })}</Space>
-          <Typography.Text type="secondary">
-            Sơ đồ, tải và danh sách kiện cập nhật sau mỗi thao tác dỡ (dỡ tầng cao trước, từ cửa sau ra trước).
-          </Typography.Text>
-        </Space>
-      </Card>}
-
       {viewMode === '3d' ? (
         <Cargo3DVisualizer
           lengthCm={bedLength}
@@ -1365,7 +1074,7 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           aria-label="Sơ đồ kiện trong thùng xe"
           width="100%"
           viewBox={`0 0 ${totalSvgWidth} ${totalSvgHeight}`}
-          style={{ display: 'block', maxHeight: 380, userSelect: 'none' }}
+          style={{ display: 'block', width: '100%', height: 'auto', maxHeight: 420, userSelect: 'none' }}
         >
           <defs>
             {/* Lưới kỹ thuật sàn xe */}
@@ -1951,6 +1660,341 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
       )}
 
       {/* ============================================================ */}
+      {/* THÔNG TIN CHI TIẾT XẾP DỠ & TRỌNG TÂM BÊN DƯỚI KHUNG VẼ      */}
+      {/* ============================================================ */}
+      {(hasStackedPlan || orderGroups.length > 0) && (
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+            marginTop: 10,
+          }}
+        >
+          {orderGroups.length > 0 && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                overflowX: 'auto',
+                paddingBottom: 2,
+              }}
+            >
+              <span style={{ fontSize: 11, color: '#64748b', whiteSpace: 'nowrap' }}>
+                <FilterOutlined style={{ marginRight: 3 }} /> Lọc đơn trên xe:
+              </span>
+              <Tag
+                color={selectedOrderFilter === null ? 'blue' : 'default'}
+                style={{ cursor: 'pointer', fontSize: 11, margin: 0 }}
+                onClick={() => setSelectedOrderFilter(null)}
+              >
+                Tất cả ({currentPlacedItems.length} kiện)
+              </Tag>
+              {orderGroups.map((grp) => {
+                const isSelected = selectedOrderFilter === grp.orderKey;
+                return (
+                  <Tag
+                    key={grp.orderKey}
+                    style={{
+                      cursor: 'pointer',
+                      fontSize: 11,
+                      margin: 0,
+                      border: `1px solid ${grp.color.border}`,
+                      backgroundColor: isSelected ? grp.color.light : '#f8fafc',
+                      color: isSelected ? grp.color.border : '#334155',
+                      fontWeight: isSelected ? 600 : 400,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                    onClick={() => setSelectedOrderFilter(isSelected ? null : grp.orderKey)}
+                  >
+                    <span
+                      style={{
+                        display: 'inline-block',
+                        width: 8,
+                        height: 8,
+                        borderRadius: 2,
+                        backgroundColor: grp.color.bg,
+                      }}
+                    />
+                    <span>Đơn {grp.orderKey.slice(-6).toUpperCase()}</span>
+                    <span style={{ color: '#64748b', fontSize: 10 }}>
+                      ({grp.items.length} kiện - {grp.totalWeight.toFixed(0)}kg)
+                    </span>
+                  </Tag>
+                );
+              })}
+            </div>
+          )}
+
+          {hasStackedPlan && (
+            <Space wrap size={6}>
+              <Tag color="geekblue" style={{ margin: 0 }}>
+                Xếp chồng 3D
+              </Tag>
+              {viewMode === '2d' && (
+                <Select
+                  size="small"
+                  aria-label="Lọc theo độ cao đáy kiện"
+                  placeholder="Tất cả độ cao"
+                  allowClear
+                  value={visibleHeight}
+                  onChange={setSelectedHeight}
+                  options={heights.map((height) => ({
+                    value: height,
+                    label: height ? `Đáy kiện ở ${Math.round(height * 10) / 10} cm` : 'Mặt sàn',
+                  }))}
+                />
+              )}
+            </Space>
+          )}
+        </div>
+      )}
+
+      {canPreviewUnload && activeState && (
+        <Card size="small" title="Thứ tự dỡ tại điểm giao" style={{ marginTop: 10 }}>
+          <Space direction="vertical" size="small">
+            <Space wrap>
+              <Select
+                aria-label="Bước dỡ kiện"
+                value={completedUnloads}
+                onChange={(completed) => {
+                  setIsUnloadPlaying(false);
+                  setUnloadPreview({ stopId: activeState.stop_id, completed });
+                }}
+                options={Array.from({ length: unloadSequence.length + 1 }, (_, value) => ({
+                  value,
+                  label: value === 0 ? 'Trước khi dỡ' : `Sau khi dỡ ${value}/${unloadSequence.length} kiện`,
+                }))}
+              />
+              <Button
+                size="small"
+                onClick={() => {
+                  setIsUnloadPlaying(false);
+                  setUnloadPreview({ stopId: activeState.stop_id, completed: showingUnload ? completedUnloads + 1 : 0 });
+                }}
+              >
+                {showingUnload ? 'Dỡ kiện tiếp theo' : 'Xem dỡ từ đầu'}
+              </Button>
+              <Button
+                size="small"
+                type={isUnloadPlaying ? 'primary' : 'default'}
+                icon={isUnloadPlaying ? <PauseOutlined /> : <PlayCircleOutlined />}
+                onClick={() => {
+                  if (isUnloadPlaying) {
+                    setIsUnloadPlaying(false);
+                    return;
+                  }
+                  if (!showingUnload) {
+                    setUnloadPreview({ stopId: activeState.stop_id, completed: 0 });
+                  }
+                  setIsUnloadPlaying(true);
+                }}
+              >
+                {isUnloadPlaying ? 'Tạm dừng dỡ' : 'Phát dỡ tự động'}
+              </Button>
+            </Space>
+            <Space wrap>
+              {unloadSequence.map((id, index) => {
+                const item = previousById.get(id);
+                if (!item) return null;
+                return (
+                  <Tag
+                    key={id}
+                    title={id}
+                    color={index < completedUnloads ? 'green' : index === completedUnloads ? 'blue' : undefined}
+                  >
+                    {index + 1}. {getItemShortLabel(item)} · {item.weight_kg.toLocaleString('vi-VN')} kg · cao độ{' '}
+                    {Math.round((item.z ?? 0) * 10) / 10} cm
+                  </Tag>
+                );
+              })}
+            </Space>
+            <Typography.Text type="secondary">
+              Sơ đồ, tải và danh sách kiện cập nhật sau mỗi thao tác dỡ (dỡ tầng cao trước, từ cửa sau ra trước).
+            </Typography.Text>
+          </Space>
+        </Card>
+      )}
+
+      {/* Thanh trạng thái cân bằng trọng tâm (CG) */}
+      <div
+        data-testid="floor-weight-balance-bar"
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          backgroundColor: '#f8fafc',
+          border: '1px solid #e2e8f0',
+          borderRadius: 6,
+          padding: '6px 10px',
+          marginTop: 10,
+          marginBottom: 8,
+          fontSize: 12,
+        }}
+      >
+        <Space size={8} wrap>
+          <span style={{ color: '#475569', fontWeight: 600 }}>Cân bằng trọng tâm (CG):</span>
+          <Tag color={weightBalanceMeta.tagColor} style={{ margin: 0 }}>
+            {weightBalanceMeta.label}
+          </Tag>
+          <span style={{ color: '#334155' }}>
+            Lệch trái/phải: <b>{currentWeightBalance.lateral_imbalance_percent}%</b>
+          </span>
+          <span style={{ color: '#64748b' }}>
+            Trái {currentWeightBalance.left_weight_kg} kg · Phải {currentWeightBalance.right_weight_kg} kg
+          </span>
+          <span style={{ color: '#64748b' }}>
+            Đầu {currentWeightBalance.front_weight_kg} kg · Đuôi {currentWeightBalance.rear_weight_kg} kg
+          </span>
+        </Space>
+        <span style={{ color: '#64748b', fontSize: 11 }}>
+          CG: ({currentWeightBalance.cg_x_cm} cm, {currentWeightBalance.cg_y_cm} cm)
+        </span>
+      </div>
+
+      {/* BẢNG 4 METRIC CARDS CHI TIẾT KỸ THUẬT */}
+      <Row gutter={[8, 8]} style={{ marginBottom: 4 }}>
+        <Col xs={12} sm={6}>
+          <div
+            style={{
+              backgroundColor: '#f1f5f9',
+              border: '1px solid #e2e8f0',
+              borderRadius: 6,
+              padding: '8px 10px',
+              height: '100%',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: '#64748b' }}>Tải trọng trên xe</span>
+              <DashboardOutlined style={{ color: '#2563eb', fontSize: 13 }} />
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
+              {currentWeightKg.toLocaleString('vi-VN')} <span style={{ fontSize: 12, fontWeight: 500 }}>kg</span>
+            </div>
+            <div style={{ fontSize: 11, color: '#475569' }}>
+              <b>Còn {currentPlacedItems.length} kiện trên xe</b>
+            </div>
+          </div>
+        </Col>
+
+        <Col xs={12} sm={6}>
+          <div
+            style={{
+              backgroundColor: '#f1f5f9',
+              border: '1px solid #e2e8f0',
+              borderRadius: 6,
+              padding: '8px 10px',
+              height: '100%',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: '#64748b' }}>
+                {showingUnload ? 'Tiến độ dỡ mô phỏng' : 'Biến động theo kế hoạch'}
+              </span>
+              <SwapOutlined
+                style={{
+                  color: stepDelta.type === 'DEPOT' ? '#2563eb' : stepDelta.type === 'PICKUP' ? '#16a34a' : '#ea580c',
+                  fontSize: 13,
+                }}
+              />
+            </div>
+            <div
+              style={{
+                fontSize: 16,
+                fontWeight: 700,
+                color: stepDelta.type === 'DEPOT' ? '#2563eb' : stepDelta.type === 'PICKUP' ? '#16a34a' : '#ea580c',
+                marginTop: 2,
+              }}
+            >
+              {stepDelta.type === 'DEPOT'
+                ? '0 kiện'
+                : stepDelta.type === 'PICKUP'
+                ? `+${stepDelta.count} kiện`
+                : `-${stepDelta.count} kiện`}
+            </div>
+            <div style={{ fontSize: 11, color: '#475569' }}>
+              {stepDelta.type === 'DEPOT' ? 'Thùng xe:' : stepDelta.type === 'PICKUP' ? 'Bốc nhận:' : 'Dỡ giao:'}{' '}
+              <b>{stepDelta.type === 'DEPOT' ? 'Xe rỗng' : `${stepDelta.weight.toFixed(0)} kg`}</b>
+            </div>
+          </div>
+        </Col>
+
+        <Col xs={12} sm={6}>
+          <div
+            style={{
+              backgroundColor: '#f1f5f9',
+              border: '1px solid #e2e8f0',
+              borderRadius: 6,
+              padding: '8px 10px',
+              height: '100%',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: '#64748b' }}>Diện tích mặt sàn</span>
+              <AppstoreOutlined style={{ color: '#0891b2', fontSize: 13 }} />
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
+              {occupiedAreaM2.toFixed(2)} <span style={{ fontSize: 12, fontWeight: 500 }}>/ {totalFloorAreaM2.toFixed(2)} m²</span>
+            </div>
+            <div style={{ fontSize: 11, color: '#475569' }}>
+              Trống: <b>{freeAreaM2.toFixed(2)} m²</b> ({freeAreaPercent.toFixed(1)}%)
+            </div>
+          </div>
+        </Col>
+
+        <Col xs={12} sm={6}>
+          <div
+            style={{
+              backgroundColor: '#f1f5f9',
+              border: '1px solid #e2e8f0',
+              borderRadius: 6,
+              padding: '8px 10px',
+              height: '100%',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: '#64748b' }}>Lối dỡ cửa sau</span>
+              <SafetyCertificateOutlined
+                style={{
+                  color: clampedStep === 0 ? '#3b82f6' : clearCorridorCount === currentPlacedItems.length ? '#16a34a' : '#eab308',
+                  fontSize: 13,
+                }}
+              />
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#0f172a', marginTop: 2 }}>
+              {clampedStep === 0
+                ? '0 / 0 '
+                : `${clearCorridorCount} / ${currentPlacedItems.length} `}
+              <span style={{ fontSize: 12, fontWeight: 500 }}>kiện</span>
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                color: clampedStep === 0
+                  ? '#3b82f6'
+                  : clearCorridorCount === currentPlacedItems.length
+                  ? '#16a34a'
+                  : '#d97706',
+              }}
+            >
+              {currentPlacedItems.length === 0
+                ? 'Thùng xe trống'
+                : clearCorridorCount === currentPlacedItems.length
+                ? '✓ 100% thông thoáng'
+                : `${currentPlacedItems.length - clearCorridorCount} kiện chờ dỡ sau`}
+            </div>
+          </div>
+        </Col>
+      </Row>
+
+      {/* ============================================================ */}
       {/* CẢNH BÁO VA CHẠM CHỒNG LẤN KHI MÔ PHỎNG THỦ CÔNG             */}
       {/* (Đặt bên dưới SVG để tuyệt đối không làm dịch chuyển khung SVG) */}
       {/* ============================================================ */}
@@ -2228,10 +2272,10 @@ export const FloorPackingVisualizer: React.FC<Props> = ({
           >
             <InboxOutlined style={{ fontSize: 32, color: '#94a3b8', marginBottom: 8 }} />
             <div style={{ fontWeight: 600, color: '#334155', fontSize: 14 }}>
-              Thùng xe đang trống (Xe rỗng chuẩn bị nhận hàng)
+              Chưa có hàng trên xe
             </div>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              Xe đang khởi hành từ chi nhánh. Hàng hóa sẽ được bốc lên xe khi xe di chuyển tới Điểm 1.
+              Xe rỗng tại điểm xuất phát.
             </Text>
           </div>
         ) : orderGroups.length === 0 ? (

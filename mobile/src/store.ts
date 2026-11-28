@@ -3,12 +3,15 @@ import { Api, ApiError } from "./api";
 import {
   AssignmentDetail,
   AssignmentList,
+  deliveryFailureResponseSchema,
   detailSchema,
   listSchema,
   loginSchema,
   Profile,
   profileSchema,
   responseSchema,
+  returnToHubResponseSchema,
+  taskConfirmResponseSchema,
 } from "./contracts";
 export interface TokenStorage {
   read(): Promise<string | null>;
@@ -61,7 +64,20 @@ export class DriverStore {
     assignmentId: string;
     taskId: string;
     key: string;
-    body: { expectedVersion: number; expectedTripVersion: number; reason: string };
+    body: {
+      expectedVersion: number;
+      expectedTripVersion: number;
+      reason: string;
+      failureCategory?: string;
+      requestedRedeliveryAt?: string;
+    };
+  };
+  private taskCommandRequest?: {
+    scope: string;
+    assignmentId: string;
+    targetId: string;
+    key: string;
+    body: { expectedVersion: number; expectedTripVersion: number };
   };
   private storageTail: Promise<void> = Promise.resolve();
   private listeners = new Set<() => void>();
@@ -238,13 +254,143 @@ export class DriverStore {
     ++this.detailRequest;
     this.set({ detail: null, loadingDetail: false, error: null });
   }
-  async reportRecipientUnavailable(taskId: string) {
+  async confirmPickup(taskId: string) {
+    return this.executeTaskCommand(
+      "pickup-confirm",
+      taskId,
+      (assignmentId) => `/driver/assignments/${assignmentId}/tasks/${taskId}/pickup-confirm`,
+      taskConfirmResponseSchema,
+      "Đã xác nhận lấy hàng lên xe.",
+    );
+  }
+
+  async confirmDelivery(taskId: string) {
+    return this.executeTaskCommand(
+      "delivery-confirm",
+      taskId,
+      (assignmentId) => `/driver/assignments/${assignmentId}/tasks/${taskId}/delivery-confirm`,
+      taskConfirmResponseSchema,
+      "Đã xác nhận giao hàng thành công.",
+    );
+  }
+
+  async confirmReturnToHub(stopId: string) {
+    const { detail, busy } = this.state;
+    const token = this.token;
+    if (busy || !token || !detail || detail.status !== "ACCEPTED") return;
+    const epoch = this.epoch;
+    const prev = this.taskCommandRequest;
+    const command =
+      prev?.scope === "return-to-hub" &&
+      prev.assignmentId === detail.id &&
+      prev.targetId === stopId
+        ? prev
+        : {
+            scope: "return-to-hub",
+            assignmentId: detail.id,
+            targetId: stopId,
+            key: this.uuid(),
+            body: {
+              expectedVersion: detail.version,
+              expectedTripVersion: detail.trip.version,
+            },
+          };
+    this.taskCommandRequest = command;
+    this.set({ busy: true, error: null, notice: null });
+    try {
+      const res = await this.api.call(
+        `/driver/assignments/${detail.id}/stops/${stopId}/return-to-hub`,
+        returnToHubResponseSchema,
+        token,
+        command.body,
+        command.key,
+      );
+      if (epoch !== this.epoch) return;
+      this.taskCommandRequest = undefined;
+      this.set({
+        notice: `Đã hoàn ${res.returnedPackageCount} kiện về kho ${res.warehouse.name}. Chuyến ${res.tripCompleted ? "đã hoàn tất" : "đã cập nhật"}.`,
+      });
+      await this.open(detail.id);
+    } catch (error) {
+      if (epoch !== this.epoch) return;
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+        this.taskCommandRequest = undefined;
+        if (error.status === 409) await this.open(detail.id);
+      }
+      await this.failure(error, epoch);
+    } finally {
+      if (epoch === this.epoch) this.set({ busy: false });
+    }
+  }
+
+  private async executeTaskCommand<T>(
+    scope: string,
+    taskId: string,
+    buildPath: (assignmentId: string) => string,
+    schema: z.ZodType<T>,
+    successNotice: string,
+  ) {
+    const { detail, busy } = this.state;
+    const token = this.token;
+    if (busy || !token || !detail || detail.status !== "ACCEPTED") return;
+    const epoch = this.epoch;
+    const prev = this.taskCommandRequest;
+    const command =
+      prev?.scope === scope &&
+      prev.assignmentId === detail.id &&
+      prev.targetId === taskId
+        ? prev
+        : {
+            scope,
+            assignmentId: detail.id,
+            targetId: taskId,
+            key: this.uuid(),
+            body: {
+              expectedVersion: detail.version,
+              expectedTripVersion: detail.trip.version,
+            },
+          };
+    this.taskCommandRequest = command;
+    this.set({ busy: true, error: null, notice: null });
+    try {
+      await this.api.call(
+        buildPath(detail.id),
+        schema,
+        token,
+        command.body,
+        command.key,
+      );
+      if (epoch !== this.epoch) return;
+      this.taskCommandRequest = undefined;
+      this.set({ notice: successNotice });
+      await this.open(detail.id);
+    } catch (error) {
+      if (epoch !== this.epoch) return;
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+        this.taskCommandRequest = undefined;
+        if (error.status === 409) await this.open(detail.id);
+      }
+      await this.failure(error, epoch);
+    } finally {
+      if (epoch === this.epoch) this.set({ busy: false });
+    }
+  }
+
+  async reportRecipientUnavailable(
+    taskId: string,
+    options?: {
+      reason?: string;
+      failureCategory?: "CUSTOMER_BUSY" | "UNREACHABLE" | "REFUSED" | "OTHER";
+      requestedRedeliveryAt?: string;
+    },
+  ) {
     const { detail, busy } = this.state;
     const token = this.token;
     if (busy || !token || !detail || detail.status !== "ACCEPTED") return;
     const epoch = this.epoch;
     const previous = this.deliveryFailureRequest;
-    const command = previous?.assignmentId === detail.id && previous.taskId === taskId
+    const nextReason = options?.reason?.trim() || "Người nhận không thể nhận hàng";
+    const command = previous?.assignmentId === detail.id && previous.taskId === taskId && previous.body.reason === nextReason && previous.body.failureCategory === options?.failureCategory
       ? previous
       : {
           assignmentId: detail.id,
@@ -253,20 +399,26 @@ export class DriverStore {
           body: {
             expectedVersion: detail.version,
             expectedTripVersion: detail.trip.version,
-            reason: "Người nhận không thể nhận hàng",
+            reason: nextReason,
+            ...(options?.failureCategory ? { failureCategory: options.failureCategory } : {}),
+            ...(options?.requestedRedeliveryAt ? { requestedRedeliveryAt: options.requestedRedeliveryAt } : {}),
           },
         };
     this.deliveryFailureRequest = command;
     this.set({ busy: true, error: null, notice: null });
     try {
-      await this.api.call(
+      const result = await this.api.call(
         `/driver/assignments/${detail.id}/tasks/${taskId}/delivery-failure`,
-        z.object({ attemptId: z.string(), tripVersion: z.number().int() }),
+        deliveryFailureResponseSchema,
         token, command.body, command.key,
       );
       if (epoch !== this.epoch) return;
       this.deliveryFailureRequest = undefined;
-      this.set({ notice: "Máy chủ đã ghi nhận kiện còn trên xe. Chờ điều phối trước khi tiếp tục." });
+      const c = result.continuation;
+      const notice = c?.returnWarehouseName
+        ? `Đã giữ hàng trên xe. Điểm hoàn về: ${c.returnWarehouseName}. Tiếp tục ${c.keptDeliveryStopIds.length} điểm giao đủ điều kiện${c.returnToHubStopIds.length ? `, mang về kho thêm ${c.returnToHubStopIds.length} điểm bị chắn/lỡ giờ` : ""}${c.detachedOrderIds.length ? `, tách ${c.detachedOrderIds.length} đơn chưa lấy cho xe rảnh` : ""}.`
+        : "Máy chủ đã ghi nhận kiện còn trên xe. Chờ điều phối trước khi tiếp tục.";
+      this.set({ notice });
       await this.open(detail.id);
     } catch (error) {
       if (epoch !== this.epoch) return;

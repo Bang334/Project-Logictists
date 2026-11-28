@@ -83,8 +83,18 @@ export class TripsValidator {
       const manifest = { ...stop.order, packageDataStatus: stop.order.packageDataStatus ?? 'LEGACY_REVIEW', items: stop.order.items.map(item => ({ ...item, packages: item.packages ?? [] })) };
       const canonical = stop.order.packageDataStatus === 'COMPLETE';
       if (canonical) assertPackageManifest(manifest);
+      const allCanonicalPackages = manifest.items.flatMap((item) => item.packages);
+      const activeCanonicalPackages = allCanonicalPackages.filter(
+        (pkg) => pkg.status === 'READY' || pkg.status === 'ALLOCATED',
+      );
       // Legacy projections are only for historical display/validation. Never infer physical packages.
-      const totals = canonical ? packageTotals(manifest.items.flatMap(item => item.packages)) : {
+      const totals = canonical
+        ? packageTotals(
+            activeCanonicalPackages.length > 0
+              ? activeCanonicalPackages
+              : allCanonicalPackages,
+          )
+        : {
         weightG: BigInt(Math.round(stop.order.items.reduce((sum, item) => sum + item.weightKg, 0) * 1000)),
         volumeMm3: BigInt(Math.round(stop.order.items.reduce((sum, item) => sum + item.volumeM3, 0) * 1e9)),
       };

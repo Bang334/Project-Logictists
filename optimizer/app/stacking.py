@@ -21,6 +21,8 @@ from .packing_rules import (
     exceeds_top_load_limit,
     is_floor_rotation_locked,
     resolve_can_rotate,
+    resolve_weight_balance_thresholds,
+    weight_balance_exceeds_limit,
 )
 from .spatial_cache import (
     SpatialValidationCache,
@@ -30,6 +32,7 @@ from .spatial_cache import (
 from .spatial_validator import SpatialValidator
 from .stacking_unequal import (
     fast_validate_unequal_stacked_route,
+    fast_validate_unequal_stacked_route_with_balances,
     has_unequal_stack_potential,
     validate_unequal_stacked_stops,
 )
@@ -614,33 +617,18 @@ def _validate_single_stop_cycle(
 def _enforce_weight_balance_policy(
     policy: Optional[DemoStackingPolicy],
     result: SpatialValidationResult,
+    cost_policy: Any = None,
 ) -> SpatialValidationResult:
-    if (
-        not result.is_valid
-        or policy is None
-        or not bool(getattr(policy, "enforce_weight_balance", False))
-    ):
+    enforce_wb, max_lat_limit, max_lon_limit = resolve_weight_balance_thresholds(
+        policy, cost_policy
+    )
+    if not result.is_valid or not enforce_wb:
         return result
-    max_lat_limit = getattr(policy, "max_lateral_imbalance_percent", None)
-    max_lon_limit = getattr(policy, "max_longitudinal_imbalance_percent", None)
     for state in result.step_states:
         wb = getattr(state, "weight_balance", None)
-        if wb is None or float(getattr(wb, "total_weight_kg", 0.0) or 0.0) <= 1e-6:
-            continue
-        lat_pct = float(getattr(wb, "lateral_imbalance_percent", 0.0) or 0.0)
-        lon_pct = float(getattr(wb, "longitudinal_imbalance_percent", 0.0) or 0.0)
-        violated = False
-        if max_lat_limit is not None and lat_pct > float(max_lat_limit) + 1e-6:
-            violated = True
-        if max_lon_limit is not None and lon_pct > float(max_lon_limit) + 1e-6:
-            violated = True
-        if (
-            max_lat_limit is None
-            and max_lon_limit is None
-            and getattr(wb, "status", "EMPTY") == "IMBALANCED"
-        ):
-            violated = True
-        if violated:
+        violated = weight_balance_exceeds_limit(wb, max_lat_limit, max_lon_limit)
+        if violated is not None:
+            lat_pct, lon_pct = violated
             return result.model_copy(
                 update={
                     "is_valid": False,
@@ -654,6 +642,9 @@ def _enforce_weight_balance_policy(
     return result
 
 
+enforce_spatial_weight_balance_if_needed = _enforce_weight_balance_policy
+
+
 def validate_stop_actions(
     policy: Optional[DemoStackingPolicy],
     vehicle: Any,
@@ -661,6 +652,7 @@ def validate_stop_actions(
     *,
     max_search_nodes: Optional[int] = None,
     max_time_seconds: Optional[float] = None,
+    cost_policy: Any = None,
 ) -> SpatialValidationResult:
     """Validate StopAction sequence honoring optional demo_stacking and weight balance policy."""
     floor = vehicle if isinstance(vehicle, VehicleFloor) else VehicleFloor(
@@ -685,6 +677,7 @@ def validate_stop_actions(
                 max_time_seconds=max_time_seconds,
                 cache=None,
             ),
+            cost_policy=cost_policy,
         )
 
     cycles = split_independent_stop_cycles(actions)
@@ -699,6 +692,7 @@ def validate_stop_actions(
                 max_time_seconds=max_time_seconds,
                 cache=cache,
             ),
+            cost_policy=cost_policy,
         )
 
     deadline = (
@@ -777,6 +771,7 @@ def validate_stop_actions(
             step_states=step_states,
             demo_stacking=resolved_policy,
         ),
+        cost_policy=cost_policy,
     )
 
 
@@ -843,6 +838,7 @@ def fast_validate_stacked_route(
     policy: DemoStackingPolicy,
     *,
     allow_layout_search: bool = True,
+    cost_policy: Any = None,
 ) -> tuple[bool, str]:
     """Fast LIFO + unequal-footprint vertical tree-stacking pre-check."""
     return fast_validate_unequal_stacked_route(
@@ -852,4 +848,26 @@ def fast_validate_stacked_route(
         policy,
         allow_layout_search=allow_layout_search,
         validate_fallback=validate_stop_actions,
+        cost_policy=cost_policy,
+    )
+
+
+def fast_validate_stacked_route_with_balances(
+    vehicle: Any,
+    stops: Sequence[Any],
+    cargo_by_id: Mapping[str, Any],
+    policy: DemoStackingPolicy,
+    *,
+    allow_layout_search: bool = True,
+    cost_policy: Any = None,
+) -> tuple[bool, str, list[Any]]:
+    """Fast LIFO + 3D stacking validation returning per-stop WeightBalanceMetrics."""
+    return fast_validate_unequal_stacked_route_with_balances(
+        vehicle,
+        stops,
+        cargo_by_id,
+        policy,
+        allow_layout_search=allow_layout_search,
+        validate_fallback=validate_stop_actions,
+        cost_policy=cost_policy,
     )

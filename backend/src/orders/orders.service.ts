@@ -44,7 +44,16 @@ export class OrdersService {
   }
   async getAvailableForDispatch(user: Principal, branchId?: string) {
     const rows = await this.prisma.order.findMany({
-      where: { orderType: 'B2B_TRANSPORT', status: OrderStatus.CONFIRMED, packageDataStatus: 'COMPLETE', branchId: branchFilter(user, 'orders.read', branchId), items: { none: { allocations: { some: {} } } } },
+      where: {
+        orderType: 'B2B_TRANSPORT',
+        status: OrderStatus.CONFIRMED,
+        packageDataStatus: 'COMPLETE',
+        branchId: branchFilter(user, 'orders.read', branchId),
+        items: {
+          some: { packages: { some: { status: PackageStatus.READY } } },
+          none: { allocations: { some: { releasedAt: null } } },
+        },
+      },
       include: orderInclude, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: 501,
     });
     if (rows.length > 500) throw new BadRequestException({ code: 'DISPATCH_SELECTION_TOO_LARGE', message: 'Có hơn 500 đơn chờ; hãy thu hẹp chi nhánh trước khi lập kế hoạch' });

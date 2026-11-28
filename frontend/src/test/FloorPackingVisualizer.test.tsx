@@ -235,3 +235,63 @@ it('displays weight balance, CG marker, Part A badges, updates balance on unload
   fireEvent.click(screen.getByText('Dỡ kiện tiếp theo'));
   expect(screen.getByTestId('floor-weight-balance-bar')).toHaveTextContent('Cân bằng tốt');
 }, 20_000);
+
+it('hides duplicate route selector when paired with map and places 3D canvas above KPI summary', () => {
+  const sampleRoute = {
+    route_id: 'route-1',
+    vehicle_id: 'veh-1',
+    plate_number: '29D-528.36',
+    driver_name: 'Nguyễn Văn A',
+    service_day_index: 0,
+    start_time_sec: 28_800,
+    end_time_sec: 36_000,
+    total_distance_km: 50,
+    total_duration_minutes: 120,
+    vehicle_length_cm: 630,
+    vehicle_width_cm: 220,
+    vehicle_height_cm: 210,
+    stops: [],
+    spatial_validation: {
+      is_valid: true,
+      step_states: [pickup, delivery],
+      max_area_cm2: 138_600,
+      max_weight_kg: 1740,
+    },
+  };
+
+  const { rerender } = render(
+    <FloorPackingVisualizer
+      route={sampleRoute}
+      allRoutes={[sampleRoute, { ...sampleRoute, route_id: 'route-2', plate_number: '29D-999.99' }]}
+      onSelectRoute={vi.fn()}
+      stepStates={[pickup, delivery]}
+      isValid={true}
+      selectedStepIndex={1}
+      vehicleDimensions={{ lengthCm: 630, widthCm: 220, heightCm: 210 }}
+      pairedWithMap={false}
+    />,
+  );
+  expect(
+    screen.getAllByLabelText('Chọn tuyến xe xem sơ đồ xếp dỡ').length,
+  ).toBeGreaterThan(0);
+
+  rerender(
+    <FloorPackingVisualizer
+      route={sampleRoute}
+      allRoutes={[sampleRoute, { ...sampleRoute, route_id: 'route-2', plate_number: '29D-999.99' }]}
+      onSelectRoute={vi.fn()}
+      stepStates={[pickup, delivery]}
+      isValid={true}
+      selectedStepIndex={1}
+      vehicleDimensions={{ lengthCm: 630, widthCm: 220, heightCm: 210 }}
+      pairedWithMap={true}
+    />,
+  );
+  expect(screen.queryAllByLabelText('Chọn tuyến xe xem sơ đồ xếp dỡ')).toHaveLength(0);
+
+  const canvasEl = screen.getByTestId('cargo-3d-visualizer');
+  const balanceEl = screen.getByTestId('floor-weight-balance-bar');
+  expect(
+    Boolean(canvasEl.compareDocumentPosition(balanceEl) & Node.DOCUMENT_POSITION_FOLLOWING),
+  ).toBe(true);
+}, 20_000);

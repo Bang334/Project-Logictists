@@ -256,10 +256,10 @@ describe('AutomaticDispatchPage reload restore', () => {
     render(<App><AutomaticDispatchPage /></App>);
 
     await waitFor(() => {
-      expect(screen.getByText('Đã khôi phục từ phiên trước')).toBeInTheDocument();
+      expect(screen.getAllByText(/43C-123\.45/).length).toBeGreaterThan(0);
     });
+    expect(screen.queryByText('Đã khôi phục từ phiên trước')).not.toBeInTheDocument();
     expect(tripsApi.getLatestAutomaticOptimizationJob).toHaveBeenCalledWith('branch-dad');
-    expect(screen.getAllByText(/43C-123\.45/).length).toBeGreaterThan(0);
     expect(getAutoDispatchState('branch-dad')?.optimizationJobId).toBe('job-dad-1');
   });
 
@@ -288,8 +288,9 @@ describe('AutomaticDispatchPage reload restore', () => {
     vi.mocked(tripsApi.getLatestAutomaticOptimizationJob).mockResolvedValue(axiosResponse(job));
     render(<App><AutomaticDispatchPage /></App>);
     await waitFor(() => {
-      expect(screen.getByText('Đã khôi phục từ phiên trước')).toBeInTheDocument();
+      expect(screen.getAllByText(/43C-123\.45/).length).toBeGreaterThan(0);
     });
+    expect(screen.queryByText('Đã khôi phục từ phiên trước')).not.toBeInTheDocument();
   });
 
   it('does not resurrect a job after the user dismissed it', async () => {
@@ -351,5 +352,18 @@ describe('AutomaticDispatchPage reload restore', () => {
       fireEvent.click(resetBtn);
     });
     expect(getAutoDispatchState('branch-dad')).toBeNull();
+  });
+
+  it('displays earliestDepartureAt when a CURRENT_TIME job includes dispatch preparation time', async () => {
+    const job = makeJob({
+      scheduleMode: 'CURRENT_TIME',
+      earliestDepartureAt: '2026-11-21T02:22:00.000Z',
+    });
+    vi.mocked(tripsApi.getLatestAutomaticOptimizationJob).mockResolvedValue(axiosResponse(job));
+
+    render(<App><AutomaticDispatchPage /></App>);
+
+    const tags = await screen.findAllByText(/Xuất phát sớm nhất lúc/);
+    expect(tags.length).toBeGreaterThan(0);
   });
 });

@@ -22,6 +22,7 @@ class WarehouseOperatingWindow(StrictContractModel):
 class LocationPoint(StrictContractModel):
     id: str
     source_location_id: Optional[str] = None
+    warehouse_location_id: Optional[str] = None
     name: str
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
@@ -32,6 +33,7 @@ class LocationPoint(StrictContractModel):
     max_vehicle_payload_kg: Optional[float] = Field(default=None, gt=0)
     max_vehicle_length_cm: Optional[float] = Field(default=None, gt=0)
     has_forklift: Optional[bool] = None
+    allows_hazmat: Optional[bool] = None
     operating_windows: List[WarehouseOperatingWindow] = Field(default_factory=list)
     handling_sec_per_ton: int = Field(default=0, ge=0)
     handling_sec_per_package: int = Field(default=0, ge=0)
@@ -58,7 +60,8 @@ class FleetVehicle(VehicleFloor):
     end_depot: Optional[LocationPoint] = None
     model: Optional[str] = None
     vehicle_type: Optional[str] = None
-    temperature_mode: Literal["DRY", "CHILLED", "FROZEN", "ISOTHERMAL"] = "DRY"
+    temperature_mode: Literal["DRY", "CHILLED", "FROZEN", "ISOTHERMAL", "HAZMAT"] = "DRY"
+    allows_hazmat: bool = False
     has_tail_lift: bool = False
     toll_factor: float = Field(default=1.0, gt=0)
     fuel_consumption_liters_per_100_km: float = Field(
@@ -88,6 +91,7 @@ class DriverOption(StrictContractModel):
     home_location_id: Optional[str] = None
     home_province_code: Optional[str] = None
     strict_home_location: bool = False
+    initial_weekly_driving_sec: int = Field(default=0, ge=0)
 
 
 def can_driver_drive_vehicle(
@@ -132,7 +136,7 @@ class DrivingRestPolicy(StrictContractModel):
     short_rest_duration_sec: int = Field(default=15 * 60, ge=0)
     max_daily_driving_sec: int = Field(default=10 * 3600, gt=0)
     daily_rest_duration_sec: int = Field(default=8 * 3600, ge=0)
-    max_weekly_driving_sec: Optional[int] = Field(default=None, gt=0)
+    max_weekly_driving_sec: Optional[int] = Field(default=48 * 3600, gt=0)
     min_inter_trip_rest_sec: int = Field(default=0, ge=0)
     overnight_allowance_vnd: int = Field(default=0, ge=0)
     rest_allowance_during_service: bool = True
@@ -169,6 +173,10 @@ class CostPolicy(StrictContractModel):
     late_delivery_penalty_value: float = Field(default=0, ge=0)
     max_routes_per_day: Optional[int] = Field(default=None, ge=1, le=500)
     driving_rest_policy: Optional[DrivingRestPolicy] = None
+    weight_balance_penalty_vnd_per_percent: int = Field(default=0, ge=0)
+    enforce_weight_balance: bool = False
+    max_lateral_imbalance_percent: Optional[float] = Field(default=None, gt=0, le=100)
+    max_longitudinal_imbalance_percent: Optional[float] = Field(default=None, gt=0, le=100)
 
     @model_validator(mode="after")
     def validate_late_delivery_penalty(self):
@@ -196,9 +204,10 @@ class CargoItem(StrictContractModel):
     allow_upper_tier: bool = True
     no_top_load_requested: bool = False
     max_top_load_g: Optional[int] = Field(default=None, gt=0)
-    required_temperature: Optional[Literal["DRY", "CHILLED", "FROZEN"]] = None
+    required_temperature: Optional[Literal["DRY", "CHILLED", "FROZEN", "HAZMAT"]] = None
     cargo_group: Optional[str] = None
     incompatible_cargo_groups: List[str] = Field(default_factory=list)
+    is_hazmat: bool = False
     requires_lift_equipment: bool = False
 
     @model_validator(mode="after")
@@ -468,12 +477,16 @@ class FleetOptimizationRequest(StrictContractModel):
             known_location_keys.add(vehicle.depot.id)
             if vehicle.depot.source_location_id:
                 known_location_keys.add(vehicle.depot.source_location_id)
+            if vehicle.depot.warehouse_location_id:
+                known_location_keys.add(vehicle.depot.warehouse_location_id)
             known_coords.add((round(vehicle.depot.latitude, 6), round(vehicle.depot.longitude, 6)))
         for order in self.orders:
             for loc in (order.pickup_location, order.delivery_location):
                 known_location_keys.add(loc.id)
                 if loc.source_location_id:
                     known_location_keys.add(loc.source_location_id)
+                if loc.warehouse_location_id:
+                    known_location_keys.add(loc.warehouse_location_id)
                 known_coords.add((round(loc.latitude, 6), round(loc.longitude, 6)))
 
         extra_end_keys: List[str] = []
@@ -481,11 +494,15 @@ class FleetOptimizationRequest(StrictContractModel):
             end_depot = vehicle.end_depot
             if end_depot is None:
                 continue
-            key = end_depot.source_location_id or end_depot.id
+            key = end_depot.warehouse_location_id or end_depot.source_location_id or end_depot.id
+            end_keys = {
+                k
+                for k in (end_depot.id, end_depot.source_location_id, end_depot.warehouse_location_id)
+                if k
+            }
             coord = (round(end_depot.latitude, 6), round(end_depot.longitude, 6))
             if (
-                end_depot.id not in known_location_keys
-                and key not in known_location_keys
+                not (end_keys & known_location_keys)
                 and coord not in known_coords
                 and key not in extra_end_keys
             ):
@@ -557,6 +574,7 @@ class RouteCostBreakdown(StrictContractModel):
     driver_trip_pay_vnd: int
     toll_cost_vnd: int = 0
     overnight_allowance_vnd: int = 0
+    weight_balance_penalty_vnd: int = 0
     total_cost_vnd: int
 
 
@@ -578,6 +596,7 @@ class OptimizedRoute(StrictContractModel):
     return_travel_time_sec: int = Field(default=0, ge=0)
     return_waiting_time_sec: int = Field(default=0, ge=0)
     mandatory_rest_sec: int = Field(default=0, ge=0)
+    total_driving_sec: int = Field(default=0, ge=0)
     rest_breaks: List[RestBreakRecord] = Field(default_factory=list)
     province_hops: List[str] = Field(default_factory=list)
     stops: List[ScheduledStop]
@@ -684,3 +703,77 @@ class OptimizationResponse(StrictContractModel):
     unassigned_order_ids: List[str] = Field(default_factory=list)
     spatial_validation: Optional[SpatialValidationResult] = None
     diagnostics: List[str] = Field(default_factory=list)
+
+
+class PlacedOnboardItem(StrictContractModel):
+    item: CargoItem
+    retained: bool = False
+    unload_stop_id: Optional[str] = None
+    x: Optional[float] = Field(default=None, ge=0)
+    y: Optional[float] = Field(default=None, ge=0)
+    z: Optional[float] = Field(default=None, ge=0)
+    placed_length_cm: Optional[float] = Field(default=None, gt=0)
+    placed_width_cm: Optional[float] = Field(default=None, gt=0)
+    placed_height_cm: Optional[float] = Field(default=None, gt=0)
+    support_item_id: Optional[str] = None
+
+
+class RemainingRouteStop(StrictContractModel):
+    stop_id: str
+    sequence: int = Field(ge=1)
+    stop_type: Literal["PICKUP", "DELIVERY"]
+    order_id: str
+    order_number: Optional[str] = None
+    item_ids: List[str] = Field(min_length=1)
+    items_to_load: List[CargoItem] = Field(default_factory=list)
+    estimated_arrival_epoch_sec: Optional[int] = Field(default=None, ge=0)
+    window_end_epoch_sec: Optional[int] = Field(default=None, ge=0)
+    service_duration_sec: int = Field(default=900, ge=0)
+
+
+class InProgressEvaluationRequest(StrictContractModel):
+    trip_id: str
+    vehicle: VehicleFloor
+    demo_stacking: Optional[DemoStackingPolicy] = Field(
+        default_factory=default_stacking_policy
+    )
+    shift_end_epoch_sec: Optional[int] = Field(default=None, ge=0)
+    return_to_hub_travel_sec: int = Field(default=0, ge=0)
+    onboard_items: List[PlacedOnboardItem] = Field(default_factory=list)
+    remaining_stops: List[RemainingRouteStop] = Field(default_factory=list)
+
+
+class EvaluatedStopDecision(StrictContractModel):
+    stop_id: str
+    sequence: int
+    stop_type: Literal["PICKUP", "DELIVERY"]
+    order_id: str
+    decision: Literal[
+        "KEEP_DELIVER",
+        "KEEP_PICKUP",
+        "RETURN_TO_HUB",
+        "DETACH_TO_FREE_VEHICLE",
+    ]
+    reason_code: Optional[
+        Literal[
+            "CLEAR",
+            "BLOCKED_BY_RETAINED_CARGO",
+            "OUTSIDE_SHIFT_WINDOW",
+            "INSUFFICIENT_CAPACITY_WITH_RETAINED_CARGO",
+        ]
+    ] = None
+    blocker_item_ids: List[str] = Field(default_factory=list)
+    unload_sequence: List[str] = Field(default_factory=list)
+    reason_message: Optional[str] = None
+
+
+class InProgressEvaluationResponse(StrictContractModel):
+    trip_id: str
+    used_exact_placements: bool
+    stop_decisions: List[EvaluatedStopDecision] = Field(default_factory=list)
+    keep_delivery_stop_ids: List[str] = Field(default_factory=list)
+    return_to_hub_stop_ids: List[str] = Field(default_factory=list)
+    return_to_hub_item_ids: List[str] = Field(default_factory=list)
+    detached_order_ids: List[str] = Field(default_factory=list)
+    diagnostics: List[str] = Field(default_factory=list)
+

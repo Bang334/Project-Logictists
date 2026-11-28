@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Button, Card, DatePicker, Empty, Form, Input, InputNumber, List, Modal, Pagination, Space, Spin, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Checkbox, DatePicker, Empty, Form, Input, InputNumber, List, Modal, Pagination, Space, Spin, Tag, Typography } from 'antd';
 import dayjs, { type Dayjs } from 'dayjs';
 import { apiClient, apiErrorMessage } from '../api/client';
 import { getRealtimeSocket } from '../api/realtime';
@@ -7,6 +7,7 @@ import { getRealtimeSocket } from '../api/realtime';
 export interface DeliveryAppointment {
   id: string; batchId: string; orderId: string; version: number; status: string;
   windowStart: string; windowEnd: string; expiresAt: string;
+  recipientPhone?: string | null;
   requestedStart?: string | null; requestedEnd?: string | null; responseNote?: string | null;
   order: { orderNumber: string };
 }
@@ -90,7 +91,19 @@ export const DispatcherDeliveryPlanning: React.FC<{ branchId: string; jobId?: st
   const [batches, setBatches] = useState<DeliveryBatch[]>([]);
   const [loading, setLoading] = useState(false), [loadError, setLoadError] = useState(''), [error, setError] = useState('');
   const [dialog, setDialog] = useState<'propose' | 'responses' | null>(null), [busy, setBusy] = useState(false);
-  const [form] = Form.useForm<{ windowMinutes: number; expiresAt: Dayjs }>();
+  const [form] = Form.useForm<{ windowMinutes: number; expiresAt: Dayjs; recipientWeb?: boolean }>();
+  const [recipientLink, setRecipientLink] = useState<{ url: string; phone: string }>();
+  const openRecipientLink = async (batchId: string, id: string) => {
+    setError('');
+    try {
+      const { data } = await apiClient.get<{ url: string; phone: string }>(
+        `/delivery-planning/batches/${batchId}/appointments/${id}/recipient-link`,
+      );
+      setRecipientLink(data);
+    } catch (failure) {
+      setError(apiErrorMessage(failure));
+    }
+  };
   const command = useRef<{ fingerprint: string; key: string }>();
   const optimizeKeys = useRef(new Map<string, string>());
   const refreshSequence = useRef(0);
@@ -112,14 +125,22 @@ export const DispatcherDeliveryPlanning: React.FC<{ branchId: string; jobId?: st
   const pendingCount = activeAppointments.filter(row => appointmentStatus(row) === 'PENDING').length;
   const changeCount = activeAppointments.filter(row => row.status === 'CHANGE_REQUESTED').length;
   const hasResponsesToTrack = confirmedCount + pendingCount + changeCount > 0;
+  const showResponsesTrigger = activeBatches.length > 0 || hasResponsesToTrack || Boolean(loadError);
   const showProposal = canPropose && !!jobId && !batches.some(
     batch => batch.finalOptimizationJobId === jobId && (batch.status !== 'OFFERING' || !batch.appointments.some(row => row.status === 'CHANGE_REQUESTED')),
   );
   const openDialog = (next: 'propose' | 'responses') => { setError(''); setDialog(next); };
   const closeDialog = () => { if (!busy) setDialog(null); };
-  const propose = async (values: { windowMinutes: number; expiresAt: Dayjs }) => {
+  const propose = async (values: { windowMinutes: number; expiresAt: Dayjs; recipientWeb?: boolean }) => {
     if (!showProposal || !jobId || busy) return;
-    const payload = { jobId, candidateNumber, windowMinutes: values.windowMinutes, expiresAt: values.expiresAt.toISOString() };
+    const recipientWeb = values.recipientWeb ?? true;
+    const payload = {
+      jobId,
+      candidateNumber,
+      windowMinutes: values.windowMinutes,
+      expiresAt: values.expiresAt.toISOString(),
+      ...(recipientWeb ? { recipientWeb: true } : {}),
+    };
     const fingerprint = JSON.stringify(payload);
     if (command.current?.fingerprint !== fingerprint) command.current = { fingerprint, key: crypto.randomUUID() };
     setBusy(true); setError('');
@@ -155,7 +176,7 @@ export const DispatcherDeliveryPlanning: React.FC<{ branchId: string; jobId?: st
   };
   return <>
     {showProposal && <Button size="large" disabled={busy} onClick={() => openDialog('propose')}>Gửi khung giờ cho khách</Button>}
-    {(hasResponsesToTrack || loadError) && <Space wrap>
+    {showResponsesTrigger && <Space wrap>
       {hasResponsesToTrack && <Typography.Text type="secondary">
         {confirmedCount} đơn đã xác nhận · {pendingCount} đơn đang chờ{changeCount > 0 && ` · ${changeCount} yêu cầu đổi khung`}
       </Typography.Text>}
@@ -184,16 +205,31 @@ export const DispatcherDeliveryPlanning: React.FC<{ branchId: string; jobId?: st
             {row.order.orderNumber}: {dateTime(row.windowStart)} – {dateTime(row.windowEnd)} <Tag>{labels[appointmentStatus(row)] ?? row.status}</Tag>
             {row.requestedStart && row.requestedEnd && <span>Muốn đổi: {dateTime(row.requestedStart)} – {dateTime(row.requestedEnd)}</span>}
             {row.responseNote && <span> · {row.responseNote}</span>}
+            {row.recipientPhone && appointmentStatus(row) === 'PENDING' && batch.status === 'OFFERING' && (
+              <Button type="link" size="small" onClick={() => void openRecipientLink(batch.id, row.id)}>
+                Lấy liên kết
+              </Button>
+            )}
           </div>)}
         </Space></List.Item>;
       }} />
+    </Modal>
+    <Modal title="Liên kết gửi người nhận" open={Boolean(recipientLink)} onCancel={() => setRecipientLink(undefined)} footer={null}>
+      <Typography.Paragraph>Số người nhận {recipientLink?.phone}</Typography.Paragraph>
+      <Input value={recipientLink?.url} readOnly onFocus={event => event.target.select()} />
+      <Typography.Paragraph style={{ marginTop: 8 }} copyable={{ text: recipientLink?.url }}>
+        Sao chép liên kết hẹn giao
+      </Typography.Paragraph>
     </Modal>
     <Modal title="Gửi khung giờ cho khách" open={dialog === 'propose'} onCancel={closeDialog} onOk={() => form.submit()}
       okText="Gửi đề xuất" okButtonProps={{ disabled: !showProposal }} confirmLoading={busy}>
       {error && <Alert type="error" showIcon message={error} />}
       <Typography.Paragraph>Phương án #{candidateNumber} dùng để đề xuất khung giờ cho các đơn giao trọn trong ca ngày tiếp theo. Các đơn giao ngày sau tiếp tục chờ.</Typography.Paragraph>
       <Typography.Paragraph>Chọn độ rộng tối đa và hạn phản hồi. Hệ thống giữ xe và tài xế cho đợt hẹn. Khi đã nhận đủ phản hồi hoặc hết hạn, chỉ các đơn đã xác nhận được tối ưu chốt theo khung đã hẹn.</Typography.Paragraph>
-      <Form form={form} layout="vertical" onFinish={values => void propose(values)}>
+      <Form form={form} layout="vertical" initialValues={{ recipientWeb: true }} onFinish={values => void propose(values)}>
+        <Form.Item name="recipientWeb" valuePropName="checked">
+          <Checkbox>Gửi liên kết qua SĐT người nhận (SMS / trang công khai, không cần tài khoản app)</Checkbox>
+        </Form.Item>
         <Form.Item name="windowMinutes" label="Độ rộng tối đa mỗi khung (phút)" rules={[{ required: true }]}><InputNumber min={1} max={1440} precision={0} /></Form.Item>
         <Form.Item name="expiresAt" label="Hạn khách phản hồi (trước khung giao sớm nhất)" rules={[{ required: true }]}><DatePicker showTime format="DD/MM/YYYY HH:mm" /></Form.Item>
       </Form>

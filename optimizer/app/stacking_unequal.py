@@ -25,15 +25,19 @@ from .models import (
     SpatialValidationResult,
     StopAction,
     VehicleFloor,
+    WeightBalanceMetrics,
 )
 from .packing_rules import (
     build_floor_balance_context,
     build_weight_balance_metrics,
+    check_placed_items_weight_balance,
     exceeds_top_load_limit,
     is_floor_rotation_locked,
     resolve_can_rotate,
+    resolve_weight_balance_thresholds,
     score_candidate_balance_and_fragility,
     score_candidate_balance_and_fragility_ctx,
+    weight_balance_exceeds_limit,
 )
 from .spatial_validator import SpatialValidator
 
@@ -896,7 +900,9 @@ def _fast_cycle_cache_key(
     policy: DemoStackingPolicy,
     allow_layout_search: bool,
     has_fallback: bool,
+    cost_policy: Any = None,
 ) -> Tuple[Any, ...]:
+    enforce_wb, max_lat_wb, max_lon_wb = resolve_weight_balance_thresholds(policy, cost_policy)
     veh_key = (
         round(float(vehicle.length_cm), 4),
         round(float(vehicle.width_cm), 4),
@@ -910,6 +916,9 @@ def _fast_cycle_cache_key(
         float(policy.lift_clearance_cm),
         str(policy.owner_mode),
         int(getattr(policy, "max_top_load_percent", 30)),
+        enforce_wb,
+        max_lat_wb,
+        max_lon_wb,
     )
     stops_key = tuple(
         (
@@ -948,26 +957,74 @@ def fast_validate_unequal_stacked_route(
     *,
     allow_layout_search: bool = True,
     validate_fallback: Optional[Callable[..., SpatialValidationResult]] = None,
+    cost_policy: Any = None,
 ) -> Tuple[bool, str]:
     """Fast O(N*K) LIFO + unequal-footprint tree stacking pre-check matching 3D rules."""
+    ok, msg, _ = _fast_validate_unequal_stacked_route_impl(
+        vehicle,
+        stops,
+        cargo_by_id,
+        policy,
+        allow_layout_search=allow_layout_search,
+        validate_fallback=validate_fallback,
+        cost_policy=cost_policy,
+        collect_balances=False,
+    )
+    return ok, msg
+
+
+def fast_validate_unequal_stacked_route_with_balances(
+    vehicle: Any,
+    stops: Sequence[Any],
+    cargo_by_id: Mapping[str, Any],
+    policy: DemoStackingPolicy,
+    *,
+    allow_layout_search: bool = True,
+    validate_fallback: Optional[Callable[..., SpatialValidationResult]] = None,
+    cost_policy: Any = None,
+) -> Tuple[bool, str, List[WeightBalanceMetrics]]:
+    """Fast LIFO + unequal-footprint 3D validation also returning per-stop WeightBalanceMetrics."""
+    return _fast_validate_unequal_stacked_route_impl(
+        vehicle,
+        stops,
+        cargo_by_id,
+        policy,
+        allow_layout_search=allow_layout_search,
+        validate_fallback=validate_fallback,
+        cost_policy=cost_policy,
+        collect_balances=True,
+    )
+
+
+def _fast_validate_unequal_stacked_route_impl(
+    vehicle: Any,
+    stops: Sequence[Any],
+    cargo_by_id: Mapping[str, Any],
+    policy: DemoStackingPolicy,
+    *,
+    allow_layout_search: bool = True,
+    validate_fallback: Optional[Callable[..., SpatialValidationResult]] = None,
+    cost_policy: Any = None,
+    collect_balances: bool = False,
+) -> Tuple[bool, str, List[WeightBalanceMetrics]]:
     if not stops:
-        return True, "Hợp lệ"
+        return True, "Hợp lệ", []
     pickup_stop: Dict[str, int] = {}
     delivery_stop: Dict[str, int] = {}
     for idx, stop in enumerate(stops):
         for iid in stop.items_loaded:
             if iid in pickup_stop:
-                return False, "Kiện bị bốc lên nhiều lần"
+                return False, "Kiện bị bốc lên nhiều lần", []
             pickup_stop[iid] = idx
         for iid in stop.items_unloaded:
             if iid in delivery_stop:
-                return False, "Kiện bị dỡ nhiều lần"
+                return False, "Kiện bị dỡ nhiều lần", []
             delivery_stop[iid] = idx
     if pickup_stop.keys() != delivery_stop.keys():
-        return False, "Thiếu cặp nhận/giao kiện"
+        return False, "Thiếu cặp nhận/giao kiện", []
     for iid in pickup_stop:
         if delivery_stop[iid] <= pickup_stop[iid] or iid not in cargo_by_id:
-            return False, "Thứ tự nhận/giao kiện không hợp lệ"
+            return False, "Thứ tự nhận/giao kiện không hợp lệ", []
 
     # Empty-to-empty cycles are physically independent; validate & memoize each cycle once.
     cycle_slices: List[Sequence[Any]] = []
@@ -984,27 +1041,57 @@ def fast_validate_unequal_stacked_route(
     cycle_slices.append(stops[start_idx:])
 
     if len(cycle_slices) > 1:
+        all_balances: List[WeightBalanceMetrics] = []
         for cycle in cycle_slices:
-            ok, msg = _fast_validate_unequal_cycle(
-                vehicle,
-                cycle,
-                cargo_by_id,
-                policy,
-                allow_layout_search=allow_layout_search,
-                validate_fallback=validate_fallback,
-            )
+            if collect_balances:
+                ok, msg, cycle_wb = _fast_validate_unequal_cycle_uncached(
+                    vehicle,
+                    cycle,
+                    cargo_by_id,
+                    policy,
+                    allow_layout_search=allow_layout_search,
+                    validate_fallback=validate_fallback,
+                    cost_policy=cost_policy,
+                    collect_balances=True,
+                )
+            else:
+                ok, msg = _fast_validate_unequal_cycle(
+                    vehicle,
+                    cycle,
+                    cargo_by_id,
+                    policy,
+                    allow_layout_search=allow_layout_search,
+                    validate_fallback=validate_fallback,
+                    cost_policy=cost_policy,
+                )
+                cycle_wb = []
             if not ok:
-                return False, msg
-        return True, "Hợp lệ"
+                return False, msg, []
+            all_balances.extend(cycle_wb)
+        return True, "Hợp lệ", all_balances
 
-    return _fast_validate_unequal_cycle(
+    if collect_balances:
+        return _fast_validate_unequal_cycle_uncached(
+            vehicle,
+            stops,
+            cargo_by_id,
+            policy,
+            allow_layout_search=allow_layout_search,
+            validate_fallback=validate_fallback,
+            cost_policy=cost_policy,
+            collect_balances=True,
+        )
+
+    ok, msg = _fast_validate_unequal_cycle(
         vehicle,
         stops,
         cargo_by_id,
         policy,
         allow_layout_search=allow_layout_search,
         validate_fallback=validate_fallback,
+        cost_policy=cost_policy,
     )
+    return ok, msg, []
 
 
 def _fast_validate_unequal_cycle(
@@ -1015,6 +1102,7 @@ def _fast_validate_unequal_cycle(
     *,
     allow_layout_search: bool = True,
     validate_fallback: Optional[Callable[..., SpatialValidationResult]] = None,
+    cost_policy: Any = None,
 ) -> Tuple[bool, str]:
     key = _fast_cycle_cache_key(
         vehicle,
@@ -1023,20 +1111,24 @@ def _fast_validate_unequal_cycle(
         policy,
         allow_layout_search,
         validate_fallback is not None,
+        cost_policy,
     )
     cached = _FAST_CYCLE_CACHE.get(key)
     if cached is not None:
         _FAST_CYCLE_CACHE.move_to_end(key)
         return cached
 
-    res = _fast_validate_unequal_cycle_uncached(
+    ok, msg, _ = _fast_validate_unequal_cycle_uncached(
         vehicle,
         stops,
         cargo_by_id,
         policy,
         allow_layout_search=allow_layout_search,
         validate_fallback=validate_fallback,
+        cost_policy=cost_policy,
+        collect_balances=False,
     )
+    res = (ok, msg)
     if res[0] or not (allow_layout_search and validate_fallback is not None):
         _FAST_CYCLE_CACHE[key] = res
         if len(_FAST_CYCLE_CACHE) > _FAST_CYCLE_CACHE_MAX:
@@ -1054,6 +1146,9 @@ def _solve_cycle_greedy(
     delivery_stop: Mapping[str, int],
     collect_snapshots: bool = False,
     has_time: Optional[Callable[[], bool]] = None,
+    enforce_weight_balance: bool = False,
+    max_lat_imbalance_percent: Optional[float] = None,
+    max_lon_imbalance_percent: Optional[float] = None,
 ) -> Tuple[bool, str, Optional[Tuple[List[Tuple[int, Tuple[_PlacedNode, ...], Tuple[str, ...]]], float, float]]]:
     bed_l = float(vehicle.length_cm)
     bed_w = float(vehicle.width_cm)
@@ -1446,12 +1541,9 @@ def _solve_cycle_greedy(
             if stop.stop_type not in ("PICKUP", "DELIVERY"):
                 return False, f"Loại điểm dừng không hợp lệ: {stop.stop_type}", None
 
-            if collect_snapshots:
-                cur_w = float(onboard_weight)
-                floor_area = sum(e["l"] * e["w"] for e in onboard.values() if e["tier"] == 1)
-                max_weight = max(max_weight, cur_w)
-                max_area = max(max_area, floor_area)
-                nodes = tuple(
+            nodes_for_step: Optional[Tuple[_PlacedNode, ...]] = None
+            if enforce_weight_balance or collect_snapshots:
+                nodes_for_step = tuple(
                     _PlacedNode(
                         placed=PlacedItem(
                             item_id=e["id"],
@@ -1474,7 +1566,28 @@ def _solve_cycle_greedy(
                     )
                     for e in onboard.values()
                 )
-                snapshots.append((stop_index, nodes, tuple(unload_seq)))
+            if enforce_weight_balance and nodes_for_step:
+                violated = check_placed_items_weight_balance(
+                    (n.placed for n in nodes_for_step),
+                    bed_l,
+                    bed_w,
+                    max_lat_limit=max_lat_imbalance_percent,
+                    max_lon_limit=max_lon_imbalance_percent,
+                )
+                if violated is not None:
+                    lat_pct, lon_pct = violated
+                    return (
+                        False,
+                        f"WEIGHT_BALANCE_EXCEEDED: Phân bổ tải trọng lệch tâm (ngang {lat_pct:.1f}%, dọc {lon_pct:.1f}%).",
+                        None,
+                    )
+
+            if collect_snapshots:
+                cur_w = float(onboard_weight)
+                floor_area = sum(e["l"] * e["w"] for e in onboard.values() if e["tier"] == 1)
+                max_weight = max(max_weight, cur_w)
+                max_area = max(max_area, floor_area)
+                snapshots.append((stop_index, nodes_for_step or (), tuple(unload_seq)))
 
         if onboard:
             return False, "Còn hàng chưa dỡ", None
@@ -1505,25 +1618,28 @@ def _fast_validate_unequal_cycle_uncached(
     *,
     allow_layout_search: bool = True,
     validate_fallback: Optional[Callable[..., SpatialValidationResult]] = None,
-) -> Tuple[bool, str]:
+    cost_policy: Any = None,
+    collect_balances: bool = False,
+) -> Tuple[bool, str, List[WeightBalanceMetrics]]:
+    enforce_wb, max_lat_wb, max_lon_wb = resolve_weight_balance_thresholds(policy, cost_policy)
     pickup_stop: Dict[str, int] = {}
     delivery_stop: Dict[str, int] = {}
     for idx, stop in enumerate(stops):
         for iid in stop.items_loaded:
             if iid in pickup_stop:
-                return False, "Kiện bị bốc lên nhiều lần"
+                return False, "Kiện bị bốc lên nhiều lần", []
             pickup_stop[iid] = idx
         for iid in stop.items_unloaded:
             if iid in delivery_stop:
-                return False, "Kiện bị dỡ nhiều lần"
+                return False, "Kiện bị dỡ nhiều lần", []
             delivery_stop[iid] = idx
     if pickup_stop.keys() != delivery_stop.keys():
-        return False, "Thiếu cặp nhận/giao kiện"
+        return False, "Thiếu cặp nhận/giao kiện", []
     for iid in pickup_stop:
         if delivery_stop[iid] <= pickup_stop[iid] or iid not in cargo_by_id:
-            return False, "Thứ tự nhận/giao kiện không hợp lệ"
+            return False, "Thứ tự nhận/giao kiện không hợp lệ", []
 
-    def _try_fallback_search() -> Optional[Tuple[bool, str]]:
+    def _try_fallback_search() -> Optional[Tuple[bool, str, List[WeightBalanceMetrics]]]:
         if not (allow_layout_search and validate_fallback is not None and len(pickup_stop) <= 12 and len(stops) <= 24):
             return None
         actions = [
@@ -1555,22 +1671,43 @@ def _fast_validate_unequal_cycle_uncached(
             for i, s in enumerate(stops)
         ]
         res = validate_fallback(policy, vehicle, actions, max_search_nodes=300, max_time_seconds=0.02)
-        if res.is_valid:
-            return True, "Hợp lệ sau tìm kiếm xếp chồng"
-        return None
+        if not res.is_valid:
+            return None
+        if enforce_wb:
+            for st in res.step_states:
+                if weight_balance_exceeds_limit(st.weight_balance, max_lat_wb, max_lon_wb) is not None:
+                    return None
+        step_wbs = (
+            [st.weight_balance for st in res.step_states if st.weight_balance is not None]
+            if collect_balances
+            else []
+        )
+        return True, "Hợp lệ sau tìm kiếm xếp chồng", step_wbs
 
-    ok, msg, _ = _solve_cycle_greedy(
+    ok, msg, greedy_meta = _solve_cycle_greedy(
         vehicle=vehicle,
         stops=stops,
         cargo_by_id=cargo_by_id,
         policy=policy,
         pickup_stop=pickup_stop,
         delivery_stop=delivery_stop,
-        collect_snapshots=False,
+        collect_snapshots=collect_balances,
+        enforce_weight_balance=enforce_wb,
+        max_lat_imbalance_percent=max_lat_wb,
+        max_lon_imbalance_percent=max_lon_wb,
     )
     if ok:
-        return True, msg
+        step_wbs: List[WeightBalanceMetrics] = []
+        if collect_balances and greedy_meta is not None:
+            snaps, _, _ = greedy_meta
+            bed_l = float(vehicle.length_cm)
+            bed_w = float(vehicle.width_cm)
+            step_wbs = [
+                build_weight_balance_metrics((n.placed for n in nodes), bed_l, bed_w)
+                for _, nodes, _ in snaps
+            ]
+        return True, msg, step_wbs
     fb = _try_fallback_search()
     if fb is not None:
         return fb
-    return False, msg
+    return False, msg, []

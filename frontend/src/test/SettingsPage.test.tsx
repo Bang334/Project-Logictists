@@ -106,6 +106,7 @@ function makeCompanyResponse(overrides: Partial<ScopedSettingsResponse['company'
       maxTimeSeconds: 120,
       hybridSeedCount: 0,
       earlyStopPatience: 30,
+      dispatchPreparationMinutes: 20,
       unassignedOrderPenaltyVnd: 1_000_000_000,
       maxRoutesPerDay: null,
       demoAllowOverride: true,
@@ -232,6 +233,9 @@ it('cho phép Admin lưu cấu hình xếp chồng và số seed toàn công ty'
   fireEvent.change(screen.getByLabelText('Ngưỡng dừng sớm'), {
     target: { value: '35' },
   });
+  fireEvent.change(screen.getByLabelText('Thời gian chuẩn bị trước khi xuất phát'), {
+    target: { value: '30' },
+  });
 
   await waitFor(() => expect(screen.getByText('Lưu thay đổi').closest('button')).not.toBeDisabled());
   fireEvent.click(screen.getByText('Lưu thay đổi'));
@@ -241,7 +245,12 @@ it('cho phép Admin lưu cấu hình xếp chồng và số seed toàn công ty'
       expect.objectContaining({
         expectedVersion: 1,
         stacking: expect.objectContaining({ enabled: true, maxTopLoadPercent: 45 }),
-        optimization: expect.objectContaining({ hybridSeedCount: 20, maxTimeSeconds: 1000, earlyStopPatience: 35 }),
+        optimization: expect.objectContaining({
+          hybridSeedCount: 20,
+          maxTimeSeconds: 1000,
+          earlyStopPatience: 35,
+          dispatchPreparationMinutes: 30,
+        }),
       }),
     ),
   );

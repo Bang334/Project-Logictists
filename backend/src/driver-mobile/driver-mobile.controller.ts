@@ -14,14 +14,46 @@ import { AuthRequest, RequirePermission } from "../auth/access";
 import {
   AssignmentQuery,
   AssignmentResponseDto,
-  FailedDeliveryDto,
   RejectAssignmentDto,
 } from "./driver-mobile.dto";
+import { DriverContinuationService } from "./driver-continuation.service";
+import {
+  ConfirmTaskDto,
+  EnhancedFailedDeliveryDto,
+  ReturnToHubDto,
+} from "./driver-execution.dto";
 import { DriverMobileService } from "./driver-mobile.service";
 
 @Controller("driver")
 export class DriverMobileController {
-  constructor(private readonly service: DriverMobileService) {}
+  constructor(
+    private readonly service: DriverMobileService,
+    private readonly continuation: DriverContinuationService,
+  ) {}
+  @Post("assignments/:id/tasks/:taskId/pickup-confirm")
+  @HttpCode(200)
+  @RequirePermission("driver.assignments.respond")
+  confirmPickup(
+    @Req() req: AuthRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("taskId", ParseUUIDPipe) taskId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() dto: ConfirmTaskDto,
+  ) {
+    return this.continuation.confirmPickupTask(req.user, id, taskId, key, dto);
+  }
+  @Post("assignments/:id/tasks/:taskId/delivery-confirm")
+  @HttpCode(200)
+  @RequirePermission("driver.assignments.respond")
+  confirmDelivery(
+    @Req() req: AuthRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("taskId", ParseUUIDPipe) taskId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() dto: ConfirmTaskDto,
+  ) {
+    return this.continuation.confirmDeliveryTask(req.user, id, taskId, key, dto);
+  }
   @Post("assignments/:id/tasks/:taskId/delivery-failure")
   @HttpCode(200)
   @RequirePermission("driver.assignments.respond")
@@ -30,9 +62,21 @@ export class DriverMobileController {
     @Param("id", ParseUUIDPipe) id: string,
     @Param("taskId", ParseUUIDPipe) taskId: string,
     @Headers("idempotency-key") key: string | undefined,
-    @Body() dto: FailedDeliveryDto,
+    @Body() dto: EnhancedFailedDeliveryDto,
   ) {
-    return this.service.reportDeliveryFailure(req.user, id, taskId, key, dto);
+    return this.continuation.reportDeliveryFailure(req.user, id, taskId, key, dto);
+  }
+  @Post("assignments/:id/stops/:stopId/return-to-hub")
+  @HttpCode(200)
+  @RequirePermission("driver.assignments.respond")
+  returnToHub(
+    @Req() req: AuthRequest,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("stopId", ParseUUIDPipe) stopId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() dto: ReturnToHubDto,
+  ) {
+    return this.continuation.confirmReturnToHub(req.user, id, stopId, key, dto);
   }
   @Get("me")
   @RequirePermission("driver.profile.read")

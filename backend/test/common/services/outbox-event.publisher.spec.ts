@@ -48,4 +48,58 @@ describe('OutboxEventPublisher', () => {
       expect.objectContaining({ jobId: 'job-1', attempts: 3 }),
     );
   });
+
+  it('gửi SMS hẹn giao và SMS chốt lịch qua webhook kèm Idempotency-Key, bỏ qua đơn hết hạn', async () => {
+    const row = {
+      id: 'f24d4850-3c27-4a4c-9294-17c346af84a5',
+      version: 1,
+      status: 'PENDING',
+      recipientPhone: '+84900000000',
+      batch: { status: 'OFFERING' },
+      order: { orderNumber: 'ORDER-SMS-1' },
+      expiresAt: new Date(Date.now() + 60_000),
+      windowStart: new Date('2031-01-09T02:00:00Z'),
+      windowEnd: new Date('2031-01-09T04:00:00Z'),
+    };
+    const prisma = { deliveryAppointment: { findUnique: jest.fn().mockResolvedValue(row) } };
+    const smsPublisher = new OutboxEventPublisher(gateway, optimizationQueue as never, prisma as never);
+    const send = jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 204 }));
+    const prevEnv = { ...process.env };
+    process.env.DELIVERY_SMS_WEBHOOK_URL = 'https://notifications.example.com/sms';
+    process.env.DELIVERY_SMS_WEBHOOK_TOKEN = 'test-sms-token';
+    process.env.DELIVERY_PUBLIC_WEB_URL = 'https://tms.example.com';
+    process.env.DELIVERY_LINK_SECRET = 'test-link-secret-at-least-32-characters';
+    try {
+      const event = { ...baseEvent, aggregateId: row.id, eventType: 'DELIVERY_SMS_OFFERED', payload: {} };
+      await smsPublisher.publish(event);
+      await smsPublisher.publish(event);
+      expect(send).toHaveBeenCalledTimes(2);
+      const [url, request] = send.mock.calls[0];
+      expect(url).toBe('https://notifications.example.com/sms');
+      expect(request?.headers).toMatchObject({
+        Authorization: 'Bearer test-sms-token',
+        'Idempotency-Key': event.eventId,
+      });
+      expect(JSON.parse(String(request?.body))).toMatchObject({
+        to: '+84900000000',
+        message: expect.stringContaining('https://tms.example.com/hen-giao#'),
+      });
+      expect(send.mock.calls[1][1]?.body).toBe(request?.body);
+
+      row.expiresAt = new Date(0);
+      await smsPublisher.publish(event);
+      expect(send).toHaveBeenCalledTimes(2);
+
+      row.status = 'SCHEDULED';
+      await smsPublisher.publish({ ...event, eventType: 'DELIVERY_SMS_SCHEDULED' });
+      expect(send).toHaveBeenCalledTimes(3);
+      expect(JSON.parse(String(send.mock.calls[2][1]?.body))).toMatchObject({
+        to: '+84900000000',
+        message: expect.stringContaining('đã chốt lịch giao'),
+      });
+    } finally {
+      process.env = prevEnv;
+      send.mockRestore();
+    }
+  });
 });

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layout, Button, Space, Typography, Tag, Select, Grid } from 'antd';
+import { Layout, Button, Typography, Tag, Grid, Divider } from 'antd';
 import { CarOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import { useAuth } from '../context/AuthContext';
 
@@ -8,7 +8,8 @@ const { Text } = Typography;
 
 const Navbar: React.FC = () => {
   const screens = Grid.useBreakpoint();
-  const { user, logout, branchId, setBranchId } = useAuth();
+  const { user, logout } = useAuth();
+  const roleLabel = [...new Set(user?.grants.map((g) => g.role))].join(', ') || user?.role;
 
   return (
     <Header
@@ -17,19 +18,19 @@ const Navbar: React.FC = () => {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '0 20px',
-        flexWrap: 'wrap',
-        gap: 12,
+        padding: '0 24px 0 15px',
+        gap: 16,
         background: '#ffffff',
         borderBottom: '1px solid #e2e8f0',
-        boxShadow: '0 2px 8px rgba(15, 23, 42, 0.05)',
-        minHeight: 64,
+        boxShadow: '0 1px 6px rgba(15, 23, 42, 0.05)',
+        height: 64,
+        lineHeight: 'normal',
         position: 'sticky',
         top: 0,
         zIndex: 100,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+      <div className="tms-brand" style={{ gap: 12 }}>
         <div
           style={{
             width: 38,
@@ -40,37 +41,31 @@ const Navbar: React.FC = () => {
             alignItems: 'center',
             justifyContent: 'center',
             boxShadow: '0 2px 6px rgba(2, 132, 199, 0.15)',
+            flexShrink: 0,
           }}
         >
-          <CarOutlined aria-label="TMS Logistics" style={{ color: '#0284c7', fontSize: '20px' }} />
+          <CarOutlined aria-label="TMS Logistics" style={{ color: '#0284c7', fontSize: 20 }} />
         </div>
-        <div>
-          <span style={{ color: '#0f172a', fontWeight: 800, fontSize: '18px', letterSpacing: '-0.02em' }}>
-            TMS LOGISTICS
-          </span>
+        <div className="tms-brand-copy">
+          <strong>TMS LOGISTICS</strong>
+          <small>Hệ thống điều phối vận tải</small>
         </div>
       </div>
 
-      <Space size="middle" wrap>
-        <Select
-          aria-label="Chi nhánh làm việc"
-          style={{ minWidth: 220 }}
-          value={branchId || 'ALL'}
-          onChange={(value) => setBranchId(value === 'ALL' ? undefined : value)}
-          options={[
-            { value: 'ALL', label: user?.companyScope ? 'Toàn công ty' : 'Các chi nhánh được cấp' },
-            ...(user?.branches || []).map((b) => ({ value: b.id, label: b.name })),
-          ]}
-        />
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Tag color="geekblue" icon={<UserOutlined />}>
-            {[...new Set(user?.grants.map((g) => g.role))].join(', ') || user?.role}
-          </Tag>
-          <Text style={{ color: '#1e293b', fontWeight: 600 }}>
+      <div className="tms-navbar-actions">
+        <div className="tms-user-pill">
+          <UserOutlined style={{ color: '#0f5593', fontSize: 14 }} />
+          <Text style={{ color: '#1e293b', fontWeight: 600, fontSize: 13 }}>
             {user?.fullName || user?.username}
           </Text>
+          {roleLabel && (
+            <Tag color="geekblue" style={{ margin: 0, fontSize: 11, fontWeight: 700 }}>
+              {roleLabel}
+            </Tag>
+          )}
         </div>
+
+        <Divider type="vertical" style={{ height: 22, margin: 0, borderColor: '#cbd5e1' }} />
 
         <Button
           className="tms-logout-button"
@@ -81,7 +76,7 @@ const Navbar: React.FC = () => {
         >
           {screens.lg ? 'Đăng xuất' : null}
         </Button>
-      </Space>
+      </div>
     </Header>
   );
 };

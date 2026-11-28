@@ -28,6 +28,7 @@ export const VEHICLE_HOME_DEPOT_SELECT = {
   operatingWindows: true,
   handlingSecPerTon: true,
   handlingSecPerPackage: true,
+  capabilities: true,
 } satisfies Prisma.LocationSelect;
 
 type FullHomeDepotLocation = Prisma.LocationGetPayload<{
